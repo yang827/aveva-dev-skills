@@ -162,5 +162,5 @@ AVEVA PML provides structured loops with explicit termination:
 ## Scope & Limits
 
 This skill covers AVEVA PML 1 and PML 2 language syntax, GUI form customisation, Event Driven Graphics, DABACON model queries, and Marine Drafting automation as documented in TM-2263, TM-2401, SOFTCG, and SCRM.
-- **Scope**: Applicable to AVEVA PDMS (11.5+) and AVEVA Marine (12 series).
+- **Scope**: Applicable to AVEVA Marine (12 series) and AVEVA PDMS (11.5+).
 - **Out of Scope**: Third-party C# plugin compilation with external Visual Studio IDEs, low-level SQL database bypasses bypassing DABACON, or proprietary hardware licensing configurations.
