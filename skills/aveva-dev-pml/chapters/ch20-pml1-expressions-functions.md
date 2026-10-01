@@ -1,7 +1,7 @@
 # Chapter 20: SCRM Appendix A — PML 1 Expressions & Functions Reference
 
 ## Core Idea
-The AVEVA Software Customisation Reference Manual (SCRM Appendix A, pp. 289–332) provides the definitive reference specification for **PML 1 expressions, operators, and built-in functions**. Although PML 2 introduced object-oriented dot-syntax methods, the PML 1 expression engine remains fully supported across all AVEVA products (Marine, Plant, Outfitting, PDMS, E3D). It is fundamental for database queries, report generators, collection filters, and attribute evaluation.
+The AVEVA Software Customisation Reference Manual (SCRM Appendix A, pp. 289–332) provides the definitive reference specification for **PML 1 expressions, operators, and built-in functions**. Although PML 2 introduced object-oriented dot-syntax methods, the PML 1 expression engine remains fully supported across all AVEVA products (Marine, Plant, Outfitting, PDMS). It is fundamental for database queries, report generators, collection filters, and attribute evaluation.
 
 ---
 

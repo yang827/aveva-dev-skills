@@ -1,6 +1,6 @@
 ---
 name: aveva-dev-dotnet
-description: "Comprehensive developer knowledge base for AVEVA E3D, PDMS, and AVEVA Marine .NET secondary development (part of the aveva-dev-skills suite). Covers Common Application Framework (CAF), Dabacon DbElement access, PMLNet interop, MarAPI, and Planar structural modeling."
+description: "Comprehensive developer knowledge base for AVEVA PDMS and AVEVA Marine .NET secondary development (part of the aveva-dev-skills suite). Covers Common Application Framework (CAF), Dabacon DbElement access, PMLNet interop, MarAPI, and Planar structural modeling."
 metadata:
   suite: aveva-dev-skills
   version: "1.0.0"
@@ -8,7 +8,7 @@ metadata:
 
 <!-- argument-hint: [topic, class name, or chapter number] -->
 
-# AVEVA E3D, PDMS & Marine .NET Customisation & Secondary Development Guide
+# AVEVA PDMS & Marine .NET Customisation & Secondary Development Guide
 
 **Author**: AVEVA Solutions Limited | **Pages**: ~1,822 | **Chapters**: 10 | **Generated**: 2026-09-29
 
@@ -147,5 +147,5 @@ AVEVA 所有工程模型数据均存储于分层式的 Dabacon 专有数据库�
 
 ## Scope & Limits
 
-本 Skill 完整覆盖了 AVEVA Plant / Marine 官方文档中的 .NET 二次开发指南（NCUG.pdf）、Marine 核心 API 参考（NETmarAPI.pdf）及 Planar 平面结构建模 API（netaveva.marine.planarapi.pdf）。在具体工程中编写实现代码时，需结合目标项目安装的具体 AVEVA 版本（如 12.1、E3D 2.1/3.1）及其引用的程序集版本；若涉及曲面外板高级成形算法或特定的第三方数据库，请辅以对应专项指南。
+本 Skill 完整覆盖了 AVEVA Plant / Marine 官方文档中的 .NET 二次开发指南（NCUG.pdf）、Marine 核心 API 参考（NETmarAPI.pdf）及 Planar 平面结构建模 API（netaveva.marine.planarapi.pdf）。在具体工程中编写实现代码时，需结合目标项目安装的具体 AVEVA 版本（如 Marine 12.1、PDMS 12.0/12.1）及其引用的程序集版本；若涉及曲面外板高级成形算法或特定的第三方数据库，请辅以对应专项指南。
 

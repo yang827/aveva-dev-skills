@@ -1,7 +1,7 @@
 # Chapter 1: PML Overview & Runtime Environment
 
 ## Core Idea
-AVEVA Programmable Macro Language (PML) is an interpreted scripting language operating within AVEVA Plant (PDMS, E3D) and AVEVA Marine (Marine 12 Series). It bridges user commands, graphical user interface (GUI) definitions, and DABACON engineering databases.
+AVEVA Programmable Macro Language (PML) is an interpreted scripting language operating within AVEVA PDMS and AVEVA Marine (Marine 12 Series). It bridges user commands, graphical user interface (GUI) definitions, and DABACON engineering databases.
 
 ## Frameworks Introduced
 - **PML Architecture Split (PML 1 vs PML 2)**:

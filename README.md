@@ -9,7 +9,7 @@
 [![Compatible with Antigravity](https://img.shields.io/badge/Compatible-Antigravity-4285F4?style=flat-square)](https://deepmind.google)
 [![Compatible with Cline](https://img.shields.io/badge/Compatible-Cline%20%2F%20Roo%20Code-brightgreen?style=flat-square)](https://github.com/cline/cline)
 
-**AVEVA Dev Skills** is a dedicated engineering knowledge base and professional skill suite designed for AI Coding Agents working on **AVEVA E3D, PDMS, and AVEVA Marine** secondary development and customization.
+**AVEVA Dev Skills** is a dedicated engineering knowledge base and professional skill suite designed for AI Coding Agents working on **AVEVA PDMS and AVEVA Marine** secondary development and customization.
 
 Built upon the open **[Agent Skills specification](https://agentskills.io)**, the project employs **Progressive Disclosure** architecture: agents load only high-level mental models and indexes at initialization, reading detailed chapters and reference documentation on demand.
 
@@ -92,7 +92,7 @@ Once installed, simply converse naturally with your AI coding agent:
 * **PML Forms & GUI**:
   > *"Create a PML 2 form with a SELECTOR dropdown, a data grid gadget, and callback methods for user selection."*
 * **EDG 3D Picking**:
-  > *"How do I implement non-blocking 3D object picking using Event Driven Graphics (EDG) in PDMS/E3D to retrieve a DBREF?"*
+  > *"How do I implement non-blocking 3D object picking using Event Driven Graphics (EDG) in PDMS to retrieve a DBREF?"*
 * **Code Review & Auditing**:
   > *"Review this PML snippet for illegal loops, memory leaks, and encoding flaws, then refactor it according to AVEVA best practices."*
 
@@ -128,5 +128,5 @@ aveva-dev-skills/
 
 * Licensed under the [MIT License](LICENSE).
 * **Trademark & Non-Affiliation Disclaimer**:  
-  * AVEVA, PDMS, Everything3D, E3D, DABACON, and PML are registered trademarks or trademarks of AVEVA Solutions Limited or Schneider Electric.
+  * AVEVA, PDMS, DABACON, and PML are registered trademarks or trademarks of AVEVA Solutions Limited or Schneider Electric.
   * This repository is an independent open-source documentation and engineering skill suite maintained by secondary developers. It is **not affiliated with, endorsed by, or sponsored by AVEVA Solutions Limited or Schneider Electric**.

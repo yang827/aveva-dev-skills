@@ -1,6 +1,6 @@
 # AVEVA PML Design Patterns & Architectural Recipes
 
-Production-tested design patterns for AVEVA Plant (PDMS, E3D) and AVEVA Marine (Marine 12) macro and application development.
+Production-tested design patterns for AVEVA PDMS and AVEVA Marine (Marine 12) macro and application development.
 
 ---
 
