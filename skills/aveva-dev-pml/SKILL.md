@@ -9,7 +9,7 @@ metadata:
 <!-- argument-hint: [topic, framework name, or chapter number] -->
 
 # AVEVA PML & Marine Customisation Guide
-**Author**: AVEVA Solutions Ltd | **Pages**: 858 | **Chapters**: 20 | **Updated**: 2026-09-30
+**Source**: AVEVA Official Documentation (~858 pages) | **Maintained by**: aveva-dev-skills | **Chapters**: 20
 
 ## How to Use This Skill
 

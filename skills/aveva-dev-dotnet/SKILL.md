@@ -10,7 +10,7 @@ metadata:
 
 # AVEVA Marine & PDMS .NET Customisation & Secondary Development Guide
 
-**Author**: AVEVA Solutions Limited | **Pages**: ~1,822 | **Chapters**: 10 | **Generated**: 2026-09-29
+**Source**: AVEVA Official Documentation (~1,822 pages) | **Maintained by**: aveva-dev-skills | **Chapters**: 10
 
 ## How to Use This Skill
 
