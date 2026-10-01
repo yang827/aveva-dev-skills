@@ -1,6 +1,10 @@
+<p align="center">
+  <img src="assets/banner.jpg" alt="AVEVA Dev Skills Banner" width="100%" />
+</p>
+
 # AVEVA Dev Skills 🚀
 
-[English](README.md) | [简体中文](README_zh.md)
+[English](README.md) | [简体中文](README_zh.md) | [实测基准 (Evals)](EVALS_zh.md)
 
 [![Agent Skills Standard](https://img.shields.io/badge/Standard-Agent%20Skills-blue?style=flat-square)](https://agentskills.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
@@ -92,12 +96,41 @@ Copy-Item -Recurse skills/* "$env:USERPROFILE\.gemini\config\skills\"
 
 ---
 
+## ⚖️ AI Agent 实测基准与防幻觉评测 (Evals)
+
+通用大语言模型（如 GPT-4o、Claude 3.5、Gemini 1.5 等）在面对工业软件二次开发时，由于公网训练语料匮乏与 AVEVA 封闭专有机制，极易发生致命幻觉。挂载技能套件前后的关键实测对比如下：
+
+| 评测场景 | ❌ 未挂载技能时的常见 AI 幻觉 (Unskilled) | ✅ 挂载 `aveva-dev-skills` 后的规范输出 (Skilled) | AVEVA 宿主运行时后果 |
+|---|---|---|---|
+| **PML 循环控制流** | 凭空臆造 `while ... endwhile` 或 `for` | 严格使用 `do ... break if (...) ... enddo` | `(61,2) Command not recognised` 语法中断 |
+| **Dabacon 数据库线程** | 开 `Task.Run` 多线程并发访问 `DbElement` | 严格遵守 STA 单线程主循环并加 `PdmsException` 防卫 | 触发底层 AccessViolation 进程瞬间闪退硬崩溃 |
+| **PMLNet 跨语言桥接** | 使用 `int`/`float`，遗漏 `Assign()` 浅拷贝 | 强制使用 `double`、`ArrayList` 并实现 5 大契约 | `(81,146) Method not found` 无法调用 |
+| **marAPI 船体原生对象** | 将 `MarDataBase`/`MarObject` 交给 .NET GC | 强制 `using` 或 `IDisposable` 确定性释放非托管指针 | 内存句柄泄漏，SAVE WORK 时模型损坏崩溃 |
+| **CAF 插件界面解耦** | 在 Form 构造函数中写死按钮 `Click` 事件 | 注册全局 `Command`，界面通过 `.uic` XML 声明式解耦 | 按钮无法吸附、无法参与系统撤销与布局记忆 |
+| **PMLLIB 索引与热更新** | 建议重启软件、随意大写文件名 | 强制小写命名、`pml rehash all` 重新索引、`reload form` | 文件找不到，修改代码在内存中始终不生效 |
+
+👉 **查看完整的详细评测案例、测试 Prompt 与对比代码：[EVALS_zh.md](EVALS_zh.md) (English: [EVALS.md](EVALS.md))**。
+
+---
+
+## 🏷️ 仓库推荐标签 (GitHub Topics)
+
+在 GitHub 仓库设置中配置以下 Topics 标签，可实现工业 CAD 与 AI 工程智能体社区的最佳曝光与检索推荐：
+
+`aveva` · `aveva-marine` · `pdms` · `plant-design` · `pml` · `pmlnet` · `csharp` · `agent-skills` · `cad-customization`
+
+---
+
 ## 📂 仓库目录结构 (Directory Structure)
 
 ```text
 aveva-dev-skills/
+├── assets/
+│   └── banner.jpg                  # 仓库社交分享头图 (Social Preview Banner)
 ├── .gitignore
 ├── LICENSE                         # MIT 许可证与商标免责声明
+├── EVALS.md                        # AI 评测基准与防幻觉报告 (英文)
+├── EVALS_zh.md                     # AI 实测基准与防幻觉评测报告 (中文)
 ├── README.md                       # 英文说明文档
 ├── README_zh.md                    # 中文说明文档
 └── skills/                         # 遵循 agentskills.io 规范的技能集
@@ -124,3 +157,4 @@ aveva-dev-skills/
 * **第三方知识产权免责声明**：  
   * AVEVA, PDMS, DABACON, PML 为 AVEVA Solutions Limited 或 Schneider Electric 的注册商标或商标。
   * 本知识库由独立二次开发工程师总结维护，旨在促进行业技术交流与 AI 辅助工程编程，**与 AVEVA Solutions Limited 或 Schneider Electric 官方无任何隶属、赞助或背书关系**。
+

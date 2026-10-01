@@ -1,6 +1,10 @@
+<p align="center">
+  <img src="assets/banner.jpg" alt="AVEVA Dev Skills Banner" width="100%" />
+</p>
+
 # AVEVA Dev Skills 🚀
 
-[English](README.md) | [简体中文](README_zh.md)
+[English](README.md) | [简体中文](README_zh.md) | [Benchmark & Evals](EVALS.md)
 
 [![Agent Skills Standard](https://img.shields.io/badge/Standard-Agent%20Skills-blue?style=flat-square)](https://agentskills.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
@@ -98,12 +102,41 @@ Once installed, simply converse naturally with your AI coding agent:
 
 ---
 
+## ⚖️ AI Agent Benchmark & Anti-Hallucination Evals
+
+General LLMs frequently hallucinate when dealing with AVEVA software due to sparse public training data and proprietary runtime rules. Here is a summary of real-world comparisons:
+
+| Scenario | ❌ Unskilled AI (Common Hallucination) | ✅ With `aveva-dev-skills` | AVEVA Host Consequence |
+|---|---|---|---|
+| **PML Control Flow** | Inventing `while ... endwhile` or `for` | Strict `do ... break if (...) ... enddo` | `(61,2) Command not recognised` |
+| **Dabacon DB Threading** | Asynchronous `Task.Run` on `DbElement` | Enforces STA single-thread + `PdmsException` guard | Unhandled AccessViolation crash |
+| **PMLNet Bridge Contract** | Passing `int`/`float`, missing `Assign()` | Strict `double`, `ArrayList`, `[PMLNetCallable()]` | `(81,146) Method not found` |
+| **marAPI Native Resource** | Leaving `MarDataBase`/`MarObject` to GC | Deterministic `using` / `IDisposable` lifecycle | Native handle leak & crash on save |
+| **CAF UI Architecture** | Hardcoding `Click` events in Form | Decoupled `CommandManager` Key + `.uic` XML | Inoperable menus, docking failure |
+| **PMLLIB Hot Reloading** | CamelCase filenames, restart-only advice | Lowercase filenames, `pml rehash all`, `reload form` | Form not found, stale code execution |
+
+👉 **Read the comprehensive evaluation report with code examples in [EVALS.md](EVALS.md) (中文版: [EVALS_zh.md](EVALS_zh.md))**.
+
+---
+
+## 🏷️ Recommended GitHub Topics
+
+When configuring this repository on GitHub, tag the following topics for maximum discoverability:
+
+`aveva` · `aveva-marine` · `pdms` · `plant-design` · `pml` · `pmlnet` · `csharp` · `agent-skills` · `cad-customization`
+
+---
+
 ## 📂 Directory Structure
 
 ```text
 aveva-dev-skills/
+├── assets/
+│   └── banner.jpg                  # Repository Social Preview Banner
 ├── .gitignore
 ├── LICENSE                         # MIT License & Trademark Disclaimer
+├── EVALS.md                        # AI Benchmark & Anti-Hallucination Evals (English)
+├── EVALS_zh.md                     # AI 实测基准与防幻觉评测报告 (中文)
 ├── README.md                       # English Documentation (Default)
 ├── README_zh.md                    # Chinese Documentation (中文文档)
 └── skills/                         # Standard Agent Skills Suite
@@ -130,3 +163,4 @@ aveva-dev-skills/
 * **Trademark & Non-Affiliation Disclaimer**:  
   * AVEVA, PDMS, DABACON, and PML are registered trademarks or trademarks of AVEVA Solutions Limited or Schneider Electric.
   * This repository is an independent open-source documentation and engineering skill suite maintained by secondary developers. It is **not affiliated with, endorsed by, or sponsored by AVEVA Solutions Limited or Schneider Electric**.
+
