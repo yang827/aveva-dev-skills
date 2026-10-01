@@ -1,7 +1,7 @@
 # Chapter 8: Planar Modeling Fundamentals & PanelStatement
 
 ## Core Idea
-`Aveva.Marine.Planar.dll` 实现了 AVEVA Marine / Tribon 标志性的平面结构语句体系（Planar Statements）；该体系以 `PanelStatement` 为基石，将船体平面构件（甲板、横舱壁、纵舱壁、强框架等）的参考基准面（`PlaneStatement`）、外边界（`BoundaryStatement`）、水密等级及局部坐标轴系抽象为强类型对象，支持从 `DbElement` 双向解析与逆向重构船体结构语句。
+`Aveva.Marine.Planar.dll` 实现了 AVEVA Marine 标志性的平面结构语句体系（Planar Statements）；该体系以 `PanelStatement` 为基石，将船体平面构件（甲板、横舱壁、纵舱壁、强框架等）的参考基准面（`PlaneStatement`）、外边界（`BoundaryStatement`）、水密等级及局部坐标轴系抽象为强类型对象，支持从 `DbElement` 双向解析与逆向重构船体结构语句。
 
 ## Frameworks Introduced
 - **平面语句声明式建模框架 (Planar Statement Declarative Modeling Framework)**:
@@ -11,7 +11,7 @@
     2. 创建 `PanelStatement` 并绑定所属分段（`Block`）、水密性（`isWatertight`）、标记面（`GMS`）。
     3. 声明参考基准面 `PlaneStatement`（指定是肋位 Frame、纵剖面 LP 还是水线面 WL）。
     4. 声明外围边界 `BoundaryStatement`（确定与外板、相邻甲板或舱壁的搭接修剪关系）。
-    5. 调用 `.Statement` 属性获取符合 Tribon 语法的标准化建模语句串，或调用 API 直接生成/更新模型。
+    5. 调用 `.Statement` 属性获取符合 Marine 语法的标准化建模语句串，或调用 API 直接生成/更新模型。
 - **DbElement 到 Planar 语句的双向互转模式 (DbElement-to-Planar Roundtrip Pattern)**:
   - When to use: 逆向解析现有三维模型中特定板架的施工参数。
   - How: 使用重载构造函数 `new PanelStatement(dbElement)`，直接将数据库图元转化为结构化语句对象。
@@ -27,10 +27,10 @@
 
 ## Mental Models
 - **Think of PanelStatement as the Canvas**: 船体结构不是自由杂乱的碎片，`PanelStatement` 是画布，所有母板、加筋、肘板都在这张画布上依附绘制。
-- **Think of Statement Property as Code-Behind**: 每一个 Statement 对象的 `.Statement` 字符串属性即是 Tribon 标准设计语句，可以直接作为日志记录或输入宏。
+- **Think of Statement Property as Code-Behind**: 每一个 Statement 对象的 `.Statement` 字符串属性即是 Marine 标准设计语句，可以直接作为日志记录或输入宏。
 
 ## Anti-patterns
-- **直接手工拼接 Tribon 文本宏字符串**: 易出现空格、标点、参数顺序错误；应使用强类型的 `PanelStatement` 类设置属性，由 `.Statement` 属性自动生成标准语法。
+- **直接手工拼接 Marine 文本宏字符串**: 易出现空格、标点、参数顺序错误；应使用强类型的 `PanelStatement` 类设置属性，由 `.Statement` 属性自动生成标准语法。
 - **脱离基准面盲目定义局部坐标**: 平面板架严格依赖全局肋位（Frame）或纵剖线（LP），若未正确初始化 `PlaneStatement`，在视图刷新时会导致构件飘出船体范围。
 
 ## Code Examples
@@ -89,7 +89,7 @@ namespace Aveva.CustomMarine.PlanarModeling
 ## Reference Tables
 
 ### `PanelStatement` 关键属性字典
-| 属性名 | 类型 | 说明 / 对应 Tribon 语法关键字 |
+| 属性名 | 类型 | 说明 / 对应 Marine 语法关键字 |
 |---|---|---|
 | `Name` | `string` | 平面分段名称（如 `T_BHD_FR50`） |
 | `Block` | `string` | 所属建造分段名（`Block`） |
@@ -98,7 +98,7 @@ namespace Aveva.CustomMarine.PlanarModeling
 | `Locationstr` | `string` | 基准定位描述（如 `FR 45`, `LP 3500`, `WL 6200`） |
 | `Axis` | `string` | 主法向轴（X, Y 或 Z） |
 | `UAxis` / `VAxis` | `string` | 板架二维局部正交轴向定义 |
-| `Statement` | `string` | (只读) 导出的完整 Tribon Planar 语句字符串 |
+| `Statement` | `string` | (只读) 导出的完整 Marine Planar 语句字符串 |
 | `Valid` | `bool` | 当前语句逻辑完整性验证标识 |
 
 ## Worked Example: 自动化批量分段水密性核查

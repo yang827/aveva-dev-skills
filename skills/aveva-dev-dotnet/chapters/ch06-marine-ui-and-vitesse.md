@@ -5,7 +5,7 @@
 
 ## Frameworks Introduced
 - **三元语言互操作架构 (Tri-Language Interoperability Architecture: C# - Python - PML)**:
-  - When to use: 企业已有成熟的 Tribon/Marine Python 脚本库（Vitesse），或需要结合 Python 的强大科学计算库与 C# 的现代化 WPF/WinForms 界面时。
+  - When to use: 企业已有成熟的 Marine Python 脚本库（Vitesse），或需要结合 Python 的强大科学计算库与 C# 的现代化 WPF/WinForms 界面时。
   - How:
     1. 使用 `Aveva.Marine.Vitesse.MarPythonEngine` 在 C# 进程内加载执行 Python 代码。
     2. 使用 `MarPythonObject` 封装 Python 类实例与函数返回值。
@@ -17,7 +17,7 @@
 ## Key Concepts
 - **MarUi**: AVEVA Marine 原生界面自动化服务类，负责与宿主界面的直接交互（弹窗输入、颜色选择、窗口最大化/最小化/刷新）。
 - **MarButtonState**: Marine 原生工具条或按钮的状态枚举（如禁用、按下、默认状态）。
-- **Vitesse**: AVEVA Marine / Tribon 的经典 Python 扩展环境，内置海量船体、舾装建模 API。
+- **Vitesse**: AVEVA Marine 的经典 Python 扩展环境，内置海量船体、舾装建模 API。
 - **MarPythonEngine**: 运行在 Marine 进程内的 Python 执行引擎封装，提供执行脚本和初始化环境方法。
 - **MarPythonObject**: Python 对象的托管包装，支持跨语言方法调用与属性读取。
 - **MarPythonObjectPML**: 专为 PML 设计的 Python 包装器，打通 Python 与 PML 的直接通信。
@@ -75,7 +75,7 @@ namespace Aveva.CustomMarine.Automation
                     engine.RunScript(scriptPath);
 
                     // 4. 调用 Python 内部全局函数或创建对象
-                    // 引擎支持在宿主内存中直接同步执行 Tribon Python API
+                    // 引擎支持在宿主内存中直接同步执行 Marine Python API
                     Console.WriteLine($"Vitesse script {scriptPath} executed successfully on {blockName}.");
                 }
                 catch (MarVitesseException vex)

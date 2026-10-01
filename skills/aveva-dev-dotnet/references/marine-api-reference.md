@@ -749,7 +749,7 @@
 - **Assembly**: `marAPI.dll`
 - **Namespace**: `Aveva.Marine.Utility`
 - **Inheritance**: `System.Object` -> `Aveva.Marine.Utility.MarTbBaseException` (implements `System.IDisposable`)
-- **Description**: Tribon 底层异常基类，所有来自 Marine 原生核心的错误均继承自此类。
+- **Description**: Marine 底层异常基类，所有来自 Marine 原生核心的错误均继承自此类。
 
 #### Constructors
 
@@ -858,7 +858,7 @@
 | `Dispose` | `void Dispose()` | Releases all unmanaged resources held by this instance |
 | `ExitFunction` | `int ExitFunction()` | The function returns a value that is equal to user response EXIT_FUNCTION |
 | `ExitFunctionPML` | `double ExitFunctionPML()` | The function returns a value that is equal to user response EXIT_FUNCTION (PML |
-| `ExitProgram` | `void ExitProgram()` | The function terminates the Tribon program |
+| `ExitProgram` | `void ExitProgram()` | The function terminates the Marine program |
 | `Failure` | `int Failure()` | The function returns error value |
 | `FailurePML` | `double FailurePML()` | The function returns error value (PML Version) |
 | `No` | `int No()` | The function returns a value that is equal to user response NO |
@@ -877,8 +877,8 @@
 | `Success` | `int Success()` | The function returns success value |
 | `SuccessPML` | `double SuccessPML()` | The function returns success value (PML Version) |
 | `SwitchApplication` | `bool SwitchApplication(string applicationName)` | The function executes a command. |
-| `TBEnvironmentGet` | `string TBEnvironmentGet(string Env)` | The function gets the value of a Tribon environment variable |
-| `TBEnvironmentSet` | `void TBEnvironmentSet(string Env, string Value)` | The function sets a Tribon environment variable |
+| `TBEnvironmentGet` | `string TBEnvironmentGet(string Env)` | The function gets the value of a Marine environment variable |
+| `TBEnvironmentSet` | `void TBEnvironmentSet(string Env, string Value)` | The function sets a Marine environment variable |
 | `TraCoordPan` *(Overloads: 2)* | `bool TraCoordPan(MarPointPlanar,string,MarPoint)` | Get a co-ordinate in the panel co-ordinate system from an earlier made indication in |
 | `TraCoordShip` *(Overloads: 2)* | `bool TraCoordShip(MarPointPlanar,string,MarPoint)` | Get a coordinate in the ship coordinate system, from an earlier made indication in the |
 | `TriggerAbort` | `int TriggerAbort()` | Return this function from a trigger to abort the function that fired the trigger |

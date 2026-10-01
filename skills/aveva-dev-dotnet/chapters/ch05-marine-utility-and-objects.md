@@ -1,15 +1,15 @@
 # Chapter 5: AVEVA Marine Utility API & Core Domain Objects
 
 ## Core Idea
-`marAPI.dll` 中的 `Aveva.Marine.Utility` 命名空间是 AVEVA Marine 二次开发的基础底层框架；它提供了对 Tribon / Marine 专有实体模型的对象化封装（如 `MarObject`、`MarDataBase`、`MarUtil`），并规范了命令注入、图纸与模型列表检索、二维几何轮廓以及基于 `IDisposable` 的非托管资源生命周期管理。
+`marAPI.dll` 中的 `Aveva.Marine.Utility` 命名空间是 AVEVA Marine 二次开发的基础底层框架；它提供了对 Marine 专有实体模型的对象化封装（如 `MarObject`、`MarDataBase`、`MarUtil`），并规范了命令注入、图纸与模型列表检索、二维几何轮廓以及基于 `IDisposable` 的非托管资源生命周期管理。
 
 ## Frameworks Introduced
 - **Marine 非托管资源生命周期管理模式 (Marine Resource Disposal Pattern)**:
   - When to use: 任何使用 `marAPI.dll` 中以 `Mar...` 开头的类（如 `MarObject`, `MarDataBase`, `MarUtil`）时。
   - How:
-    1. 所有核心业务类均实现了 `System.IDisposable` 接口，底层紧密包装了 C/C++ 内存句柄与 Tribon 内部数据块。
+    1. 所有核心业务类均实现了 `System.IDisposable` 接口，底层紧密包装了 C/C++ 内存句柄与 Marine 内部数据块。
     2. 必须在 C# 中采用 `using (...) { ... }` 语句块或在 `finally` 块中调用 `.Dispose()`。
-    3. 严禁放任垃圾回收器（GC）非确定性回收，否则可能导致底层 Tribon 数据通信通道未正常释放或产生内存碎片。
+    3. 严禁放任垃圾回收器（GC）非确定性回收，否则可能导致底层 Marine 数据通信通道未正常释放或产生内存碎片。
 - **MarDataBase 准则查询体系 (Criteria-Based Query Framework)**:
   - When to use: 从 AVEVA Marine 工程中批量提取特定图纸（Dwg）或构件对象清单（ObjectList）时。
   - How: 构建 `MarObjectCriteria` 准则过滤条件，传给 `MarDataBase.ObjectListGet` 获得目标集合。
@@ -20,15 +20,15 @@
 - **MarDataBase**: 专门面向 Marine 结构模型的查询网关，提供 `ObjectListGet` 与 `DwgListGet` 方法。
 - **MarObjectCriteria**: 查询过滤器描述类，用于设定构件名匹配模式、类型过滤器和模型状态掩码。
 - **MarPoint2D / MarContour2D**: 二维空间坐标点与平面轮廓线段集合，是船体板缝、开孔轮廓的数学描述基础。
-- **MarTbBaseException**: Tribon 底层异常基类，所有来自 Marine 原生核心的错误均继承自此类。
+- **MarTbBaseException**: Marine 底层异常基类，所有来自 Marine 原生核心的错误均继承自此类。
 
 ## Mental Models
-- **Think of MarObject as a Managed Handle to a Tribon C++ Structure**: `MarObject` 并不包含全部数据副本，它是对 Tribon 核心引擎中内存块的托管安全代理。
+- **Think of MarObject as a Managed Handle to a Marine C++ Structure**: `MarObject` 并不包含全部数据副本，它是对 Marine 核心引擎中内存块的托管安全代理。
 - **Think of MarUtil as the Command & Context Hub**: 当需要知道“当前是否在曲面外板模块”或“向控制台发送一行宏指令”时，第一选择是 `MarUtil`。
 
 ## Anti-patterns
-- **忽略 Dispose() 导致连接泄露**: 在循环中大量 `new MarObject()` 或 `new MarDataBase()` 而不调用 `Dispose()`，极易耗尽底层 Tribon IPC 通信套接字或内存句柄。
-- **混淆 Aveva.Core.Database 与 Aveva.Marine.Utility**: `Aveva.Core.Database.DbElement` 偏向 Plant/Common Dabacon 树形层级，而 `MarObject` / `MarDataBase` 偏向船体造船工艺（Tribon 业务逻辑），两者应结合使用而非相互混淆。
+- **忽略 Dispose() 导致连接泄露**: 在循环中大量 `new MarObject()` 或 `new MarDataBase()` 而不调用 `Dispose()`，极易耗尽底层 Marine IPC 通信套接字或内存句柄。
+- **混淆 Aveva.Core.Database 与 Aveva.Marine.Utility**: `Aveva.Core.Database.DbElement` 偏向 Plant/Common Dabacon 树形层级，而 `MarObject` / `MarDataBase` 偏向船体造船工艺（Marine 业务逻辑），两者应结合使用而非相互混淆。
 
 ## Code Examples
 ```csharp
@@ -80,8 +80,8 @@ namespace Aveva.CustomMarine.Utilities
                 }
                 catch (MarTbBaseException tbEx)
                 {
-                    // 5. 捕获 Tribon 内核特定异常
-                    Console.WriteLine($"Tribon Core Error: {tbEx.Message}");
+                    // 5. 捕获 Marine 内核特定异常
+                    Console.WriteLine($"Marine Core Error: {tbEx.Message}");
                 }
             }
         }
@@ -113,7 +113,7 @@ namespace Aveva.CustomMarine.Utilities
 | `MarStringlist` | `IDisposable` | 专用的非托管安全字符串列表 |
 | `MarPoint2D` | `IDisposable` | 二维几何点坐标 (`X`, `Y`) |
 | `MarContour2D` | `IDisposable` | 二维轮廓，由有序的折线或圆弧构成 |
-| `MarTbBaseException`| `System.Exception` | Tribon / Marine 底层通用异常类型 |
+| `MarTbBaseException`| `System.Exception` | Marine 底层通用异常类型 |
 
 ### PMLNet 跨语言调用双重载规范 (Int32 与 Double 并存机制)
 在 `marAPI.dll` 中，大量核心方法与属性提供成对的重载版本：

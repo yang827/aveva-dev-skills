@@ -9,7 +9,7 @@
 [![Compatible with Antigravity](https://img.shields.io/badge/Compatible-Antigravity-4285F4?style=flat-square)](https://deepmind.google)
 [![Compatible with Cline](https://img.shields.io/badge/Compatible-Cline%20%2F%20Roo%20Code-brightgreen?style=flat-square)](https://github.com/cline/cline)
 
-**AVEVA Dev Skills** 是专为 AI 编程智能体（AI Coding Agents）打造的 **AVEVA Marine & Plant（PDMS / Everything3D / Tribon）二次开发工程知识库与专业技能套件**。
+**AVEVA Dev Skills** 是专为 AI 编程智能体（AI Coding Agents）打造的 **AVEVA Marine & Plant（PDMS / Everything3D / AVEVA Marine 12）二次开发工程知识库与专业技能套件**。
 
 本项目遵循开放的 **[Agent Skills 规范](https://agentskills.io)**，采用 **渐进式披露（Progressive Disclosure）** 架构设计。考虑到 AVEVA 二次开发中 **.NET 现代托管插件开发** 与 **PML 传统脚本/界面自动化** 属于两种截然不同的工程场景，本项目将两者拆分为两个独立的专业技能包，既可作为整套开发套件引入，也可按实际开发场景单独使用。
 
@@ -122,5 +122,5 @@ aveva-dev-skills/
 
 * 本项目基于 [MIT License](LICENSE) 开源。
 * **第三方知识产权免责声明**：  
-  * AVEVA, PDMS, Everything3D, E3D, Tribon, DABACON, PML 为 AVEVA Solutions Limited 或 Schneider Electric 的注册商标或商标。
+  * AVEVA, PDMS, Everything3D, E3D, DABACON, PML 为 AVEVA Solutions Limited 或 Schneider Electric 的注册商标或商标。
   * 本知识库由独立二次开发工程师总结维护，旨在促进行业技术交流与 AI 辅助工程编程，**与 AVEVA Solutions Limited 或 Schneider Electric 官方无任何隶属、赞助或背书关系**。

@@ -33,7 +33,7 @@
 - **Bracket as the Bridge**: 肘板是型材与型材之间、型材与垂直板面之间的力学传递桥梁，负责消除应力集中。
 
 ## Anti-patterns
-- **忽略端部连接定义 (End1 / End2)**: 筋条如果未配置 `StiffenerEndConnection`，在 Tribon 制造模型编译时会报错断裂或干涉，无法通过生产预制校验。
+- **忽略端部连接定义 (End1 / End2)**: 筋条如果未配置 `StiffenerEndConnection`，在 Marine 制造模型编译时会报错断裂或干涉，无法通过生产预制校验。
 - **直接指定无效的材料规格代码**: 型材规格必须严格匹配船厂当前项目的结构截面库（Profiles Library），传入不存在的规格会导致构件生成失败。
 
 ## Code Examples
@@ -99,7 +99,7 @@ namespace Aveva.CustomMarine.PlanarModeling
 ## Reference Tables
 
 ### `StiffenerStatement` 核心字段对照表
-| 属性名 | Tribon 语法关键字 | 含义说明 |
+| 属性名 | Marine 语法关键字 | 含义说明 |
 |---|---|---|
 | `Distance` | `M1` | 距离基准线偏移距离（间距值） |
 | `DirectionAngel` | `T` | 铺设偏转角度 |

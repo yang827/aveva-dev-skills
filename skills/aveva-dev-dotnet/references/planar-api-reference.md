@@ -27,7 +27,7 @@ Planar API 在程序集 `Aveva.Marine.Planar.dll` 中划分了两大核心命名
 
 ## 2. Statement 底层语法标记对照表 (Schema Syntax Mapping)
 
-当调用任意 Statement 对象的 `.Statement` 属性时，内部引擎会将其属性序列化为 AVEVA Marine 标准文本宏语法（Tribon / Marine Schema Syntax）。下表列出核心关键字映射关系，便于调试逆向提取结果或编写宏脚本生成器：
+当调用任意 Statement 对象的 `.Statement` 属性时，内部引擎会将其属性序列化为 AVEVA Marine 标准文本宏语法（Marine Schema Syntax）。下表列出核心关键字映射关系，便于调试逆向提取结果或编写宏脚本生成器：
 
 | 语法关键字 | 对应 Statement 类型与属性 | 说明与语法格式范例 |
 |---|---|---|

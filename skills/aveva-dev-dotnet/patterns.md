@@ -79,7 +79,7 @@ High-frequency architectural patterns and engineering recipes for secondary deve
 1. 从 3D 视图或数据库拾取 `DbElement` 结构实体。
 2. 构造 `PanelStatement panel = new PanelStatement(dbElement);`，API 会自动提取该板架的全部基准面、外轮廓与工艺属性。
 3. 读取其属性（如 `panel.Locationstr`, `panel.isWatertight`）进行业务逻辑分析或参数重写。
-4. 获取 `panel.Statement` 查看标准 Tribon 建模语法，或直接调用更新接口提交重构。
+4. 获取 `panel.Statement` 查看标准 Marine 建模语法，或直接调用更新接口提交重构。
 
 **Trade-offs**:
 - *优势*: 将晦涩的几何图元转化为可读、可序列化、可版本控制的平面语句对象，开发效率极大提升。
