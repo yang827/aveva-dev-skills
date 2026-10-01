@@ -3,7 +3,7 @@ name: aveva-dev-pml
 description: "Knowledge base for AVEVA PML secondary development (part of the aveva-dev-skills suite). Covers PML 1 and PML 2 macros, functions, forms, gadgets, Event Driven Graphics, Marine Drafting automation, and DABACON database queries."
 metadata:
   suite: aveva-dev-skills
-  version: "1.0.0"
+  version: "0.1.0"
 ---
 
 <!-- argument-hint: [topic, framework name, or chapter number] -->
