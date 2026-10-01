@@ -113,13 +113,6 @@ Copy-Item -Recurse skills/* "$env:USERPROFILE\.gemini\config\skills\"
 
 ---
 
-## 🏷️ 仓库推荐标签 (GitHub Topics)
-
-在 GitHub 仓库设置中配置以下 Topics 标签，可实现工业 CAD 与 AI 工程智能体社区的最佳曝光与检索推荐：
-
-`aveva` · `aveva-marine` · `pdms` · `plant-design` · `pml` · `pmlnet` · `csharp` · `agent-skills` · `cad-customization`
-
----
 
 ## 📂 仓库目录结构 (Directory Structure)
 

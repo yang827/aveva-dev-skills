@@ -119,13 +119,6 @@ General LLMs frequently hallucinate when dealing with AVEVA software due to spar
 
 ---
 
-## 🏷️ Recommended GitHub Topics
-
-When configuring this repository on GitHub, tag the following topics for maximum discoverability:
-
-`aveva` · `aveva-marine` · `pdms` · `plant-design` · `pml` · `pmlnet` · `csharp` · `agent-skills` · `cad-customization`
-
----
 
 ## 📂 Directory Structure
 
