@@ -1,6 +1,9 @@
 ---
-name: aveva-dotnet
-description: "Comprehensive developer knowledge base for AVEVA Marine and Plant .NET customisation, Common Application Framework (CAF), Dabacon DbElement database access, PMLNet interop, Marine Utilities, Welding/Production automation, and Planar structural modeling."
+name: aveva-dev-dotnet
+description: "Comprehensive developer knowledge base for AVEVA Marine and Plant .NET secondary development (part of the aveva-dev-skills suite). Covers Common Application Framework (CAF), Dabacon DbElement access, PMLNet interop, MarAPI, and Planar structural modeling."
+metadata:
+  suite: aveva-dev-skills
+  version: "1.0.0"
 ---
 
 <!-- argument-hint: [topic, class name, or chapter number] -->

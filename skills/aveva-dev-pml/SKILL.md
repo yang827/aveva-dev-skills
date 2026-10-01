@@ -1,6 +1,9 @@
 ---
-name: aveva-pml
-description: "Knowledge base from AVEVA PML documentation (TM-2263, TM-2401, SOFTCG, SCRM). Use when developing, debugging, or migrating AVEVA PML 1 and PML 2 macros, functions, forms, gadgets, Event Driven Graphics, Marine Drafting automation, or DABACON database queries."
+name: aveva-dev-pml
+description: "Knowledge base for AVEVA PML secondary development (part of the aveva-dev-skills suite). Covers PML 1 and PML 2 macros, functions, forms, gadgets, Event Driven Graphics, Marine Drafting automation, and DABACON database queries."
+metadata:
+  suite: aveva-dev-skills
+  version: "1.0.0"
 ---
 
 <!-- argument-hint: [topic, framework name, or chapter number] -->
