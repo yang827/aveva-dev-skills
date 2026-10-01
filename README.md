@@ -9,7 +9,7 @@
 [![Compatible with Antigravity](https://img.shields.io/badge/Compatible-Antigravity-4285F4?style=flat-square)](https://deepmind.google)
 [![Compatible with Cline](https://img.shields.io/badge/Compatible-Cline%20%2F%20Roo%20Code-brightgreen?style=flat-square)](https://github.com/cline/cline)
 
-**AVEVA Dev Skills** is a dedicated engineering knowledge base and professional skill suite designed for AI Coding Agents working on **AVEVA Marine & Plant (PDMS / Everything3D / AVEVA Marine 12)** secondary development and customization.
+**AVEVA Dev Skills** is a dedicated engineering knowledge base and professional skill suite designed for AI Coding Agents working on **AVEVA E3D, PDMS, and AVEVA Marine** secondary development and customization.
 
 Built upon the open **[Agent Skills specification](https://agentskills.io)**, the project employs **Progressive Disclosure** architecture: agents load only high-level mental models and indexes at initialization, reading detailed chapters and reference documentation on demand.
 
