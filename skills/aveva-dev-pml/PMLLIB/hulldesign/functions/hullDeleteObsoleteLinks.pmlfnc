@@ -1,0 +1,170 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            hullDeleteObsoleteLinks.pmlfnc
+--    Type:          Function Definition
+--    Group:
+--      Keyword:     APP
+--    Module:        marine modules
+--  Author:
+--  Created:         Thu Jan 29 11:34:00 2015
+
+--
+--  Description:     Remove obsolete LNDESC elements, neither pointing to an existing file nor an existing element
+--
+----------------------------------------------------------------------
+
+define function !!HullDeleteObsoleteLinks()
+   !ce = !!ce
+   !objType = !!ce.type
+   if ( (!objType ne 'LINKWL') and (!objType ne 'LNFOLD') ) then
+      !!Alert.message('Please make a LINKWL or a LNFOLD element current and try again.')
+      return
+   endif
+   !str = !!Alert.Confirm('The command will do savework. Is that OK?')
+   if( !str eq 'NO' ) then
+      $p Command aborted
+      return
+   endif
+--
+-- Open output logfile
+--
+   !project  = CURRENT PROJECT
+   !projectCode = !project.code()
+   !projectEvar = !projectCode & 'mar'
+   var !Directory EVAR $!<projectEvar>
+   !logPathname = !Directory + '\lst\ObsoleteLinks.log'
+   !logFile = object file( !logPathname.String())
+   !logFile.open('OVERWRITE')
+   !!Alert.message('Writing log to $!logPathname')
+--
+-- Collect all LNDESC elements with a bad lnkref
+--
+   !coll = object collection()
+--   !expr = object expression('badref(lnkref)')
+--   !coll.filter(!expr)
+   !coll.type('LNDESC')
+   !coll.scope(!ce)
+   !elements = !coll.results()
+   !elementsDeleted = 0
+   !anyDeleted = 0
+   !elementsChecked = 0
+   !limitSavework = 1000
+   !deleteFailure = 0
+--
+-- Check each LNDESC element
+--
+   do !thisElement value !elements
+      !elementsChecked = !elementsChecked + 1
+      if (!thisElement.url.empty()) then
+         !dbrefstring = ''
+         !filename = ''
+         !otherstring = ''
+      elseif (!thisElement.url.match('dabref://') eq 1) then
+         !dbrefstring = !thisElement.url.substring(10)
+         !filename = ''
+         !otherstring = ''
+      elseif (!thisElement.url.match('file:///') eq 1) then
+         !dbrefstring = ''
+         !filename = !thisElement.url.substring(9)
+         !otherstring = ''
+      elseif (!thisElement.url.match('://') ge 1) then
+         -- URL pointing to something else than element or local file so do not delete !thisElement
+         !dbrefstring = ''
+         !filename = ''
+         !otherstring = !thisElement.url
+      else
+         !dbrefstring = ''
+         !filename = !thisElement.url
+         !otherstring = ''
+      endif
+
+      !doDelete = false
+      if (not !dbrefstring.empty()) then
+         !dbR = object dbref(!dbrefstring)
+         handle (2,107)
+            !doDelete = true
+         endhandle
+      elseif (not !filename.empty()) then
+         !F = object file(!filename)
+         !keep = !F.exists()
+         handle ANY
+            !keep = true
+         endhandle
+         if (not !keep) then
+            !doDelete = true
+         endif
+      elseif (!otherstring.empty()) then
+         !doDelete = true
+      endif
+--
+-- Check also if the LNDESC element is referenced
+--
+      if ( not !doDelete) then
+         !!ce = !thisElement
+         var !mc mcount(typename LNLINK)
+         if ($!mc eq 0) then
+            !doDelete = true
+         endif
+      endif
+--
+-- Delete each LNDESC element that does not point to an existing file or drawing
+--
+      if (!doDelete) then
+         !deleteOk = false
+         !thisName = !thisElement.name
+         !thisDescr = !thisElement.descr
+         !!ce = !thisElement
+         delete $!thisElement.type
+         handle ANY
+            !line = 'Failed to delete $!thisName ($!thisDescr): $!!Error.Text'
+            !logFile.WriteRecord( !line.String() )
+         elsehandle NONE
+            !line = 'Deleted $!thisName ($!thisDescr)'
+            !logFile.WriteRecord( !line.String() )
+            !deleteOk = true
+         endhandle
+         if (!deleteOk) then
+            !anyDeleted = !anyDeleted + 1
+            !elementsDeleted = !elementsDeleted + 1
+         else
+            !deleteFailure = !deleteFailure + 1
+         endif
+      endif
+--
+-- Intermediate savework
+--
+      if (!anyDeleted ge !limitSavework) then
+         !anyDeleted = 0
+         savework
+         !line = '$!elementsDeleted elements deleted and savework done'
+         !logFile.WriteRecord( !line.String() )
+      endif
+   enddo
+--
+-- Cleanup finished.
+--
+   savework
+   !line = 'End of cleanup'
+   !logFile.WriteRecord( !line.String())
+   !line = '$!elementsChecked LNDESC elements checked'
+   $p $!line
+   !logFile.WriteRecord( !line.String())
+   !line = '$!elementsDeleted elements deleted and savework done'
+   $p $!line
+   !logFile.WriteRecord( !line.String())
+   if (!deleteFailure gt 0) then
+      !line = '$!deleteFailure obsolete elements could not be deleted'
+      $p $!line
+      !logFile.WriteRecord( !line.String())
+   endif
+   !logFile.Close()
+   $p Log written to $!logPathname
+   !!ce = !ce
+
+   -- Failed to reset CE because it was deleted, new CE set to owner instead
+   handle (2,822)
+   endhandle
+
+endfunction

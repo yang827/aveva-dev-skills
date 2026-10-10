@@ -1,0 +1,286 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            hmrestrictioncequipen.pmlobj
+--   Type:          Object Definition
+--   Group:
+--     Keyword:     Hole Management
+--   Module:        All
+-- Author:          Martin Ward
+--  Created:        June 2007
+--
+-- Description:
+--   Object used to verify an association in the Hole Management system
+--    1.  Loop all ASSMBRs
+--    1.1.  Get DPCA and FIXING positions
+--    2.  Test DPCA pos is the same as FIXING pos.
+
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  checkDpcaFixiCoincident()        BOOLEAN             check the dpca and fixing are coincident
+--  gatherData()                     -
+--  hmRestrictionCEquiPen()          -
+--  testEv()                         BOOLEAN
+--  unionProfiles(PROFILE,PROFILE)   PROFILE             project profile b onto plane of profile a and union
+--
+------------------------------------------------------------------------
+
+define object HMRESTRICTIONCEQUIPEN
+
+ -- MEMBER names are compulsory to tie in with ASSOCIATIONS
+ -- COMPONENT = RESTRICTION element
+   member .association   is DBREF
+   member .component     is DBREF
+
+   member .allAssMbr     is ARRAY
+   -- Additional members required to simplify processing
+   member .hmHole       is HMHOLE
+
+   member .debug         is BOOLEAN
+endobject
+-- End of object definition
+
+
+------------------------------------------------------------------------
+--
+-- Method:      hmRestrictionCEquiPen
+--
+-- Description: Constructor method
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .hmRestrictionCEquiPen()
+
+  !this.debug = FALSE
+  if (defined(!!debug) ) then
+    !this.debug = TRUE
+  endif
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      testEv
+--
+-- Description: make sure that the fixis and attas are coincident
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .testEv() is BOOLEAN
+
+-- Manually trigger the CONSTRUCTOR - does not get run automatically at the moment
+  !this.hmRestrictionCEquiPen()
+
+  !this.gatherData()
+
+-- Check on profile of Hole Owner
+  if ( !this.checkDpcaFixiCoincident().not() ) then
+    if (!this.debug ) then
+      write 'Failed check in hmRestrictionC.checkAttaFixiCoincident()'
+    endif
+    return false
+  endif
+
+  -- check for virtual and real hole alignment for an approved hole
+  !status = !this.hmHole.getFullStatus()
+  if (!status neq 'APPROVED') then
+    return true
+  endif
+
+  -- hole is approved so we need to check the approved hole against the virtual hole
+
+  !hole = !this.hmHole.getPrimaryHole()
+  if (!hole.unset()) then
+    !!setRestrictionError(!this.association, !this.component, |Hole element not found for an Approved hole|)
+    return false
+  endif
+
+  -- cannot get the boundary shape of a CHOLE so this check does not function for CHOLE
+  if( !hole.type eq 'CHOLE' ) then
+    return true
+  endif
+
+  -- check that virtual hole and real hole are coincident
+  !holeProfile = !this.hmHole.getPrimaryHoleProfile()
+  if( !holeProfile.unset() ) then
+    !errStr = |Unable to create profile from | + !hole.type + | association member|
+    !!setRestrictionError(!this.association, !this.component, !errStr)
+    return false
+  endif
+
+  !virtualProfile = !this.hmHole.getVirtualHoleProfile()
+  if( !holeProfile.unset() ) then
+    !errStr = |Unable to create profile from virtual hole|
+    !!setRestrictionError(!this.association, !this.component, !errStr)
+    return false
+  endif
+
+  !cleanHoleProfile    = !holeProfile.mergePoints().mergeLines().close()
+  !cleanVirtualProfile = !virtualProfile.mergePoints().mergeLines().close()
+
+  !overallProfile      = !this.unionProfiles(!cleanVirtualProfile, !cleanHoleProfile)
+  handle (2,830)
+    !!setRestrictionError(!this.association, !this.component, |Unable to union profiles with different orientations (#profile fixings > 1)|)
+    return false
+  endhandle
+
+  -- if !overallProfile is unset it is probably because the profiles do not intersect
+  if (!overallProfile.unset()) then
+    !!setRestrictionError(!this.association, !this.component, |Virtual hole and approved hole are not aligned|)
+    return false
+  endif
+
+  -- ensure that the overall profile area is within a tolerance of the approved hole and virtual hole profiles
+  !overallProfileArea = !overallProfile.area()
+  !difference = ((!overallProfileArea - !cleanVirtualProfile.area()) / !overallProfileArea)
+  !testResult = ( !difference.abs() lt 0.001 )
+
+  if (!testResult.not()) then
+    !!setRestrictionError(!this.association, !this.component, |Approved hole and virtual hole profiles do not match|)
+  endif
+
+-- Once all checks completed successfully...
+  return !testResult
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      GatherData
+--
+-- Description: Collect all key information for member variables
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .gatherData()
+
+-- Gather all hole data for this association
+  !this.hmHole = object HMHOLE(!this.association)
+
+  !this.allAssMbr = object ARRAY()
+
+-- Locate ALL the Assmbr elements for this ASSOCIATION
+  !find = object COLLECTION()
+  !find.type('ASSMBR')
+  !find.scope(!this.hmHole.element)
+  !this.allAssMbr = !find.results()
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      checkAttaFixiCoincident
+--
+-- Description: check the attas and fixis are coincident
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .checkDpcaFixiCoincident() is BOOLEAN
+
+--    1.  Loop all ASSMBRs
+-- find all the dpca and fixing in the association
+do !i values !this.allAssMbr
+  if (badref(!i.amemrf)) then
+    !!setRestrictionError(!this.association, !this.component, |Bad reference in an AMEMRF field in one of the elements in the hole association|)
+    return FALSE
+  endif
+--    1.1.  Get DPCA and FIXING positions
+  if (!i.amemrf.type eq 'DPCA') then
+    !dpcaPos = !i.posev
+  elseif (!i.amemrf.type eq 'FIXING') then
+    !fixingPos = !i.posev
+  endif
+enddo
+
+--    2.  Test DPCA pos is the same as FIXING pos.
+if (!fixingPos eq !dpcaPos) then
+  !!setRestrictionError(!this.association, !this.component, |No Error|)
+  return TRUE
+else
+  !!setRestrictionError(!this.association, !this.component, |Fixing position different from DPCA position|)
+  return FALSE
+endif
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      unionProfiles
+--
+-- Description: project profile b onto plane of profile a and union
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .unionProfiles(!holeProfile is PROFILE, !fixingProfile is PROFILE) is PROFILE
+
+  if( !holeProfile.orientation.zDir().isParallel(!fixingProfile.orientation.zDir())) then
+    -- profiles are in parallel planes
+    !return               = !holeProfile.union(!fixingProfile)
+  else
+    -- profile b and profile a are not in parallel planes. Project b onto plane of a
+    !chordalApproximation = !fixingProfile.mergePoints().mergeLines().polyLine()
+    !pvStart              = !fixingProfile.plane().pointVector()
+    !pvEnd                = !pvStart
+    !profilePlane         = !holeProfile.plane()
+    !edgeArray            = ARRAY()
+    do !edge values !chordalApproximation.edges()
+      !pvStart.position   = !edge.startPosition
+      !pvEnd.position     = !edge.endPosition
+      !line               = object LINE(!profilePlane.intersection(!pvStart), !profilePlane.intersection(!pvEnd))
+      !edgeArray.append(!line)
+    enddo
+    !projectedProfile = object PROFILE(!profilePlane.position,!profilePlane.orientation,!edgeArray)
+    !projectedProfile.close()
+    !return           = !holeProfile.union(!projectedProfile)
+  endif
+
+  if( !return.size() neq 1 ) then
+    -- probably profiles do not overlap
+    return object PROFILE()
+  endif
+
+  return !return[1]
+
+endmethod
+-- End of method

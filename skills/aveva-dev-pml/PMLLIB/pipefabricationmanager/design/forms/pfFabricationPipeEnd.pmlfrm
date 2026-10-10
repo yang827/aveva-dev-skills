@@ -1,0 +1,1035 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            pfFabricationPipeEnd.pmlfrm
+--    Type:          Form Definition
+--    Group:         Pipe Fabrication
+--      Keyword:     PF
+--    Module:        Design
+--  Author:          Jaehun Choi(Daniel)
+--  Created:         11 January 2013
+--
+--  Description:     fabrication pipe end form
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  checkAngleValue()                BOOLEAN             check angle value
+--  checkHeadPartPickedOnTube(DBREF,POINTVECTOR) BOOLEAN             check head part picked on tube
+--  checkValidPipeEnd(EDGPICKDATA)   -                   check valid pipe end
+--  createPipeEnd(EDGPICKDATA,STRING) -                   create pipe end
+--  createPipeEndByPlane(EDGPOSITIONDATA) -                   create pipe end by plane
+--  displayFabPipeEnd()              -                   display fabricated pipe end
+--  evaluateThreadTypes(BORE)        ARRAY
+--  initialise()                     -                   initialise
+--  isValidSlantedPipeEndComponent(DBREF) BOOLEAN             is valid slanted pipe end component
+--  loadThreadEngagementTable()      ARRAY               load thread engagement table
+--  pfFabricationPipeEnd()           -                   constructor
+--  pickSourceElements(STRING)       -                   pick source elements
+--  prepareEnvironment(DBREF,DBREF,POINTVECTOR) BOOLEAN             prepare environment to insert slanted pipe end
+--  removeExistFabricatedEnd(DBREF)  BOOLEAN             remove exist fabricated end component
+--  removePipeEnd(EDGPICKDATA)       -                   remove pipe end
+--  setNoteString()                  -
+--  tidy()                           -                   tidy
+--  track()                          -
+--
+------------------------------------------------------------------------
+
+--- form definition
+setup form !!pfFabricationPipeEnd
+  !this.formTitle  = 'Fabricated Pipe Ends'
+  !this.initcall  = |!this.initialise()|
+  !this.quitcall  = '!this.tidy()'
+
+  track |DBCHANGED| callback '!this.track()'
+
+  frame .slantedAngle 'Plain/Sniped End'
+    text .angle     'Sniped Angle' tagwidth 10 callback |!this.checkAngleValue()| width 5 is REAL
+    para .anglePar   text 'Deg'           width 3
+    para .remarkPar  text '(0:Plain End)'  width 10
+    path down
+    text .clearance  'Clearance' tagwidth 10  at x0 width 5 is REAL
+    path right
+    para .remarkClear text '(Ref. Plane Clearance)'  width 15
+    path down
+    vdist 0.1
+    text .note      'Drawing Note' tagwidth 10 at x0 callback |!this.setNoteString()| width 20  is STRING
+    --para .noteRemark at x0 text |({deg} will be replaced actual cutting angle)|  width 32
+    para .orientation at x0 text '*Orientation : '  width 20
+  exit
+
+--  frame .threadEnd foldUp 'Threaded End'
+--    option .threadType 'Thread Type' tagwidth 10 width 19
+--  exit
+
+--  path down
+
+  vdist 0.3
+
+  button .createSlantedEnd 'Sniped End' pixmap callback |!this.pickSourceElements('SEND')| width 32 height 32 tooltip 'Create Sniped End'
+  hdist 1
+  path right
+  button .createSEndByPlane pixmap callback |!this.pickSourceElements('SPANEL')| width 32 height 32 tooltip 'Create Sniped End with Reference Plane'
+  button .createThreadEnd   pixmap callback |!this.pickSourceElements('THREAD')| width 32 height 32 tooltip 'Create Threaded End'
+  button .removePipeEnd     pixmap callback |!this.pickSourceElements('REMOVE')| width 32 height 32 tooltip 'Remove Fabricated End'
+  button .displayPipEnd     toggle pixmap 'Display' callback |!this.displayFabPipeEnd()|          width 32 height 32 tooltip 'Display Fabricated End'
+
+  member .sourceTubeRef       is DBREF
+  member .isHeadPart          is BOOLEAN
+  member .checkDbWriteObject  is COMCHECKDBWRITE
+  member .slantedEndObject    is PFFABRICATIONPIPEENDCONTROL
+  member .aidNumber           is REAL
+  member .slantedEndNote      is STRING
+exit
+
+------------------------------------------------------------------------
+--
+-- Method:      pfFabricationPipeEnd
+-- Description: constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pfFabricationPipeEnd()
+  !this.createSlantedEnd.addPixmap(!!pml.getPathName('slantedend.png'))
+  !this.createSEndByPlane.addPixmap(!!pml.getPathName('slantedendplane.png'))
+  !this.createThreadEnd.addPixmap(!!pml.getPathName('threadend.png'))
+  !this.removePipeEnd.addPixmap(!!pml.getPathName('removefabend.png'))
+  !this.displayPipEnd.addPixmap(!!pml.getPathName('displaythreadend.png'))
+  !this.angle.val = 0
+  !this.note.val  = 'Plain End'
+  !this.slantedEndNote = !this.note.val
+
+  !this.aidNumber = !!aidNumbers.add('FabricatedPipeEnd')
+  !this.slantedEndObject.aidNumber = !this.aidNumber
+
+  !this.checkDbWriteObject.showalert  = true
+  !this.clearance.val = 0mm
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      loadThreadEngagementTable
+-- Description: load thread engagement table
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY
+--
+------------------------------------------------------------------------
+define method .loadThreadEngagementTable() is ARRAY
+  !threadData = object ARRAY()
+
+  -- load connection description list & evaluate connection type & desc
+  !connectionDescList = !!collectAllFor('COCDES','', world)
+  !connectionTypes    = object ARRAY()
+  !connectionDesc     = object ARRAY()
+
+  do !cocdesRef values !connectionDescList
+    !connectionTypes.append(!cocdesRef.coconnection)
+    !connectionDesc.append(!cocdesRef.desc)
+  enddo
+
+  -- evaluate thread data
+
+  !threadTableOwner = !!collectAllFor('DDSE', |upcase(func) eq 'THREAD'|, world)
+  if (!threadTableOwner.unset()) then
+    !!alert.error('Failed to load thread data')
+    return !threadData
+  endif
+
+  !members = !threadTableOwner[1].members
+  if (!members.size() eq 0) then
+    !!alert.error('Failed to load thread data. this data is empty')
+    return !threadData
+  endif
+
+  do !entry values !members
+    !connectionType = !entry.dKey
+
+    !index = !connectionTypes.findFirst(!connectionType)
+    if (!index.set()) then
+      !inputStr = !entry.dKey & '-' & !connectionDesc[!index]
+    else
+      !inputStr = '(Not defined on COCO Table)'
+    endif
+
+    !threadData.append(!inputStr)
+  enddo
+
+  return !threadData
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      initialise
+-- Description: initialise
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .initialise()
+  !this.note.val = 'Plain End'
+  --!this.noteRemark.val = |(This note will appear on the Drawing)|
+
+--  !threadData = !this.loadThreadEngagementTable()
+--  if (!threadData.unset()) then
+--    return
+--  endif
+--
+--  !threadData.unique()
+--
+--  !threadData[1] = '---'
+--  !this.threadType.dText = !threadData
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      pickSourceElements
+-- Description: pick source elements
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     STRING      task type
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pickSourceElements(!taskType is STRING)
+--  if (!taskType eq 'THREAD') then
+--    !threadType = !this.threadType.displayText().upcase()
+--    if (!threadType eq '(NOT DEFINED ON COCO TABLE)') then
+--      !!alert.message('Please check Thread Type')
+--      return
+--    endif
+--  endif
+
+  !packet = object EDGPACKET()
+  !packet.pickPacket.picks[1] = object EDGPICKTYPE()
+  !packet.elementPick('Pick pipe end' )
+--  !packet.pickPacket.picks[1].stdGraphics('Pick pipe end')
+  !packet.pickPacket.picks[1].pick.input[3]   = 'TYPE eq |TUBI|'
+  !packet.pickPacket.picks[1].pick.modifiable = false
+  !packet.priority = 2
+
+  !pickBasePlane = !taskType eq 'SPANEL'
+  !packet.remove = !pickBasePlane.not()
+
+  if (!taskType eq 'SPANEL') then
+    !packet.remove = true
+    !packet.action  = |!!pfFabricationPipeEnd.checkValidPipeEnd(!this.return[1])|
+
+    !addPacket = object EDGPACKET()
+    !addPacket.definePosition('')
+    !addPacket.priority = 3
+    !addPacket.pickPacket.picks[1].stdGraphics('Pick plane')
+    !addPacket.pickPacket.picks[1].pick.input[6] = |FACET|
+    !addPacket.pickPacket.picks[1].pick.modifiable = false
+    !addPacket.action  = |!!pfFabricationPipeEnd.createPipeEndByPlane(!this.return[1])|
+    !addPacket.remove = true
+
+    !!edgCntrl.add(!addPacket)
+  elseif (!taskType eq 'REMOVE') then
+    !packet.pickPacket.picks[1].pick.input[3]   = |match('FTUB',TYPE) eq 1 and compType inset ('SEND', 'THRD')|
+    !packet.action  = |!!pfFabricationPipeEnd.removePipeEnd(!this.return[1])|
+    !packet.remove = false
+  else
+    !packet.remove = false
+    !packet.action  = |!!pfFabricationPipeEnd.createPipeEnd(!this.return[1], '$!taskType')|
+  endif
+
+  !!edgCntrl.add(!packet)
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      checkAngleValue
+-- Description: check angle value
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN
+--
+------------------------------------------------------------------------
+define method .checkAngleValue() is BOOLEAN
+  if (!this.angle.val.unset()) then
+    !this.angle.val = 0
+    !this.note.val = 'Plain End'
+  endif
+
+  if (!this.angle.val eq 0) then
+    !this.note.val = 'Plain End'
+    --!this.noteRemark.val = |(This note will appear on the Drawing)|
+  else
+    !this.note.val  = 'Trim pipe end to $!this.angle.val deg'
+    !this.slantedEndNote = !this.note.val
+    --!this.noteRemark.val = |(This note will appear on the Drawing)|
+    --!this.noteRemark.val = |({deg} will be replaced actual cutting angle)|
+  endif
+
+  !validRange = !this.angle.val.between(-0.99, 89.99)
+  if (!validRange.not()) then
+    return false
+  endif
+
+  return true
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      checkValidPipeEnd
+-- Description: check valid pipe end
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     EDGPICKDATA pick data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .checkValidPipeEnd(!pickData is EDGPICKDATA)
+  !element   = !pickData.item
+  !branchRef = bran of $!<element>
+
+  if (!this.prepareEnvironment(!branchRef, !element, !pickData.pickLine).not()) then
+    !!edgCntrl.escape()
+    return
+  endif
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      isValidSlantedPipeEndComponent
+-- Description: is valid slanted pipe end component
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       check element
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     return to check result
+--
+------------------------------------------------------------------------
+define method .isValidSlantedPipeEndComponent(!element is DBREF) is BOOLEAN
+  !result = !element.hardType eq 'FTUB' and !element.compType inset ('SEND','THRD')
+
+  return !result
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      removePipeEnd
+-- Description: remove pipe end
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     EDGPICKDATA pick data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .removePipeEnd(!pickData is EDGPICKDATA)
+  !element = !pickData.item
+  !branchRef = bran of $!<element>
+
+  if (!this.isValidSlantedPipeEndComponent(!element)) then
+    !!edgCntrl.escape()
+  else
+    !branchRef = bran of $!element
+    handle any
+      !!alert.error('Please pick Fabricated Pipe End Component')
+      return
+    endhandle
+
+    !errorFlag = true
+    if (!element.hardType eq 'TUBI') then
+      !ownerRef = object DBREF(!element.flnm.after('tube of'))
+      if (!this.isValidSlantedPipeEndComponent(!ownerRef)) then
+        !element = !ownerRef
+        !errorFlag = false
+      endif
+    else
+      if (!branchRef.mCount eq 1) then
+        if (!this.isValidSlantedPipeEndComponent(!branchRef.members[1])) then
+          !element = !branchRef.members[1]
+          !errorFlag = false
+        endif
+      else
+        if (!element.sequ eq !branchRef.mCount - 1 ) then
+          !nextRef = !branchRef.members[!element.sequ + 1]
+          if (!this.isValidSlantedPipeEndComponent(!nextRef)) then
+            !element  = !nextRef
+            !errorFlag = false
+          endif
+        endif
+      endif
+    endif
+
+    if (!errorFlag) then
+      !!alert.error('Please pick Fabricated Pipe End Component')
+      return
+    endif
+  endif
+
+  -- check DB write access
+  if (!this.checkDbWriteObject.checkDbWrite(!element).not()) then
+    return
+  endif
+
+  !saveCe = !!ce
+
+  !!ce = !element
+  delete FTUB
+  handle any
+    !!alert.error(!!error.text)
+  endhandle
+
+  if (!this.displayPipEnd.val) then
+    !this.displayFabPipeEnd()
+  else
+    aid clear all $!<this.aidNumber>
+  endif
+
+  !!ce = !saveCe
+  handle any
+  endhandle
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      removeExistFabricatedEnd
+-- Description: remove exist fabricated end component
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     element    pick element
+-- Return:
+--   [Data Type] [Description]
+--    1    R     BOOLEAN    return to confirm result
+--
+------------------------------------------------------------------------
+define method .removeExistFabricatedEnd(!element is DBREF) is BOOLEAN
+  !confirm = !!alert.confirm('There is fabricated pipe end already, Do you want to change it?')
+  if (!confirm ne 'YES') then
+    --!!alert.message('Please pick a end of pipe')
+    return false
+  endif
+
+  if (!this.checkDbWriteObject.checkDbWrite(!element).not()) then
+    return false
+  endif
+
+  !saveCe = !!ce
+
+  !!ce = !element
+  delete FTUB
+
+  !!ce = !saveCe
+  handle any
+  endhandle
+
+  return true
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      checkHeadPartPickedOnTube
+-- Description: check head part picked on tube
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]     [Description]
+--    1    R     element        pick element
+--    2    R     point vector   picked point vector
+-- Return:
+--   [Data Type] [Description]
+--    1    R     BOOLEAN    return to check result
+--
+------------------------------------------------------------------------
+define method .checkHeadPartPickedOnTube(!element is DBREF, !pickPointVector is POINTVECTOR) is BOOLEAN
+  --!tubing   = object EDGTUBING()
+  !tubeLine = object LINE(!element.aPos.wrt(world), !element.lPos.wrt(world))
+  !nearPos  = !tubeLine.intersection(!pickPointVector)
+  handle any
+    !nearPos = !tubeLine.startPosition
+  endhandle
+
+  !isHeadPart = !element.aPos.wrt(world).distance(!nearPos) lt !element.lPos.wrt(world).distance(!nearPos)
+  return !isHeadPart
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      prepareEnvironment
+-- Description: prepare environment to insert slanted pipe end
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]     [Description]
+--    1    R     element        branch element
+--    1    R     element        pick element
+--    2    R     point vector   picked point vector
+-- Return:
+--   [Data Type] [Description]
+--    1    R     BOOLEAN        return to ready result
+--
+------------------------------------------------------------------------
+define method .prepareEnvironment(!branchRef is DBREF, !element is DBREF, !pickedPointVector is POINTVECTOR) is BOOLEAN
+  !errorMessage = 'Pick Pipe End'
+
+  if (!element.hardType eq 'BRAN') then
+    if (!element.tGeom.not()) then
+      !!alert.message(!errorMessage)
+      return false
+    endif
+
+    !tubeRef = il tube of $!<element>
+
+    if (!branchRef.mCount eq 0) then
+      if (!branchRef.hRef.badRef().not() and !branchRef.tRef.badRef()) then
+        if (!this.checkHeadPartPickedOnTube(!tubeRef, !pickedPointVector)) then
+          !!alert.message(!errorMessage)
+          return false
+        endif
+        !isHeadPart = false
+      elseif (!branchRef.hRef.badRef() and !branchRef.tRef.badRef().not()) then
+        if (!this.checkHeadPartPickedOnTube(!tubeRef, !pickedPointVector).not()) then
+          !!alert.message(!errorMessage)
+          return false
+        endif
+        !isHeadPart = true
+      else
+        -- bran
+        --   tubi
+        !isHeadPart = !this.checkHeadPartPickedOnTube(!tubeRef, !pickedPointVector)
+      endif
+    else
+      !firstMember = !branchRef.members[1]
+      if (!firstMember.hardType eq 'FTUB' and !firstMember.compType inset ('SEND', 'THRD')) then
+        -- bran
+        --   tubi
+        --   ftub
+        if (!branchRef.hRef.badRef().not() and !branchRef.tRef.badRef()) then
+          if (!this.checkHeadPartPickedOnTube(!tubeRef, !pickedPointVector)) then
+            !!alert.message(!errorMessage)
+            return false
+          endif
+
+          if (!this.removeExistFabricatedEnd(!firstMember).not()) then
+            return false
+          endif
+          !isHeadPart = false
+        elseif (!branchRef.hRef.badRef() and !branchRef.tRef.badRef().not()) then
+          if (!this.checkHeadPartPickedOnTube(!tubeRef, !pickedPointVector).not()) then
+            !!alert.message(!errorMessage)
+            return false
+          endif
+          !isHeadPart = true
+        else
+          -- bran
+          --   tubi
+          if (!this.removeExistFabricatedEnd(!firstMember).not()) then
+            return false
+          endif
+
+          !isHeadPart = !this.checkHeadPartPickedOnTube(!tubeRef, !pickedPointVector)
+          -- check point position and decision head part
+        endif
+      else
+        -- bran
+        --   tubi
+        --   fitting
+        if (!this.checkHeadPartPickedOnTube(!tubeRef, !pickedPointVector).not()) then
+          !!alert.message(!errorMessage)
+          return false
+        endif
+        !isHeadPart = true
+      endif
+    endif
+  else
+    if (!element.tGeom) then
+      if (!this.isValidSlantedPipeEndComponent(!element)) then
+        -- bran
+        --   ftub
+        --   tubi
+        if (!branchRef.mCount eq 1) then
+          !tubeRef = il tube of $!<element>
+          !isHeadPart = !this.checkHeadPartPickedOnTube(!tubeRef, !pickedPointVector)
+
+          if (!isHeadPart) then
+            if (!this.removeExistFabricatedEnd(!element).not()) then
+              return false
+            endif
+            !tubeRef = il tube of $!<branchRef>
+            !isHeadPart = !this.checkHeadPartPickedOnTube(!tubeRef, !pickedPointVector)
+          endif
+        else
+          !tubeRef    = il tube of $!<element>
+          if (!element.sequ lt !branchRef.mCount) then
+            !nextRef = !branchRef.members[!element.sequ + 1]
+
+            if (!this.isValidSlantedPipeEndComponent(!nextRef)) then
+              !isHeadPart = !this.checkHeadPartPickedOnTube(!tubeRef, !pickedPointVector)
+              if (!isHeadPart.not()) then
+                if (!this.removeExistFabricatedEnd(!nextRef).not()) then
+                  return false
+                endif
+                !element = !nextRef
+              else
+                !isFirstMember = !element.sequ eq 1
+                if (!isFirstMember) then
+                  if (!this.removeExistFabricatedEnd(!element).not()) then
+                    return false
+                  endif
+                  !tubeRef = il tube of $!<branchRef>
+                else
+                  !previousMember = !branchRef.members[!elementSeq - 1 ]
+                  handle any
+                    !!alert.message(!errorMessage)
+                    return false
+                  endhandle
+
+                  if (!previousMember.tGeom.not()) then
+                    !!alert.message(!errorMessage)
+                    return false
+                  endif
+
+                  !tubeRef = il tube of $!<previousMember>
+                endif
+              endif
+
+              !isHeadPart = !this.checkHeadPartPickedOnTube(!tubeRef, !pickedPointVector)
+            else
+              if (!this.checkHeadPartPickedOnTube(!tubeRef, !pickedPointVector).not()) then
+                !!alert.message(!errorMessage)
+                return false
+              endif
+
+              if (!this.removeExistFabricatedEnd(!element).not()) then
+                return false
+              endif
+
+              !tubeRef = il tube of $!<branchRef>
+              !isHeadPart = !this.checkHeadPartPickedOnTube(!tubeRef, !pickedPointVector)
+            endif
+          else
+            if (!this.removeExistFabricatedEnd(!element).not()) then
+              return false
+            endif
+
+            !previousMember = !branchRef.members[!elementSeq - 1 ]
+            handle any
+              !!alert.message(!errorMessage)
+              return false
+            endhandle
+
+            if (!previousMember.tGeom.not()) then
+              !!alert.message(!errorMessage)
+              return false
+            endif
+
+            !tubeRef = il tube of $!<previousMember>
+            !isHeadPart = !this.checkHeadPartPickedOnTube(!tubeRef, !pickedPointVector)
+          endif
+
+        endif
+      else
+        !tubeRef    = il tube of $!<element>
+        if (!this.checkHeadPartPickedOnTube(!tubeRef, !pickedPointVector)) then
+          !!alert.message(!errorMessage)
+          return false
+        endif
+
+        if (!element.sequ lt !branchRef.mCount) then
+          !nextRef = !branchRef.members[!element.sequ + 1]
+          if (!this.isValidSlantedPipeEndComponent(!nextRef)) then
+            if (!this.removeExistFabricatedEnd(!nextRef).not()) then
+              return false
+            endif
+          endif
+        endif
+
+        -- bran
+        --   fitting
+        --   tubi
+        !isHeadPart = false
+      endif
+    else
+      if (!this.isValidSlantedPipeEndComponent(!element) and !element.sequ ge !branchRef.mCount) then
+        -- bran
+        --   fitting
+        --   tubi
+        --   ftube
+        !previousMember = !branchRef.members[!element.sequ -1]
+        handle any
+          !!alert.message(!errorMessage)
+          return false
+        endhandle
+
+        if (!previousMember.tGeom.not()) then
+          !!alert.message(!errorMessage)
+          return false
+        endif
+
+        !tubeRef = il tube of $!<previousMember>
+        !isHeadPart = false
+      else
+        !!alert.message(!errorMessage)
+        return false
+      endif
+    endif
+  endif
+
+  !this.isHeadPart = !isHeadPart
+  !this.sourceTubeRef = !tubeRef
+
+  return true
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      createPipeEnd
+-- Description: create pipe end
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     EDGPICKDATA pick data
+--    2    R     STRING      task type
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createPipeEnd(!pickData is EDGPICKDATA, !taskType is STRING)
+  !element = !pickData.item
+
+  !branchRef = bran of $!<element>
+
+  if (!this.prepareEnvironment(!branchRef, !element, !pickData.pickLine).not()) then
+    return
+  endif
+
+  -- check angle value is valid
+  if (!taskType eq 'SEND') then
+    if (!this.checkAngleValue().not()) then
+      !!alert.message('Please input angle between 0 to 90')
+      return
+    endif
+
+    !angle = !this.angle.val
+  else
+    !angle = 999
+
+    if (!element.badRef()) then
+      !element = !branchRef
+    endif
+
+    if (!element.hardType eq 'BRAN') then
+      if (!element.mCount eq 0) then
+        if (!this.isHeadPart) then
+          !bore = !element.hBore
+        else
+          !bore = !element.tBore
+        endif
+      else
+        !bore = !element.hBore
+      endif
+    else
+      if (!this.isHeadPart) then
+        !bore = !element.aBore
+      else
+        !bore = !element.lBore
+      endif
+    endif
+
+    !connections = !this.evaluateThreadTypes(!bore)
+    if (!connections.unset()) then
+      !!alert.error(|There is no suitable thread type for | & !bore.string() & |. Please check thread type on the threaded ends table|)
+      return
+    endif
+
+    if (undefined(!!pfThreadEndTypes)) then
+      pml load form !!pfThreadEndTypes
+    endif
+
+    !!pfThreadEndTypes.threadTypes.dText = !connections[2]
+    !!pfThreadEndTypes.threadTypes.rText = !connections[1]
+
+    !!pfThreadEndTypes.isHeadPart       = !this.isHeadPart
+    !!pfThreadEndTypes.branchRef        = !branchRef
+    !!pfThreadEndTypes.sourceTubeRef    = !this.sourceTubeRef
+    !!pfThreadEndTypes.slantedEndObject = !this.slantedEndObject
+    !!pfThreadEndTypes.isHeadPart = !this.isHeadPart
+    !!pfThreadEndTypes.ownerForm  = !this
+
+    show !!pfThreadEndTypes at xr0.3 yr0.3
+
+    return
+  endif
+
+  -- check DB write access
+  if (!this.checkDbWriteObject.checkDbWrite(!this.sourceTubeRef).not()) then
+    return
+  endif
+
+  !!edgCntrl.escape()
+
+  !isForSlantedEnd = !taskType ne 'THREAD'
+  --!threadInfo = !this.threadType.displayText()
+
+  !threadInfo = ''
+  !this.slantedEndObject.createPipeEnd(!branchRef, !this.sourceTubeRef, !angle, !this.isHeadPart,!isForSlantedEnd, !threadInfo, object PLANE(), !this.note.val, !this.clearance.val)
+
+  !this.orientation.val = '*Orientation : ' & !this.slantedEndObject.orientation
+
+  if (!this.displayPipEnd.val) then
+    !this.displayFabPipeEnd()
+  else
+    aid clear all $!<this.aidNumber>
+  endif
+endmethod
+-- End of method
+
+define method .evaluateThreadTypes(!bore is BORE) is ARRAY
+  !threadData = object PFTHREADENGAGEMENTTABLE()
+  !threadData.load()
+
+  --!index = !this.threadData.boreGroups
+  !connection = object ARRAY()
+
+  !connectionCode = object ARRAY()
+  !connectionDesc = object ARRAY()
+  do !i index !threadData.boreGroups
+    !index = !threadData.boreGroups[!i].findFirst(!bore)
+    skip if (!index.unset())
+    !connectionCode.append(!threadData.connections[!i])
+
+    !dataGroup = !threadData.datagroups[!i][!index]
+    !insertString = !threadData.connections[!i] & '(' & !dataGroup.description & ',' & !dataGroup.bore.string() & ',' & !dataGroup.length.string() & ')'
+    !connectionDesc.append(!insertString)
+  enddo
+
+  if (!connectionCode.set()) then
+    !connection.append(!connectionCode)
+    !connection.append(!connectionDesc)
+  endif
+
+  return !connection
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      createPipeEndByPlane
+-- Description: create pipe end by plane
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     EDGPOSITIONDATApick data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createPipeEndByPlane(!pickData is EDGPOSITIONDATA)
+  !element = !pickData.item
+
+  -- calculate slanted angle
+  !tubeDir      = !this.sourceTubeRef.aPos.wrt(world).direction(!this.sourceTubeRef.lPos.wrt(world))
+  !slantedAngle = !pickData.plane.direction().angle(!tubeDir)
+
+  !branchRef  = bran of $!<this.sourceTubeRef>
+  if (!branchRef.mCount eq 0) then
+    !tubeRef = il tube of $!<branchRef>
+    !pickPos = !pickData.position.wrt(world)
+    !isHeadPart = !tubeRef.aPos.wrt(world).distance(!pickPos) lt !tubeRef.lPos.wrt(world).distance(!pickPos)
+  else
+    !ownerRef = object DBREF(!this.sourceTubeRef.flnm.after('tube of'))
+    if (!ownerRef.hardType eq 'BRAN') then
+      !isHeadPart = true
+    else
+      !isHeadPart = false
+    endif
+  endif
+
+  !this.angle.val = !slantedAngle.nint()
+
+  if (abs(!slantedAngle.nint()) eq 0 or abs(!slantedAngle.nint()) eq 180) then
+    !!alert.message('Cannot create sniped end using a perpendicular plane')
+    return
+  endif
+
+  -- check DB write access
+  if (!this.checkDbWriteObject.checkDbWrite(!this.sourceTubeRef).not()) then
+    return
+  endif
+
+  if (!this.angle.val eq 0) then
+    !this.note.val = 'Plain End'
+  else
+    !this.note.val  = 'Trim pipe end to $!this.angle.val deg'
+  endif
+
+  !branchRef = bran of $!this.sourceTubeRef
+  !this.slantedEndObject.createPipeEnd(!branchRef, !this.sourceTubeRef, !slantedAngle, !isHeadPart, true, '', !pickData.plane, !this.note.val,!this.clearance.val)
+  !this.orientation.val = !this.slantedEndObject.orientation
+
+  if (!this.displayPipEnd.val) then
+    !this.displayFabPipeEnd()
+  else
+    aid clear all $!<this.aidNumber>
+  endif
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      displayFabPipeEnd
+-- Description: display fabricated pipe end
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .displayFabPipeEnd()
+  aid clear all $!<this.aidNumber>
+
+  if (!this.displayPipEnd.val.not()) then
+    return
+  endif
+
+--  if (!this.displayPipEnd.tag.upcase() eq 'DISPLAY') then
+--    !this.displayPipEnd.addPixmap(!!pml.getPathName('hidethreadend.png'))
+--    !this.displayPipEnd.tag = 'Hide'
+--
+--  else
+--    !this.displayPipEnd.addPixmap(!!pml.getPathName('displaythreadend.png'))
+--    !this.displayPipEnd.tag = 'Display'
+--    return
+--  endif
+
+  !pipeRef = pipe of ce
+  handle any
+--    !!alert.message('Please select PIPE on design explorer')
+    return
+  endhandle
+
+  !sourceList = !!collectAllFor('FTUB', |comptype inset ('SEND', 'THRD')|, !pipeRef)
+  if (!sourceList.unset()) then
+--    !!alert.message('There is no Fabricated Pipe End')
+    return
+  endif
+
+  do !entry values !sourceList
+  !displayText = !entry.matn
+    if (!entry.compType eq 'SEND') then
+      if (abs(!entry.desp[1].nint().value()) gt 0) then
+        !slantedData = !!pfCalculateSlantedEndData(!entry)
+        handle any
+          skip
+        endhandle
+
+        !displayText = 'Dir: ' & !slantedData[2] & ' Cut Angle: ' & !slantedData[1]
+        !this.slantedEndObject.displaySlantedAngle(!entry)
+      endif
+    endif
+
+    !pos = !entry.pos
+    aid text num $!this.aidNumber |$!displayText| at $!pos
+  enddo
+
+endmethod
+
+define method .setNoteString()
+  !this.slantedEndNote = !this.note.val
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      tidy
+-- Description: tidy
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .tidy()
+  !!edgCntrl.escape()
+
+  aid clear all $!<this.aidNumber>
+
+  !this.hide()
+endmethod
+-- End of method
+
+define method .track()
+  !isValidType = !!ce.hardType eq 'FTUB' and !!ce.compType eq 'SEND'
+  handle any
+    !isValidType = false
+  endhandle
+
+  if (!isValidType.not()) then
+    return
+  endif
+
+--  if (!!ce.dbWrite.not()) then
+--    return
+--  endif
+
+--  !slantedData = !!pfCalculateSlantedEndData(!!ce)
+--
+--  if (!this.note.val.occurs('{deg}') gt 0) then
+--    !insertNote = '[$!slantedData[2]]' & !this.note.val.replace('{deg}', !slantedData[1]) & 'deg'
+--  else
+--    !insertNote = '[$!slantedData[2]]' & !this.slantedEndNote.replace('{deg}', !slantedData[1]) & 'deg'
+--  endif
+--
+--  !!ce.matn = |$!insertNote|
+--  handle any
+--  endhandle
+
+  if (!this.displayPipEnd.val) then
+    !this.displayFabPipeEnd()
+  else
+    aid clear all $!<this.aidNumber>
+  endif
+endmethod

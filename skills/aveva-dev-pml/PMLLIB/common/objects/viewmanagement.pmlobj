@@ -1,0 +1,1112 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            viewmanagement.pmlobj
+--    Type:          Object Definition
+--    Group:         General Application
+--      Keyword:     GEN
+--    Module:        common
+--  Author:          Daniel(Jaehun Choi)
+--  Created:         23 July 2010
+--
+--  Description:     Save & Restore Graphical View
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  checkPostName(STRING)            BOOLEAN             check file name
+--  deleteDefFile(STRING)            -                   delete data file
+--  fileSave(STRING,ARRAY)           BOOLEAN             save file
+--  restoreDrawlist(STRING,BOOLEAN)  -                   restore draw list
+--  restoreToView(GADGET,STRING,STRING,BOOLEAN) -                   Constructor
+--  restoreView(STRING,STRING)       -                   restore view
+--  restoreViewStatus(STRING)        -
+--  saveDrawLists(GADGET,STRING)     -                   save drawlist to file
+--  saveView(GADGET,STRING)          -                   Constructor
+--  saveViewStatus(GADGET,STRING)    -                   save view-status to file
+--  selectFilePath()                 -                   builds the required file path with correct mdb name
+--  viewManagement()                 -
+--
+------------------------------------------------------------------------
+
+define object VIEWMANAGEMENT
+  -- data file directory, is controlled from save restore views form
+  member .datFileDir            is STRING
+  -- data file path
+  member .datFilePath           is STRING
+  member .newLocalDrawListFlag  is BOOLEAN
+  member .restoreCurrentStatus  is BOOLEAN
+  member .calledView            is GADGET
+  member .module                is STRING
+  member .projCode              is STRING
+
+  --Flag to indicate what type of action is called from the save & restore view form.
+  member .actionType           is STRING
+endobject
+-- End of object definition for ViewManagement
+
+------------------------------------------------------------------------
+--
+-- Method:      viewManagement
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .viewManagement()
+  import 'PMLNetUtilities'
+  handle any
+  endhandle
+
+  import 'PDMSCommands'
+  handle any
+  endhandle
+
+  !this.module   = !!module().appkey
+  !project       = current project
+  !this.projCode = !project.code().lowcase()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      saveView
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .saveView(!view is GADGET, !fileName is STRING)
+
+  !this.calledView = !view
+  if (!this.checkPostName(!fileName).not()) then
+    return error 1 |The view save filename contains invalid characters|
+  endif
+  !this.saveViewStatus(!view, !fileName)
+  !this.saveDrawLists(!view, !fileName)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      restoreToView
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   RW     GADGET      View to restore to
+--    2   R      STRING      View name (part of filename)
+--    3   R      STRING      ADD - add to drawlist, REPLACE - replace drawlist
+--    4   R      BOOLEAN     true to set view properties, false to leave view unchanged
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .restoreToView(!view is GADGET, !viewName is STRING, !action is STRING, !restoreView is BOOLEAN)
+
+  !this.calledView = !view
+  if (!this.checkPostName(!viewName).not()) then
+    return error 1 |The view restore filename contains invalid characters|
+  endif
+
+  !this.newLocalDrawListFlag = false
+  !this.restoreCurrentStatus = !restoreView.not()
+
+  -- deal with drawlist
+  if (!action eq 'ADD') then
+    !this.restoreDrawlist(!viewName, true)
+
+  elseif (!action eq 'REPLACE') then
+    -- delete current drawlist
+    -- at this point may be global drawlist, so don't want to delete contents if it is, and we are replacing one instance
+    -- so there are multiple views - other views may have global drawlist and so it must be kept intact
+    !token    = !!gphDrawlists.token(!view)
+    if (!token.neq(1)) then
+      !drawlist = !!gphDrawlists.drawlist(!token)
+      !drawlist.removeAll()
+    endif
+    !this.restoreDrawlist(!viewName, false)
+
+  endif
+
+  -- deal with view
+  if( !restoreView ) then
+    !this.restoreViewStatus(!viewName)
+  endif
+
+  -- refresh all views
+  !!gphviews.refreshAllViews()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      saveDrawLists
+--
+-- Description: save drawlist to file
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .saveDrawLists(!view is GADGET, !fileName is STRING)
+
+  !token = !!gphDrawlists.token(!view)
+  -- eliminate high level elements that cause problems when the drawlist is reinstated
+  !ignore = object EXPRESSION('TYPE INSET(|BLOCK|,|CPANEL|,|HIBLO|,|HICPAN|)')
+  !data  = !!gphDrawlists.save(!token, !ignore)
+
+  !this.selectFilePath()
+  !filePath = !this.datFilePath & '-drawlist-' & !fileName
+  if (!this.fileSave(!filePath, !data).not()) then
+    return error 1 |Failed to save the status of current view|
+  endif
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      saveViewStatus
+--
+-- Description: save view-status to file
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .saveViewStatus(!view is GADGET, !fileName is STRING)
+  if (!fileName eq '') then
+    return
+  endif
+
+  -- Do not save Clasher view
+  if (defined(!!cDCLACHK)) then
+    if (!view.owner() eq !!cDCLACHK ) then
+      return
+    endif
+  endif
+
+  -- Do not save Integrator view
+  if (!view.owner().formTitle eq |Integrator 3D View|) then
+    return
+  endif
+
+  !data = object ARRAY()
+
+  -- Set view limits
+  !data.append( |!limits = ARRAY()| )
+  do !limit values !view.limits
+    !data.append( |!limits.append(| & !limit & |)| )
+  enddo
+  !data.append( !view.fullName() & |.limits = !limits| )
+
+  -- Set eyeMode
+  !radius = !view.radius
+  !data.append( !view.fullName() & |.radius = | & !radius )
+
+  -- Set view direction
+  !data.append( |!direction = ARRAY()| )
+  do !component values !view.direction
+    !data.append( |!direction.append(| & !component & |)| )
+  enddo
+  !data.append( !view.fullName() & |.direction = !direction| )
+
+  -- Set bearing
+  !bearing = !view.bearing
+  !data.append( !view.fullName() & |.bearing = | & !bearing )
+
+  -- Set elevation
+  !elevation = !view.elevation
+  !data.append( !view.fullName() & |.elevation = | & !elevation )
+
+  -- Set Through
+  !data.append (|!through = ARRAY()| )
+  do !i values !view.through
+    !data.append( |!through.append(| & !i & |)| )
+  enddo
+  !data.append( !view.fullName() & |.through = !through| )
+
+  -- Set shaded
+  !shaded = !view.shaded
+  !data.append( !view.fullName() & |.shaded = | & !shaded )
+  -- Set Borders
+  !borders = !view.borders
+  !data.append( !view.fullName() & |.borders = | & !borders )
+  -- Set eyeMode
+  !eyeMode = !view.eyeMode
+  !data.append( !view.fullName() & |.eyeMode = | & !eyeMode )
+  -- Set mouseMode
+  !mouseMode = !view.mouseMode
+  !data.append( !view.fullName() & |.mouseMode = | & |'| & !mouseMode & |'| )
+  -- Set background
+  !background = !view.background
+  !data.append( !view.fullName() & |.background = | & !background )
+  -- Set projection
+  !projection = !view.projection
+  !data.append( !view.fullName() & |.projection = | & |'| & !projection & |'| )
+  -- Set walkthrough
+  !walkthrough = !view.walkthrough
+  !data.append( !view.fullName() & |.walkthrough = | & !walkthrough )
+  -- Set highlight
+  !highlight = !view.highlight
+  !data.append( !view.fullName() & |.highlight = | & !highlight )
+  -- Set clipPlanesAllOff
+  !clipPlanesAllOff = !view.clipPlanesAllOff
+  !data.append( !view.fullName() & |.clipPlanesAllOff = | & !clipPlanesAllOff )
+  !data.appendArray(!view.owner().clipbox.save())
+  handle any
+    -- Form may have no clipbox
+  endhandle
+  --set the clipping status
+  !clipping = !view.clipping
+  !data.append( !view.fullName() & |.clipping = | & !clipping )
+
+  if (!view.clipping) then
+    !data.append(!view.owner().fullName() & |.clippingbutton.val = true|)
+    !data.append(!view.owner().fullName() & |.clipbox.set()|)
+  else
+    !data.append(!view.owner().fullName() & |.clippingbutton.val = false|)
+  endif
+
+  do !i to 6
+    !data.appendArray(!view.owner().clipPlanes[!i].save())
+    handle any
+      -- Form may have no clipplanes
+    endhandle
+  enddo
+
+
+  -- This is what save display used to do
+  var !tolang tol ang
+  !data.append( |tol ang $!tolang| )
+  var !toloff tol off
+  !data.append( |tol off $!toloff| )
+  var !tolrat tol rat
+  !data.append( |tol ratio $!tolrat| )
+  var !hoff hoff
+  !data.append( |hoffset $!hoff| )
+  var !wgrid wgrid
+  !data.append( |wgrid $!wgrid| )
+  -- Ignore error if wgrid references an element that no longer exists
+  !data.append( |handle any| )
+  !data.append( |endhandle|  )
+
+  !this.selectFilePath()
+  !filePath = !this.datFilePath & '-viewenv-' & !fileName
+  if (!this.fileSave(!filePath, !data).not()) then
+    return error 1 |Failed to save the status of current view|
+  endif
+
+  -- save preview image
+  !imgPath  = !this.datFilePath & '-viewimg-' & !fileName & '.png'
+
+  using namespace 'Aveva.Pdms.PMLNet'
+  !clipboard = object PMLCLIPBOARD()
+
+  using namespace 'Aveva.Pdms.Presentation.PDMSCommands'
+  !commandManager = object PMLNETCOMMANDMANAGER()
+
+  if (!this.actionType neq 'ADD' and !this.actionType neq 'REPLACE') then
+    !commandManager.executeCommand('AVEVA.View.CopyImage.Size1')
+    !clipboard.saveImage(!imgPath)
+  endif
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      fileSave
+--
+-- Description: save file
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .fileSave(!fileName is STRING, !contents is ARRAY) is BOOLEAN
+  !resultFileName = !fileName + '.dat'
+  !saveFlag = true
+
+  !saveFile = object FILE(!resultFileName)
+  !saveFile.writeFile('overwrite',!contents)
+  handle any
+    !saveFlag = false
+  endhandle
+
+  !saveFile.close()
+
+  return !saveFlag
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      checkPostName
+--
+-- Description: check file name
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .checkPostName(!postName is STRING) is BOOLEAN
+  !invalidStr  = |` ~ ! @ # $ % ^ & * ( ) + = [ ] { } \ || ; : ' " , < > . ? /|
+  !invalidList = !invalidStr.split('')
+
+  -- check if there is invalid character on view name
+  !result = true
+  do !i indices !invalidList
+    if (!postName.match(!invalidList[!i]) gt 0) then
+--      write 'Please remove invalid character on name.'
+--      write 'invalid character is one of '
+--      write !invalidStr
+      !result = false
+      break
+    endif
+  enddo
+
+  -- check if there is blank character on view name
+  if (!postName.occurs(' ') gt 0) then
+--    write 'Please remove blank character on name''
+    !result = false
+  endif
+  return !result
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      restoreView
+--
+-- Description: restore view
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .restoreView(!postName is STRING, !actType is STRING)
+
+  !this.newLocalDrawListFlag = false
+  !owningForms = !!gphviews.views.evaluate(object BLOCK('!!gphviews.views[!Evalindex].owner().string()'))
+
+  -- Check if registered views are on a main graphics form
+  -- we don't want to update views on other forms
+  !gphForms = 0
+  do !form values !owningForms
+    if ( !form.matchWild( '*GPH3DDESIGN*' ) )then
+      !gphForms = !gphForms + 1
+    endif
+  enddo
+
+  -- Check if we have multiple GPH3DDESIGN forms
+  if ( !gphForms.gt(1) )then
+    if ( !actType.eq('ALL') ) then
+      if (!!alert.confirm('Restore View and Apply Drawlist Changes to All Views?') neq 'YES') then
+        !this.newLocalDrawListFlag = true
+      endif
+    else
+      if (!!alert.confirm('Apply Drawlist Changes to All Views?') neq 'YES') then
+                !this.newLocalDrawListFlag = true
+      endif
+    endif
+  endif
+
+  !this.restoreCurrentStatus = true
+  if (!actType eq 'ALL') then
+    !this.actionType = !actType
+
+    !token    = !!gphDrawlists.token(!this.calledView)
+    if (!token.neq(1)) then
+      !drawlist = !!gphDrawlists.drawlist(!token)
+      !drawlist.removeAll()
+    endif
+
+    !this.restoreCurrentStatus = false
+    !this.restoreDrawlist(!postName,false)
+    !this.restoreViewStatus(!postName)
+
+  elseif (!actType eq 'ADD') then
+    !this.actionType = !actType
+
+    !this.restoreDrawlist(!postName,true)
+
+  elseif (!actType eq 'REPLACE') then
+    !this.actionType = !actType
+
+    -- delete current drawlist
+    -- at this point may be global drawlist, so don't want to delete contents if it is, and we are replacing one instance
+    -- so there are multiple views - other views may have global drawlist and so it must be kept intact
+    !token    = !!gphDrawlists.token(!this.calledView)
+    if (!token.neq(1)) then
+      !drawlist = !!gphDrawlists.drawlist(!token)
+      !drawlist.removeAll()
+    endif
+    !this.restoreDrawlist(!postName,false)
+
+  endif
+
+  -- refresh all views
+  !!gphviews.refreshAllViews()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      restoreDrawlist
+--
+-- Description: restore draw list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .restoreDrawlist(!postName is STRING, !addModelFlag is BOOLEAN)
+
+!this.selectFilePath()
+
+if !!gphDrawlists.drawlists.size().gt(1) and !!gphviews.views.size().gt(1) and !this.actionType.eq('ADD')  and !this.newLocalDrawListFlag.not() then
+
+  --Add drawlist to multiple views case
+  !numberOfViews = !!gphviews.views.size()
+
+  do !viewNo from 1 to !numberOfViews
+
+     !drawlistPath = !this.datFilePath & '-drawlist-' & !postName & '.dat'
+     !drawlistFile = object FILE(!drawlistPath)
+
+     if (!drawlistFile.exists().not()) then
+       return error 1 |There is no drawList file for restoring view on $!drawlistFile|
+     endif
+
+     --!currentView = !this.calledView
+     !currentView = !!gphviews.views[!viewNo]
+     !token       = !!gphDrawlists.token(!currentView)
+
+     -- Check the name of the view form, we only want to update main graphics forms
+     if ( not !currentView.owner().string().matchWild( '*GPH3DDESIGN*' ) ) then
+       skip
+     endif
+
+     -- checking whether global drawlist or not
+     !globalFlag = (!token eq 1)
+
+     -- backup current drawlist
+     if (!addModelFlag) then
+       !oldDrawlist  = !!gphDrawlists.save(!token)
+       do !k indices !oldDrawlist
+         if (matchw(!oldDrawlist[!k],'.attachView')) then
+           !oldDrawlist.remove(!k)
+         endif
+       enddo
+     endif
+
+     --Store old members
+     !oldMem = ARRAY()
+     !view = !!gphviews.views[!viewNo]
+     !checkToken    = !!gphDrawlists.token(!view)
+     !oldMem = !!gphDrawlists.drawlist(!checkToken).members()
+
+     !!saveRestoreCalledView = !this.calledView
+     !!saveRestoreProcView = !!gphviews.views[!viewNo]
+
+     -- backup current view status
+     if (!this.restoreCurrentStatus) then
+       !this.saveViewStatus(!currentView, '__TMP')
+     endif
+
+      -- create temporary file
+      !tmpFilePath = !drawlistPath.replace('drawlist','tmpdraw')
+      !tmpFile     = object FILE(!tmpFilePath)
+
+      !result = object ARRAY()
+      !drawlistFile.open('READ')
+      handle any
+        return error 1 |Failed to restore view status file|
+      endhandle
+
+      do
+        !text=!drawlistFile.readRecord()
+        handle(41,319)
+        endhandle
+
+        break if (!text.unset())
+
+        --!!drawListGlobal = !drawListNo
+
+        if (matchw(!text,'!drawlist = !!gphDrawlists.drawlist*')) then
+          !result.append('!view  = !!saveRestoreProcView')
+          !result.append('!token = !!gphDrawlists.token(!view)')
+          !result.append('!drawlist = !!gphDrawlists.drawlist(!token)')
+          skip
+        endif
+
+        !result.append(!text)
+      enddo
+
+      --loop to remove  '!!gphDrawlists.attachView(9, !!GPH3DDESIGN2.VIEW)'
+      --so it attaches to correct view if view saved in view other than view 1 (this line auto-generated by core object when view saved
+      --if view >1)
+      do !i indices !result
+        if (matchw(!result[!i],'.attachView')) then
+          !result.remove(!i)
+        endif
+      enddo
+
+      -- restore backup drawlist
+      if (!addModelFlag) then
+        do !i indices !oldDrawlist
+          skip if (!i lt 6)
+          !result.append(!oldDrawlist[!i])
+        enddo
+      endif
+
+      !tmpFile.writeFile('overwrite',!result)
+      handle any
+        !tmpFile.close()
+        !drawlistFile.close()
+        return error 1 |Failed to restore view drawlist on current view|
+      endhandle
+
+      !tmpFile.close()
+
+      -- load drawlist
+      !!runMacro(!tmpFilePath,'')
+      handle any
+      endhandle
+
+      --restore view (view will be changed again if restore view has been selected (not just add or replace drawlist))
+      if (!this.restoreCurrentStatus) then
+        !tmpEnvPath = !this.datFilePath & '-viewenv-__TMP.dat'
+        !tmpEnvFile = object FILE(!tmpEnvPath)
+        !!runMacro(!tmpEnvPath,'')
+        !tmpEnvFile.deleteFile()
+        handle any
+          !!alert.warning(|Failed to delete temporary view environment file|)
+        endhandle
+      endif
+
+      !tmpFile.deleteFile()
+      !drawlistFile.close()
+      -- Compare the old local drawlist to the new local drawlist updated
+      -- to get the members newly updated.
+      !addedElement = ARRAY()
+      !addedElement =  !!gphDrawlists.drawlist(!token).members().difference(!oldMem)
+      handle any
+      endhandle
+      -- If there is no members updated, restore the old drawlist to the local view.
+      if !addedElement.unset() then
+        !addedElement = !oldMem
+      endif
+      -- Add members newly updated into the local drawlist
+      !drawlist = !!gphDrawlists.drawlist(!token)
+      !drawlist.addmembers(!addedElement)
+
+  enddo
+---------------------------------------------------------------------
+---------------------------------------------------------------------
+
+elseif  !!gphviews.views.size().gt(1) and  !this.actionType.eq('REPLACE') and !this.newLocalDrawListFlag.not() then
+
+  --Replace drawlist for multiple views case
+  !numberOfViews = !!gphviews.views.size()
+
+  --Save each view in a separate file, as completely deleting drawlist then adding to it loses original view
+  do !viewNo from 1 to !numberOfViews
+    !currentView = !!gphviews.views[!viewNo]
+
+    -- Check the name of the view form, we only want to update main graphics forms
+    if ( not !currentView.owner().string().matchWild( '*GPH3DDESIGN*' ) ) then
+      skip
+    endif
+    !tmpString = '__TMP' & !viewNo.string()
+    !this.saveViewStatus(!currentView, !tmpString)
+  enddo
+
+  do !viewNo from 1 to !numberOfViews
+
+    !drawlistPath = !this.datFilePath & '-drawlist-' & !postName & '.dat'
+    !drawlistFile = object FILE(!drawlistPath)
+
+    if (!drawlistFile.exists().not()) then
+      return error 1 |There is no drawList file for restoring view on $!drawlistFile|
+    endif
+
+    --!currentView = !this.calledView
+    !currentView = !!gphviews.views[!viewNo]
+    !token       = !!gphDrawlists.token(!currentView)
+
+    if ( not !currentView.owner().string().matchWild( '*GPH3DDESIGN*' ) ) then
+      skip
+    endif
+
+    -- checking whether global drawlist or not
+    !globalFlag = (!token eq 1)
+
+    --delete drawlists associated with all views (do not delete drawlist 1)
+    --we do this if using/reverting to a single (global) drawlist
+    !oldMem = ARRAY()
+    !view = !!gphviews.views[!viewNo]
+    !checkToken    = !!gphDrawlists.token(!view)
+    !checkDrawList = !!gphDrawlists.drawlist(!checkToken)
+    -- get the drawlist from the local view.
+    !oldMem = !!gphDrawlists.drawlist(!checkToken).members()
+    if !checkToken.neq(1) then
+      !!gphDrawlists.deleteDrawlist(!checkToken)
+    endif
+    if !viewNo.eq(1) then
+      !!gphDrawlists.drawlist(1).removeAll()
+      handle any
+      endhandle
+    endif
+    !tokenLocal= !checkToken
+
+    !!saveRestoreCalledView = !this.calledView
+    !!saveRestoreProcView = !!gphviews.views[!viewNo]
+
+    -- create temporary file
+    !tmpFilePath = !drawlistPath.replace('drawlist','tmpdraw')
+    !tmpFile     = object FILE(!tmpFilePath)
+
+    !result = object ARRAY()
+    !drawlistFile.open('READ')
+    handle any
+      return error 1 |Failed to restore view status file|
+    endhandle
+
+    do
+      !text=!drawlistFile.readRecord()
+      handle(41,319)
+      endhandle
+
+      break if (!text.unset())
+
+      if (matchw(!text,'!drawlist = !!gphDrawlists.drawlist*')) then
+        !result.append('!view  = !!saveRestoreProcView')
+        !result.append('!token = !!gphDrawlists.token(!view)')
+        !result.append('!drawlist = !!gphDrawlists.drawlist(!token)')
+        skip
+      endif
+
+      !result.append(!text)
+    enddo
+
+    --loop to remove  '!!gphDrawlists.attachView(9, !!GPH3DDESIGN2.VIEW)'
+    --so it attaches to correct view if view saved in view other than view 1 (this line auto-generated by core object when view saved
+    --if view >1)
+    do !i indices !result
+      if (matchw(!result[!i],'.attachView')) then
+        !result.remove(!i)
+      endif
+    enddo
+
+    -- restore backup drawlist
+    if (!addModelFlag) then
+      do !i indices !oldDrawlist
+        skip if (!i lt 6)
+        !result.append(!oldDrawlist[!i])
+      enddo
+    endif
+
+    !tmpFile.writeFile('overwrite',!result)
+    handle any
+      !tmpFile.close()
+      !drawlistFile.close()
+      return error 1 |Failed to restore view drawlist on current view|
+    endhandle
+
+    !tmpFile.close()
+
+    --We are going to a single global drawlist so just do drawlist once (do views multiple times)
+    if !viewNo.eq(1) then
+      -- load drawlist
+      !!runMacro(!tmpFilePath,'')
+      handle any
+      endhandle
+
+    endif
+
+    --restore view (view will be changed again if restore view has been selected (not just add or replace drawlist))
+    !tmpEnvPath = !this.datFilePath & '-viewenv-__TMP' & !viewNo & '.dat'
+    !tmpEnvFile = object FILE(!tmpEnvPath)
+    !!runMacro(!tmpEnvPath,'')
+    !tmpEnvFile.deleteFile()
+    handle any
+      !!alert.warning(|Failed to delete temporary view environment file|)
+    endhandle
+    !tmpFile.deleteFile()
+    !drawlistFile.close()
+
+  enddo
+
+---------------------------------------------------------------------
+---------------------------------------------------------------------
+else
+  -- General case
+  !drawlistPath = !this.datFilePath & '-drawlist-' & !postName & '.dat'
+  !drawlistFile = object FILE(!drawlistPath)
+
+  if (!drawlistFile.exists().not()) then
+    return error 1 |There is no drawList file for restoring view on $!drawlistFile|
+  endif
+
+  !currentView = !this.calledView
+  !token       = !!gphDrawlists.token(!currentView)
+
+  -- checking whether global drawlist or not
+  !globalFlag = (!token eq 1)
+
+  -- backup current drawlist
+  if (!addModelFlag) then
+    !oldDrawlist  = !!gphDrawlists.save(!token)
+    do !k indices !oldDrawlist
+      if (matchw(!oldDrawlist[!k],'.attachView')) then
+        !oldDrawlist.remove(!k)
+      endif
+    enddo
+  endif
+
+  --delete drawlists associated with all views (do not delete drawlist 1)
+  --we do this if using/reverting to a single (global) drawlist
+  !oldMem = ARRAY()
+  if (!this.newLocalDrawListFlag.not()) then
+    !views =  !!gphviews.views
+
+    !noGlobView = TRUE
+    do !view values !views
+      !checkToken    = !!gphDrawlists.token(!view)
+      !checkDrawList = !!gphDrawlists.drawlist(!checkToken)
+      if !checkToken.eq(1) then
+        !noGlobView = FALSE
+      endif
+      if (!addModelFlag.not()) then
+        !checkDrawList.removeAll()
+      endif
+      skip if (!checkToken eq 1)
+      -- get the drawlist from the local view.
+      !oldMem = !!gphDrawlists.drawlist(!checkToken).members()
+      !tokenLocal= !checkToken
+      if !addModelFlag.not() then
+        !!gphDrawlists.deleteDrawlist(!checkToken)
+      endif
+    enddo
+
+    if !noGlobView then
+      !globDrawList = !!gphDrawlists.drawlist(1)
+      !globDrawList.removeAll()
+    endif
+
+  endif
+
+  -- create local drawlist
+  if (!globalFlag and !this.newLocalDrawListFlag) then
+    !token = !!gphDrawlists.createDrawlist()
+    !!gphDrawlists.attachView(!!gphDrawlists.drawlists.size(), !this.calledView)
+    handle any
+      !currentView = !!fmsys.currentDocument().view
+      -- attach view, otherwise just adds to existing view
+      !!gphDrawlists.attachView(!token, !currentView)
+      !!saveRestoreCalledView = !currentView
+    elsehandle none
+      !!saveRestoreCalledView = !this.calledView
+    endhandle
+  else
+    !!saveRestoreCalledView = !this.calledView
+  endif
+
+  -- backup current view status
+  if (!this.restoreCurrentStatus) then
+    !this.saveViewStatus(!currentView, '__TMP')
+  endif
+
+  -- create temporary file
+  !tmpFilePath = !drawlistPath.replace('drawlist','tmpdraw')
+  !tmpFile     = object FILE(!tmpFilePath)
+
+  !result = object ARRAY()
+  !drawlistFile.open('READ')
+  handle any
+    return error 1 |Failed to restore view status file|
+  endhandle
+
+  do
+    !text=!drawlistFile.readRecord()
+    handle(41,319)
+    endhandle
+
+    break if (!text.unset())
+
+    if (matchw(!text,'!drawlist = !!gphDrawlists.drawlist*')) then
+      !result.append('!view  = !!saveRestoreCalledView')
+      !result.append('!token = !!gphDrawlists.token(!view)')
+      !result.append('!drawlist = !!gphDrawlists.drawlist(!token)')
+      skip
+    endif
+
+    !result.append(!text)
+  enddo
+
+  --loop to remove  '!!gphDrawlists.attachView(9, !!GPH3DDESIGN2.VIEW)'
+  --so it attaches to correct view if view saved in view other than view 1 (this line auto-generated by core object when view saved
+  --if view >1)
+  do !i indices !result
+    if (matchw(!result[!i],'.attachView')) then
+      !result.remove(!i)
+    endif
+  enddo
+
+  -- restore backup drawlist
+  if (!addModelFlag) then
+    do !i indices !oldDrawlist
+      skip if (!i lt 6)
+      !result.append(!oldDrawlist[!i])
+    enddo
+  endif
+
+  !tmpFile.writeFile('overwrite',!result)
+  handle any
+    !tmpFile.close()
+    !drawlistFile.close()
+    return error 1 |Failed to restore view drawlist on current view|
+  endhandle
+
+  !tmpFile.close()
+
+  -- load drawlist
+  !!runMacro(!tmpFilePath,'')
+  handle any
+  endhandle
+
+  --restore view (view will be changed again if restore view has been selected (not just add or replace drawlist))
+  if (!this.restoreCurrentStatus) then
+    !tmpEnvPath = !this.datFilePath & '-viewenv-__TMP.dat'
+    !tmpEnvFile = object FILE(!tmpEnvPath)
+    !!runMacro(!tmpEnvPath,'')
+    !tmpEnvFile.deleteFile()
+    handle any
+      !!alert.warning(|Failed to delete temporary view environment file|)
+    endhandle
+  endif
+
+  !tmpFile.deleteFile()
+  !drawlistFile.close()
+  -- Compare the old local drawlist to the new local drawlist updated
+  -- to get the members newly updated.
+  !addedElement = ARRAY()
+  !addedElement =  !!gphDrawlists.drawlist(!tokenLocal).members().difference(!oldMem)
+  handle any
+  endhandle
+  -- If there is no members updated, restore the old drawlist to the local view.
+  if !addedElement.unset() then
+    !addedElement = !oldMem
+  endif
+  -- Add members newly updated into the local view.
+  !!gphDrawlists.drawlists[1].addmembers(!addedElement)
+
+endif
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      restoreViewStatus
+--
+-- Description: restore view status
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .restoreViewStatus(!postName is STRING)
+
+!allViews = ARRAY()
+
+!this.selectFilePath()
+
+if !this.newLocalDrawListFlag.eq(TRUE) then
+  --apply to all views
+  !allViews[1] = !this.calledView
+else
+  --apply to one view only
+  !allViews = !!gphviews.views
+endif
+
+do !view values !allViews
+
+  -- Check the name of the view form, we only want to update main graphics forms
+  if ( !view.owner().string().matchWild( '*GPH3DDESIGN*' ) ) then
+  else
+    skip
+  endif
+
+  !statusPath   = !this.datFilePath & '-viewenv-'  & !postName & '.dat'
+  !statusFile  = object FILE(!statusPath)
+
+  !tmpFilePath = !statusPath.replace('viewenv','tmpenv')
+  !tmpFile     = object FILE(!tmpFilePath)
+
+  !result = object ARRAY()
+  !statusFile.open('READ')
+  handle any
+    return error 1 |Failed to restore view status file|
+  endhandle
+
+  --!currentForm = |!!| & !this.calledView.owner().string()
+  !currentForm = |!!| & !view.owner().string()
+
+  -- read view properties and adjust to selected view
+  do
+    !text=!statusFile.readRecord()
+    handle(41,319)
+      break
+    endhandle
+
+    break if (!text.unset())
+
+    !viewMatchString = '*!!GPH3DDESIGN*'
+
+    if (!text.occurs('=') gt 0 AND !text.matchWild(!viewMatchString)) then
+      !splitText = !text.split('=')
+      -- if updating all views and not just all drawlists, should loop through views and add them here
+      !tmpText   = ''
+      do !splitValue values !splitText
+        if (!splitValue.matchWild(!viewMatchString)) then
+          !splitValue = !splitValue.replace(!splitValue.part(1,'.'), !currentForm)
+        endif
+        !tmpText = !tmpText + !splitValue + '='
+      enddo
+      !text = substring(!tmpText,1,!tmpText.length() - 1)
+    endif
+    !result.append(!text)
+  enddo
+
+  !tmpFile.writeFile('OVERWRITE',!result)
+  handle any
+    !tmpFile.close()
+    !statusFile.close()
+    return error 1 |Failed to restore view status on current view|
+  endhandle
+
+  !tmpFile.close()
+
+  !!runMacro(!tmpFilePath,'')
+
+  !tmpFile.deleteFile()
+  !statusFile.close()
+
+  --!viewDir = !this.calledView.direction
+  !viewDir = !view.direction
+  handle any
+  elsehandle none
+    if( !viewDir[1] eq 0 and !viewDir[2] eq 0  and !viewDir[3] eq -1 ) then
+      -- plan view - No way to tell how to align XY so default to PLAN NORTH
+      --!!gphviews.look(!this.calledView, N)
+      --!!gphviews.look(!this.calledView, D)
+      -- Now restoring bearing and elevation so no need to do this
+      --    !!gphviews.look(!view, N)
+      --!!gphviews.look(!view, D)
+    endif
+  endhandle
+
+  if (defined(!!saveRestoreCalledView)) then
+    !!saveRestoreCalledView.delete()
+  endif
+
+enddo
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      deleteDefFile
+--
+-- Description: delete data file
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .deleteDefFile(!postName is STRING)
+
+  !this.selectFilePath()
+  !defFile[1] = !this.datFilePath & '-viewenv-'  & !postName & '.dat'
+  !defFile[2] = !this.datFilePath & '-drawlist-' & !postName & '.dat'
+  !defFile[3] = !this.datFilePath & '-viewimg-'  & !postName & '.png'
+
+  do !filePath values !defFile
+    !file = object FILE(!filePath)
+    skip if (!file.exists().not())
+    !file.deleteFile()
+  enddo
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      selectFilePath
+--
+-- Description: builds the required file path with correct mdb name
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .selectFilePath()
+
+  -- MDB is selected from save and restore view form
+  !mdb = !!saverestoreview.selectedMDB
+
+  -- Build the required file Path. .datFileDir is controlled by save and restore view form
+  !this.datFilePath = !this.datFileDir & !this.module & '-' & !this.projCode & '-' & !mdb
+
+endmethod
+-- End of method

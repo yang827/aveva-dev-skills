@@ -1,0 +1,892 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:        mdsChkAppDflts.pmlfrm
+--   Type:      Form Definition
+--   Group:     Multi Discipline Supports Application
+--     Keyword: MDS
+--   Module:    Paragon
+--   Replaces:
+--
+-- Author:   Richard Martin
+-- Created:  18 May 2011
+--
+--
+-- Description:
+-- Form to check user application dflts against the mds template version. if users are missing defaults for new standards they can upgrade their own dflts using this FORM
+--
+kill !!mdsChkAppDflts
+
+setup form !!mdsChkAppDflts dialog dock right size 40 13
+
+  !this.initcall = '!this.init()'
+  !this.formtitle = 'Check MDS Application Defaults'
+
+  list .upgradeItems anchor all columns width 40 hei 15
+  button .scan 'Check Defaults' at xmin.upgradeItems ymax.upgradeItems+0.5 anchor l+b call |!this.scanDflts(FALSE)| wid 10
+  para .status at xmax.scan+0.5 ymax.upgradeItems+0.5 anchor l+b text '' wid 30
+  button .updateDflts 'Update Defaults' at xmin.scan ymax.scan+0.5 anchor l+b call |!this.updateDflts()| wid 10
+  button .createDflts 'Create Defaults' at xmax.updateDflts+0.5 ymin.updateDflts anchor l+b call |!this.createDflts()| wid 10
+
+  --list of standard mds disciplines that will be checked i.e. 'ATTA' from /MDS/ATTA/DFLTS
+  member .mdsDiscipline is ARRAY
+
+  --list of standards that are missing in the current applications defaults set
+  member .updateList is ARRAY
+  member .datalList is ARRAY
+
+  --final array of updates (datal and updates) that will be run during the updatedflts method run - this is always re-generated after a scan
+  member .finalList is ARRAY
+
+  --lists containing superseded items that should not be checked
+  member .supersededAttas is ARRAY
+  member .supersededOptions is ARRAY
+  member .supersededIcon is ARRAY
+  member .supersededPreliminary is ARRAY
+  member .supersededTrunnion is ARRAY
+  member .supersededStructure is ARRAY
+  member .supersededUpdates is ARRAY
+
+  --lists containing pre-conditions that need to be fulfilled when considering an update item
+  member .preconditionAttas is ARRAY
+  member .preconditionOptions is ARRAY
+  member .preconditionIcon is ARRAY
+  member .preconditionPreliminary is ARRAY
+  member .preconditionTrunnion is ARRAY
+  member .preconditionStructure is ARRAY
+  member .preconditionUpdates is ARRAY
+
+  --lists containing the numbers of any macro failures during execution
+  member .datalFailures is REAL
+  member .updateFailures is REAL
+
+  --mds exe location
+  member .mdsPdmsData is STRING
+
+exit
+
+define method .init()
+
+  --clear the list gadget
+  !this.upgradeItems.clear()
+
+  --now set the upgrade button to be inactive
+  !this.updateDflts.active = FALSE
+
+  !this.status.val = ''
+
+  !pdmsexe = !!evarsplit('PDMSEXE')
+
+  do !i from 1 to !pdmsexe.size()
+
+    !dirPath = !pdmsexe[!i] + 'asso_products\MDS\data'
+    !dir = object FILE(!dirPath)
+    if !dir.exists() then
+      !this.mdsPdmsData = !dirPath
+      break
+    endif
+
+  enddo
+
+  if !this.mdsPdmsData.unset() then
+  	!!alert.warning('The %PDMSEXE%\asso_products\MDS\data directory could not be found - cannot check for updates')
+  endif
+
+endmethod
+
+define method .mdsChkAppDflts()
+
+  -- Setup MDS disciplines
+  !this.mdsDiscipline.append('ATTA')
+  !this.mdsDiscipline.append('TRUNNION')
+  !this.mdsDiscipline.append('PRELIMINARY')
+  !this.mdsDiscipline.append('STRUCTURE')
+  !this.mdsDiscipline.append('OPTION')
+  !this.mdsDiscipline.append('ICON')
+  !headings = object ARRAY()
+  !headings.append('Identified Updates')
+  !headings.append('Discipline')
+  !headings.append('Description')
+  !this.upgradeItems.setheadings(!headings)
+
+  --de-activate the create datals button as this is to be used by Aveva only to create the model standards for customer updating
+  !this.createDflts.visible = FALSE
+  --!!mdsChkAppDflts.createDflts.visible = TRUE
+endmethod
+
+--scans the mds application defaults to see if any actions are required
+--!silent true stops any !!fmsys.progressbar being displayed during scanning
+define method .scanDflts(!silent is BOOLEAN)
+
+  !this.updateList.clear()
+  !this.datalList.clear()
+  !this.finalList.clear()
+  !this.buildsupersededList()
+  !this.buildPreconditionList()
+
+  --scan for updates that need to be run
+  prompt 'Checking MDS Application Defaults For Available Updates'
+  !this.scanUpdates(!silent)
+  prompt dismiss
+
+  --scan for any missing standards that need to be run
+  prompt 'Checking MDS Application Defaults For Missing Standards'
+  !this.scanDatals(!silent)
+
+  if !this.updateList.size().gt(0) or !this.datalList.size().gt(0) then
+
+    --clear the list gadget and re-populate
+    !this.upgradeItems.clear()
+
+    !fullList = !this.updateList
+    !fullList.appendarray(!this.datalList)
+    !numOfUpdateItems = 0
+    !numOfDatalItems = 0
+    do !i from 1 to !fullList.size()
+
+      !discipline.delete()
+      handle (2,751)
+      endhandle
+
+      !discipline = !fullList[!i][1].namn.after('MDS/').before('/DEFAULTS')
+      handle (2,759)
+        --this must be an update item
+        !discipline = 'UPDATES'
+      endhandle
+
+      --check for superseded items and remove
+      !dontAddToList1 = !this.checksuperseded(!fullList[!i][3], !discipline)
+      if !dontAddToList1 then
+      else
+        --check for precondition items and remove if not met
+        !dontAddToList2 = !this.checkPrecondition(!fullList[!i][3], !discipline)
+        if !dontAddToList2 then
+        else
+          !this.finalList.append(!fullList[!i])
+          if !fullList[!i][4].eq('DATAL') then
+            !numOfDatalItems = !numOfDatalItems + 1
+          else
+            !numOfUpdateItems = !numOfUpdateItems + 1
+          endif
+        endif
+      endif
+
+    enddo
+
+    --set the display text of the list
+    !dtext = object ARRAY()
+    do !i from 1 to !this.finalList.size()
+      !tempArray = object ARRAY()
+      !tempArray.append(!this.finalList[!i][3])
+      !tempArray.append(!this.finalList[!i][1].namn)
+      handle (2,759)
+        !tempArray.append(!this.finalList[!i][1])
+      endhandle
+      !tempArray.append(!this.finalList[!i][5])
+      !dtext.append(!tempArray)
+    enddo
+
+    !this.upgradeItems.setrows(!dtext)
+    if !numOfUpdateItems.gt(0) and !numOfDatalItems.eq(0) then
+      !statusText = 'Found ' + !numOfUpdateItems.string() + ' updates'
+      !this.status.val = !statusText
+      !this.updateDflts.active = TRUE
+    elseif !numOfDatalItems.gt(0) and !numOfUpdateItems.eq(0) then
+      !statusText = 'Found ' + !numOfDatalItems.string() + ' missing items'
+      !this.status.val = !statusText
+      !this.updateDflts.active = TRUE
+    elseif !numOfUpdateItems.gt(0) and !numOfDatalItems.gt(0) then
+      !statusText = 'Found ' + !numOfUpdateItems.string() + ' updates and ' + !numOfDatalItems.string() + ' missing items'
+      !this.status.val = !statusText
+      !this.updateDflts.active = TRUE
+    else
+      !this.status.val = ''
+      !this.updateDflts.active = FALSE
+    endif
+
+  else
+
+    --clear the list gadget
+    !this.upgradeItems.clear()
+
+    --now set the upgrade button to be inactive
+    !this.updateDflts.active = FALSE
+
+    !this.status.val = 'No problems detected'
+
+  endif
+
+  --remove the prompt at the same time as we remove the progress bar
+  prompt dismiss
+  !!fmsys.setProgress(0)
+
+endmethod
+
+define method .scanUpdates(!silent is BOOLEAN)
+
+  !this.updateList.clear()
+
+  -- Check directory exists to run in datals
+  !fileSize = 0
+
+  --first add any updates required for defaults i.e. schema changes within existing data structures or name changes
+  --note updates are processed first because we want to make sure that any name changes are picked up prior to potentially adding new standards that will exist after the name change
+  --i.e. if we for some reason need to change AT01 to AR01 then we need to ensure that the name change macro runs first otherwise we might end up with AT01 and AR01 rather than just AR01.
+  --start of update processing
+  !checkDir = object FILE('$!this.mdsPdmsData/updates')
+  !exists = !checkDir.exists()
+  if !exists.not() then
+    !!alert.error('Directory' + !checkDir.string() + ' does not exist. Aborting update of MDS standards')
+    return
+  endif
+
+  -- OK directory exists now get all the datals.
+  !datalFiles = !checkDir.subdirs()
+  do !createStds from 1 to !datalFiles.size()
+    !percent = (50 / !datalFiles.size()) * !createStds
+    if !silent.not() then
+      !!fmsys.setProgress(!percent.nint())
+    endif
+    !updateDir = !datalFiles[$!createStds]
+    !updateDirPath = !updateDir.fullname()
+
+    --each update directory must have a scan.pmldat macro that will scan the app database and tell the system whether or not to process the update
+    !scanMacroPath = !updateDirPath + '\scan.pmldat'
+    !scanMacroFile = object FILE(!scanMacroPath)
+
+    --each update directory must have an update.pmldat macro that will apply the update if the scan macro tells the system it is required
+    !updateMacroPath = !updateDirPath + '\update.pmldat'
+    !updateMacroFile = object FILE(!updateMacroPath)
+
+    --we can also have a description.txt file that describes what the macro does. this should be a one line description
+    !descPath = !updateDirPath + '\description.txt'
+    !descFile = object FILE(!descPath)
+
+    --skip the update if the proper macros do not exist
+    if !scanMacroFile.exists().not() or !updateMacroFile.exists().not() then
+      skip
+    else
+      !!useUpdate.delete()
+      handle (2,751)
+      endhandle
+      $m "$!scanMacroPath"
+      if (defined(!!useUpdate)) then
+        if !!useUpdate.eq(TRUE) then
+          !tempArray = object ARRAY()
+          !tempArray.append('UPDATES')
+          !tempArray.append(!updateMacroPath)
+          --!tempArray.append(!updateDirPath)
+          !tempArray.append(!updateDir.entry())
+          !tempArray.append('UPDATE')
+
+          if !descFile.exists() then
+            !description = !descFile.readfile()[1].trim()
+            if !description.eq('') then
+              !description = 'update macro'
+            endif
+          else
+            !description = 'update macro'
+          endif
+
+          !tempArray.append(!description)
+          !this.updateList.append(!tempArray)
+          !!useUpdate.delete()
+        else
+          !!useUpdate.delete()
+          skip
+        endif
+      else
+        skip
+      endif
+    endif
+  enddo
+endmethod
+
+define method .scanDatals(!silent is BOOLEAN)
+
+  !this.datalList.clear()
+  !this.buildsupersededList()
+  !this.buildPreconditionList()
+
+  -- Check directory exists to run in datals
+  !fileSize = 0
+
+  --get number of files through all disciplines for the progressbar
+  !numFiles = 0
+  do !doDiscipline values !this.mdsDiscipline
+    !checkDir = object FILE('$!this.mdsPdmsData/$!doDiscipline')
+    !numFiles = !numFiles + !checkDir.files().size()
+  enddo
+
+  --build a list of standards that need to be input we do it this way so that we can set the fmsys.progress() bar properly
+  --start of datal processing
+  !percent = 50
+  do !doDiscipline values !this.mdsDiscipline
+
+    !checkDir = object FILE('$!this.mdsPdmsData/$!doDiscipline')
+    !exists = !checkDir.exists()
+    if !exists.not() then
+      !!alert.error('Directory' + !checkDir.string() + ' does not exist. Aborting update of MDS standards')
+      return
+    endif
+
+    -- OK directory exists now get all the datals.
+    !datalFiles = !checkDir.files()
+		
+    -- Access applications defaults element
+    !!ce = /MDS/$!doDiscipline/DEFAULTS
+    handle any
+      !!alert.error('MDS application /MDS/$!doDiscipline/DEFAULTS does not exist. Aborting creation of new standards')
+      return
+    endhandle
+
+    !addpercent = 0
+    do !createStds from 1 to !datalFiles.size()
+      !newpercent = !percent + !addpercent
+      if !silent.not() then
+        !!fmsys.setProgress(!newpercent.nint())
+      endif
+      !addpercent = ((10 / !datalFiles.size()) * !createStds)
+
+      -- Get std from datal file name
+      !mdsStd = !datalFiles[$!createStds].name().before('.pmldat')
+      !mdsStd = !mdsStd.after(|asso_products\MDS\data\$!doDiscipline\|)
+      !mdsStd = !mdsStd.replace(|dividedby|,|/|)
+
+      -- Try and access standard, if it does not exist then load it
+      !disciplineString = /MDS/$!doDiscipline/DEFAULTS
+      !unusedStdNameTest = /MDS/$!doDiscipline/DEFAULTS/$!mdsStd
+      handle ANY
+        --if the standard is not on the superseded list then add it to the update list
+        !tempArray = object ARRAY()
+        !tempArray.append(!disciplineString)
+        !tempArray.append(!datalFiles[!createStds])
+        !tempArray.append(!mdsStd)
+        !tempArray.append('DATAL')
+        !tempArray.append('Missing Standard $!mdsStd')
+        !fileSize = !fileSize + !datalFiles[!createStds].size()
+        !this.datalList.append(!tempArray)
+      elsehandle none
+      endhandle
+    enddo
+    !percent = !newpercent
+  enddo
+
+endmethod
+
+define method .updateDflts()
+
+
+  --set the failures members to be 0 so tat we get a the true number of any failures after running datals and updates
+  !this.datalFailures = 0
+  !this.updateFailures = 0
+  !logfiledata = object ARRAY()
+
+  !numofupdates = 0
+  !numofdatals = 0
+
+  !logfiledata = object ARRAY()
+  if !this.finalList.size().gt(0) then
+    !logfiledata.append('The following changes have been made to the MDS application defaults')
+  endif
+
+  !increment = 100 / !this.finalList.size()
+
+  prompt 'Running MDS Application Defaults Updates'
+  do !i from 1 to !this.finalList.size()
+
+    if !this.finalList[!i][4].eq('DATAL') then
+      !numofdatals = !numofdatals + 1
+    else
+      !numofupdates = !numofupdates + 1
+    endif
+
+    !path = !this.finalList[!i][2].fullname()
+    handle ANY
+      !path = !this.finalList[!i][2]
+      !type = 'UPDATE'
+      !discipline = 'UPDATES'
+      !name = !this.finalList[!i][3]
+    elsehandle NONE
+      !type = 'DATAL'
+      !discipline = !this.finalList[!i][1].name
+      !name = !this.finalList[!i][2].entry()
+    endhandle
+
+    !percent = !increment * !i
+    !!fmsys.setProgress(!percent.nint())
+    !logfiledata.appendarray(!this.runMacro(!path, !type, !name, !discipline))
+
+  enddo
+  prompt dismiss
+  !!fmsys.setProgress(0)
+
+  if !logfiledata.size().gt(0) then
+    !logFile = object FILE('%PDMSUSER%\mdsDefaultsUpdate.log')
+    !logFile.writefile('OVERWRITE', !logfiledata)
+  endif
+
+  --now scan again to make sure it has completed properly. this also has the effect of clearing the list gadget and un-setting the update button
+  !this.scanDflts(FALSE)
+
+  var !pdmsuserstring evar PDMSUSER
+  if !this.datalFailures.gt(0) or !this.updateFailures.gt(0) then
+    if !this.datalFailures.gt(0) and !this.updateFailures.gt(0) then
+      !!alert.warning(!this.datalFailures.string() + ' new standards failed to be input and ' + !this.updateFailures.string + ' updates failed to run properly, see ' + !pdmsuserstring + '\mdsDefaultsUpdate.log for details.')
+    elseif !this.datalFailures.gt(0) and !this.updateFailures.eq(0) then
+      !!alert.warning(!this.datalFailures.string() + ' new standards failed to be input, see ' + !pdmsuserstring + '\mdsDefaultsUpdate.log for details.')
+    else
+      !!alert.warning(!this.updateFailures.string() + ' updates failed to run properly, see ' + !pdmsuserstring + '\mdsDefaultsUpdate.log for details.')
+    endif
+  else
+    if !numofdatals.gt(0) and !numofupdates.gt(0) then
+      !!alert.message(!numofdatals.string() + ' new standards input and ' + !numofupdates.string() + ' update macros run in, see ' + !pdmsuserstring + '\mdsDefaultsUpdate.log for details.')
+    elseif !numofupdates.gt(0) and !numofdatals.eq(0) then
+      !!alert.message(!numofupdates.string() + ' update macros run in, see ' + !pdmsuserstring + '\mdsDefaultsUpdate.log for details.')
+    else
+      !!alert.message(!numofdatals.string() + ' new standards input, see ' + !pdmsuserstring + '\mdsDefaultsUpdate.log for details.')
+    endif
+  endif
+
+endmethod
+
+define method .createDflts()
+
+  !counter = 0
+
+  do !doDiscipline values !this.mdsDiscipline
+
+    -- Check directory exists to create datals
+    !checkDir = object FILE('$!this.mdsPdmsData/$!doDiscipline')
+    !exists = !checkDir.exists()
+    if !exists.not() then
+      !!alert.error('Directory ' + !checkDir.string() + ' does not exist. Skipping creation of datals for MDS standards')
+      skip
+    endif
+
+    -- OK directory exists now create datals.
+
+    -- Access applications defaults element
+    !!ce = /MDS/$!doDiscipline/DEFAULTS
+    handle any
+      !!alert.error('MDS application /MDS/$!doDiscipline/DEFAULTS does not exist. Skipping creation of datals for standards')
+      skip
+    endhandle
+
+    var !collAllSects coll all sect for ce
+    do !createDatals from 1 to !collAllSects.size()
+      !percent = (100 / !collAllSects.size()) * !createDatals
+      !!fmsys.setProgress(!percent.nint())
+      !!ce = !collAllSects[$!createDatals].dbref()
+      !mdsStd = !!ce.name.after('/MDS/$!doDiscipline/DEFAULTS/')
+      !mdsStd = !mdsStd.replace(|/|, |dividedby|)
+      !datalFileName = '$!this.mdsPdmsData/$!doDiscipline/$!mdsStd$n.pmldat'
+      !datalFile = object FILE(!datalFileName)
+      if !datalFile.exists().not() then
+        file /$!datalFile
+        output ce
+        term
+        !counter = !counter + 1
+      endif
+    enddo
+
+  enddo
+
+  !!fmsys.setProgress(0)
+  !!alert.message('Created ' + !counter.string() + ' datal files')
+
+endmethod
+
+--build lists of superseded standards that no longer need to be checked
+define method .buildsupersededList()
+
+  --clear the lists so we can rebuild
+  !this.supersededAttas.clear()
+  !this.supersededOptions.clear()
+  !this.supersededIcon.clear()
+  !this.supersededPreliminary.clear()
+  !this.supersededTrunnion.clear()
+  !this.supersededStructure.clear()
+  !this.supersededUpdates.clear()
+
+  --read the list items into the appropriate array
+  !supersededListFile = object FILE('$!this.mdsPdmsData/superseded.txt')
+  !fileLines = !supersededListFile.readfile()
+  !in = 'NONE'
+  do !i from 1 to !fileLines.size()
+    if !fileLines[!i].trim().lowcase().eq('--superseded atta items start') then
+      !in = 'ATTA'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--superseded atta items end') then
+      !in = 'NONE'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--superseded option items start') then
+      !in = 'OPTION'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--superseded option items end') then
+      !in = 'NONE'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--superseded icon items start') then
+      !in = 'ICON'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--superseded icon items end') then
+      !in = 'NONE'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--superseded preliminary items start') then
+      !in = 'PRELIMINARY'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--superseded preliminary items end') then
+      !in = 'NONE'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--superseded structure items start') then
+      !in = 'STRUCTURE'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--superseded structure items end') then
+      !in = 'NONE'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--superseded trunnion items start') then
+      !in = 'TRUNNION'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--superseded trunnion items end') then
+      !in = 'NONE'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--superseded update items start') then
+      !in = 'UPDATE'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--superseded update items end') then
+      !in = 'NONE'
+      skip
+    endif
+
+    if !in.eq('ATTA') then
+      !line = !fileLines[!i].trim()
+      if !line.neq('') then
+        !item = !line.split(|,|)[1]
+        !this.supersededAttas.append(!item)
+      else
+        skip
+      endif
+    elseif !in.eq('OPTION') then
+      !line = !fileLines[!i].trim()
+      if !line.neq('') then
+        !item = !line.split(|,|)[1]
+        !this.supersededOptions.append(!item)
+      else
+        skip
+      endif
+    elseif !in.eq('ICON') then
+      !line = !fileLines[!i].trim()
+      if !line.neq('') then
+        !item = !line.split(|,|)[1]
+        !this.supersededIcon.append(!item)
+      else
+        skip
+      endif
+    elseif !in.eq('PRELIMINARY') then
+      !line = !fileLines[!i].trim()
+      if !line.neq('') then
+        !item = !line.split(|,|)[1]
+        !this.supersededPreliminary.append(!item)
+      else
+        skip
+      endif
+    elseif !in.eq('TRUNNION') then
+      !line = !fileLines[!i].trim()
+      if !line.neq('') then
+        !item = !line.split(|,|)[1]
+        !this.supersededTrunnion.append(!item)
+      else
+        skip
+      endif
+    elseif !in.eq('STRUCTURE') then
+      !line = !fileLines[!i].trim()
+      if !line.neq('') then
+        !item = !line.split(|,|)[1]
+        !this.supersededStructure.append(!item)
+      else
+        skip
+      endif
+    elseif !in.eq('UPDATE') then
+      !line = !fileLines[!i].trim()
+      if !line.neq('') then
+        !item = !line.split(|,|)[1]
+        !this.supersededUpdates.append(!item)
+      else
+        skip
+      endif
+    endif
+  enddo
+
+endmethod
+
+--define method to check if a supplied standard name is on the superseded list for the supplied discipline name
+define method .checksuperseded(!name is STRING, !discipline is STRING) is BOOLEAN
+
+  if !discipline.upcase().eq('ATTA') then
+    !list = !this.supersededAttas
+  elseif !discipline.upcase().eq('TRUNNION') then
+    !list = !this.supersededTrunnion
+  elseif !discipline.upcase().eq('PRELIMINARY') then
+    !list = !this.supersededPreliminary
+  elseif !discipline.upcase().eq('STRUCTURE') then
+    !list = !this.supersededStructure
+  elseif !discipline.upcase().eq('OPTION') then
+    !list = !this.supersededOptions
+  elseif !discipline.upcase().eq('ICON') then
+    !list = !this.supersededIcon
+  elseif !discipline.upcase().eq('UPDATES') then
+    !list = !this.supersededUpdates
+  endif
+
+  do !i from 1 to !list.size()
+    if !list[!i].eq(!name) then
+      return TRUE
+    endif
+  enddo
+
+  return FALSE
+
+endmethod
+
+--build lists of preconditions that are applied before considering adding a datal to the list of datal updates
+define method .buildPreconditionList()
+
+  --clear the lists so we can rebuild
+  !this.preconditionAttas.clear()
+  !this.preconditionOptions.clear()
+  !this.preconditionIcon.clear()
+  !this.preconditionPreliminary.clear()
+  !this.preconditionTrunnion.clear()
+  !this.preconditionStructure.clear()
+  !this.preconditionUpdates.clear()
+
+  --read the list items into the appropriate array
+  !preconditionListFile = object FILE('$!this.mdsPdmsData/pre-condition.txt')
+  !fileLines = !preconditionListFile.readfile()
+  !in = 'NONE'
+  do !i from 1 to !fileLines.size()
+    if !fileLines[!i].trim().lowcase().eq('--pre-condition atta items start') then
+      !in = 'ATTA'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--pre-condition atta items end') then
+      !in = 'NONE'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--pre-condition option items start') then
+      !in = 'OPTION'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--pre-condition option items end') then
+      !in = 'NONE'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--pre-condition icon items start') then
+      !in = 'ICON'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--pre-condition icon items end') then
+      !in = 'NONE'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--pre-condition preliminary items start') then
+      !in = 'PRELIMINARY'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--pre-condition preliminary items end') then
+      !in = 'NONE'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--pre-condition structure items start') then
+      !in = 'STRUCTURE'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--pre-condition structure items end') then
+      !in = 'NONE'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--pre-condition trunnion items start') then
+      !in = 'TRUNNION'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--pre-condition trunnion items end') then
+      !in = 'NONE'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--pre-condition update items start') then
+      !in = 'UPDATE'
+      skip
+    elseif !fileLines[!i].trim().lowcase().eq('--pre-condition update items end') then
+      !in = 'NONE'
+      skip
+    endif
+
+    if !in.eq('ATTA') then
+      !line = !fileLines[!i].trim()
+      if !line.neq('') then
+        !tempArray = object ARRAY()
+        !item = !line.split(|,|)
+        do !j from 1 to !item.size()
+          !tempArray.append(!item[!j])
+        enddo
+        !this.preconditionAttas.append(!tempArray)
+      else
+        skip
+      endif
+    elseif !in.eq('OPTION') then
+      !line = !fileLines[!i].trim()
+      if !line.neq('') then
+        !tempArray = object ARRAY()
+        !item = !line.split(|,|)
+        do !j from 1 to !item.size()
+          !tempArray.append(!item[!j])
+        enddo
+        !this.preconditionOptions.append(!tempArray)
+      else
+        skip
+      endif
+    elseif !in.eq('ICON') then
+      !line = !fileLines[!i].trim()
+      if !line.neq('') then
+        !tempArray = object ARRAY()
+        !item = !line.split(|,|)
+        do !j from 1 to !item.size()
+          !tempArray.append(!item[!j])
+        enddo
+        !this.preconditionIcon.append(!tempArray)
+      else
+        skip
+      endif
+    elseif !in.eq('PRELIMINARY') then
+      !line = !fileLines[!i].trim()
+      if !line.neq('') then
+        !tempArray = object ARRAY()
+        !item = !line.split(|,|)
+        do !j from 1 to !item.size()
+          !tempArray.append(!item[!j])
+        enddo
+        !this.preconditionPreliminary.append(!tempArray)
+      else
+        skip
+      endif
+    elseif !in.eq('TRUNNION') then
+      !line = !fileLines[!i].trim()
+      if !line.neq('') then
+        !tempArray = object ARRAY()
+        !item = !line.split(|,|)
+        do !j from 1 to !item.size()
+          !tempArray.append(!item[!j])
+        enddo
+        !this.preconditionTrunnion.append(!tempArray)
+      else
+        skip
+      endif
+    elseif !in.eq('STRUCTURE') then
+      !line = !fileLines[!i].trim()
+      if !line.neq('') then
+        !tempArray = object ARRAY()
+        !item = !line.split(|,|)
+        do !j from 1 to !item.size()
+          !tempArray.append(!item[!j])
+        enddo
+        !this.preconditionStructure.append(!tempArray)
+      else
+        skip
+      endif
+    elseif !in.eq('UPDATE') then
+      !line = !fileLines[!i].trim()
+      if !line.neq('') then
+        !tempArray = object ARRAY()
+        !item = !line.split(|,|)
+        do !j from 1 to !item.size()
+          !tempArray.append(!item[!j])
+        enddo
+        !this.preconditionUpdates.append(!tempArray)
+      else
+        skip
+      endif
+    endif
+  enddo
+
+endmethod
+
+--define method to check if a supplied standard name is on the superseded list for the supplied discipline name
+define method .checkPrecondition(!name is STRING, !discipline is STRING) is BOOLEAN
+
+  if !discipline.upcase().eq('ATTA') then
+    !list = !this.preconditionAttas
+  elseif !discipline.upcase().eq('TRUNNION') then
+    !list = !this.preconditionTrunnion
+  elseif !discipline.upcase().eq('PRELIMINARY') then
+    !list = !this.preconditionPreliminary
+  elseif !discipline.upcase().eq('STRUCTURE') then
+    !list = !this.preconditionStructure
+  elseif !discipline.upcase().eq('OPTION') then
+    !list = !this.preconditionOptions
+  elseif !discipline.upcase().eq('ICON') then
+    !list = !this.preconditionIcon
+  elseif !discipline.upcase().eq('UPDATES') then
+    !list = !this.preconditionUpdates
+  endif
+
+  do !i from 1 to !list.size()
+    if !list[!i][1].eq(!name) then
+      --now ensure that the precondition for the name is fulfilled i.e. updatexx is not in the updatelist
+      do !j from 1 to !this.updateList.size()
+        do !k from 2 to !list[!i].size()
+          if !this.updateList[!j][3].trim().upcase().eq(!list[!i][!k].trim().upcase()) then
+            --we have found an item in the list that depends upon an outstanding update. therefore allow the update to complete before
+            --adding the missing datal to the list. i.e. return true
+            return TRUE
+          endif
+        enddo
+      enddo
+    endif
+  enddo
+
+  return FALSE
+
+endmethod
+
+define method .runMacro(!macroPath is STRING, !type is STRING, !name is STRING, !discipline is STRING) is ARRAY
+  !updateLogArray = object ARRAY()
+  if !type.eq('DATAL') then
+    --this is a standard. add missing datal to defaults macro
+    !currentDiscipline.delete()
+    handle ANY
+    endhandle
+    !currentDiscipline = !discipline.dbref()
+    !!ce = !currentDiscipline
+    !updateLogArray.append(|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|)
+    !updateLogArray.append(|running update macro | + !name)
+    last mem
+    handle (2,113)
+    endhandle
+  else
+    --this is an update macro
+    !updateLogArray.append(|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|)
+    !updateLogArray.append(|running update macro | + !name)
+  endif
+  -- mark the database so that we can roll back an update if it fails
+  markdb
+  $m "$!macroPath"
+  handle ANY
+    undodb 1
+
+    if !type.eq('DATAL') then
+      !updateLogArray.append(|new standard input | + !macroPath + | failed due to error - all db changes for this update have been rolled back|)
+    else
+      !updateLogArray.append(|update macro | + !macroPath + | failed due to error - all db changes for this update have been rolled back|)
+    endif
+    !updateLogArray.append(|error text = | + !!error.text)
+    !updateLogArray.append(|error line = | + !!error.line)
+    !updateLogArray.append(|error command = | + !!error.command)
+    if !type.eq('DATAL') then
+      !this.datalFailures = !this.datalFailures + 1
+    else
+      !this.updateFailures = !this.updateFailures + 1
+    endif
+  elsehandle NONE
+    endmarkdb
+    if !type.eq('DATAL') then
+      !updateLogArray.append(|standard successfully added|)
+    else
+      !updateLogArray.append(|Update macro run in successfully|)
+    endif
+
+  endhandle
+
+  return !updateLogArray
+
+endmethod

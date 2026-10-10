@@ -56,7 +56,7 @@ setup form !!equipmentmanager dialog resizable
   member .nozzleNames is ARRAY
 
   -- Layout gadgets
-  paragraph .info text 'Select Equipment from active 3D view' at x 1 y 1
+  paragraph .info at x 1 y 1 text 'Select Equipment from active 3D view'
   button .pickBtn 'Pick Equipment' at xmin ymax+0.5 callback '!this.pickEquipment()'
   
   text .equiName 'Name:' at xmin ymax+0.5 is STRING width 25

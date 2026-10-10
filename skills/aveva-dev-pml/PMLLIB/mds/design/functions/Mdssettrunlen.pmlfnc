@@ -1,0 +1,947 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File: Mdssettrunlen.pmlfnc
+--   Type: Function Definition
+--   Group: Multi Discipline Supports Application
+--     Keyword: MDS
+--   Module: design
+--   Replaces:
+--
+-- Author: Neale Morris
+-- Created: Thursday 12th February 2002
+--
+--
+-- Description:
+-- Function to set the length of a trunnion
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         STRING      Length
+--     2     R         DIRECTION   Direction of trunnion
+--     3     R         POSITION    Start Position
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsSetTrunLen(!id is STRING,!dummyLength is REAL,!plat is DBREF,!dir is STRING,!type is STRING,!form is FORM)
+
+  -- NOTE: !plat is the TRUNNION BASE PLATE 'PLAT' element
+  -- Find current units and set the distance unit to metric
+  !currentUnits = !!kGetSetUnits()
+
+  -- Save current DB position
+  !!ce = !plat
+  if (!!ce.:MDSGuideRef.badref().not()) then
+    !iPad = !!ce.:MDSGuideRef
+    !guideOri = !iPad.orientation.wrt(/* )
+  endif
+
+  --><wd>12mar2009 - Defect No. 16924
+  -- Determine the Pipe and Trunnion Weld Values at the ATTA/PLAT elements from the Specific MDSSELECTION object
+  !trunnionBranch = !plat.owner
+  if (!trunnionBranch.:mdsTrun) then
+    !members = !trunnionBranch.members
+    !!ce = !plat.owner
+    do !element values !members
+      if (!element.type.eq('ATTA') and !element.atty.eq('')) then
+        skip if !element.name.matchwild('*/SREF')
+        !!mdsNWelds(!element)
+      elseif (!element.type.eq('PLAT')) then
+        !!mdsNWelds(!element)
+        --><wd>26jun2009 - Defect No. 22278
+        -- Determine the Pipe Weld Value for a Trunnion attached to the MAIN PIPE at the MDS Trunnion REDU element from the Specific MDSSELECTION object
+        -- This 'VIRTUAL' MDS Trunnion REDUCER element which is 'WELDED' to the MAIN PIPE for ISOMETRIC/SPOOLER WELD NUMBERING purposes
+      elseif ((!element.type.eq('REDU')) and (!element.spref.name.matchwild('*/MDS/.*MAKEUP*')) ) then
+        !!mdsNWelds(!element)
+        --<<wd>26jun2009 - Defect No. 22278
+      else
+        skip
+      endif
+    enddo
+  endif
+  --<<wd>12mar2009 - Defect No. 16924
+
+  -- Put pin 9 at the branch head for both steel and gadget
+  pin 9 at ph
+  pin 9 dir $!dir
+  pin 9 plane pin 9 thro href of bran
+  pin 9 off
+
+  -- If user requires to id STEEL etc... then identify it and put PIN 8 ON the TOP FACE
+  -- LENGTH BY ID STEEL etc.
+  if !id.eq('STEEL') then
+
+    prompt off
+    prompt load escape 'Identify steelwork to set trunnion to'
+    --<wd>10jan2008 -- Defect No. P-4407
+    --    ID BOX SCTN FLOOR WALL GWALL STWALL SCREED CFLOOR CSCREED CWALL PANE @
+    ID BOX SCTN FLOOR WALL GWALL STWALL SCREED CFLOOR CSCREED CWALL PANE HSTIFF HPLATE @
+    --<wd>10jan2008 -- Defect No. P-4407
+    handle (61,528)
+      prompt on
+      !!kRestoreUnits(!currentUnits)
+      return FALSE
+    endhandle
+    prompt on
+    !idEle = !!ce
+    !!ce = !plat.owner
+    -- Navigating to the OWNING Trunnion BRANCH Element
+    pin 8 at ph
+    pin 8 dir $!dir
+    -- 'same' element is the Identified Element e.g. a 'SCTN' i.e. !idEle
+    -- tm mod to use the passed dir instead of the hard coded direction
+    pin 8 plane $!dir clear 0 inf same
+
+    -- LENGTH BY GADGET VALUE.
+    -- If it not STEEL then set pin 8 to the gadget length
+
+  elseif !id.eq('GADGET') then
+
+    if (!!ce.owner.href.type.eq('ELBO')) then
+      !!ce = !plat.owner
+      pin 9 plane pin 9 thro p0 of href
+      same
+    endif
+    pin 8 copy pin 9
+    pin 8 dist $!form.tLength.val
+
+  endif
+
+  pin 9 off
+  pin 8 off
+
+  -- If pin 8 is above pin 9 error
+
+  var !tp9u pin 9 pos wrt /*
+  var !tp8u pin 8 pos wrt /*
+  !p9u = !tp9u.position()
+  !p8u = !tp8u.position()
+
+  -- !!mdsTT27 is the vertical trunnion for hangers
+  --<dw>oct2008 dun979 - Also allow for TT42 attachment to a sloping line
+  if !form.eq(!!mdsTT36) then
+  elseif !form.eq(!!mdsTT37) then
+  elseif !form.eq(!!mdsTT42) then
+  elseif !form.eq(!!mdsTT27).not() then
+    if !dir.eq('U WRT /*') or !dir.eq('Z WRT /*') then
+      if !p8u.up.lt(!p9u.up) then
+        !!alert.error('Identified element is below support.')
+        !!kRestoreUnits(!currentUnits)
+        return
+      endif
+    else
+      if !p8u.up.gt(!p9u.up) then
+        !!alert.error('Identified element is above support.')
+        !!kRestoreUnits(!currentUnits)
+        return
+      endif
+    endif
+  endif
+
+  -----------------------------------------------------------------------------------------------------------------
+  -- MDS Trunnions with a Bearing Plate and a Trunnion Base Plate
+  -----------------------------------------------------------------------------------------------------------------
+  !bearPl = '0'
+  !at59pl = '0'
+  !ceComp = !!ce
+
+  bran
+  var !members coll all for ce
+  do !getRidOfBranTubi indices !members
+    if !members[$!getRidOfBranTubi].dbref().type.eq('BRAN') then
+      !members[$!getRidOfBranTubi].delete()
+    elseif !members[$!getRidOfBranTubi].dbref().type.eq('TUBI') then
+      !members[$!getRidOfBranTubi].delete()
+    endif
+  enddo
+
+  !members.compress()
+  var !sTyps eval styp for all from !members ignore ANY
+  ----------------------------------------------------------------------
+  !bearingPlateFound = FALSE
+  !searchForBearingPlateAC19A = !sTyps.find('AC19A')
+  !searchForBearingPlateAC19B = !sTyps.find('AC19B')
+
+  if !searchForBearingPlateAC19A.unset().not() then
+    !bearingPlateFound = TRUE
+    !bearingMemberNumber = !searchForBearingPlateAC19A[1]
+  endif
+
+  if !searchForBearingPlateAC19B.unset().not() then
+    !bearingPlateFound = TRUE
+    !bearingMemberNumber = !searchForBearingPlateAC19B[1]
+  endif
+  ----------------------------------------------------------------------
+
+  !basePlateFound = FALSE
+  !searchForBasePlateAC18A = !sTyps.find('AC18A')
+  !searchForBasePlateAC18B = !sTyps.find('AC18B')
+
+  if !searchForBasePlateAC18A.unset().not() then
+    !basePlateFound = TRUE
+    !baseMemberNumber = !searchForBasePlateAC18A[1]
+  endif
+
+  if !searchForBasePlateAC18B.unset().not() then
+    !basePlateFound = TRUE
+    !baseMemberNumber = !searchForBasePlateAC18B[1]
+  endif
+  ----------------------------------------------------------------------
+  --<wd>02aug2004
+  !searchForBasePlateAC30 = !sTyps.find('AC30')
+
+  if !searchForBasePlateAC30.unset().not() then
+    !basePlateFound = TRUE
+    !baseMemberNumber = !searchForBasePlateAC30[1]
+  endif
+  --<wd>02aug2004
+  ----------------------------------------------------------------------
+
+  ----------------------------------------------------------------------
+  if (!bearingPlateFound) then
+    bran
+    last mem
+    -- Last member is always a Bearing Plate on these Trunnion Types
+    if (!!ce.styp inset ('AC19A','AC19B')) then
+      var !bearPl const dist pa to pl
+      previous
+      if (!!ce.styp inset ('AT59','AT68')) then
+        var !at59pl const dist pa to pl
+      endif
+      next
+      ori and p3 is p3 of $!baseMemberNumber of owner
+      branch
+    else
+      !!alert.error('There is an error in the configuration of this MDS trunnion. Aborting Trunnion Length modification')
+      !!kRestoreUnits(!currentUnits)
+      return
+    endif
+  elseif (!basePlateFound) then
+    -- Trunnion Base Plate
+    !!ce = !form.support.datum
+    next
+    handle NONE
+      if (!!ce.styp inset ('AT59','AT68')) then
+        var !at59pl const dist pa to pl
+      endif
+    elsehandle ANY
+    endhandle
+  endif
+
+  -- We need to move pin 8 down by the thickness of the bearing plate if gadget driven
+
+  if (!id.eq('GADGET')) then
+    pin 8 dist $!bearPl
+    pin 8 dist $!at59pl
+  endif
+
+  !!ce = !ceComp
+
+  -- ***********************
+  -- *** IMPORTANT NOTE: ***
+  -- ***********************
+  -- The variable !trunLen <trunnion length> is checked here, which is before any ADJUSTMENT has been made
+  -- to allow for Trunnion Base ELL's with BEARING PLATES plus BASE PLATES at the Trunnion Branch Tail.
+  --
+  -- With the addition of ''AT59'' - (Cold Isolation Block for Trunnions) - Further checks will also required
+  -- here to cater for the Component Length of an ''AT59'' ancillary when checking the TRUE Trunnion Length
+  -- is within the MINIMUM and MAXIMUM allowed Trunnion Lengths .
+
+  -- Set the *** REQUIRED *** trunnion length Variable
+  var !trunLen const dist pin 9 to pin 8
+  var !trunLen ( $!trunLen - $!bearPl - $!at59pl )
+
+$(
+
+  -- Subtract the Bearing Plate Thickness if applicable to Get the TRUE Trunnion Length
+  -- i.e. tRUNNION BRANCH PHEAD to PLEAVE of tRUNNION BASE PLATE for Correct CHECKING of !trunLen below
+  if (!id.eq('STEEL')) then
+    var !trunLen ( $!trunLen - $!bearPl - $!at59pl )
+  elseif (!id.eq('GADGET')) then
+    var !trunLen ( $!trunLen )
+  endif
+
+$)
+  -----------------------------------------------------------------------------------------------------------------
+
+  !form.tLength.val = !trunLen.real()
+
+  --------------------------------------------------------------
+  -- Fix for HPD0030051 GE 22/09/05
+  if !form.eq(!!mdsTT36) then
+    !tee = href of bran
+    !teePl = !tee.ldir.wrt(worl)
+    if !tee.type eq 'TEE' then
+      if !teePl.string().eq('U WRT /*') or !teePl.string().eq('D WRT /*') or !teePl.string().eq('Z WRT /*') or !teePl.string().eq('-Z WRT /*') then
+        !trunData = object MDSGETTRUNOVERDIM(!tee,!idEle)
+        handle NONE
+        elsehandle ANY
+        endhandle
+        !form.tLength.val = !trunData.vertTrunDim
+        handle NONE
+          !trunLen = !trunData.vertTrunDim.string()
+        elsehandle ANY
+        endhandle
+      endif
+    endif
+  endif
+  --------------------------------------------------------------
+
+  -- Get bore of connected ELBO and set MIN/MAX values
+  !!ce = !plat
+  bran
+  !plBore = ph bore
+
+  same
+  ---------------------------------------------------------------------------------------------------
+  --<wd>apr2006<mds12>
+  --
+  -- Navigate back to the Trunnion Base Plate
+  --  !min = !!mdsPar$!type[$!plBore].minimum
+  --  !max = !!mdsPar$!type[$!plBore].maximum
+  --
+
+  -- NOW back at the "PLAT" element, so determine the MINIMUM and MAXIMUM TRUNNION LENGTH values
+  -- The MAIN PIPE Bore Size = !plBore, i.e. the PHEAD of the TRUNNION BRANCH
+  -- The passed variable !type contains the TRUNNION TYPE
+  !mdsTrunObj  = object MDSREADTRUNDATA()
+  !mdsTrunData = !mdsTrunObj.mdsTrunData(!type, !plBore.real().value())
+
+  -- TEMPORARY GLOBAL VARUIABLE used for QUERYING etc...
+  -- !!lObj = !mdsTrunObj
+
+  -- CHECK if Trunnion DEFAULTS DATA OK in the MDS DEFAULTS PARAGON DATABASE CATA
+  if (!mdsTrunData.not()) then
+    -- ERROR with the MDS DEFAULTS in the PARAGON CATALOGUE "SECTION" or "CATEGORY" element
+    if (!mdsTrunObj.mdsStd.sactive.not()) then
+      -- ERROR with the MDS DEFAULTS in the PARAGON CATALOGUE "SECTION" element
+      !errormessage = !mdsTrunObj.mdsStd.smess
+    elseif (!mdsTrunObj.mdsStd.cactive.not()) then
+      -- ERROR with the MDS DEFAULTS in the PARAGON CATALOGUE "CATEGORY" element
+      !errormessage = !mdsTrunObj.mdsStd.cmess
+    endif
+    return
+
+  else
+    -- Trunnion DATA is OK, so GET and SET the MINIMUM and MAXIMUM Trunnion Lengths
+    !min = !mdsTrunObj.minlength
+    !max = !mdsTrunObj.maxlength
+
+  endif
+  --<wd>apr2006<mds12>
+  ---------------------------------------------------------------------------------------------------
+
+  -- Now check if the LENGTH required is outside the MINIMUM and MAXIMUM TRUNNION LENGTH values
+  !minMax = FALSE
+  if !trunLen.real().nint().lt(!min) then
+    !uMin = !min.string(!!distanceFMT)
+    !uTrunLen = !trunLen.string(!!distanceFMT)
+    pin 8 off
+    !!alert.error(|Length stated is less than the minimum allowed. Setting length to minimum of $!uMin|)
+    !trunLen = !min.string()
+    !form.tLength.val = !min.real()
+    pin 8 copy pin 9
+    !minMaxVal = !min
+    pin 8 dist ( $!minMaxVal + $!bearPl + $!at59pl)
+    !minMax = TRUE
+  elseif !trunLen.real().nint().gt(!max) then
+    !uMax = !max.string(!!distanceFMT)
+    !uTrunLen = !trunLen.string(!!distanceFMT)
+    pin 8 off
+    !!alert.error(|Length stated is more than the maximum allowed. Setting length to maximum of $!uMax|)
+    !trunLen = !max.string()
+    !form.tLength.val = !max.real()
+    pin 8 copy pin 9
+    !minMaxVal = !max
+    !minMax = TRUE
+  endif
+
+  -------------------------------------------------------------------------
+  -- Adjustment for the trunnion being attached to an elbow If connected to
+  -- an elbow then we need to add the leg length to the overall height
+  -------------------------------------------------------------------------
+
+  if !plat.owner.href.type.eq('ELBO') then
+    if !form.eq(!!mdsTT36) then
+      !elbo = !plat.owner.href
+      !!ce = !elbo
+      var !ll const dist p0 to p1
+      same
+    else
+      !elbo = !plat.owner.href
+      pin 9 at p1 of $!elbo
+      pin 8 at p1 of $!elbo
+      pin 8 dir $!dir
+      pin 8 plane pin 8 thro p0 of $!elbo
+      var !ll const dist pin 9 to pin 8
+    endif
+  else
+    var !ll 0
+  endif
+
+  !overall = !trunLen.real() + !ll.real()
+
+  -------------------------------------------------------------------
+  -- Adjustment for a bearing plate existing in the trunnion standard
+  -------------------------------------------------------------------
+
+  --  For 'STEEL' -If the element has a bearing plate then the length must be SUBTRACTED from the overall length
+  --  because the length does NOT include the bearing plate
+
+  --  For 'GADGET' -If the element has a bearing plate then the length must be ADDED to the overall length
+  --  because the length does NOT include the bearing plate
+
+  !extra = '0'
+
+  -- Search members for AC19 which is the bearing plate standard in the trunnion
+
+  if (!bearingPlateFound) then
+    bran
+    $!bearingMemberNumber
+    var !extra const dist pa to pl
+    -- !form.tLength.val = !trunLen.real() - !extra.real()
+  endif
+
+  -- When the element is a REDU add the difference between extra and the redu offset
+
+  if !plat.owner.href.type.eq('REDU') then
+
+    !!ce = !plat.owner.href
+    pin 9 copy p3
+    pin 8 copy p3
+    if (!!ce.abor.gt(!!ce.lbor)) then
+      pin 8 plane pin 8 thro pa
+    else
+      pin 8 plane pin 8 thro pl
+    endif
+    var !bit const dist pin 9 to pin 8
+    !diff = !extra.real() - !bit.real()
+    if (!!ce.abor.gt(!!ce.lbor)) then
+      !form.tLength.val = !trunLen.real()
+      !overall = !overall - !extra.real()  + !diff
+    else
+      if (!id.eq('GADGET')) then
+        !overall = !overall - !extra.real()  - !diff.abs()
+      else
+        !overall = !overall - !diff
+      endif
+    endif
+    same
+  endif
+
+  -- What is the collar length compared with the baseplate length
+  if !form.support.type.eq('TT06') or !form.support.type.eq('TT07') then
+    !!ce = !form.support.atta[4]
+    !pThickness = despar
+  elseif !form.support.type.eq('TT10') or !form.support.type.eq('TT11') then
+    !!ce = !form.support.atta[5]
+    !pThickness = despar
+  elseif !form.support.type.eq('TT22') or !form.support.type.eq('TT28') then
+    !!ce = !form.support.atta[5]
+    !pThickness = despar
+  endif
+
+  bran
+
+  !branMem = mem count
+  last mem
+
+  !!mdsDacControl(TRUE)
+
+  pin 8 at ph
+  pin 8 dir $!dir
+  pin 9 dir $!dir
+
+
+  if (!id.eq('STEEL')) then
+    if (!minMax) then
+      pin 8 dist ( $!minMaxVal + $!bearPl + $!at59pl )
+      if !plat.owner.href.type.eq('ELBO') then
+        !elbo = !plat.owner.href
+        pin 8 at p1 of $!elbo
+        pin 8 dir $!dir
+        pin 8 plane pin 8 thro p0 of $!elbo
+        pin 8 dist ( $!minMaxVal + $!bearPl + $!at59pl )
+      endif
+    else
+      pin 8 plane pin 8 clear 0 inf $!idEle
+    endif
+  elseif (!id.eq('GADGET')) then
+    -- Passed Variable ** !id ** is = 'GADGET'
+    pin 8 dist $!overall $* tm nov 2003
+    -- if anything goes wrong with trunnion lengths then use the line below
+    --pin 8 dist $!trunLen
+  endif
+
+  -- save p3 to put back in original orientation
+  !p3dir = p3 dir wrt /*
+  handle ANY
+  endhandle
+
+  conn
+  -- handle (7,3)
+  handle (7,3)(7,42) $* <wd>apr2006<mds12>
+    fconn
+  endhandle
+
+  ori and p3 is $!p3dir
+  handle ANY
+  endhandle
+
+  --<wd>oct2003
+  --var !pos pin 8 pos
+  if (!id.eq('STEEL')) then
+    var !pos pin 8 pos
+  elseif (!id.eq('GADGET')) then
+    -- Position Pin 8 at the Pipe Tail
+    pin 8 dist $!bearPl
+    pin 8 dist $!at59pl
+    var !pos pin 8 pos
+  endif
+  --<wd>oct2003
+
+  bran
+  tpos $!pos
+  same
+  pos p2 at pin 8
+
+  bran
+  conn pt to last mem
+  tcon clos
+
+  !!mdsresetpins(8,9)
+
+  -- The setup member array will list the position of the elements, now position them
+  do !count from 1 to !form.support.atta.size()
+    !!ce = !form.support.atta[$!count]
+    !saveOri = ori
+    if !!ce.stype.eq('AC27') then
+      skip
+    endif
+
+    --<wd>02aug2004
+    skip if !!ce.stype.eq('AC28')
+    skip if !!ce.stype.eq('AC31')
+    skip if !!ce.stype.eq('AC53')
+    skip if !!ce.stype.eq('AC54')
+    --<wd>02aug2004
+
+    if !form.setup[$!count].eq('0') then
+      if !!ce.name.match('MAKEUP').gt(0) then
+        !saveP3Dir = p3 dir wrt /*
+      endif
+      conn
+      -- handle (7,3)
+      handle (7,3)(7,42) $* <wd>apr2006<mds12>
+        fconn
+      endhandle
+      if !!ce.name.match('MAKEUP').gt(0) then
+        ori and p3 is $!saveP3Dir
+      endif
+    elseif !form.setup[$!count].match('-').eq(1) and !!ce.stype.neq('AC29') then
+      if !!ce.styp.eq('AC20') then
+        --<wd>oct2003> -- Modified for TT06, TT07
+        --pos pl dist $!form.setup[$!count] from pt
+        pos pa dist ( $!form.setup[$!count] - $!bearPl ) from pt
+        --$p pos pa dist ( $!form.setup[$!count] - $!bearPl ) from pt
+        --<wd>oct2003>
+      else
+        pos pa dist $!form.setup[$!count] from pt
+      endif
+    else
+
+      --<wd>feb2003
+      if ((!form.eq(!!mdsTT23)) and (!count.eq(4))) then
+        !ceOrig = !!ce
+        !mainOd = !!ce.owne.href.lstu.param[2]
+        if (!ceOrig.type.eq('BRAN')) then
+          !crefTyp = !!ce.href.type
+          !crefDbr = !!ce.href
+        else
+          !crefTyp = !!ce.owner.href.type
+          !crefDbr = !!ce.owner.href
+        endif
+
+        --<dw>jan2009 dun1081 - Height to isolation block now controlled by property Pdist for AC46 - HPD0038589
+        -- Calculate the Distance to Move the Atta(AC46)
+        if (!crefTyp.eq('ELBO')) then
+          -- Navigate to the ELBO
+          !!ce    = !crefDbr
+          !adjust = !!kStrReal('cons dist p0 to plane p1')
+          -- !distPa = (!form.setup[4].real() + (!mainOd / 2)) + !adjust
+          same
+          !distPa = (!!ce.prop.pdist.real() + (!mainOd / 2)) + !adjust
+        elseif (!crefTyp.eq('REDU')) then
+          -- Navigate to REDU
+          !!ce    = !crefDbr
+          -- !mainOd MUST always be the SMALLER BORE O/Dia of the REDU
+          !paBore = !!ce.abore
+          !plBore = !!ce.lbore
+          if (!plBore.gt(!paBore)) then
+            !mainOd = !!ce.aod
+          else
+            !mainOd = !!ce.lod
+          endif
+          same
+          -- !distPa = (!form.setup[4].real() + (!mainOd / 2))
+          !distPa = (!!ce.prop.pdist.real() + (!mainOd / 2))
+        else
+          -- !distPa = (!form.setup[4].real() + (!mainOd / 2))
+          !distPa = (!!ce.prop.pdist.real() + (!mainOd / 2))
+        endif
+        --<dw>jan2009 dun1081 - End of height controlled by property Pdist for AC46 - HPD0038589
+        -- Navigate back to the Atta(AC46)
+        !!ce = !ceOrig
+        dist $!distPa
+      else
+        --<wd>feb2003
+        dist $!form.setup[$!count]
+      endif
+    endif
+
+  enddo
+
+  -- Connect the last member to the pt
+  bran
+  last mem
+  !p3dir = p3 dir wrt world
+  handle ANY
+  endhandle
+  conn to pt
+  ori and p3 is $!p3dir
+  handle ANY
+  endhandle
+
+  -- The members at the end of the trunnion may not be connected if they have
+  -- a thickness i.e baseplate so connect them up if they are -0
+  -- Find the last connect member
+  !counter = 1
+  do !search values !form.setup
+    if !search.eq('-0') then
+      !last = !form.support.atta[$!counter]
+    else
+      !counter = !counter + 1
+    endif
+  enddo
+
+  do !count from !branMem to 1 by -1
+    bran
+    $!count
+    !saveOri = ori
+    back conn forw
+    -- handle (7,3)
+    handle (7,3)(7,42) $* <wd>apr2006<mds12>
+      back fconn forw
+    endhandle
+    if !!ce.styp.matchwild('AC19*') then
+      ori and p3 is p3 of $!baseMemberNumber of owner
+    else
+      ori $!saveOri
+    endif
+    if !!ce.ref.eq(!last.ref) then
+      break
+    endif
+  enddo
+
+  --<dw>jan2009 dun1081 - To check for minimum height of TT23 pipe stool - HPD0038589
+  if !form.eq(!!mdsTT23) then
+    plat3
+    var !dist construct distance pl of ce to pa of nex
+    if (!dist.real() lt !form.setup[4].real()) then
+      !minHeight = !form.setup[4].real()
+      !!alert.error('Distance between isolation block and base plate = ' & !dist.real().nint() & 'mm
+      Apply lower value from BOP to Plate top to allow for ' & !minHeight & 'mm minimum distance')
+      return
+    endif
+  endif
+  --<dw>jan2009 dun1081 - End check for minimum height of TT23 pipe stool
+
+  bran
+  -- In order to create the correct code, store appropriate values in despar attribute
+  -- 1 is the head bore of bran
+  -- 2 is the branch bore of bran
+  -- 3 dummy
+  -- 4 dummy
+  -- 5 is the height
+  -- 6 is the install type
+
+  !srefString = !form.support.datum.name + '/SREF'
+
+  !!ce = !srefString.dbref()
+
+  !dp1 = !!ce.phbore.string().before('mm')
+  !dp2 = !!ce.ppbore[1].string().before('mm')
+  if !!ce.styp.eq('TT22') or !!ce.styp.eq('TT28') then
+    !dp2 = !form.bore.selection()
+  endif
+
+  -- dp3 will be all the alpha chars
+
+  !dp3 = ''
+
+  do !loop from 1 to !form.support.replace.length()
+    !char = !form.support.replace.substring(!loop,1)
+    !typeTest = 0
+    !real.delete()
+    handle ANY
+    endhandle
+    !unusedTest = !typeTest + !char.real()
+    handle NONE
+      !real = FALSE
+    elsehandle ANY
+      !real = TRUE
+    endhandle
+    if !real then
+      !dp3 = !dp3 + !char
+    else
+      break
+    endif
+  enddo
+
+  --  !temp = !form.support.replace.after(!dp3)
+  --  !dp4 = !temp.string()
+
+  -- dp4 will be all the numeric chars
+  -- !dp3 = !form.support.replace.substring(1,1)
+  -- !dp4 = !form.support.replace.substring(2,4)
+
+  --<wd>oct2003
+  !dp5 = !trunLen
+  --<wd>oct2003
+
+  !dp6 = !form.support.replace.substring(6)
+
+  -- if is a TT07 the second bore is found from the makeup piece leave
+  if !!ce.styp.eq('TT06') or !!ce.styp.eq('TT07') or !!ce.styp.eq('TT10') or !!ce.styp.eq('TT11') or !!ce.styp.eq('TT22') or !!ce.styp.eq('TT28') then
+    !makeup = !form.support.datum.name + '/MAKEUP'
+    $!makeup
+    !dp2 = !!ce.ppbore[2].string().before('mm')
+    same
+    if !!ce.styp.eq('TT06') or !!ce.styp.eq('TT07') then
+      !!ce = !form.support.atta[4]
+    elseif !!ce.styp.eq('TT10') or !!ce.styp.eq('TT11') or !!ce.styp.eq('TT22') or !!ce.styp.eq('TT28') then
+      !!ce = !form.support.atta[5]
+    endif
+
+    --<wd>nov2003
+    -----------------------------------------------------------
+    -- The CODE below was Commented Out Friday 14/NOV/2003
+    -- as it is SURPLUS to REQUIREMENTS
+$(
+    !nudge = !pThickness[3] - !extra.real()
+    handle none
+      by d $!nudge
+    elsehandle any
+    endhandle
+
+$)
+    -----------------------------------------------------------
+    --<wd>nov2003
+
+    same
+  endif
+
+  if !dp6.eq('') then
+    !dp6 = 'A'
+  endif
+
+  --despar $!dp1 $!dp2 $!dp3 $!dp4 $!dp5 $!dp6
+  despar $!dp1 $!dp2 0mm 0mm $!dp5 $!dp6
+
+  -->>>-<wd>feb2003
+  !ceOrig = !!ce
+  !!ce = !form.support.datum
+  !!ce = !!ce.owner.href
+  --<wd>oct2003
+  if (!!ce.type.eq('REDU')) then
+    if (!!ce.abor.gt(!!ce.lbor)) then
+      !pos = !!ce.apos.string()
+    else
+      !pos = !!ce.lpos.string()
+    endif
+  else
+    var !pos pos wrt world
+  endif
+
+  $M/%PDMSUI%/DES/CLIB/GAIDTEXT 210 Trunnion $<$!pos$>
+  !!ce = !form.support.datum
+  var !pos pos wrt world
+  $M/%PDMSUI%/DES/CLIB/GAIDTEXT 211 Datum $<$!pos$>
+
+  do !count from 212 to 259
+    var !num ($!count - 211)
+    !attaname = !form.support.datum.name & '.' & !num
+    !!ce = !attaname.dbref()
+    handle ANY
+      skip
+    endhandle
+    -- Store Atta reference in form
+    var !pos pos wrt world
+    handle ANY
+      skip
+    endhandle
+    $M/%PDMSUI%/DES/CLIB/GAIDTEXT $!count $!num $<$!pos$>
+  enddo
+  !!ce = !ceOrig
+  --<<<-<wd>feb2003
+
+  -- line up all ATTAS if the pipe is sloping
+  !makeup = !form.support.datum.name + '/MAKEUP'
+  $!makeup
+  do
+    nex
+    handle ANY
+      break
+    endhandle
+    thro ce
+  enddo
+  tail
+  conn pt to last mem
+  -- items should now be lined up
+
+  -- If a field fitt weld exists connect it to the collar
+  !weld = !form.support.datum.name + '/FFW'
+  !!ce = !weld.dbref()
+  handle ANY
+  elsehandle NONE
+    connect to next
+  endhandle
+
+  --<wd>feb2003
+  -- Check for Valid Trunnion Base Plate SType
+  --<wd>oct2003
+  --<dw>oct2008 dun979 - To allow for additional trunnion base plates
+  --if (!form.support.datum.stype inset ('AC18A','AC18B','AC30','AC47')) then
+  if (!form.support.datum.stype inset ('AC18A','AC18B','AC30','AC47','AC49','AC60','AC61','AC62','AC63','AC64','AC65','AC66','AC67')) then
+    --<wd>oct2003
+
+    -- Check if UDA :MDSGuideRef is Valid
+    if (!form.support.datum.:MDSGuideRef.badref().not()) then
+      !bPlt = !form.support.datum
+      !iPad = !bPlt.:MDSGuideRef
+      !tNam = !bPlt.name & '/SREF'
+      !trun = !tNam.dbref()
+
+      -- Adjust Trunnion Length within the MIN/MAX Trunnion Length Limits to Accommodate the Isolation Pad/Cold Isolation Block etc...
+      !trunLenWarn = STRING()
+      if (!!mdsAdjTrunLen(!bPlt,!iPad,!trun,!form,'ADJUST',!trunLenWarn).not()) then
+        !!alert.warning(!trunLenWarn)
+      endif
+    endif
+  endif
+  --<wd>feb2003
+
+
+  -- re-orientate the guide to what it was before the reset trunnion length
+  if defined(!guideOri) then
+    !!ce = !iPad
+    !!ce.ori = !guideOri
+  endif
+
+
+  --<tm for TT27 to orientate the plates
+  if !form.eq(!!mdsTT27) then
+    !!ce = !!mdsTT27.support.datum
+    if !!ce.:MDSRotated then
+      ori and p9 is $!!ce.:MDSRotDir
+      handle ANY
+      elsehandle NONE
+        next
+        ori and p9 is $!!ce.:MDSRotDir
+        nex
+        ori and p9 is $!!ce.:MDSRotDir
+      endhandle
+    endif
+  endif
+
+
+  -- Fix for HPD0030051 GE 22/09/05
+  -- Vertical pipes to work adjust correctly via identifying an element
+
+  if !form.eq(!!mdsTT36) then
+    !tee = href of bran
+    !bran = bran
+    -- Fix for HPD0031900 GE 10/04/06
+    if !tee.type eq 'TEE' then
+      !teePl = !tee.ldir.wrt(worl)
+      if !teePl.string().eq('U WRT /*') or !teePl.string().eq('D WRT /*') or !teePl.string().eq('Z WRT /*') or !teePl.string().eq('-Z WRT /*') then
+        !trunData = object MDSGETTRUNOVERDIM(!tee,!idEle)
+        handle NONE
+        elsehandle ANY
+        endhandle
+        !form.tLength.val = !trunData.vertTrunDim
+        handle NONE
+        elsehandle ANY
+        endhandle
+        !form.direction.val = !trunData.vertTrunDir.string()
+        handle NONE
+        elsehandle ANY
+        endhandle
+        $!tee
+        lea 3
+        dir d
+        handle ANY  $* Pipe must be vertical so set direction N
+          dir $!trunData.vertTrunDir
+          handle NONE
+            dir $!trunData.vertTrunDir
+          elsehandle ANY
+          endhandle
+        endhandle
+        lea 2
+
+        $!bran
+
+        -- additional fix code for HPD0030051 RM 13/03/06
+        var !headDir hdir
+        !hDirTemp = object DIRECTION(!headDir)
+        !hDirTempOpp = !hDirTemp.opposite()
+        -- end of additional fix code for HPD0030051 RM 13/03/06
+
+        if !!ce.type.eq('BRAN') then
+          conn ph to same
+          !tDir = !trunData.vertTrunDir
+          handle NONE
+            !tDirOpp =  !tDir.opposite()
+            !!mdsTT36.tDirection = !tDirOpp.string()
+            tdir $!tDirOpp
+            call !!mdsSetTrunLen('GADGET',!!mdsTT36.tLength.val.real(),!!mdsTT36.support.datum,!!mdsTT36.direction.val,'TT36',!!mdsTT36)
+          elsehandle ANY
+          endhandle
+          !tDir = !!mdsTT36.tDirection.direction()
+
+          -- additional fix code for HPD0030051 RM 13/03/06
+          !tDir = $!hDirTempOpp
+          handle (2,779)
+            !tDir = axis $!hDirTempOpp
+          endhandle
+          tdir $!tDir
+          -- end of additional fix code for HPD0030051 RM 13/03/06
+
+          handle NONE
+            !!mdsTT36.boremethod()
+          elsehandle ANY
+          endhandle
+        endif
+      endif
+    endif
+  endif
+
+  --- End of Fix for HPD0030051 GE 22/09/05
+
+  !!mdsDacControl(FALSE)
+  !!kRestoreUnits(!currentUnits)
+
+  -- Reset Pins
+  !!mdsresetpins (8,9)
+
+endfunction

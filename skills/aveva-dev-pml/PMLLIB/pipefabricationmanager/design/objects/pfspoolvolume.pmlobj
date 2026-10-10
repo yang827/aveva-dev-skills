@@ -1,0 +1,464 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            pfspoolvolume.pmlobj
+--   Type:          Object Definition
+--   Group:         Pipe Fabrication
+--     Keyword:     PF
+--   Module:        Design
+--   Replaces:
+--
+--  Author:          Jaehun Choi(Daniel)
+--  Created:         01 August 2014
+--
+--  Description:     Object to evaluate pipe spool volume
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  drawDimension(POSITION,POSITION,DIRECTION,REAL) -                   draw dimension
+--  drawVolume(REAL)                 -                   draw volume
+--  getVertex()                      ARRAY               get vertex
+--  getVolume(DBREF)                 -                   get volume
+--  insertVertexPoint(ARRAY,LINE,POSITION,POSITION,REAL) -
+--
+------------------------------------------------------------------------
+-- Define object
+define object PFSPOOLVOLUME
+  member .volume      is ARRAY
+  member .width       is REAL
+  member .height      is REAL
+  member .depth       is REAL
+  member .xDir        is DIRECTION
+  member .yDir        is DIRECTION
+  member .zDir        is DIRECTION
+  member .aidBox      is GPHBOX
+  member .midPosition is POSITION
+  member .orientation is ORIENTATION
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:      getVolume
+-- Description: get volume
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       spool ref
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getVolume(!spoolRef is DBREF)
+  !this.volume      = object ARRAY()
+  !this.aidBox      = object GPHBOX()
+  !this.midPosition = object POSITION()
+  !this.orientation = object ORIENTATION()
+
+  -- evaluate spool volume
+  !viewDirList = !!pfGetViewDirections(!spoolRef, true)
+
+  !volume    = object VOLUME(!spoolRef)
+  !midPoint  = !volume.from.midPoint(!volume.to)
+
+  if (!spoolRef.hardType eq 'PSPOOL') then
+  !boundaryElements = !spoolRef.belrfa
+  elseif (!spoolRef.hardType eq 'SPOOL') then
+    !boundaryElements = !spoolRef.splmem
+  else
+    return
+  endif
+  !posList = object ARRAY()
+  !posList[1] = object ARRAY()
+  !posList[2] = object ARRAY()
+  !posList[3] = object ARRAY()
+
+  !isValidConditionForExcess = !spoolRef.pstyp eq 'FITT'
+  handle (2,201)
+    !isValidConditionForExcess = false
+  endhandle
+
+  do !i index !boundaryElements
+    !compRef = !boundaryElements[!i]
+    skip if (!compRef.hardType eq 'BRAN')
+
+    if (!compRef.hardType eq 'TUBI') then
+      !fromPos  = !compRef.aPos.wrt(world)
+      !toPos    = !compRef.lPos.wrt(world)
+
+      skip if (!fromPos.distance(!toPos) lt 0.5mm)
+
+      !flowDir  = !fromPos.direction(!toPos)
+
+      !tubeOwnerRef = !compRef.flnm.after('ileave tube of').dbRef()
+      if (!tubeOwnerRef.hardType inset ('BRAN','BEND','ELBO')) then
+        !distance = !compRef.para[2]
+      else
+        !localVolume = object LOCALVOLUME(!tubeOwnerRef, !tubeOwnerRef)
+        handle any
+          skip
+        endhandle
+
+        !localBox = !localVolume.box()
+        !sameDiff1 = abs(!localBox.xLength - !localBox.yLength) lt 0.1mm or abs(!localBox.xLength - !localBox.zLength) lt 0.1mm
+        !sameDiff2 = abs(!localBox.yLength - !localBox.zLength) lt 0.1mm
+
+        if (!sameDiff1) then
+          !distance = !localBox.xLength
+        elseif (!sameDiff2) then
+          !distance = !localBox.yLength
+        else
+          !distance = !compRef.para[2]
+        endif
+      endif
+    else
+      !localVolume = object LOCALVOLUME(!compRef, !compRef)
+      handle any
+        skip
+      endhandle
+
+      !fromPos = !localVolume.from.wrt(world)
+      !toPos   = !localVolume.to.wrt(world)
+
+      if (!compRef.aDir.isParallel(!compRef.ori.xDir())) then
+        !orthDir = !compRef.ori.yDir().cross(!compRef.aDir)
+      elseif (!compRef.aDir.isParallel(!compRef.ori.yDir())) then
+        !orthDir = !compRef.ori.xDir().cross(!compRef.aDir)
+      else
+        !orthDir = !compRef.ori.zDir().cross(!compRef.aDir)
+      endif
+
+      !orthLine = object LINE(!midPoint, !midPoint.offset(!orthDir, 100mm))
+
+      if (!compRef.hardType inset ('ELBO','BEND')) then
+        !distance = !compRef.aOd
+      else
+        !localBox = !localVolume.box()
+        !sameDiff1 = abs(!localBox.xLength - !localBox.yLength) lt 0.1mm or abs(!localBox.xLength - !localBox.zLength) lt 0.1mm
+        !sameDiff2 = abs(!localBox.yLength - !localBox.zLength) lt 0.1mm
+
+        if (!sameDiff1) then
+          !distance = !localBox.xLength
+        elseif (!sameDiff2) then
+          !distance = !localBox.yLength
+        else
+          !distance = !orthLine.near(!fromPos).distance(!orthLine.near(!toPos))
+        endif
+      endif
+
+      !centreLine = object LINE(!compRef.pos, !compRef.pos.offset(!compRef.aDir, 100mm))
+      !flowDir    = !centreLine.near(!fromPos).direction(!centreLine.near(!toPos))
+      handle (2,891)
+        !flowDir = !compRef.aDir.wrt(world)
+      endhandle
+
+      !fromPos    = !centreLine.near(!fromPos)
+      !toPos      = !centreLine.near(!toPos)
+    endif
+
+    !arriveComponent = object DBREF()
+    !leaveComponent  = object DBREF()
+    !partRefList     = object ARRAY()
+
+    if (!compRef.hardType eq 'TUBI') then
+      !!pfGetTubeParts(!compRef, !arriveComponent, !leaveComponent, !partRefList)
+
+      if (!arriveComponent.lexcess gt 0 and !isValidConditionForExcess) then
+        if (!arriveComponent.type eq 'BRAN') then
+          if (!arriveComponent.hPos.distance(!fromPos) lt 0.5mm) then
+            !fromPos = !fromPos.offset(!flowDir.opposite(), !arriveComponent.lexcess)
+          endif
+        else
+          if (!arriveComponent.lPos.distance(!fromPos) lt 0.5mm) then
+            !fromPos = !fromPos.offset(!flowDir.opposite(), !arriveComponent.lexcess)
+          endif
+        endif
+      endif
+
+      if (!leaveComponent.aexcess gt 0 and !isValidConditionForExcess) then
+        if (!leaveComponent.type eq 'BRAN') then
+          if (!leaveComponent.tPos.distance(!toPos) lt 0.5mm) then
+            !toPos = !toPos.offset(!flowDir, !leaveComponent.aexcess)
+          endif
+        else
+          if (!leaveComponent.aPos.distance(!toPos) lt 0.5mm) then
+            !toPos = !toPos.offset(!flowDir, !leaveComponent.aexcess)
+          endif
+        endif
+      endif
+    endif
+
+    do !j index !viewDirList
+      !viewDir  = object DIRECTION(!viewDirList[!j])
+      !baseLine = object LINE(!midPoint, !midPoint.offset(!viewDir, 1000mm))
+
+      !insulationThickness = !compRef.inth
+      if (!compRef.hardType inset ('ELBO', 'BEND')) then
+        !isParallel = !viewDir.dot(!compRef.aDir).abs() gt 0.9999
+        if (!isParallel.not()) then
+          !orthDir = !viewDir.cross(!compRef.aDir)
+
+          !fromPos = !compRef.pPos[1].offset(!orthDir, !distance * 0.5)
+          !toPos   = !compRef.pPos[1].offset(!orthDir, !distance * -0.5)
+
+          !posList[!j].append(!baseLine.near(!fromPos))
+          !posList[!j].append(!baseLine.near(!toPos))
+
+          if (!compRef.ang gt 89.999) then
+            !fromPos = !compRef.pPos[1].offset(!viewDir, !distance * 0.5)
+            !toPos   = !compRef.pPos[1].offset(!viewDir, !distance * -0.5)
+
+            !posList[!j].append(!baseLine.near(!fromPos))
+            !posList[!j].append(!baseLine.near(!toPos))
+          endif
+
+        else
+          !posList[!j].append(!baseLine.near(!compRef.pPos[1]))
+        endif
+
+        !isParallel = !viewDir.dot(!compRef.lDir).abs() gt 0.9999
+        if (!isParallel.not()) then
+          !orthDir = !viewDir.cross(!compRef.lDir)
+
+          !fromPos = !compRef.pPos[2].offset(!orthDir, !distance * 0.5)
+          !toPos   = !compRef.pPos[2].offset(!orthDir, !distance * -0.5)
+
+          !posList[!j].append(!baseLine.near(!fromPos))
+          !posList[!j].append(!baseLine.near(!toPos))
+
+          if (!compRef.ang gt 89.999) then
+            !fromPos = !compRef.pPos[2].offset(!viewDir, !distance * 0.5)
+            !toPos   = !compRef.pPos[2].offset(!viewDir, !distance * -0.5)
+
+            !posList[!j].append(!baseLine.near(!fromPos))
+            !posList[!j].append(!baseLine.near(!toPos))
+          endif
+
+        else
+          !posList[!j].append(!baseLine.near(!compRef.pPos[2]))
+        endif
+
+      else
+        !isParallel = !viewDir.dot(!flowDir).abs() gt 0.9999
+        if (!isParallel.not()) then
+          !orthDir = !viewDir.cross(!flowDir)
+
+          !diagonalFromPos = !fromPos.offset(!orthDir, !distance * 0.5)
+          !diagonalToPos   = !fromPos.offset(!orthDir, !distance * -0.5)
+
+          !posList[!j].append(!baseLine.near(!diagonalFromPos))
+          !posList[!j].append(!baseLine.near(!diagonalToPos))
+
+          !this.insertVertexPoint(!posList[!j], !baseLine, !diagonalFromPos, !diagonalToPos, !insulationThickness)
+          !diagonalFromPos = !toPos.offset(!orthDir, !distance * 0.5)
+          !diagonalToPos   = !toPos.offset(!orthDir, !distance * -0.5)
+
+          !posList[!j].append(!baseLine.near(!diagonalFromPos))
+          !posList[!j].append(!baseLine.near(!diagonalToPos))
+
+          !this.insertVertexPoint(!posList[!j], !baseLine, !diagonalFromPos, !diagonalToPos, !insulationThickness)
+          !orthDir = !orthDir.cross(!flowDir)
+          !diagonalFromPos = !fromPos.offset(!orthDir, !distance * 0.5)
+          !diagonalToPos   = !fromPos.offset(!orthDir, !distance * -0.5)
+
+          !posList[!j].append(!baseLine.near(!diagonalFromPos))
+          !posList[!j].append(!baseLine.near(!diagonalToPos))
+
+          !this.insertVertexPoint(!posList[!j], !baseLine, !diagonalFromPos, !diagonalToPos, !insulationThickness)
+          !diagonalFromPos = !toPos.offset(!orthDir, !distance * 0.5)
+          !diagonalToPos   = !toPos.offset(!orthDir, !distance * -0.5)
+
+          !posList[!j].append(!baseLine.near(!diagonalFromPos))
+          !posList[!j].append(!baseLine.near(!diagonalToPos))
+          !this.insertVertexPoint(!posList[!j], !baseLine, !diagonalFromPos, !diagonalToPos, !insulationThickness)
+        else
+          !posList[!j].append(!baseLine.near(!fromPos))
+          !posList[!j].append(!baseLine.near(!toPos))
+        endif
+      endif
+    enddo
+  enddo
+
+  !posList[1].unique()
+  !posList[2].unique()
+  !posList[3].unique()
+
+  !posList[1].sort()
+  !posList[2].sort()
+  !posList[3].sort()
+
+  !xDist = nint(!posList[1].first().distance(!posList[1].last()) + 0.05)
+  !yDist = nint(!posList[2].first().distance(!posList[2].last()) + 0.05)
+  !zDist = nint(!posList[3].first().distance(!posList[3].last()) + 0.05)
+
+  !this.volume.append(!xDist)
+  !this.volume.append(!yDist)
+  !this.volume.append(!zDist)
+
+  !planeList = object ARRAY()
+  do !i from 1 to 3
+    !tempMidPoint = !posList[!i].first().midPoint(!posList[!i].last())
+    !tempMidDir   = !posList[!i].first().direction(!posList[!i].last())
+
+    !tempPlane    = object PLANE(!tempMidPoint, object ORIENTATION('Z is ' & !tempMidDir.string().before('WRT')))
+    !planeList.append(!tempPlane)
+  enddo
+
+  !intersectPos = !planeList[1].intersection(!planeList[2], !planeList[3])
+  !midPoint = !intersectPos
+
+  !oriXdir = !posList[1].first().direction(!posList[1].last())
+  if (!posList[2].size() gt 1) then
+    !oriYdir = !posList[2].first().direction(!posList[2].last())
+  else
+    !oriYdir = object DIRECTION()
+  endif
+
+  !gphBox = object GPHBOX()
+  if (!oriYdir.set()) then
+    !gphBox.box.orientation = object ORIENTATION('X is ' & !oriXdir & ' AND Y is ' & !oriYdir)
+  else
+    !gphBox.box.orientation = object ORIENTATION('X is ' & !oriXdir)
+  endif
+
+  !gphBox.box.position = !midPoint
+
+  !gphBox.box.xLength     = !xDist
+  !gphBox.box.yLength     = !yDist
+  !gphBox.box.zLength     = !zDist
+
+  !this.aidBox = !gphBox
+  !this.midPosition = !midPoint
+  !this.orientation = !gphBox.box.orientation
+
+  !vertexList = !this.getVertex()
+
+  !this.width  = !vertexList[1].distance(!vertexList[2])
+  !this.height = !vertexList[2].distance(!vertexList[3])
+  !this.depth  = !vertexList[3].distance(!vertexList[4])
+endmethod
+-- End of method
+define method .insertVertexPoint(!targetArray is ARRAY, !baseLine is LINE, !fromPos is POSITION, !toPos is POSITION, !insulationThickness is REAL)
+  !tempFromPos = !baseLine.near(!fromPos)
+  !tempToPos   = !baseLine.near(!toPos)
+  if (!tempFromPos.distance(!tempToPos) lt 0.5mm) then
+    !targetArray.append(!tempFromPos)
+  else
+    !tempDir     = !tempFromPos.direction(!tempToPos)
+    !insertFromPos = !tempFromPos.offset(!tempDir, !insulationThickness)
+    !insertToPos   = !tempToPos.offset(!tempDir.opposite(), !insulationThickness)
+    !targetArray.append(!insertFromPos)
+    !targetArray.append(!insertToPos)
+  endif
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      getVertex
+-- Description: get vertex
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY
+--
+------------------------------------------------------------------------
+define method .getVertex() is ARRAY
+  !result = object ARRAY()
+
+  !position    = !this.aidBox.box.position
+  !orientation = !this.aidBox.box.orientation
+
+  !xLen = !this.aidBox.box.xLength
+  !yLen = !this.aidBox.box.yLength
+  !zLen = !this.aidBox.box.zLength
+
+  !this.xDir = !orientation.xDir()
+  !this.yDir = !orientation.yDir()
+  !this.zDir = !orientation.zDir()
+
+  !vertex1 = !position.offset(!this.xDir, !xLen * 0.5).offset(!this.zDir, !zLen * -0.5).offset(!this.yDir, !yLen * -0.5)
+  !vertex2 = !position.offset(!this.xDir, !xLen * 0.5).offset(!this.zDir, !zLen * -0.5).offset(!this.yDir, !yLen *  0.5)
+  !vertex3 = !position.offset(!this.xDir, !xLen * 0.5).offset(!this.zDir, !zLen *  0.5).offset(!this.yDir, !yLen *  0.5)
+  !vertex4 = !position.offset(!this.xDir, !xLen * -0.5).offset(!this.zDir, !zLen *  0.5).offset(!this.yDir, !yLen *  0.5)
+
+  !this.zDir = !vertex3.direction(!vertex2)
+
+  !result.append(!vertex1)
+  !result.append(!vertex2)
+  !result.append(!vertex3)
+  !result.append(!vertex4)
+
+  return !result
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      drawVolume
+-- Description: draw volume
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     REAL        aid number
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .drawVolume(!aidNumber is REAL)
+  !this.aidBox.draw(!aidNumber)
+
+  !vertexList = !this.getVertex()
+
+  !this.drawDimension(!vertexList[1],   !vertexList[2], !this.zDir, !aidNumber)
+  !this.drawDimension(!vertexList[2],   !vertexList[3], !this.yDir, !aidNumber)
+  !this.drawDimension(!vertexList[3],   !vertexList[4], !this.yDir, !aidNumber)
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      drawDimension
+-- Description: draw dimension
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     POSITION    from pos
+--    2    R     POSITION    to pos
+--    3    R     DIRECTION   dim dir
+--    4    R     REAL        aid number
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .drawDimension(!fromPos is POSITION, !toPos is POSITION, !dimDir is DIRECTION, !aidNumber is REAL)
+  !dimFromPos1 = !fromPos.offset(!dimDir, 5mm)
+  !dimFromPos2 = !fromPos.offset(!dimDir, 100mm)
+  !dimFromPos3 = !dimFromPos1.midPoint(!dimFromPos2)
+
+  !dimToPos1   = !toPos.offset(!dimDir, 5mm)
+  !dimToPos2   = !toPos.offset(!dimDir, 100mm)
+  !dimToPos3   = !dimToPos1.midPoint(!dimToPos2)
+
+  !dimDistance = !dimFromPos3.distance(!dimToPos3).string(!!distanceFMT)
+  !dimTextPos  = !dimFromPos3.midPoint(!dimToPos3)
+
+  AID LINE NUM    $!aidNumber $!dimFromPos1  to $!dimFromPos2
+  AID LINE NUM    $!aidNumber $!dimToPos1 to $!dimToPos2
+  AID LINE NUM    $!aidNumber $!dimFromPos3 to $!dimToPos3
+  AID SPHERE NUM  $!aidNumber $!dimFromPos3   diam 30mm
+  AID SPHERE NUM  $!aidNumber $!dimToPos3     diam 30mm
+
+  AID TEXT NUM $!<aidNumber> |$!<dimDistance>| at $!dimTextPos
+endmethod
+-- End of method

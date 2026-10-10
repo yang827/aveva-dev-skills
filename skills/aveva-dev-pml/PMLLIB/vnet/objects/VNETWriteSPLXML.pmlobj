@@ -1,0 +1,1613 @@
+-------------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:                VNETWriteSPLXML.pmlobj
+--   Type:              Function Definition
+--   Group:             AVEVA NET
+--     Keyword:         Export
+--   Module:            Design
+--   Replaces:
+--
+-- Author:           I. Stanbrook
+-- Created:          August 2006
+--
+--
+-- Description:
+-- Output AVEVA(formally Cadcentre) PDMS SPOOLER data into XML format
+-- Data output from user specified hierarchy position or list of hierarchy elements
+-- Output hierarchy list stored in VNETExport member ".HierList"
+
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  DefIncItems()                    -
+--  GetAttributes(string,string)     -
+--  IncludeAtts()                    -
+--  IncludeItems()                   -
+--  IncludeTol(string)               -
+--  Output(VNETSpool,string)         -
+--  TransClass(string,string)        -
+--  VNETWriteSPLXML()                -
+--  logfile(string,string)           -
+--  logfilehead(string,file)         -
+--  percomplete(real,real)           -
+--
+--------------------------------------------------------------------------------
+
+define object VNETWriteSPLXML
+
+  -- Used as a temporary store to store results
+  member .result is string
+
+  -- Used as a temporary store to store results
+  member .resultarray is array
+
+  -- Used as a counter so we can display progress on the main form
+  member .totalcount is real
+
+  -- Used to store the type of the main Looping element
+  member .Eletype is string
+
+  -- Attributes and UDAs
+  member .IncludedAttribs is array
+  member .IncludedAttribsTyp is array
+
+  -- Psuedo Attributes
+  member .IncludedPsuedos is array
+  member .IncludedPsuedosTyp is array
+
+  -- Items
+  member .IncludeItem is array
+
+  -- VNETXMLOutFile
+  member .VNETXMLOutFile is file
+
+  -- Attributes found for item
+  member .CEAttName is array
+  member .CEAttDesc is array
+  member .CEAttValue is array
+  member .CEAttDefVal is array
+
+  -- Logfiles
+  member .NormalLog is file
+  member .FullLog is file
+  member .LogfileMes is array
+
+  -- Previous Item Type
+  member .PrevItemType is string
+
+  -- Character encoding
+  member .CharEnc is string
+
+  -- Original CE Container
+  member .ce is DBREF
+
+  -- CE Container
+  member .currentDBref is DBREF
+
+  -- Spooler Pipe Name
+  member .pipeOname is array
+  member .pipeVname is array
+
+  -- Tolerences
+  member .tolbore is string
+  member .tolskey is string
+  member .toloff is string
+  member .tolang is string
+  member .toltub is string
+
+  member .settolbore is string
+  member .settolskey is string
+  member .settoloff is string
+  member .settolang is string
+  member .settoltub is string
+
+  member .AssociatedSites is array
+
+  member .logtime is string
+
+endobject
+
+-- End of object definition for VNETWriteSPLXML()
+
+--------------------------------------------------------------------------------
+
+define method .VNETWriteSPLXML()
+
+ -- Switch off echoing of navigation through db
+  trace off
+
+ -- Remember the current element
+  !this.ce = object DBREF()
+  !this.currentDBref = object DBREF()
+  !this.ce = !!ce
+  !this.currentDBref = !!ce
+
+ -- Reload Classes
+  !!VNETExport.ClassRead()
+
+ -- Set Error text
+  if undefined (!!VNETError) then
+     pml load object VNETErrorStore
+     !!VNETError = object VNETErrorStore()
+     !!VNETError.Reset()
+  endif
+
+  !!VNETExport.FProgress.active = true
+
+ -- Load Tolerences
+  !this.IncludeTol('LOAD')
+
+  if !!ce.dbType neq 'ISOD' then
+     !!ce = !!dbeWorldGet('ISOD')
+  endif
+
+  !!VNETxsettings.checkdir('outputspl')
+
+  prompt |Exporting VNET XML (Please Wait...)|
+
+ -- Empty Temporary User Class storage areas
+  !!VNETExport.UserClassStore1.clear()
+  !!VNETExport.UserClassStore2.clear()
+  !!VNETExport.UserClassStore3.clear()
+  !!VNETExport.UserClassStore4.clear()
+  !!VNETExport.UserClassStore5.clear()
+  !!VNETExport.UserClassStore6.clear()
+  !!VNETExport.UserClassStore7.clear()
+  !!VNETExport.UserClassStore8.clear()
+  !!VNETExport.UserClassStore9.clear()
+  !!VNETExport.UserClassStore10.clear()
+
+ -- Determine the mapping file
+  !this.IncludeAtts()
+
+ -- Determine the Included Items
+  !this.IncludeItems()
+
+  -- Check if items where selected to output in SPL-VNET-ITEMS file
+   if !this.IncludeItem.empty() then
+      !!VNETError.SetErrorFlag('No collection criteria found - Using Default. Check ' & !!VNETxsettings.incitemspl.val)
+      !this.DefIncItems()
+   endif
+
+  -- Set the progress bar gadgets...
+   !this.percomplete( 1 , 1 )
+
+  -- Read in the hierarchy list to dump from and re-order into PDMS order....
+   var !isodepref collect all isodep
+   var !isodepnam eval fullname for all from !isodepref
+
+  -- Check to see if it is the Whole MDB...
+   if (!!VNETExport.HierList[1] eq '/*') then
+      !VNETTopItems = !isodepnam
+   else
+      !VNETTopItems = !isodepnam.intersect(!!VNETExport.HierList)
+   endif
+
+   if !VNETTopItems.size() eq 0 then
+     !!Alert.Warning('No Items where exported as there are none in the currently selected MDB')
+     return error 1 noalert
+   endif
+
+
+   !this.logtime = !!VNETLogTime()
+
+   !OutFile = !!VNETxsettings.logfile.val & '/VNETExport-SPL_' & !this.logtime & '.log'
+   !this.NormalLog  = object file(!OutFile)
+   !this.NormalLog.open('OVERWRITE')
+   handle any
+     !this.percomplete( 1 , 1 )
+     !!Alert.error('Error Creating standard file : $!OutFile')
+     $p $!!ERROR.TEXT
+     prompt dismiss
+     return
+   endhandle
+
+  -- Character Encoding
+   !this.CharEnc = !!VNETCharEncode()
+
+  -- Write out logfile header lines...
+   !this.logfilehead('',!this.NormalLog)
+
+  -- Storage for referenced SITES
+   !this.AssociatedSites.clear()
+
+  -- Counters
+   !Elemcount = 0
+   !sitecount = 0
+
+  -- Output the "Plant" 3 character code....
+   var !proj proj code
+
+  -- Export Charactersics Classes XML
+   if !!vnetxsettings.IncludeCharClass.val and (!this.IncludedAttribs.empty().not() or !this.IncludedPsuedos.empty().not()) then
+      !!VNETExAttrClass(!proj,'SPOOLER',!this.IncludedAttribs,!this.IncludedPsuedos,false)
+   endif
+
+   do !VNETTopItm values !VNETTopItems
+
+    -- Navigate to Top Item
+     $!VNETTopItm
+     !this.currentDBref = !!ce
+
+    -- Get its fullname
+     var !VNETTopItmFNM ( fullname of $!VNETTopItm )
+     !VNETTopItmNM = !!VNETFileName(!VNETTopItmFNM)
+
+    -- Get its type
+     var !VNETTopItmTY ( type of $!VNETTopItm )
+     !FilePrefix = !VNETTopItmTY.substring(1,1) & !VNETTopItmTY.substring(2).lowcase()
+
+    -- Start the counter of TopItems
+     !sitecount = !sitecount + 1
+
+     prompt |Exporting VNET XML (Please Wait...)|
+
+    -- Check that site is correctly named
+     if (!VNETTopItmNM.match('ISODEP') gt 0) and (!VNETTopItmNM.match(' of WORLD') gt 0) then
+        if !!VNETxsettings.IncludeUnNamedSite.val.not() then
+           !!VNETError.SetErrorFlag(!VNETTopItmFNM & ' : ' + !VNETTopItmTY + ' is not Named - NOT Exported')
+           !this.logfile('StdLog','      ' & !VNETTopItmFNM & ' : ' + !VNETTopItmTY + ' is not Named')
+           !this.logfile('StdLog','           WARNING: ' + !VNETTopItmTY +  ' not Exported as Unnamed Main Items Export setting is set to FALSE')
+           !this.logfile('StdLog','')
+           skip
+        else
+           !VNETTopItmNM = !VNETTopItmNM.before(' of WORLD').trim().replace(' ','-')
+        endif
+     endif
+
+     $p
+     $p Outputting data for ISODEP $!VNETTopItmFNM
+
+    -- Remove logfiles if they exist otherwise users could get wrong information
+     !OutFileLog = !!VNETxsettings.logfile.val & '/' & !FilePrefix & '_' & !VNETTopItmNM & '_' & !this.logtime & '.log'
+
+     !this.FullLog = object file(!OutFileLog)
+     if !this.FullLog.exists() then
+        !this.FullLog.DeleteFile()
+     endif
+
+    -- Now create the file if required
+     if !!VNETxsettings.FullLog.val then
+        !this.FullLog.open('OVERWRITE')
+        handle any
+          !!Alert.warning('Error Creating Output log file : $!OutFileLog - Only Standard Logfile will be generated')
+          $p $!!ERROR.TEXT
+          !this.FullLog = object file('')
+        endhandle
+     else
+         !this.FullLog = object file('')
+     endif
+
+    -- Write out logfile header lines...
+     !this.logfilehead('FullLog',!this.VNETXMLOutFile)
+
+    -- Counter for progress reporting
+     !Elemcount  = !Elemcount + 1
+     !TotalCount = !VNETTopItems.size()
+
+    -- Set progress bar gadgets...
+     !this.percomplete( !Elemcount , !TotalCount )
+
+    -- Loop through the listed collection selections and collect the items
+    -- Add then to an array that has sub-arrays for each selection
+
+     !totalitems = 0
+
+     !itemtypecnt = 1
+
+     if !!VNETxsettings.FullLog.val then
+        !this.logfile('FullLog','Selection Criteria :')
+     endif
+
+     do !collitem values !this.IncludeItem
+
+        var !select collect all $!collitem for $!VNETTopItm
+        handle any
+           !this.logfile('','      **************************************************************')
+           !this.logfile('','      *************                                    *************')
+           !this.logfile('','      *************             ERROR WARNING          *************')
+           !this.logfile('','      *************                                    *************')
+           !this.logfile('','      **************************************************************')
+           !this.logfile('','      ' + !!Error.Text)
+           !this.logfile('','      ' + !!Error.Line)
+           !this.logfile('','      ' + !!Error.Command)
+           !this.logfile('','      **************************************************************')
+           !this.logfile('','      Error in ' & !!VNETxsettings.incitemspl.val)
+           !this.logfile('','      **************************************************************')
+
+           !!VNETError.SetErrorFlag('Error in ' & !!VNETxsettings.incitemspl.val)
+
+           skip
+       -- error message to log file
+        endhandle
+
+       -- List selection criteria if full logging is on
+        if !select.size() gt 0 then
+           !this.logfile('FullLog','      ' & !collitem.vtext())
+           !this.logfile('FullLog','           ' & !select.size() & ' : Items found')
+        endif
+
+       -- get total list of items found
+        !totalitems = !totalitems + !select.size()
+
+        !SelectedItems[!itemtypecnt] = !select
+
+        !itemtypecnt = !itemtypecnt + 1
+        if defined(!!VNETDebug) then
+           var !tempcol |$!collitem|
+
+           var !selectt eval type for all from !select
+
+           !selectt.unique()
+           $P Collection Syntax : $!tempcol
+           $P Items Types Found
+
+           if !selectt.size() gt 0 then
+              do !tempcnt indices !selectt
+                 $P     >>>  $!selectt[$!tempcnt]
+              enddo
+           else
+              $P     *** Nothing Selected ***
+           endif
+
+        endif
+
+     enddo
+
+     !this.logfile('FullLog','')
+     !this.logfile('FullLog','--------------------------------------------------------------------------------')
+
+    -- Write Logfile entry
+
+     !this.logfile('FullLog','')
+     !this.logfile('FullLog','   $!proj is class:Plant')
+     !this.logfile('FullLog','')
+
+    -- Get the current element type
+     !this.eletype = !!ce.type
+     !this.PrevItemType = !!ce.type
+
+    -- Check for funny chars in names
+     !outname = !!VNETStripName(!VNETTopItmFNM)
+     !this.logfile('','')
+     !this.logfile('','      Outputting data for $!VNETTopItmTY: $!outname')
+     !this.logfile('','')
+
+     $p Exporting VNET data for $!VNETTopItmTY $!VNETTopItmFNM
+
+     if !!VNETxsettings.FullLog.val then
+        !this.logfile('FullLog','')
+        !this.logfile('FullLog','      Total number of items found : ' & !totalitems )
+        !this.logfile('FullLog','--------------------------------------------------------------------------------')
+        !this.logfile('FullLog','')
+     endif
+
+     !this.logfile('StdLog','      Total number of items found : ' & !totalitems )
+     !this.logfile('StdLog','')
+
+    -- Set the total number of items
+     !this.totalcount = !totalitems
+
+    -- Set Tolerences
+     !this.IncludeTol('SET')
+
+     if !this.totalcount neq 0 then
+
+       -- Update Progress Text
+        !text = '$!this.eletype ' & '$!elemcount' & ' of ' & '$!totalcount' & ' (' & !outname & ')'
+        if (!text.length() gt 55) then
+          !text = !text.substring(1,46) & '...)'
+        endif
+        !!VNETExport.progress.val = '$!text'
+        !!VNETExport.NumberOfItems.val = 'Found ' & !this.totalcount.string() & ' SPLDRG(s) - Validating'
+        refresh !!VNETExport.progress
+        refresh !!VNETExport.NumberOfItems
+
+        !!VNETExport.progtxt.val = 'Finding Pipes'
+        refresh !!VNETExport.progtxt
+
+       -- Loop through items to export
+        !amount = 0
+
+        $P Finding associated Pipes and Validating
+
+        do !loop indices !SelectedItems
+
+           !found = !SelectedItems[!loop]
+
+           !spoolpipes = object ARRAY()
+           !spooldrgsA = object ARRAY()
+           !spooldrgsB = object ARRAY()
+
+           do !item values !found
+
+              !spldrg = $!item
+              do !splfld values !spldrg.members
+                 if ( !splfld.type eq 'SPOOL' or !splfld.type eq 'FIELD' ) then
+                    !pcmps = !splfld.splmem
+                    do !i indices !pcmps
+                       skip if !pcmps[!i].badref()
+                       !spoolpipes.append(!pcmps[!i].owner.owner.name)
+                       !spooldrgsA.append(!pcmps[!i].owner.owner.name)
+                       !spooldrgsB.append(!spldrg.name)
+                    enddo
+                 endif
+              enddo
+           enddo
+           !spoolpipes.unique()
+
+           world
+
+           !chkvalidpipes = array()
+           !chkinvalidpipes = array()
+
+           !pipecheckstatus = array()
+
+           var !PDMSWORK evar PDMSWK
+
+           !counter = real()
+           !counter = 1
+
+           !!VNETExport.progtxt.val = 'Validating'
+           refresh !!VNETExport.progtxt
+
+           $P Validating associated Pipes
+
+           do !looppipes values !spoolpipes
+              $!looppipes
+              !this.currentDBref = !!ce
+
+              !this.percomplete(!counter, !spoolpipes.size() )
+
+              !pipecheckstatus.append('')
+              !pipecheckstatus.append('Pipeline: ' + !looppipes)
+              !pipecheckstatus.append('')
+
+              alpha file /$!PDMSWORK\VNETSPLDATCHK OVER
+              check ce
+              alpha file end
+
+              !checkfile = OBJECT file('$!PDMSWORK\VNETSPLDATCHK')
+              !out = !checkfile.readfile()
+
+              if !out.last() neq  '*--* NO DATA INCONSISTENCIES *--*' then
+
+                 !chkinvalidpipes.append(!looppipes)
+
+                 !pipecheckstatus.append('DATA INCONSISTENCIES - No Spooler VNET Data for')
+                 !pipecheckstatus.append('')
+                 !pipecheckstatus.appendarray(!out)
+                 !pipecheckstatus.append('')
+
+              else
+                 !chkvalidpipes.append(!looppipes)
+              endif
+
+              !pipecheckstatus.append('Associated Spldrg:')
+              !releventspools = !spooldrgsA.find(!looppipes)
+              !rellist = array()
+              do !relspool values !releventspools
+                 !rellist.append('        ' + !spooldrgsB[!relspool])
+              enddo
+              !rellist.sortunique()
+              !pipecheckstatus.appendarray(!rellist)
+              !pipecheckstatus.append('')
+              !pipecheckstatus.append('====================================================================================')
+
+              !checkfile.deletefile()
+
+              !counter = !counter + 1
+
+           enddo
+
+           !chkinvalidpipes.sortunique()
+           !chkvalidpipes.sortunique()
+
+           !this.LogfileMes = !pipecheckstatus
+           !this.logfile('FullLog','ARRAY')
+
+          -- Get all Valid Pipes
+
+           if !chkvalidpipes.size() eq 0 then
+              !this.logfile('','           No Spools can be exported as No Spooled Pipes can be Consistancy Checked without Errors')
+              !this.logfile('','')
+              break
+           endif
+
+           $P Get all Spool Drawings against valid Pipes
+
+           !validspools = ARRAY()
+           do !indx indices !chkvalidpipes
+              !spldrgtoprocess = !spooldrgsA.find(!chkvalidpipes[!indx])
+              skip if !spldrgtoprocess.empty()
+              do !loopin values !spldrgtoprocess
+                 !validspools.append(!spooldrgsB[!loopin])
+              enddo
+           enddo
+           !validspools.unique()
+
+           !!VNETExport.NumberOfItems.val = 'Exporting ' & !validspools.size().string() & ' valid SPLDRG(s)'
+           refresh !!VNETExport.NumberOfItems
+           !!VNETExport.progtxt.val = 'Writing XML'
+           refresh !!VNETExport.progtxt
+
+           !this.logfile('','           Total number of valid SPOOLS found : ' & !validspools.size() )
+           !this.logfile('','')
+
+           if !!ce.dbType neq 'ISOD' then
+              !!ce = !!dbeWorldGet('ISOD')
+           endif
+
+           $P Export Spool Drawings Data
+
+           do !vsloop indices !validspools
+
+              !this.percomplete(!vsloop, !validspools.size() )
+
+              !requiredpipes = ARRAY()
+              !pipestoprocess = !spooldrgsB.find(!validspools[!vsloop])
+              skip if !pipestoprocess.empty()
+              do !vsloopin values !pipestoprocess
+                 !requiredpipes.append(!spooldrgsA[!vsloopin])
+              enddo
+              !requiredpipes.unique()
+
+             -- Can do with a diff instead
+
+              do !reqpipes indices !requiredpipes
+                 !checkfound = !this.pipeOname.find(!requiredpipes[!reqpipes])
+                 if !checkfound.empty() then
+                    !this.pipeOname.append(!requiredpipes[!reqpipes])
+
+                    !pipe = $!requiredpipes[$!reqpipes]
+
+                    !OrigID = object VNETOriginalID(!pipe, !pipe.name)
+                    !this.pipeVname.append(!OrigID.result)
+                 endif
+              enddo
+
+             -- Down to here
+
+              $P Exporting SPLDRG $!validspools[$!vsloop]
+
+              !pipememn = array()
+              !pipememr = array()
+              !reqVNETpipes = array()
+
+              do !vsloopin indices !requiredpipes
+
+                 var !mem collect all bran mem with type neq 'ATTA' for $!requiredpipes[$!vsloopin]
+                 var !memn eval fullname for all from !mem
+                 var !memb eval branch for all from !mem
+                 var !memsite eval site for all from !mem
+
+                 !memc = !memn
+                 !prevbran = !memb[1]
+
+                 !count = 1
+                 do !vsloopin2 indices !memn
+                    skip if !memn[!vsloopin2].part(2) neq 'tube'
+                    if !memn[!vsloopin2].match('of BRANCH') gt 0 then
+                       !branch = ' of BRANCH ' & !memn[!vsloopin2].after('of BRANCH ')
+                    else
+                       !branch = ' of BRANCH ' & !memn[!vsloopin2].after('ileave tube of ')
+                    endif
+
+                    !currbran = !memb[!vsloopin2]
+                    if !currbran neq !prevbran then
+                       !count = 1
+                    endif
+
+                    !memc[!vsloopin2] = 'TUBE ' & !count & !branch
+                    !count = !count + 1
+                    !prevbran = !currbran
+                 enddo
+
+                 !pipememn.appendarray(!memn)
+                 !pipememr.appendarray(!memc)
+
+                 !findpipe = !this.pipeOname.findfirst(!requiredpipes[!vsloopin])
+
+                 !reqVNETpipes.append(!this.pipeVname[!findpipe])
+
+              enddo
+
+              !this.associatedsites.appendarray(!memsite)
+              !this.associatedsites.unique()
+
+             -- Reset current item
+              !spldrg = $!validspools[$!vsloop]
+              !this.currentDBref = !!ce
+
+             -- Create object for current spool
+              !spldrgdata = object VNETSpool()
+
+             -- Get ISOREG Name
+              !spldrgdata.IsoRegOName = !spldrg.owner.fullname
+              !spldrgdata.IsoRegNPName = !spldrg.owner.fullname.after('/')
+
+              !OrigID = object VNETOriginalID(!spldrg.owner, !spldrg.owner.fullname)
+              !spldrgdata.IsoRegVName = !OrigID.result
+
+             -- Are any attributes set for exporting
+              if !this.IncludedAttribs.empty().not() or !this.IncludedPsuedos.empty().not() then
+                 !this.GetAttributes(!spldrg.owner.fullname, !spldrg.owner.type.substring(1,4))
+                 !spldrgdata.IsoRegChars = !!VNETCharactAttrs(!this.CEAttDesc, !this.CEAttValue)
+              endif
+
+              !this.TransClass(!spldrg.owner.type, !spldrg.owner.name)
+              !spldrgdata.IsoRegClass = !this.result
+
+             -- Get SPLDRG Name
+              !spldrgdata.SplDrgOName = !spldrg.fullname
+              !spldrgdata.SplDrgNPName = !spldrg.fullname.after('/')
+              !OrigID = object VNETOriginalID(!spldrg, !spldrg.fullname)
+              !spldrgdata.SplDrgVName = !OrigID.result
+
+             -- Are any attributes set for exporting
+              if !this.IncludedAttribs.empty().not() or !this.IncludedPsuedos.empty().not() then
+                 !this.GetAttributes(!spldrg.fullname, !spldrg.type.substring(1,4))
+                 !spldrgdata.SplDrgChars = !!VNETCharactAttrs(!this.CEAttDesc, !this.CEAttValue)
+              endif
+
+              !this.TransClass(!spldrg.type, !spldrg.name)
+              !spldrgdata.SplDrgClass = !this.result
+
+             -- Add the associated pies
+              !spldrgdata.AssocPipes = !reqVNETpipes
+
+             -- Process Spool Members
+              !count = 1
+              do !splfld values !spldrg.members
+                 skip if ( !splfld.type neq 'SPOOL' and !splfld.type neq 'FIELD' )
+
+                 !spool[3] = array()
+                 !spool[4] = array()
+                 !spool[5] = array()
+
+                -- Members name
+                 !spool[2] = !splfld.fullname.before(' of ') & ' of ' & !spldrgdata.SpldrgNPName
+
+                -- Find associated Piping Items and get there PDMS names and the PDMS Review names
+                 !correctname = array()
+                 !renamedname = array()
+
+                 !MemAssocPipes = array()
+
+                 !pcmps = !splfld.splmem
+                 do !i indices !pcmps
+                    skip if !pcmps[!i].badref()
+                    skip if !pcmps[!i].type eq 'ATTA'
+                    !founditem = !pipememn.findfirst(!pcmps[!i].fullname)
+                    if !founditem.unset() then
+                       !temp = !pcmps[!i].fullname
+                       !this.logfile('StdLog','    *** Warning ***  >  $!temp not found in ' & !splfld.fullname & ' members')
+                       $P >>> $!temp not found in $!splfld members
+                    else
+                       !correctname.append(!pipememn[!founditem])
+                       !renamedname.append(!pipememr[!founditem])
+                    endif
+
+                    !MemAssocPipes.append(!pcmps[!i].owner.owner.name)
+
+                 enddo
+
+                 !spool[3] = !renamedname
+                 !spool[4] = !correctname
+
+                 !spool[5] = !MemAssocPipes.unique()
+
+                -- Are any attributes set for exporting
+                 if !this.IncludedAttribs.empty().not() or !this.IncludedPsuedos.empty().not() then
+                    !this.GetAttributes(!splfld.fullname, !splfld.type.substring(1,4))
+                    !spool[7] = !!VNETCharactAttrs(!this.CEAttDesc, !this.CEAttValue)
+                 endif
+
+                -- Get VNET class
+                 !this.TransClass(!splfld.type, !splfld.name)
+                 !spool[8] = !this.result
+
+                -- Member PDMS type (DEBUG info only)
+                 !spool[9] = !splfld.type
+
+                 !spldrgdata.SplFld[!count] = !spool
+
+                 !count = !count + 1
+
+              enddo
+
+              if !spldrgdata.Splfld.size() eq 0 then
+                 !this.logfile('StdLog','>>> $!validspools[$!vsloop] *** Warning - No data in SPOOL ***')
+                 $P >>> $!validspools[$!vsloop] *** Warning - No data in SPOOL ***
+                 skip
+              endif
+
+             -- Create XML
+              !this.Output(!spldrgdata, !this.CharEnc)
+              !outputxml = !this.resultarray
+
+              !VNETSPLtemp = !!VNETFileName(!spldrgdata.SplDrgVName)
+              !VNETSPLName = !!VNETxsettings.outputspl.val & '\SPLDRG-' & !VNETSPLtemp & '_VPDSPL.xml'
+
+              !VNETSPLFile = !!file(!VNETSPLName)
+              !VNETSPLFile.writefile('OVERWRITE',!outputxml)
+              handle any
+                 !this.logfile('StdLog','Error Opening Output file : $!VNETSPLFile')
+                 !this.logfile('StdLog','Error Opening Output file : $!!ERROR.TEXT')
+              endhandle
+
+              !VNETSPLFile.close()
+              handle any
+              endhandle
+
+           enddo
+        enddo
+
+     endif
+
+    -- Display status of export
+     if !!VNETError.SiteErrors then
+
+        !SiteErrorMess = '           >>> Errors Occured - Check Full Log files for details <<<'
+        if !this.FullLog.unset() then
+           !SiteErrorMess = '           >>> Errors Occured - Re-run with Full Logging option set to see errors <<<'
+        endif
+
+        !this.logfile('StdLog',!SiteErrorMess)
+        !this.logfile('StdLog','')
+
+        !!VNETError.SiteErrors = false
+
+        $p $!SiteErrorMess
+        $p
+
+     endif
+
+     if !this.FullLog.unset().not() then
+        var !time clock
+        !this.logfile('FullLog','')
+        !this.logfile('FullLog','--------------------------------------------------------------------------------')
+        !this.logfile('FullLog','')
+        !this.logfile('FullLog','Export Finished: $!time')
+        !this.logfile('FullLog','')
+        !this.logfile('FullLog','--------------------------------------------------------------------------------')
+        !this.FullLog.Close()
+        !this.FullLog = object file('')
+     endif
+
+     site
+     handle any
+     endhandle
+
+  enddo
+
+  var !time clock
+
+  !this.logfile('','')
+  !this.logfile('','--------------------------------------------------------------------------------')
+  !this.logfile('','')
+  !this.logfile('','Export Finished: $!time')
+  !this.logfile('','')
+  !this.logfile('','--------------------------------------------------------------------------------')
+
+ -- Set Tolerence
+  !this.IncludeTol('RESET')
+
+ -- Store file name before closing
+  !logfilename = !this.NormalLog.fullname()
+
+  !this.NormalLog.Close()
+  !this.NormalLog = object file('')
+
+ -- Reset the gadgets after export
+  !!VNETExport.Progress.val = ''
+  !!VNETExport.NumberOfItems.val = ''
+  !!VNETExport.progtxt.val = ''
+  refresh !!VNETExport.Progress
+  refresh !!VNETExport.NumberOfItems
+  refresh !!VNETExport.progtxt
+
+ -- Set progress bar gadgets...
+  !this.percomplete( 1 , 1 )
+
+  !!VNETExport.FProgress.active = false
+
+ -- Empty Temporary User Class storage areas
+  !!VNETExport.UserClassStore1.clear()
+  !!VNETExport.UserClassStore2.clear()
+  !!VNETExport.UserClassStore3.clear()
+  !!VNETExport.UserClassStore4.clear()
+  !!VNETExport.UserClassStore5.clear()
+  !!VNETExport.UserClassStore6.clear()
+  !!VNETExport.UserClassStore7.clear()
+  !!VNETExport.UserClassStore8.clear()
+  !!VNETExport.UserClassStore9.clear()
+  !!VNETExport.UserClassStore10.clear()
+
+ -- Return to original Current Element
+  !!ce = !this.ce
+
+ -- Export referenced SITES
+  if !!VNETxsettings.IncludeSITES.val and !this.AssociatedSites.empty().not() then
+
+     $p
+     $p Exporting Associated Design Item(s)
+     $p
+
+     if !!VNETExport.marine then
+        !curdesigntype = !!VNETExport.designtype.val
+        !!VNETExport.designtype.val = 1
+     endif
+
+    -- Collect the sites that items exported belong to and export them as well
+     !currenthier = !!VNETExport.HierList
+
+     !!VNETExport.HierList.clear()
+     !!VNETExport.HierList = !this.AssociatedSites.unique()
+
+     !exportsites = object VNETWriteXML()
+
+     !!VNETExport.HierList.clear()
+     !!VNETExport.HierList = !currenthier
+
+     if !!VNETExport.marine then
+        !!VNETExport.designtype.val = !curdesigntype
+     endif
+  endif
+
+ -- Finish off by refreshing the screen
+  prompt dismiss
+
+  if defined(!!VNETBatchMode) then
+     $p Export Complete
+     $p $!logfilename
+  endif
+
+endmethod
+
+-- End of method definition for .VNETWriteSPLXML()
+
+--------------------------------------------------------------------------------
+-- Method:           .Output(!assembly is Object, !charenc is STRING)
+-- Author:           Ian Stanbrook
+-- Created:          Fri March 28
+--
+--
+-- Description:
+-- Collect Assembly information
+--------------------------------------------------------------------------------
+
+define method .Output(!spooldrawing is VNETSpool, !charenc is string)
+
+   !this.resultarray.clear()
+
+  -- Create output data for each SPLDRG
+   !output = array()
+
+   !output.append(|<?xml version="1.0" encoding="| & !charenc & |"?>|)
+   !output.append('<vl:VNETList xmlns:vl="http://www.aveva.com/VNET/List" xmlns="http://www.aveva.com/VNET/eiwm">')
+   !output.append('<!--Exported by ' & !!VNETExport.user & ' - ' & !this.logtime & '-->')
+
+   !output.append('  <Template>')
+   !output.append('    <ID>VPD SPLDRG Associations ' & !spooldrawing.SpldrgNPName & '</ID>')
+
+  -- ISOREG
+   !output.append('    <Object>')
+   !output.append('      <ID>' & !spooldrawing.IsoRegVName & '</ID>')
+   !output.append('      <Context>')
+   !output.append('        <ID>PROJECTCONTEXT</ID>')
+   !output.append('      </Context>')
+
+   !output.append('      <ClassID>' & !spooldrawing.IsoRegClass & '</ClassID>')
+
+   !output.append('      <Association type="is identified by">')
+   !output.append('        <Object>')
+   !output.append('          <ID>' & !spooldrawing.IsoRegOName &'</ID>')
+   !output.append('          <Context>')
+   !output.append('            <ID>VPD</ID>')
+   !output.append('            <Context>')
+   !output.append('              <ID>PROJECTCONTEXT</ID>')
+   !output.append('            </Context>')
+   !output.append('          </Context>')
+   !output.append('        </Object>')
+   !output.append('      </Association>')
+
+   !output.appendarray(!spooldrawing.IsoRegChars)
+
+   !output.append('    </Object>')
+
+  -- SPLDRG
+   !output.append('    <Object>')
+
+   !output.append('      <ID>' & !spooldrawing.SplDrgVName & '</ID>')
+   !output.append('      <Context>')
+   !output.append('        <ID>PROJECTCONTEXT</ID>')
+   !output.append('      </Context>')
+
+   !output.append('      <ClassID>' & !spooldrawing.SplDrgClass & '</ClassID>')
+
+   !output.append('      <Association type="is identified by">')
+   !output.append('        <Object>')
+   !output.append('          <ID>' & !spooldrawing.SplDrgOName &'</ID>')
+   !output.append('          <Context>')
+   !output.append('            <ID>VPD</ID>')
+   !output.append('            <Context>')
+   !output.append('              <ID>PROJECTCONTEXT</ID>')
+   !output.append('            </Context>')
+   !output.append('          </Context>')
+   !output.append('        </Object>')
+   !output.append('      </Association>')
+
+   !output.appendarray(!spooldrawing.SplDrgChars)
+
+
+  -- Associate SPLDRG with ISOREG
+--              !output.append('      <Association type="is a part of">')
+   !output.append('      <Association type="is an element of">')
+   !output.append('        <Object>')
+   !output.append('          <ID>' & !spooldrawing.IsoRegVName &'</ID>')
+   !output.append('          <Context>')
+   !output.append('            <ID>PROJECTCONTEXT</ID>')
+   !output.append('          </Context>')
+   !output.append('        </Object>')
+   !output.append('      </Association>')
+
+  -- Associate SPLDRG with PIPEs
+   do !asspipecnt indices !spooldrawing.AssocPipes
+--                 !output.append('      <Association type="is a part of">')
+      !output.append('      <Association type="is associated with">')
+      !output.append('        <Object>')
+      !output.append('          <ID>' & !spooldrawing.AssocPipes[!asspipecnt] &'</ID>')
+      !output.append('          <Context>')
+      !output.append('            <ID>PROJECTCONTEXT</ID>')
+      !output.append('          </Context>')
+      !output.append('        </Object>')
+      !output.append('      </Association>')
+
+   enddo
+
+  -- Associate SPLDRG with SPOOLs and FIELDs
+   do !cnt indices !spooldrawing.splfld
+      !output.append('      <Association type="is an assembly including">')
+      !output.append('        <Object>')
+      !output.append('          <ID>' & !spooldrawing.splfld[!cnt][2] &'</ID>')
+      !output.append('          <Context>')
+      !output.append('            <ID>VPD</ID>')
+      !output.append('            <Context>')
+      !output.append('              <ID>PROJECTCONTEXT</ID>')
+      !output.append('            </Context>')
+      !output.append('          </Context>')
+      !output.append('        </Object>')
+      !output.append('      </Association>')
+   enddo
+
+   !output.append('    </Object>')
+
+  -- Loop through the SPOOLs and FIELDs of SPLDRG
+   do !cnt indices !spooldrawing.splfld
+
+      !output.append('    <Object>')
+      !output.append('      <ID>' & !spooldrawing.splfld[!cnt][2] & '</ID>')
+      !output.append('      <Context>')
+      !output.append('        <ID>VPD</ID>')
+      !output.append('        <Context>')
+      !output.append('          <ID>PROJECTCONTEXT</ID>')
+      !output.append('        </Context>')
+      !output.append('      </Context>')
+      !output.append('      <ClassID>' & !spooldrawing.splfld[!cnt][8] & '</ClassID>')
+
+     -- Associate all the SPOOL or FIELD members to the SPOOL or FIELD
+      do !splfldcnt indices !spooldrawing.splfld[!cnt][4]
+--                    !output.append('      <Association type="is identified by">')
+         !output.append('      <Association type="is an assembly including">')
+         !output.append('        <Object>')
+
+         if !spooldrawing.splfld[!cnt][3][!splfldcnt].substring(1,1) eq '/' then
+            !output.append('          <ID>' & !spooldrawing.splfld[!cnt][3][!splfldcnt] &'</ID>')
+         else
+            !output.append('          <ID>/' & !spooldrawing.splfld[!cnt][3][!splfldcnt] &'</ID>')
+         endif
+
+         !output.append('          <Context>')
+         !output.append('            <ID>VPD</ID>')
+         !output.append('            <Context>')
+         !output.append('              <ID>PROJECTCONTEXT</ID>')
+         !output.append('            </Context>')
+         !output.append('          </Context>')
+         !output.append('        </Object>')
+         !output.append('      </Association>')
+      enddo
+
+     -- Associate the SPOOL or FIELD to the PIPE
+      do !splfldcnt indices !spooldrawing.splfld[!cnt][5]
+         !output.append('      <Association type="is a part of">')
+         !output.append('        <Object>')
+         !output.append('          <ID>' & !spooldrawing.splfld[!cnt][5][!splfldcnt] &'</ID>')
+         !output.append('          <Context>')
+         !output.append('            <ID>VPD</ID>')
+         !output.append('            <Context>')
+         !output.append('              <ID>PROJECTCONTEXT</ID>')
+         !output.append('            </Context>')
+         !output.append('          </Context>')
+         !output.append('        </Object>')
+         !output.append('      </Association>')
+      enddo
+
+     -- Output any Characteristics found
+      !output.appendarray(!spooldrawing.splfld[!cnt][7])
+      handle any
+      endhandle
+
+      !output.append('    </Object>')
+
+     -- Loop through through the members ofthe SPOOL or FIELD
+
+      do !splfldcnt indices !spooldrawing.splfld[!cnt][3]
+
+        -- Create item with a slash (For PDMS naming reasons)
+
+         !output.append('    <Object>')
+
+         if !spooldrawing.splfld[!cnt][3][!splfldcnt].substring(1,1) eq '/' then
+            !output.append('      <ID>' & !spooldrawing.splfld[!cnt][3][!splfldcnt] &'</ID>')
+         else
+            !output.append('      <ID>/' & !spooldrawing.splfld[!cnt][3][!splfldcnt] &'</ID>')
+         endif
+
+         !output.append('      <Context>')
+         !output.append('        <ID>VPD</ID>')
+         !output.append('        <Context>')
+         !output.append('          <ID>PROJECTCONTEXT</ID>')
+         !output.append('        </Context>')
+         !output.append('      </Context>')
+
+       -- If the member does not have a slash then create an association back to the
+       -- member that will have been created with a slash in the previous piece of code
+       -- See - Create item with a slach (For PDMS naming reasons)
+
+         if !spooldrawing.splfld[!cnt][3][!splfldcnt].substring(1,1) neq '/' then
+            !output.append('      <Association type="is identified by">')
+            !output.append('        <Object>')
+            !output.append('          <ID>' & !spooldrawing.splfld[!cnt][3][!splfldcnt] &'</ID>')
+            !output.append('          <Context>')
+            !output.append('            <ID>VPD</ID>')
+            !output.append('            <Context>')
+            !output.append('              <ID>PROJECTCONTEXT</ID>')
+            !output.append('            </Context>')
+            !output.append('          </Context>')
+            !output.append('        </Object>')
+            !output.append('      </Association>')
+         endif
+
+        -- If the items are not named the same (TUBEing) then add the extra associations to
+        -- get back to the items name in the RVM file
+
+         if !spooldrawing.splfld[!cnt][3][!splfldcnt] neq !spooldrawing.splfld[!cnt][4][!splfldcnt] then
+
+            !output.append('      <Association type="is identified by">')
+            !output.append('        <Object>')
+
+            if !spooldrawing.splfld[!cnt][3][!splfldcnt].substring(1,1) eq '/' then
+               !output.append('          <ID>' & !spooldrawing.splfld[!cnt][4][!splfldcnt] &'</ID>')
+            else
+               !output.append('          <ID>/' & !spooldrawing.splfld[!cnt][4][!splfldcnt] &'</ID>')
+            endif
+
+            !output.append('          <Context>')
+            !output.append('            <ID>VPD</ID>')
+            !output.append('            <Context>')
+            !output.append('              <ID>PROJECTCONTEXT</ID>')
+            !output.append('            </Context>')
+            !output.append('          </Context>')
+            !output.append('        </Object>')
+            !output.append('      </Association>')
+         endif
+
+         !output.append('    </Object>')
+
+      enddo
+   enddo
+
+  -- Finish the SPLDRG data and save it to file
+
+   !output.append('  </Template>')
+   !output.append('</vl:VNETList>')
+
+   !this.resultarray = !output
+
+endmethod
+
+-- End of method definition for .Output()
+
+------------------------------------------------------------------------------
+-- Method:           .TransClass()
+-- Author:           D. Laird
+-- Created:          Fri March 28
+--
+--
+-- Description:
+-- Output hierarchy list stored in VNETExport member ".HierList"
+--------------------------------------------------------------------------------
+
+define method .TransClass(!type is string, !name is string)
+
+-- Translate PDMS class into VNET class from a default list specified in a file
+
+-- Get list of classes from VNETExport form member .Classes
+-- Part1 (Left side) is the PDMS value
+-- Part2 (Right side) is the VNET value
+
+-- After setting OUR default class we allow users to write their owne code
+-- to do some post processing for their own class definitions....
+
+-- Set default type (Class) if no match is found...
+   !this.Result = !type
+
+-- Check for funny chars in names
+   !outname = !!VNETStripName(!name)
+
+   -- Loop through defined classes to find match to set default...
+   do !line values !!VNETExport.Classes
+      !ClassPDMS = !line.Before('+')
+      !ClassVNET = !line.After('+')
+      if ( !ClassPDMS eq 'Otherwise' ) then
+         -- found default
+         !this.Result = !ClassVNET
+         break
+      endif
+   enddo
+
+   -- Loop through defined classes to find match...
+   do !line values !!VNETExport.Classes
+      !ClassPDMS = !line.Before('+')
+      !ClassVNET = !line.After('+')
+      if ( !Type eq !ClassPDMS ) then
+         -- found a match
+         !this.Result = !ClassVNET
+         break
+      endif
+   enddo
+
+   -- Now allow user to overwrite our choice...
+   -- First check the Users Function is set in the settings form...
+   if (!!VNETxsettings.uclass.val eq 'Unset') then
+      -- No user function, so stick with our AVEVA choice.
+      !this.logfile('FullLog','               $!outname is class: $!ClassVNET')
+      return
+   endif
+
+   -- If we got here then they have a user function defined...
+   -- Just realised this bit is a bit pointless as a function MUST be in the PMLLIB seearch path
+   -- anyway, so the system will already know about it... Still, needs to know the name though!
+
+   if !!VNETExport.UserClass then
+   -- Object to get Originalname for items for this project name found
+
+      !UserObject = object $!!VNETExport.UserClassFileName(!type, !name, !this.result)
+      handle (46,58)
+       -- Error Mapping file not found
+         !!VNETError.SetErrorFlag('')
+         !this.logfile('FullLog','         $!outname is class: $!ClassVNET')
+         !this.logfile('FullLog','               ERROR: Mapping file Not Found - $!!VNETExport.uclass')
+         return
+      elsehandle any
+       -- Error in Mapping file code
+         !!VNETError.SetErrorFlag('')
+         !this.logfile('FullLog','         $!outname is class: $!ClassVNET')
+         !this.logfile('FullLog','               ERROR: In Mapping file - Check syntax')
+         return
+      endhandle
+
+      !this.Result = !UserObject.result
+
+      if (!ClassVNET neq !UserObject.result) then
+         !this.logfile('FullLog','         $!outname is class: $!UserObject.result >> $!!VNETExport.uclass')
+      else
+         !this.logfile('FullLog','         $!outname is class: $!ClassVNET')
+      endif
+
+   endif
+
+endmethod
+
+-- End of method definition for .TransClass(!type is string, !name is string)
+
+-------------------------------------------------------------------------------
+-- Method:           .GetAttributes(!fullname is STRING, !type is STRING)
+-- Author:           D.Laird
+-- Created:          Fri March 28
+--
+--
+-- Description:
+-- Get the necessary attribrutes for current element
+--------------------------------------------------------------------------------
+
+define method .GetAttributes(!fullname is string, !type is string)
+
+   !!ce = !this.currentDBref
+
+   !this.CEAttName.clear()
+   !this.CEAttDesc.clear()
+   !this.CEAttValue.clear()
+   !this.CEAttDefVal.clear()
+
+   !CEAttrs = object VNETGetAttributes(!fullname, !type, !this.IncludedAttribs, !this.IncludedAttribsTyp, !this.IncludedPsuedos, !this.IncludedPsuedosTyp )
+
+   if !CEAttrs.CEAttDesc.empty().not() then
+      !this.CEAttDesc = !CEAttrs.CEAttDesc
+      !this.CEAttValue = !CEAttrs.CEAttValue
+   endif
+
+   if !CEAttrs.CEErrors.empty.not() and !!VNETxsettings.AttrErr.val.not() then
+      !!VNETError.SetErrorFlag('')
+      do !loop indices !CEAttrs.CEErrors
+         !this.logfile('FullLog',!CEAttrs.CEErrors[!loop])
+      enddo
+   endif
+
+endmethod
+
+-- End of method definition for .GetAttributes(!fullname is STRING, !type is STRING)
+
+--------------------------------------------------------------------------------
+-- Method:           .percomplete(!progresscount is REAL, !totalcount is REAL)
+-- Author:           C. Pearson
+-- Created:          Fri March 28
+--
+--
+-- Description:
+-- Display progress on main form....
+--------------------------------------------------------------------------------
+
+define method .percomplete( !progresscount is real , !totalcount is real )
+
+  -- Update Progress Bar
+   if !progresscount eq 1 and !totalcount eq 1 then
+      !!fmsys.setprogress(0)
+   else
+      !percomplete  = (( !progresscount / !totalcount ) * 100)
+      !!fmsys.setprogress(!percomplete)
+   endif
+
+endmethod
+
+-- End of method definition .percomplete(!progresscount is REAL, !totalcount is real)
+
+--------------------------------------------------------------------------------
+
+-- Method:           .IncludeAtts()
+-- Author:           Ian Stanbrook
+-- Created:          Fri December 05
+--
+--
+-- Description:
+-- Find out the mapping file to use
+
+--------------------------------------------------------------------------------
+
+define method .IncludeAtts()
+
+   !this.IncludedAttribs.clear()
+   !this.IncludedAttribsTyp.clear()
+   !this.IncludedPsuedos.clear()
+   !this.IncludedPsuedosTyp.clear()
+
+   !IncludedAttrs = !!VNETLoadAttrib(!!VNETxsettings.incattrsspl)
+   handle any
+      return
+   endhandle
+
+   !this.IncludedAttribs = !IncludedAttrs[1]
+   !this.IncludedAttribsTyp = !IncludedAttrs[2]
+   !this.IncludedPsuedos = !IncludedAttrs[3]
+   !this.IncludedPsuedosTyp = !IncludedAttrs[4]
+
+endmethod
+
+-- End of method definition for .IncludeAtts()
+
+-------------------------------------------------------------------------------
+
+-- Method:           .IncludeItems()
+-- Author:           Ian Stanbrook
+-- Created:          Fri December 05
+--
+--
+-- Description:
+-- Find out the mapping file to use
+
+--------------------------------------------------------------------------------
+
+define method .IncludeItems()
+
+   !this.IncludeItem.clear()
+
+   !IncludedItems = !!VNETLoadItems(!!VNETxsettings.incitemspl)
+   handle any
+      return
+   endhandle
+
+   !this.IncludeItem = !IncludedItems
+
+endmethod
+
+-- End of method definition for .IncludeItems()
+
+-------------------------------------------------------------------------------
+
+-- Method:           .DefIncItems()
+-- Author:           Ian Stanbrook
+-- Created:          Fri December 05
+--
+--
+-- Description:
+-- Set default items and there selection to output
+
+--------------------------------------------------------------------------------
+
+define method .DefIncItems()
+
+   !ItemsArray = object ARRAY()
+
+  -- SPLDRG
+   !ItemsArray.append(|SPLDRG|)
+
+ -- Finally set them to the main store .IncludeItem
+   !this.IncludeItem = !ItemsArray
+
+endmethod
+
+-- End of method definition for .DefIncItems()
+
+-------------------------------------------------------------------------------
+
+-- Method:      .IncludeTol()
+-- Author:      Ian Stanbrook
+-- Created:     Fri December 05
+--
+--
+-- Description:
+-- Find out the mapping file to use
+
+--------------------------------------------------------------------------------
+
+define method .IncludeTol(!action is string)
+
+   if !action eq 'LOAD' then
+
+-- Set up original settings
+      !this.tolbore = ''
+      !this.tolskey = ''
+      !this.toloff = ''
+      !this.tolang = ''
+      !this.toltub = ''
+
+      var !origbore TOLERANCE CATALOGUE BORE
+      var !origskey TOLERANCE CATALOGUE SKEY
+      var !origoff TOLERANCE OFFSET
+      var !origang TOLERANCE ANGLE
+      var !origtub TOLERANCE TUBE
+
+      !this.tolbore = !origbore
+      !this.tolskey = !origskey
+      !this.toloff = !origoff
+      !this.tolang = !origang
+      !this.toltub = !origtub
+
+-- Load user settings
+
+      !this.settolbore = ''
+      !this.settolskey = ''
+      !this.settoloff = ''
+      !this.settolang = ''
+      !this.settoltub = ''
+
+      !IncludedTol = !!VNETLoadItems(!!VNETxsettings.inctolerspl)
+      handle any
+         return
+      endhandle
+
+      do !loop indices !IncludedTol
+         if !IncludedTol[!loop].part(1) eq 'BORE' then
+            !this.settolbore = !IncludedTol[!loop]
+         elseif !IncludedTol[!loop].part(1) eq 'SKEY' then
+            !this.settolskey = !IncludedTol[!loop]
+         elseif !IncludedTol[!loop].part(1) eq 'OFFSET' then
+            !this.settoloff = !IncludedTol[!loop]
+         elseif !IncludedTol[!loop].part(1) eq 'ANGLE' then
+            !this.settolang = !IncludedTol[!loop]
+         elseif !IncludedTol[!loop].part(1) eq 'TUBE' then
+            !this.settoltub = !IncludedTol[!loop]
+         endif
+      enddo
+
+   elseif !action eq 'SET' then
+
+      if !this.settolbore neq '' then
+         !tmptolbore = !this.settolbore
+
+         TOLERANCE CATALOGUE $!tmptolbore
+         handle any
+            !this.logfile('','Error setting Tolerence Bore with value from Tolerences file: ' & !!VNETxsettings.inctolerspl.val)
+         endhandle
+      endif
+
+      if !this.settolskey neq '' then
+         !tmptolskey = !this.settolskey.after('SKEY').trim()
+         !tmptolskey = !tmptolskey.replace(| |,|' '|)
+         TOLERANCE CATALOGUE SKEY '$!tmptolskey'
+         handle any
+            !this.logfile('','Error setting Tolerence SKEY with value from Tolerences file: ' & !!VNETxsettings.inctolerspl.val)
+         endhandle
+      endif
+
+      if !this.settoloff neq '' then
+         !tmptoloff = !this.settoloff
+         TOLERANCE $!tmptoloff
+         handle any
+            !this.logfile('','Error setting Tolerence Offset with value from Tolerences file: ' & !!VNETxsettings.inctolerspl.val)
+         endhandle
+      endif
+
+      if !this.settolang neq '' then
+         !tmptolang = !this.settolang
+         TOLERANCE $!tmptolang
+         handle any
+            !this.logfile('','Error setting Tolerence Angle with value from Tolerences file: ' & !!VNETxsettings.inctolerspl.val)
+         endhandle
+      endif
+
+      if !this.settoltub neq '' then
+         !tmptoltub = !this.settoltub
+         TOLERANCE $!tmptoltub
+         handle any
+            !this.logfile('','Error setting Tolerence Tube with value from Tolerences file: ' & !!VNETxsettings.inctolerspl.val)
+         endhandle
+      endif
+
+   elseif !action eq 'RESET' then
+
+      !tolbore = !this.tolbore
+      TOLERANCE CATALOGUE BORE $!tolbore
+      handle any
+      endhandle
+
+      !tolskey = !this.tolskey
+      TOLERANCE CATALOGUE SKEY $!tolskey
+      handle any
+      endhandle
+
+      !toloff = !this.toloff
+      TOLERANCE OFFSET $!toloff
+      handle any
+      endhandle
+
+      !tolang = !this.tolang
+      TOLERANCE ANGLE $!tolang
+      handle any
+      endhandle
+
+      !toltub = !this.toltub
+      TOLERANCE ANGLE $!toltub
+      handle any
+      endhandle
+
+   endif
+
+endmethod
+
+-- End of method definition for .IncludeTol()
+
+-------------------------------------------------------------------------------
+
+-- Method:           .logfile()
+-- Author:           Ian Stanbrook
+-- Created:          Fri December 05
+--
+--
+-- Description:
+-- Output the data to the relevent log file or files depending on the settings
+
+--------------------------------------------------------------------------------
+
+define method .logfile(!whichfile is string, !message is string)
+
+   if !whichfile eq '' or (!whichfile eq 'StdLog') then
+      if !message eq 'ARRAY' then
+         do !loop indices !this.LogfileMes
+            !this.NormalLog.WriteRecord(!this.LogfileMes[!loop])
+         enddo
+      else
+         !this.NormalLog.WriteRecord(!message)
+      endif
+   endif
+
+   if !this.FullLog.unset().not() and (!whichfile neq 'StdLog') then
+      if !message eq 'ARRAY' then
+         do !loop indices !this.LogfileMes
+            !this.FullLog.WriteRecord(!this.LogfileMes[!loop])
+         enddo
+      else
+         !this.FullLog.WriteRecord(!message)
+         handle any
+         endhandle
+      endif
+   endif
+
+   !this.LogfileMes.clear()
+
+endmethod
+
+-- End of method definition for .logfile(!whichfile is string, !message is string)
+
+-------------------------------------------------------------------------------
+
+-- Method:           .logfilehead(!logtype is string, !Filename is file)
+-- Author:           Ian Stanbrook
+-- Created:          Fri December 05
+--
+--
+-- Description:
+-- Output the data to the relevent log file or files depending on the settings
+
+--------------------------------------------------------------------------------
+
+define method .logfilehead(!logtype is string, !Filename is file)
+
+     var !time clock
+
+     -- Write Logfile entries
+     !this.logfile('$!logtype','')
+     !this.logfile('$!logtype','--------------------------------------------------------------------------------')
+     !this.logfile('$!logtype','')
+
+     !this.logfile('FullLog','')
+     !this.logfile('$!logtype','XML Encoding : ' & !this.CharEnc )
+     !this.logfile('$!logtype','')
+
+     !this.logfile('$!logtype','Export Started: $!time')
+     !this.logfile('$!logtype','')
+     !this.logfile('$!logtype','--------------------------------------------------------------------------------')
+     !this.logfile('$!logtype','')
+     !this.logfile('$!logtype','--------------------------------------------------------------------------------')
+     !this.logfile('$!logtype','Original Name Routine  : ' + !!VNETxsettings.origname.val)
+     !this.logfile('$!logtype','User Class Map Routine : ' + !!VNETxsettings.uclass.val)
+     !this.logfile('$!logtype','Other Names Routine    : ' + !!VNETxsettings.OtherName.val)
+     !this.logfile('$!logtype','Items to Include       : ' + !!VNETxsettings.incitemspl.val.string())
+     !this.logfile('$!logtype','Attributes to Export   : ' + !!VNETxsettings.incattrsspl.val.string())
+     !this.logfile('$!logtype','Tolerances to Include  : ' + !!VNETxsettings.inctolerspl.val.string())
+     !this.logfile('$!logtype','--------------------------------------------------------------------------------')
+     !this.logfile('$!logtype','')
+     !this.logfile('$!logtype','--------------------------------------------------------------------------------')
+     !this.logfile('$!logtype','Include Settings:')
+
+     !this.logfile('$!logtype','UnNamed Sites         : ' + !!VNETxsettings.IncludeUnNamedSite.val.string())
+     !this.logfile('$!logtype','Unset values          : ' + !!VNETxsettings.IncludeUnsetValue.val.string())
+     !this.logfile('$!logtype','Nulref values         : ' + !!VNETxsettings.IncludeNulrefValue.val.string())
+     !this.logfile('$!logtype','0 values              : ' + !!VNETxsettings.IncludeZeroValue.val.string())
+     !this.logfile('$!logtype','Positions WRT to World: ' + !!VNETxsettings.IncludeWorldPosValue.val.string())
+     !this.logfile('$!logtype','E 0 N 0 U 0 Positions : ' + !!VNETxsettings.IncludeZeroPosValue.val.string())
+     !this.logfile('$!logtype','--------------------------------------------------------------------------------')
+
+     !this.logfile('$!logtype','')
+     !this.logfile('$!logtype','--------------------------------------------------------------------------------')
+     !this.logfile('$!logtype','Contents of : ' + !!VNETxsettings.incitemspl.val.string())
+     !this.logfile('$!logtype','--------------------------------------------------------------------------------')
+
+     do !loop indices !this.IncludeItem
+        !this.logfile('$!logtype','$!loop) ' + !this.IncludeItem[!loop])
+     enddo
+
+     !this.logfile('$!logtype','--------------------------------------------------------------------------------')
+
+endmethod
+
+-- End of method definition for .logfilehead(!logtype is string, !Filename is file)
+
+-------------------------------------------------------------------------------
+-- End of File

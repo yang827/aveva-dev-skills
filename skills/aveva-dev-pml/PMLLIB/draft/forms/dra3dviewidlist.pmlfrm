@@ -1,0 +1,347 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            dra3dviewidlist.pmlfrm
+--   Type:          Form Definition
+--   Group:         common
+--     Keyword:     3D
+--   Module:        DRAFT
+--   Replaces:
+--
+-- Author:          M.Barlow
+-- Created:         Tue Sep 09 9:27:03 "GMT 2003
+--
+--
+-- Description:
+-- Form to view the 2d/3D contents
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  close()                          -                   close the form
+--  dra3dViewIdlist()                -                   Constructor
+--  poppyActive()                    -                   Set the poppy active
+--  removeElement()                  -                   Remove selected ADDE or REME from list
+--  undoRemove()                     -                   Handler for UNDO actions when removing an IDLIST item
+--  update()                         -                   Determine current view from ce, and make it the selected view
+--
+------------------------------------------------------------------------
+setup form !!dra3dViewIdlist dialog dock top
+
+  !this.formTitle = 'View Content'
+
+  list .idlist anchor all at x0 y0.2 multi width 45 length 16
+
+  menu .poppy
+    add |Remove Selected|    |!this.removeElement()|
+  exit
+
+  member .currentDraftView      is DBREF
+  member .form is FORM
+
+exit
+------------------------------------------------------------------------
+--
+-- Method:      dra3dViewIdlist
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .dra3dViewIdlist()
+
+  !this.currentDraftView = object DBREF()
+  !this.form = !!dra3dView
+
+  !this.idlist.setPopUp(!this.poppy)
+  !this.idlist.callback = '!this.poppyActive()'
+
+  !this.cancelCall = '!this.close()'
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      update
+--
+-- Description: Update the view of the Idlist
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .update()
+
+  -- Initialise variables
+  !this.idlist.clear()
+  !dtext = ARRAY()
+  !rtext = ARRAY()
+
+ -- Call the form build local idlist method
+ !this.form.buildLocalIDList(!this.form.currentDraftView)
+ !this.formTitle = 'View Content - ' & !this.form.formTitle.after('3D View - ').before('*')
+
+  -- Loop through each IDLIST member, adding its elements to the return list
+  do !index indices !this.form.refList
+
+    !itemRef  = !this.form.refList[!index]
+    -- This could be a 3D origin or a 2D origin
+    if (!this.form.originList[!index] eq '2D') then
+      !test = !itemRef.idname.badref()
+      handle ANY
+        !test = TRUE
+      endhandle
+      if (!itemRef.idname.set()) then
+        if (!test or !itemRef.idname.badref()) then
+          !name = 'UNSET'
+          -- The itemRef may not be the expected IDLI
+          if (!itemRef.set() and !itemRef.badref().not() and !itemRef.type neq 'IDLI') then
+            !name = !itemRef.fullname
+          endif
+        else
+          !name = !itemRef.idname.fullname
+        endif
+      elseif (!itemRef.criteria.set()) then
+        -- This must be criteria based
+        -- ?????????????? !!ce.criteria is an ARRAY? core bug DFN3686
+        --!name = !itemRef.criteria
+        var !name criteria of $!itemRef
+      else
+        -- Both idname and criteria must be unset
+        !name = 'UNSET'
+      endif
+    elseif (!this.form.originList[!index] eq '3D') then
+      !test = !itemRef.badref()
+      handle ANY
+        !test = TRUE
+      endhandle
+      if (!itemRef.set()) then
+        if (!test or !itemRef.badref()) then
+          !name = 'UNKNOWN'
+        else
+          !name = !itemRef.fullname
+        endif
+      endif
+    endif
+    --!dtext.append(!this.form.originList[!index] & ' - ' & !this.form.opList[!index] + ' ' + !name)!dtext.append(!this.form.originList[!index] & ' - ' & !this.form.opList[!index] + ' ' + !name)
+    !dtext.append(!this.form.opList[!index] + ' ' + !name)
+    !rtext.append(!itemRef.string())
+
+  enddo
+
+  !this.idlist.dtext = !dtext
+  !this.idlist.rtext = !rtext
+
+  -- If nothing selected grey out the id list gadget
+  if (!this.idlist.rtext.size() eq 0 or !this.idlist.selection().size() eq 0) then
+    !this.poppy.setactive('Remove Selected', FALSE)
+  else
+    !this.poppy.setactive('Remove Selected', TRUE)
+  endif
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      removeElement
+--
+-- Description: Remove selected ADDE or REME from list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .removeElement()
+
+  !memory = !!ce
+
+  -- Simply delete the selected elements
+
+  -- Get the elements to be deleted in sorted, inverted eg 3,2,1
+  !toBeDeleted = !this.idlist.val.sort().invert()
+  !errorCount = 0
+  !maxErrors = 3
+
+  !undo = object UNDOABLE()
+  !undo.description('Remove an element from the IDLIST')
+  !undo.undoAction('!!dra3dViewIdList.undoRemove()')
+  !undo.redoAction('!!dra3dViewIdList.undoRemove()')
+  !undo.add()
+
+  do !index values !toBeDeleted
+
+    -- original element in DB to be deleted
+    !item = !this.form.refList[!index]
+    !!ce = !item
+    handle ANY
+      -- What if it is already deleted
+    elsehandle NONE
+      !type = !!ce.type
+      -- Before we delete it capture its IDNA attribute
+      !referencedElement = !!ce.idna
+      handle ANY
+        !errorCount = !errorCount + 1
+        if (!errorCount le !maxErrors) then
+          !!alert.error('Cannot remove this entry')
+        else
+          !!alert.error('More than ' & !maxErrors.string() & ' errors')
+        endif
+        skip
+      endhandle
+      if (!referencedElement.unset()) then
+        -- Cannot delete a Criteria based element
+        !errorCount = !errorCount + 1
+        if (!errorCount le !maxErrors) then
+          !!alert.error('Cannot remove a criteria based element')
+        else
+          !!alert.error('More than ' & !maxErrors.string() & ' errors')
+        endif
+        skip
+      else
+        -- If this was a remove REME action we should add the referenced element back into the 3D view
+        if (!type eq 'REME') then
+          !!ce = !item
+          delete $!type
+          handle ANY
+            !errorCount = !errorCount + 1
+            if (!errorCount le !maxErrors) then
+              !!alert.error(!!error.text)
+            else
+              !!alert.error('More than ' & !maxErrors.string() & ' errors')
+            endif
+            skip
+          elsehandle NONE
+            !!ce = !referencedElement
+            DESADD CE
+          endhandle
+        elseif (!type eq 'ADDE') then
+          !!ce = !item
+          delete $!type
+          handle ANY
+            !errorCount = !errorCount + 1
+            if (!errorCount le !maxErrors) then
+              !!alert.error(!!error.text)
+            else
+              !!alert.error('More than ' & !maxErrors.string() & ' errors')
+            endif
+            skip
+          elsehandle NONE
+            !!ce = !referencedElement
+            DESREM CE
+          endhandle
+        endif
+      endif
+    endhandle
+  enddo
+
+  !undo.endUndoable()
+  handle ANY
+  endhandle
+
+  -- 3D view form update will do an update only if dynamic is on
+  if (!this.form.updateOption.selection('rtext') eq 'Dynamic') then
+    !this.form.updateAndRefresh(TRUE)
+    !!dra3dView.captureDraftView(!!dra3dView.currentDraftView, 'colour')
+  else
+    -- Just make sure we capture colours
+    !!dra3dView.captureDraftView(!!dra3dView.currentDraftView, 'colour')
+  endif
+  -- Update this form ID list view
+  !this.update()
+
+  !!ce = !memory
+  if (!!ce.dbtype neq 'PADD') then
+    switch
+  endif
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      poppyActive
+--
+-- Description: Set the poppy active
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .poppyActive()
+
+  -- If nothing selected grey out the id list gadget
+  if (!this.idlist.rtext.size() eq 0 or !this.idlist.selection().size() eq 0) then
+    !this.poppy.setactive('Remove Selected', FALSE)
+  else
+    !this.poppy.setactive('Remove Selected', TRUE)
+  endif
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      close
+--
+-- Description: close the form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .close()
+
+  if (!!dra3dView.shown()) then
+    !!dra3dview.idlist.val = FALSE
+  endif
+
+  -- hide the form
+  !this.hide()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      undoRemove
+--
+-- Description: Handler for UNDO actions when removing an IDLIST item
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .undoRemove()
+  -- 3D view form update will do an update only if dynamic is on
+  if (!this.form.updateOption.selection('rtext') eq 'Dynamic') then
+    !this.form.updateAndRefresh(TRUE)
+    !!dra3dView.captureDraftView(!!dra3dView.currentDraftView, 'colour')
+  else
+    -- Just make sure we capture colours
+    !!dra3dView.captureDraftView(!!dra3dView.currentDraftView, 'colour')
+  endif
+  -- Update this form ID list view
+  !this.update()
+endmethod
+-- End of method

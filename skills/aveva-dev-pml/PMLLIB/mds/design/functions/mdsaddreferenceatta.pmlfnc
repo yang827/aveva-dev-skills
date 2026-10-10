@@ -1,0 +1,227 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:           mdsaddreferenceatta.pmlfnc
+--    Type:         Function Definition
+--   Group:
+--     Keyword:
+--   Module:
+--   Replaces:
+-- Author:          Karel Pleschner
+-- Created:         14/05/2012 12:32:44
+--
+--
+--
+--  Description:  Add existing atta to the frame as a reference
+--
+--
+--------------------------------------------------------------------------------------------------------------
+--
+-- Function Type:   Function
+-- Arguments:
+--   [#] [R/RW] [Data Type]           [Description]
+--
+-- Return:
+--   [Data Type]          [Description]
+--
+--------------------------------------------------------------------------------------------------------------
+define function !!mdsAddReferenceAtta(!form is FORM)
+
+  -- initialize variables
+  !support = !form.support
+  !datum    = !support.datum
+  !stru = !support.stru
+  !alias = !support.alias
+  !type = !support.type
+
+  -- Check that Datum atta has been created
+  if !datum.set().not() then
+    !!alert.message('Datum support atta has not been created')
+    return
+  endif
+
+  -- Check that Datum atta has been positioned
+  if !form.support.position.not() then
+    !!alert.message('Position atta before adding Pipe')
+    return
+  endif
+
+  -- check maximum number of pipes allowed
+  if !type.neq('SPECIAL') then
+    !numbofpipes = !support.atta.size() - 1
+    !maxpipes = !!mdscollectall('ZONE',':mdscp1 eq ''$!alias''',/MDS/TEMPLATES )[1].:mdsmaxpipes
+    handle ANY
+    	!templateZone = object DBREF('/MDS/FRAMES/' & !alias)
+    	!maxpipes = !templateZone.:mdsmaxpipes
+    endhandle
+    if !numbofpipes.eq(!maxpipes) then
+  	  !!alert.message('Maximum number of pipes ($!numbofpipes) allowed on this standard exceeded')
+  	  return
+  	endif
+  endif
+
+  do
+    !atta = !!mdsSinglePick('ATTA','Identify standalone support (ATTA) to add')
+    if !atta.unset() then
+    	return
+    endif
+    skip if !atta.isNamed.not()
+    !spec = !atta.spown
+    if !spec.badref() then
+    	skip
+    endif
+    -- skip if support is not an MDS support
+    if !spec.name.eq('/MDS').or(!spec.name.eq('/MDP')).not() then
+    	!!alert.error('The MDS standalone support must be picked!')
+    	skip
+    endif
+    if !atta.styp.eq('MH01') then
+    	!!alert.error('Hangers cannot be added this way!')
+    	skip
+    endif
+    -- skip if support belongs to the current frame
+    if !support.atta.find(!atta).set() then
+    	!!alert.error('The support belongs to the frame already')
+    	skip
+    endif
+    !frameref = !atta.dassci[1]
+    handle ANY
+    	!frameref = nulref
+    endhandle
+    -- skip if support belongs to some other frame already
+    if !frameref.badref().not().or(!atta.name.match('/DATUM').gt(0)) then
+      !!alert.error('The support picked belongs to other frame.')
+    	skip
+    endif
+    -- skip if support is readonly
+    if !atta.dbwrite then
+    	!atta.lock = !atta.lock.not()
+    	handle ANY
+    		!!alert.error('The support picked cannot be modified.')
+      	skip
+    	elsehandle NONE
+    		!atta.lock = !atta.lock.not()
+    	endhandle
+    else
+    	!!alert.error('The support picked must be in RW database.')
+    	skip
+    endif
+    -- check if support is locked
+    if !atta.lock then
+    	!!alert.error('The support picked is locked.')
+    	skip
+    endif
+
+    -- if support frame is SPECIAL then exit from loop since other checks are not relevant
+    break if !support.type.eq('SPECIAL')
+
+    -- check bore
+    !error = STRING()
+    !currboreunits = object COMUNITS()
+    !currboreunits.savedUnits[!currboreunits.getDimensionIndex('BORE')] = !!borefmt.units
+    if !!mdscheckpbores(!form,!atta,!error,!currboreunits) then
+    	!!alert.error(!error)
+    	skip
+    endif
+
+    -- check direction of pipe
+    !datpldir = !datum.ldir.wrt(world)
+    !datpadir = !datum.adir.wrt(world)
+    !pldir = !atta.ldir.wrt(world)
+    if !form.support.type inset('FT01', 'FT02', 'FT05', 'FT06', 'FT07' , 'FT17')then
+      if !pldir.isParallel(U wrt world) then
+        !!alert.error('Cannot select support on vertical pipe')
+        skip
+      endif
+    endif
+    if !datpldir.up.abs().neq(1) then
+      --  Datum Pipe is Horizontal.
+      if !pldir.isParallel(U wrt world) then
+        -- Selected Pipe is Vertical
+        !!alert.message('Unable to Mix Horizontal and Vertical Pipes on the same Framework')
+        skip
+      endif
+    else
+      -- Datum Pipe is Vertical
+      if !pldir.up.abs().neq(!datpldir.up.abs()).or(!pldir.up.abs().neq(!datpadir.up.abs())) then
+        -- Selected Pipe is Horizontal
+        !!alert.error('Unable to Mix Horizontal and Vertical Pipes on the same Framework')
+        skip
+      endif
+    endif
+
+  -- Check angle between the datum atta and the selected pipe
+    if !!mdsCheckAng(!datum,!atta).not() then
+    	skip
+    endif
+
+    -- all ckecks passed so exit from loop and continue
+    break
+  enddo
+
+  -- preliminary are treated by specific way
+  if !spec.name.eq('/MDP') then
+  	!!ce = !atta
+  	!!mdsancill.preliminarySupp = !!ce
+    -- display !!mdsancill form
+    !formname = !form.fullname()
+    !!mdsAncill.action.clear()
+    !!mdsAncill.action[1] = '!!mdsCrAncill(' & !formname & ')'
+    !!mdsAncill.action[2] = '!!mdsCrAddPipe(' & !formname & ')'
+    !aliasName = !form.support.alias
+    if !aliasName inset('FT17' , 'FT18' , 'FT19') then
+      if !form.support.stru.mcount().neq(0) then
+        !!mdsAncill.action[3] = '!!mdsAdjustTbar(' & !formname & ', 1)'
+        !callb = '!!mdsCreate' & !aliasName
+        !!mdsAncill.action[4] = !callb & '(''DIMENSION'')'
+      endif
+    elseif !aliasName inset('FT03','FT04','FT05','FT06') then
+      !!mdsAncill.action[3] = '!!mdsAdjustBar(' & !formName & ', 1)'
+      if !form.support.stru.mcount().neq(0) then
+        !!mdsAncill.action[4] = '!!mdsCreate' & !aliasName & '(''DIMENSION'')'
+      endif
+    elseif (!aliasName inset('FT07')) then
+      !exists = !form.support.stru.name & '-BAR-1'
+      !!ce = !exists
+      handle NONE
+        !!mdsAncill.action[3] = '!!mdsCreate' & !aliasName & '(''DIMENSION'')'
+      elsehandle ANY
+      endhandle
+    elseif (!aliasName inset('FT21')) then
+      !!ce = !currcomp
+      !!mdsAncill.action[3] = '!!mdsuboltft21()'
+      !!mdsAncill.action[4] = '!!mdsCreateft21(''MdsADDPIPE'')'
+    endif
+    !!mdsAncill.action.append('!!mdsancill.preliminarySupp = nulref')
+    !!kshowForm(!!mdsAncill)
+    !!mdsIAncill(!form.support.type)
+    return
+  endif
+
+  -- add atta to support object
+  !form.support.atta.append(!atta)
+  -- Add atta to datum cross bar
+  if (!form.support.bars.empty())then
+    !form.support.bars[1][1] = !atta
+  else
+    !form.support.bars[1].append(!atta)
+  endif
+
+  -- save old position for restoring
+  !foundAtta = !form.support.atta.findfirst(!atta)
+  !form.support.attaRefPositionStore[!foundAtta] = !atta.pos
+  handle ANY
+  endhandle
+
+  -- remove support type as it is no longer being standalone support
+  !atta.:mdssupptype = ''
+
+  !!ce = !atta
+  !!mdsCrAddPipe(!form)
+
+  -- associate atta with owning frame
+  !assoc = object MDSASSOCIATION(!stru,false)
+  !assoc.addAssociation(!atta)
+
+endfunction

@@ -1,0 +1,670 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            hmrestrictionb.pmlobj
+--   Type:          Object Definition
+--   Group:
+--     Keyword:     Hole Management
+--   Module:        All
+-- Author:          Ricky Thompson
+--  Created:        13 December 2006
+--
+-- Description:
+--   Object used to verify an association in the Hole Management system
+--        1.  Check hole owner is valid/testable (e.g. knuckle plates are not)
+--        2.  Get profile of Hole Owner (panel, HPANEL, ...)
+--        3.  Loop all ASSMBRs that are not Hole Owners.
+--        3.1.  Find VirtualHole or  PORI and DPCA (if any equipment elements are referenced)
+--        4.  Get profile of VirtualHole or PORI
+--        4.1.  Check profile intersects owning (panel) profile
+--        5.  Calculate fixing/extrusion and panel thicknesses and points on the centre-planes of both
+--        5.1.  Check that fixing intersects panel in Z direction (through the panel) or that the DPCA of
+--              an equipment penetration is within a reasonable distance from the panel
+--        6.  Loop through all non-owner ASSMBRs
+--        6.1.  Check that the position of each element is within the owning (panels) profile
+--        7.  Check that the virtual hole profile intersects all other HoleOwners (if they exist).
+
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  gatherData()                     -                   Collect all key information for member variables
+--  getCentrePointOfHPlate(DBREF)    POSITION            return a centre point of a plate (HPLATE, CPLATE[?])
+--  hmRestrictionB()                 -
+--  intersectOwnerProfile()          BOOLEAN             Make sure that /HoleOwner element profile covers all related elements
+--  testEv()                         BOOLEAN             Make sure that at least one AssMbr exists and AMEMRF is set
+--  vectorIntersect()                BOOLEAN             returns true if point vector intersects hole owner
+--
+------------------------------------------------------------------------
+
+define object HMRESTRICTIONB
+
+ -- MEMBER names are compulsory to tie in with ASSOCIATIONS
+ -- COMPONENT = RESTRICTION element
+   member .association   is DBREF
+   member .component     is DBREF
+
+   member .allAssMbr     is ARRAY
+   member .ownerAssMbr   is DBREF
+
+   -- Additional members required to simplify processing
+   member .hmHole       is HMHOLE
+   member .ownerPlane   is PLANE
+
+
+   member .debug         is BOOLEAN
+endobject
+-- End of object definition
+
+
+------------------------------------------------------------------------
+--
+-- Method:      hmRestriction
+--
+-- Description: Constructor method
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .hmRestrictionB()
+
+  !this.debug = defined(!!debug)
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      testEv
+--
+-- Description: Make sure that at least one AssMbr exists and AMEMRF is set
+--              Make sure that each AssMbr has AMEMRF set
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .testEv() is BOOLEAN
+
+-- Manually trigger the CONSTRUCTOR - does not get run automatically at the moment
+  !this.hmRestrictionB()
+  handle any
+    return FALSE
+  endhandle
+
+  !this.gatherData()
+  handle any
+    return FALSE
+  endhandle
+
+  if (badref(!this.hmHole.holeOwner)) then
+    return FALSE
+  endif
+
+  if (!this.hmHole.holeOwner.hardType inset('CPANEL','CPLATE','CTWALL','BPANEL')) then
+    -- no point in doing this test at the moment. Cannot determine planar surface
+    return TRUE
+  endif
+
+-- If key data not located then fail
+  if (!this.ownerPlane.unset() OR !this.allAssMbr.unset() ) then
+    if (!this.debug ) then
+      write 'Owner plane or AssMbr list unset in hmRestrictionB.testEv()'
+    endif
+    return FALSE
+  endif
+  -- Carry Out An Intersection Check If SCTN/GENSEC based elements
+  if(!this.hmHole.holeOwner.hardType inset('SCTN','GENSEC','STWALL','WALL')) then
+      if ( NOT !this.vectorIntersect() ) then
+        if (!this.debug ) then
+          write 'Failed check in hmRestrictionB.intersectOwnerProfile()'
+        endif
+        !!setRestrictionError(!this.association, !this.component, |Cannot find intersection with penetrated | + !this.hmHole.holeOwner.type)
+        return FALSE
+      endif
+  -- Check on profile of Hole Owner
+  elseif ( NOT !this.intersectOwnerProfile() ) then
+      if (!this.debug ) then
+        write 'Failed check in hmRestrictionB.intersectOwnerProfile()'
+      endif
+    return FALSE
+  endif
+-- Once all checks completed successfully...
+  return TRUE
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      gatherData
+--
+-- Description: Collect all key information for member variables
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .gatherData()
+
+-- Gather all hole data for this association
+  !this.hmHole = object HMHOLE(!this.association)
+
+
+  !this.allAssMbr = object ARRAY()
+  !this.ownerAssMbr = object DBREF()
+
+-- Locate ALL the Assmbr elements for this ASSOCIATION
+    !find = object COLLECTION()
+    !find.type('ASSMBR')
+    !find.scope(!this.hmHole.element)
+    !this.allAssMbr = !find.results()
+
+    -- Now identify just the /HoleOwner AssMbr
+    !find.filter(object EXPRESSION(|LNAME eq '/HoleOwner'|) )
+    !this.ownerAssMbr = !find.results()[1]
+
+-- Calculate the plane for the HoleOwner (if possible)
+  !this.ownerPlane = object PLANE()
+  !planePos = !this.hmHole.holeOwner.pos
+  handle any
+    if (!this.debug ) then
+      !itemText = !this.hmHole.holeOwner.type + | | + !this.hmHole.holeOwner.name
+      write 'Failed to get HoleOwner POS from $!itemText in hmRestrictionB.gatherData()'
+    endif
+    return
+  endhandle
+  !planeOri = !this.hmHole.holeOwner.ori
+  handle any
+    if (!this.debug ) then
+      write 'Failed to get HoleOwner ORI in hmRestrictionB.gatherData()'
+    endif
+    return
+  endhandle
+  !this.ownerPlane = object PLANE(!planePos, !planeOri)
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      intersectOwnerProfile
+--
+-- Description: Make sure that /HoleOwner element profile covers all related elements
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .intersectOwnerProfile() is BOOLEAN
+--   1.  Check hole owner is valid/testable (e.g. knuckle plates are not)
+
+-- Locate the PANE element for this /HoleOwner of this ASSOCIATION
+  !findPloo = object COLLECTION()
+  !findPloo.addtype('PLOO')
+  !findPloo.addtype('HPANEL')
+  !findPloo.addtype('CPANEL')
+  !findPloo.addtype('HPLATE')
+  !findPloo.addtype('CPLATE')
+  !findPloo.scope(!this.hmHole.holeOwner)
+  !element = !findPloo.results()[1]
+  if (!element.type eq 'HPLATE') then
+    !element = !element.owner
+  elseif (!element.type eq 'CPLATE') then
+    !element = !element.hrdprx[1]
+  endif
+--   2.  Get profile of Hole Owner (panel, HPANEL, ...)
+  !checkProfile = object PROFILE( !element )
+  handle (2,836) $* Profile has no edges
+    --ensure the HPANEL contains knuckle plates
+    !panel = !findPloo.results()[1]
+    if (!panel.type eq 'HPANEL') then
+      var !test coll all HPLATE with (KNUCKL) for $!<element>
+      if (!test.size() gt 0 ) then
+        -- Unable to get the profile of a knuckle plate so ignore the validation
+        !!setRestrictionError(!this.association, !this.component, |Unable to validate knuckle plates|)
+        return TRUE
+      else
+        !!setRestrictionError(!this.association, !this.component, |HPANEL has no edges|)
+        return FALSE
+      endif
+    elseif (!panel.type eq 'CPANEL') then
+      -- Unable to get the profile of a curved plate so ignore the validation
+      !!setRestrictionError(!this.association, !this.component, |Unable to validate CPANELs|)
+      return TRUE
+    else
+      !!setRestrictionError(!this.association, !this.component, |Unable to find edges of penetrated item|)
+      return FALSE
+    endif
+  endhandle
+  -- check validity of hole owner
+  if( !checkProfile.isValidClosed().not() ) then
+    !!setRestrictionError(!this.association, !this.component, |Boundary of penetrated item is invalid|)
+    return FALSE
+  endif
+  if( !checkProfile.area() eq 0mm2 ) then
+    !!setRestrictionError(!this.association, !this.component, |Boundary of penetrated item is invalid|)
+    return FALSE
+  endif
+
+  --find the relevant extrusion or the virtual hole fixing. Cannot just use
+  -- the hmHoles' virtualHole member as this is not what we need if this is an equipment penetration
+  !ob = object DBREF()
+  --position of a point in the centre plane of the extrusion or
+  --the origin of a fixing
+  !cPoint = object POSITION()
+  !eleCPoint = object POSITION()
+--  3.  Loop all ASSMBRs that are not Hole Owners.
+
+  do !i values !this.allAssMbr
+    if (badref(!i.amemrf)) then
+      !!setRestrictionError(!this.association, !this.component, |Association contains an invalid AMEMRF element|)
+      return FALSE
+    endif
+
+--  3.1.  Find VirtualHole or  PORI and DPCA (if any equipment elements are referenced)
+    if (!i.amemrf.type eq 'SUBE' or !i.amemrf.type eq 'EQUI') then
+      --equipment penetrations are a bit of a special case
+      --as the extrusion defining the penetration profile is not necessarily
+      --going to be intersecting the penetrated object. The design point
+      --should, however, be close to the penetrated item
+     do !mem values !i.amemrf.members
+       if (!mem.type eq 'PORS' and !mem.purpose eq 'HOLE') then
+         !ob = !mem.members[1]
+         handle any
+         endhandle
+          if (defined(!dpca)) then
+            break
+          endif
+        elseif (!mem.type eq 'DPSE' and !mem.purpose eq 'HOLE') then
+          -- check that this design point is for this penetration
+          !belongsToThisPenetration   = !mem.assos[1].eq(!this.association)
+          handle any
+            !belongsToThisPenetration = false
+          endhandle
+          skip if( !belongsToThisPenetration.not() )
+          !dpca = !mem.members[1]
+          handle any
+            !dpca.delete()
+            handle any
+            endhandle
+          endhandle
+          if (not(badref(!ob))) then
+            break
+          endif
+        endif
+      enddo
+      if (not(badref(!ob))) then
+        break
+      endif
+    elseif ( !i.amemrf.type eq 'FIXING' and !i.amemrf.owner.type neq 'FIXING' and !i.amemrf.purp neq 'COAM') then
+      !ob = !i.amemrf
+      break
+    endif
+  enddo
+  if (badref(!ob)) then
+    !!setRestrictionError(!this.association, !this.component, |Unable to get reference of penetrating fixing/extrusion|)
+    return FALSE
+  endif
+--  4.  Get profile of VirtualHole or PORI
+  !fixingProfile = !!hmFindHoleProfile(!ob)
+  if (unset(!fixingProfile)) then
+    !!setRestrictionError(!this.association, !this.component, |Unable to create profile of virtual hole|)
+    return FALSE
+  endif
+
+--  4.1.  Check profile intersects owning (panel) profile
+  !isOutside = !checkProfile.isWithout(!fixingProfile)
+  handle (2,830)
+    --may happen if penetrated item has been rotated
+    !!setRestrictionError(!this.association, !this.component, |Fixing/extrusion profile does not have same orientation as the penetrated profile|)
+    return FALSE
+  endhandle
+  if (!isOutside) then
+    !!setRestrictionError(!this.association, !this.component, |Fixing profile does not intersect penetrated item|)
+    return FALSE
+  endif
+
+--    5.  Calculate fixing/extrusion and panel thicknesses and points on the centre-planes of both
+
+  -- now ensure profiles are on the same plane
+   -- first find the thickness of the fixing
+  -- Create a plane of the penetrated panel
+  !plane = !checkProfile.plane()
+   -- need to find the thickness of the penetrated object
+  if (not badref(!this.ownerAssMbr)) then
+    !dbrReturn = !this.ownerAssMbr.amemrf
+    !tarf      = !this.ownerAssMbr.asstar
+    handle ANY
+      !!setRestrictionError(!this.association, !this.component, |Unable to find ASSTAR|)
+      return FALSE
+    endhandle
+  endif
+  if (!dbrReturn.set() and (not badref(!dbrReturn)))  then
+    if (!dbrReturn.hardType eq 'PANE') then
+      !plateThickness = !dbrReturn.lohe
+      --get centre point of 1st vertex of PLOOP of panel
+      !eleVertex = object DBREF('PAVE 1 OF PLOOP 1 OF ' + !dbrReturn.string())
+      handle any
+      --if unable to get a proper centre point, try using element position
+        !eleCPoint = !dbrReturn.pos
+      elsehandle none
+        !eleCPoint = !eleVertex.pPos[2]
+      endhandle
+
+    elseif (!dbrReturn.type inset('HPLATE','CPLATE')) then
+      !plateThickness = !dbrReturn.thickn
+      !eleCPoint = !this.getCentrePointOfHPlate(!dbrReturn)
+      if (!eleCPoint.unset()) then
+        !eleCPoint = !dbrReturn.pos
+      endif
+    elseif (!dbrReturn.type inset('HPANEL', 'CPANEL')) then
+      !plateThickness = !tarf.thickn
+      handle ANY
+        !!setRestrictionError(!this.association, !this.component, |Unable to determine plate thickness from TARF|)
+        return FALSE
+      endhandle
+      !eleCPoint = !this.getCentrePointOfHPlate(!tarf)
+      handle any
+        !!setRestrictionError(!this.association, !this.component, |Unable to retrieve centre point of HPLATE|)
+        return FALSE
+      endhandle
+      if (!eleCPoint.unset()) then
+        !eleCPoint = !tarf.pos
+      endif
+    elseif (!dbrReturn.type inset('CTWALL', 'BPANEL')) then
+      -- At this time, this should never happen
+      !plateThickness = !dbrReturn.wThickness
+      !eleCPoint = !dbrReturn.pPos[2]
+      handle ANY
+      	if(!dbrReturn.type eq 'CTWALL') then
+        	!!setRestrictionError(!this.association, !this.component, |Unable to get centre point of CTWALL|)
+        else
+        	!!setRestrictionError(!this.association, !this.component, |Unable to get centre point of BPANEL|)
+        endif
+        return FALSE
+      endhandle
+    endif
+    if (!eleCPoint.unset()) then
+      !!setRestrictionError(!this.association, !this.component, |Unable to determine centre of penetrated item|)
+      return FALSE
+    endif
+  else
+    !!setRestrictionError(!this.association, !this.component, |Unable to determine penetrated item. Check associations are correct|)
+    return FALSE
+  endif
+   --fixing thickness is normally twice the plate thickness
+  --but should really use the design parameters
+  if (!ob.type eq 'PORI') then
+    !fixThickness = !ob.tarf.height
+    --get centre point of 1st vertex in loop of extrusion pointed to by the tarf
+    !loop = LOOP 1 OF $!<ob.tarf>
+    handle any
+        !!setRestrictionError(!this.association, !this.component, |Unable to get LOOP from TARF of PORI element|)
+      return FALSE
+    endhandle
+    if (defined(!dpca)) then
+      !cPoint = !dpca.pos.wrt(worl)
+      handle any
+        !!setRestrictionError(!this.association, !this.component, |Unable to get POS of DPCA element|)
+        return FALSE
+      endhandle
+
+    else
+      !cPoint = !loop.members[1].pPos[2]
+      handle any
+        !!setRestrictionError(!this.association, !this.component, |Unable to retrieve midpoint of extrusion defining hole profile|)
+        return FALSE
+      endhandle
+    endif
+  else
+    -- Try to get the thickness from the catalogue
+    !fixThickness  = !ob.rprop.hthk
+    handle ANY
+      if (!ob.type eq 'FIXING') then
+        -- Fix for P-26137 Free holes do not have a PORI element so get the fixing thickness directly
+        -- and they do not have a RPROP so get it from the EXTR
+        !fixThickness = !ob.mem[1].mem[1].height
+        handle any
+          !!setRestrictionError(!this.association, !this.component, |Unable to get the height of the FIXING|)
+          return FALSE
+        endhandle
+      endif
+    endhandle
+    !cPoint = !ob.pos
+  endif
+
+
+--    5.1.  Check that fixing intersects panel in Z direction (through the panel) or that the DPCA of
+--              an equipment penetration is within a reasonable distance from the panel
+
+  --!plane contains the plane of the penetrated panel
+  --
+  --we want to find the distance between the midpoint PLANE of the penetrated item and
+  -- the midPOINT of the penetrating item.
+
+  --shift !plane to be passing through a midpoint of the penetrated item
+  !plane.position = !eleCPoint
+  handle any
+    !!setRestrictionError(!this.association, !this.component, |Unable to create plane through midpoint of penetrated item|)
+    return FALSE
+  endhandle
+
+  !intersectPosition = !plane.near(!cPoint)
+  -- create a line between the two points
+  !line = object LINE()
+  !line.startPosition = !cPoint
+  !line.endPosition   = !intersectPosition
+  !distance = !line.length()
+  --test whether the plane offsets are within a reasonable tolerance.
+  if (undefined(!plateThickness) or (!distance gt ((!fixThickness + !plateThickness ) / 2))) then
+    !!setRestrictionError(!this.association, !this.component, |Fixing is not on same plane as penetrated item|)
+    return FALSE
+  endif
+
+
+--    6.  Loop through all non-owner ASSMBRs
+---- check all non-owner items referenced by the AMEMRF elements in each assmbr lies in/on the penetrated items' profile
+  !result = TRUE
+
+  -- Check the AMEMRF for each AssMbr to see if its within the profile
+  do !item values !this.allAssMbr
+    if (BADREF(!item.amemrf)) then
+      !!setRestrictionError(!this.association, !this.component, |Bad reference in an AMEMRF field in one of the elements in the hole association|)
+      return FALSE
+    endif
+    skip if (!item.amemrf.hardType inset ('CWBRAN', 'HPANEL', 'CPANEL', 'HHOLE', 'CHOLE', 'EQUI', 'SUBE', 'TMPL' ))
+    -- Approved hole negative extrusion origin does not need to be within the hole owner boundary
+    skip if( !item.amemrf.hardType eq 'NXTR' and !item.amemrf.purp eq 'PENH' )
+    -- do not check the hole owner against itself
+    skip if (!item.lname eq '/HoleOwner')
+    -- do not check additional penetrating components indicated by LNAME beginning with /A=
+    skip if( !item.lName.subString(1,3) eq '/A=' )
+    -- get position of item
+    !checkPos = !item.amemrf.pos
+    handle any
+      -- CWBRAN returns a position so we need to skip them
+      -- we also need to skip any additional panels or holes
+      if (!this.debug ) then
+        !itemText = !item.type + | | !item.name
+        write 'Failed to get position from $!itemText in hmRestrictionB.intersectOwnerProfile()'
+      endif
+      skip
+    endhandle
+
+    -- do not check DPCA member. This does not have to be inside the profile
+    skip if( !item.amemrf.hardType eq 'DPCA' )
+    if (!checkPos.east.unset()) then
+      !!setRestrictionError(!this.association, !this.component, |Unable to get a valid position from an element referenced in the hole association|)
+      return FALSE
+    endif
+--    6.1.  Check that the position of each element is within the owning (panels) profile
+
+    !result = !checkProfile.isWithout(!checkPos)
+    if( !result ) then
+      -- stop if result is bad
+      !!setRestrictionError(!this.association, !this.component, |Not all items in the hole are within the fixing profile|)
+      return FALSE
+    endif
+
+  enddo
+
+--    7.  Check that the virtual hole profile intersects all other HoleOwners (if they exist).
+---- Check that any additional HPANEL hole owners intersect with the virtual hole. ----
+  if (!this.hmHole.holeOwners.empty().not()) then
+
+    if (!this.hmHole.fixiType eq 'Free') then
+      !findLoop = object COLLECTION()
+      !findLoop.type('LOOP')
+      !findLoop.scope(!this.hmHole.virtualHole)
+      !loop = !findLoop.results()[1]
+      !virtualProfile = object PROFILE(!loop)
+     else
+       !virtualProfile = !!hmFindHoleProfile(!this.hmHole.virtualHole)
+    endif
+
+    do !panel values !this.hmHole.holeOwners
+      -- Can not check CPANEL
+      skip if (!panel.hardType eq 'CPANEL')
+      !penetratedProfile = object PROFILE(!panel)
+      !penetratedProfile.mergePoints()
+      !penetratedProfile.mergeLines()
+      if (!penetratedProfile.isWithout(!virtualProfile)) then
+        !!setRestrictionError(!this.association, !this.component, |Virtual profile lies outside penetrated item profile|)
+        return FALSE
+      endif
+    enddo
+  endif
+  !!setRestrictionError(!this.association, !this.component, |No Error|)
+  return TRUE
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      getCentrePointOfHPlate
+--
+-- Description: return a centre point of a plate (HPLATE, CPLATE[?])
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       DBREF of HPLATE or CPLATE to use
+-- Return:
+--   [Data Type] [Description]
+--     POSITION   position of a point on the centre plane of the plate passed in
+--
+------------------------------------------------------------------------
+
+define method .getCentrePointOfHPlate(!dbRef is DBREF) is POSITION
+  !return = object POSITION()
+  -- only for HPLATE
+  if (!dbRef.hardType ne 'HPLATE') then
+    return !return
+  endif
+  --can't handle knuckled HPLATE either
+  if (!dbRef.knuckl) then
+    return !return
+  endif
+
+  !pv1 = object POINTVECTOR()
+  !pv1.position = !dbRef.position
+  handle any
+    return !return
+  endhandle
+
+  !pv1.direction = !dbRef.orientation.zDir()
+
+  !thickness = !dbRef.loHeight
+  handle any
+    !thickness = 0
+  endhandle
+  !pv2 = !pv1.offset( -0.5 * !thickness )
+
+  !return = !pv2.position
+  handle any
+    return object POSITION()
+  endhandle
+  return !return
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      vectorIntersect
+--
+-- Description: returns true if point vector intersects hole owner
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if vector intersects the hole owner
+--
+------------------------------------------------------------------------
+define method .vectorIntersect() is BOOLEAN
+
+  -- find the z direction and position of the fixing
+  do !assMemb values !this.allAssMbr
+    if ( !assMemb.amemrf.type.eq('FIXING')) then
+     !dir = !assMemb.amemrf.ori.zDir()
+     !pos = !assMemb.amemrf.pos
+    else
+      skip
+    endif
+  enddo
+
+  -- generate a point vector in the direction of the penetration
+  !vector = object POINTVECTOR(!pos,!dir)
+  handle any
+    return false
+  endhandle
+  !holeOwner = !this.hmHole.holeOwner
+
+  -- check if the vector intersects the penetrated item
+  !hits = !vector.intersections(!holeOwner,True)
+  !numHits = !hits.size()
+
+  -- there is different acceptance criteria for accepted holes
+  if (!this.hmHole.getFullStatus().eq('APPROVED')) then
+    if (!numHits.gt(0)) then
+      !return = false
+    else
+      !return = true
+    endif
+  else
+    if (!numHits.gt(0)) then
+      !return = True
+    else
+      !return = False
+    endif
+  endif
+
+  return !return
+
+endmethod

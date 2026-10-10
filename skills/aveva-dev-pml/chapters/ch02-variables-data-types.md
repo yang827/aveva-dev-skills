@@ -45,6 +45,7 @@ PML 2 treats data in two distinct ways upon assignment (`!a = !b`) and parameter
 * **Delimiters**: Single quotes `'text'` or pipes `|text with 'quotes' or $special|`.
 * **`unset()`**: Method checking if a variable or member is unassigned (`if (!var.unset()) ...`).
 * **`DELETE VAR`**: Frees variable memory (`delete var !varName`, `delete var !!globalName`).
+* **`ANY` (signature-only specifier)**: Type specifier usable **only** in function/method formal-parameter declarations — and, where documented, in function return-type declarations — to accept differing argument types. It is **not** a variable type: `!var is ANY` as a normal variable declaration is invalid, and a variable's type is fixed at creation and cannot change during its lifetime. See Ch 5 "ANY Type Usage Restrictions (MANDATORY)".
 
 ---
 
@@ -98,6 +99,7 @@ $P Isolated Array Size: $!isolatedArray.size()  -- Outputs: 3
 * **Modifying Gadgets Through Stale References**: Assigning `!btn = !this.myButton` across different form events without verifying if the parent form is still loaded.
 * **Zero-Based Array Indexing**: PML arrays are strictly **1-based** (`!arr[1]`). Accessing index 0 throws a runtime exception.
 * **Incorrect Equality Comparison**: Using `==` or `=` for expression comparison. Always use `EQ`, `NE`, `LT`, `LE`, `GT`, `GE`.
+* **Declaring a "generic" variable `is ANY`**: `!value is ANY` as a normal variable declaration is invalid PML. ANY is a signature-position specifier (formal parameters, and return types where documented) — not a variable type, not C# `object`, not a generic `T`. Choose a concrete type, `ARRAY`, or an object design instead. (Ch 5: ANY Type Usage Restrictions.)
 
 ## Reference Tables
 | Concept / Keyword | Syntax | Behavior / Return |

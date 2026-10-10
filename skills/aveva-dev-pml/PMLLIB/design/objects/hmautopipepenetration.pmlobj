@@ -1,0 +1,684 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            hmautopipepenetration.pmlobj
+--   Type:          Object Definition
+--   Group:         Marine pack
+--   Keyword:       STL
+--   Module:        common
+--  Author:          Undefined
+--  Created:         Fri Jun 25 15:23:44 2010
+--
+-- Description:
+-- Automatic penetration for pipe
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  checkExistingHole(DBREF,DBREF,POSITION) BOOLEAN             check for existing penetration at given position
+--  createHole(ARRAY,POSITION)       BOOLEAN
+--  findPenetrations(DBREF,REAL)     -                   Find penetrations positions. Clash list for penetrated item
+--  getNormalisedPosition(DBREF,POINTVECTOR,POSITION) POSITION            Adjust penetration position to lie on intersection of
+--  hmAutoPipePenetration()          -                   Constructor
+--  initialisePenetrationData()      -                   Initialise penetration processing for this discipline
+--  message(STRING,REAL)             -                   update progress messages using message open callback
+--  messageCallback(STRING)          -                   set call back for progress messages
+--  penetratingScope(DBREF)          ARRAY               Set scope to specific penetrated and penetrating
+--  penetratingScope(VOLUME)         ARRAY               Find all potential penetrating items for given volume
+--  processPenetrationData(REAL)     ARRAY               Process data stored in the penetrationData array
+--  setHoleData(ARRAY)               -                   Set hole data HMHOLETYPE for the PIPE penetrations
+--
+------------------------------------------------------------------------
+
+-- Define object
+define object HMAUTOPIPEPENETRATION
+
+  -- Array of PENETRATIONDATA type objects containing raw penetration data
+  -- This is an array of different types of penetration objects all supporting the same interface
+  member .penetrationData        is ARRAY
+  -- Standard hole GPART data
+  member .gPartData              is ARRAY
+  -- specification search criteria
+  member .pipeSpecSearch         is SPCSEARCH
+  -- Open callback that is called for progress message.
+  -- Open call must be of form '!!callback(' and method must take a string argument
+  member .messageAction          is STRING
+  -- penetrating fitting specification
+  member .specification          is STRING
+  -- penetrating marker type
+  member .markerType             is STRING
+  -- error log
+  member .errorLog               is COMPROPERROR
+
+endobject
+-- End of object definition
+------------------------------------------------------------------------
+--
+-- Method:      hmAutoPipePenetration
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .hmAutoPipePenetration()
+
+  -- SPECIFICATION setup
+  !this.pipeSpecSearch.spwlType     = 'PIPE'
+  !this.pipeSpecSearch.type         = 'PENI'
+  !this.pipeSpecSearch.search()
+
+  !this.messageAction               = ''
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      penetratingScope
+--
+-- Description: Find all potential penetrating items for given volume
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      VOLUME     Volume to search for penetrating items
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Penetrating items
+--
+------------------------------------------------------------------------
+define method .penetratingScope(!volume is VOLUME) is ARRAY
+
+  -- find all pipe within penetrated volume (ignoring old cable tray elements)
+  !allPipe = !!collectAllWithin('BRAN','TYPE OF OWNER EQ |PIPE| AND PURP OF PSPEC EQ |PIPE|', !volume.from, !volume.to, 'WORL')
+
+  return !allPipe
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      penetratingScope
+--
+-- Description: Set scope to specific penetrated and penetrating
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       penetrating item
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Penetrating branch item in [1]
+--
+------------------------------------------------------------------------
+define method .penetratingScope(!penetrating is DBREF) is ARRAY
+
+  !allPenetrating      = ARRAY()
+  if( !penetrating.owner.type eq 'BRAN' ) then
+    !allPenetrating[1] = !penetrating.owner
+  else
+    !allPenetrating[1] = !penetrating
+  endif
+
+  return !allPenetrating
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      setHoleData
+--
+-- Description: Set hole data HMHOLETYPE for the PIPE penetrations
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY        Array of hole data objects
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setHoleData(!holeData is ARRAY)
+
+  !this.gPartData = !holeData
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      .initialisePenetrationData()
+--
+-- Description: Initialise penetration processing for this discipline
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .initialisePenetrationData()
+
+  -- get selected specification
+  if( !this.pipeSpecSearch.replacement.empty() ) then
+    !this.specification = 'DFLT'
+  else
+    !this.specification = !this.pipeSpecSearch.replacement[1]
+  endif
+  !this.markerType      = !!holeManagementConfiguration.markerTypes[1]
+  -- reinitialise the error log for this run of auto-penetration
+  !this.errorLog.clear()
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      .findPenetrations()
+--
+-- Description: Find penetrations positions. Clash list for penetrated item
+--              must be current
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Penetrated item
+--    2   R      REAL        Number of clashes in current clash list
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .findPenetrations(!penetratedItem is DBREF,!clashCount is REAL)
+
+  -- find the nearest clash to the original selected component
+  !clashTarget              = ARRAY()
+  !normalisedClashPosition  = ARRAY()
+  !tubeClash                = ARRAY()
+  !previousClashComponent   = ARRAY()
+
+  -- process each clash between penetrated and penetrating
+  do !number from 1 to !clashCount
+
+    !clash = object AVACLASH(!number)
+    -- ignore if not HH clash
+    skip if( !clash.clashType neq 'HH' )
+
+    -- get pipe clash data
+    !tube           = !clash.clasherType.match(|(tube)|) gt 0
+    !clashComponent = !clash.clasher
+    if (!clashComponent.type eq 'BRAN') then
+      !branch = !clashComponent
+    else
+      !branch = !clashComponent.owner
+    endif
+
+    -- get target clash data
+    !target = !clash.clashee
+    if (!target.hardType eq 'PANE') then
+      -- do not penetrate a panel that is owned by a TMPL
+      skip if( !target.ahList.findFirst('TMPL').set() )
+      !panel  = !target
+    elseif (!target.type eq 'HPLATE') then
+      -- Only find hull panel clash with HPLATE
+      !panel = !target.owner
+    elseif (!target.owner.type eq 'HPANEL') then
+      -- Ignore clash with hull panel stiffener, bracket ...
+      skip
+    elseif (!target.type eq 'CTWALL' or !target.type eq 'BPANEL') then
+      -- CTWALL, BPANEL clash
+      !panel = !target
+    elseif (!target.hardType eq 'SCTN') then
+      -- SCTN clash
+      !panel = !target
+    elseif (!target.hardType eq 'GENSEC') then
+      -- GENSEC clash
+      !panel = !target
+    else
+      -- ignore all other clashes
+      skip
+    endif
+
+    -- clash position
+    !clashPosition = !clash.clashPosition
+
+    -- Find out the normalised penetration position
+    if (!clashComponent.type eq 'BRAN') then
+      !point     = !clashComponent.hpos
+      !direction = !clashComponent.hdir
+    else
+      -- skip if arrive or leave connection type is BOXI - attempt to avoid old cable tray pipe
+      -- leave position
+      !point     = !clashComponent.lPos
+      handle any
+        -- handle case where element is badly defined and querying PLeave throws an error
+        !this.errorLog.addError('WARNING')
+        !this.errorLog.setErrorContext('Find Penetrations')
+        !this.errorLog.setErrorText('Cannot process clash component ' + !clashComponent.fullname)
+        skip
+      endhandle
+      -- leave direction
+      !direction = !clashComponent.lDir
+      -- arrive position
+      !aPoint    = !clashComponent.aPos
+      handle any
+      elsehandle none
+        -- check if arrive closer to clash. Allow for non-aligned arrive and leave (e.g.bend)
+        if( !aPoint.distance(!clashPosition) lt !point.distance(!clashPosition) ) then
+          -- use arrive position and direction
+          !point     = !aPoint
+          !direction = !clashComponent.aDir
+        endif
+      endhandle
+    endif
+
+    !pointVector = object POINTVECTOR(!point,!direction)
+
+    !normalisedPosition = !this.getNormalisedPosition(!panel, !pointVector, !clashPosition)
+
+    -- Check for hole already defined here
+    skip if (!!hmCheckExistingHole(!branch, !panel, !normalisedPosition))
+    skip if (!this.checkExistingHole(!branch, !panel, !normalisedPosition))
+
+    -- check if there is more than one new hole clash at this position
+    !duplicateHoleIndex = 0
+    do !clashIndex indices !normalisedClashPosition
+      -- don't test for duplicate of target (penetrated) not the same
+      !duplicateHole = !normalisedClashPosition[!clashIndex].near(!normalisedPosition, 10mm )
+
+      if(!duplicateHole) then
+        -- by default indicate that new clash will not be stored
+        !duplicateHoleIndex = -1
+        if( !tubeClash[!clashIndex] ) then
+          -- previous clash was with tube
+          -- skip duplicate clash if this clash is tube
+          break if(!tube)
+          if( !clashComponent.type inset('COUP', 'UNIO', 'CAP', 'FLAN', 'REDU' ) ) then
+            -- coupling and union more important than tube - replace in list
+            !duplicateHoleIndex = !clashIndex
+            break
+          endif
+        else
+          -- previous clash was with component
+          -- look for tube clash
+          if( not !previousClashComponent[!clashIndex].type inset('COUP', 'UNIO', 'CAP', 'FLAN', 'REDU' ) ) then
+            -- only this list of piping components are more important than tube - replace in list by tube
+            !duplicateHoleIndex = !clashIndex
+            break
+          endif
+        endif
+      endif
+    enddo
+
+    skip if(!duplicateHoleIndex eq -1)
+
+    -- add a new penetration to the list
+    !pipePenetration = object BRANPENETRATIONDATA(!clashComponent, !target, !normalisedPosition, !tube)
+    !pipePenetration.setSpecification(!this.specification)
+    !pipePenetration.setPenetrated(!penetratedItem)
+    !pipePenetration.setMarker(!this.markerType)
+    if( !duplicateHoleIndex eq 0 ) then
+      !this.penetrationData.append( !pipePenetration )
+      !normalisedClashPosition.append(!normalisedPosition)
+      !tubeClash.append(!tube)
+      !previousClashComponent.append(!clashComponent)
+      !clashTarget.append(!target)
+    else
+      !lastIndex = !this.penetrationData.maxIndex()
+      !this.penetrationData[!lastIndex]    = !pipePenetration
+      !normalisedClashPosition[!lastIndex] = !normalisedPosition
+      !tubeClash[!lastIndex]               = !tube
+      !previousClashComponent[!lastIndex]  = !clashComponent
+      !clashTarget[!lastIndex]             = !target
+    endif
+
+  enddo
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .processPenetrationData()
+--
+-- Description: Process data stored in the penetrationData array
+-- NOTE THAT ALL PENETRATIONDATA OBJECTS MUST SUPPORT THE INTERFACE
+-- USED HERE
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      REAL        Clearance to be applied to penetrations
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       of penetration objects
+--
+------------------------------------------------------------------------
+define method .processPenetrationData(!penetratingClearance is REAL) is ARRAY
+
+  -- clear previous results
+  !multiPenetrationData = ARRAY()
+
+  !numberHoles = !this.penetrationData.size()
+  if( !numberHoles eq 0 ) then
+    return !multiPenetrationData
+  endif
+
+  -- choose part data for circular hole
+  !gPartData = object HMHOLETYPE()
+  do !holeType values !this.gPartData
+    if( !holeType.getSecondaryType() eq 'TYPE D') then
+      !gPartData = !holeType
+      break
+    endif
+  enddo
+
+  -- loop through the list of penetrations and process each one to create virtual hole
+  do !index indices !this.penetrationData
+
+    -- generate progress message
+    !this.message('Processing pipe penetrations', int( 100 * (!index - 1) / !numberHoles ) )
+
+    -- This object is a BRANPENETRATIONDATA object
+    !penetrationData = !this.penetrationData[!index]
+    -- NOTE THAT ALL PENETRATIONDATA OBJECTS MUST SUPPORT THE INTERFACE USED HERE
+    -- The branch ATTA is created here by the BRANPENETRATIONDATA object (The fixings will be created in .createSingleHoles below)
+    !result = !penetrationData.processData()
+    handle any
+      -- not all error cases handle correctly by original objects so have to catch errors here
+      !errorText    = !!error.text
+      !errorLine    = !!error.line
+      !errorCommand = !!error.command
+      !this.errorLog.addError('ERROR')
+      !this.errorLog.setErrorContext('Process Penetrations')
+      !this.errorLog.setErrorText(!errorText + ' ['+ !penetrationData.penetrating.fullname + ']')
+      !this.errorLog.setErrorCommand(!errorCommand)
+      !this.errorLog.setErrorLine(!errorLine)
+      skip
+    endhandle
+    if (!result.not()) then
+      !this.errorLog.addError('ERROR')
+      !this.errorLog.setErrorContext('Process Penetrations')
+      !this.errorLog.setErrorText('Cannot create penetration for '+ !penetrationData.penetrating.fullname)
+      skip
+    endif
+    -- convert data to HMPENETRATION data (legacy coding - should be refactored)
+    !data           = !penetrationData.getHoleData()
+    !tube           = !penetrationData.tube
+    -- 2 is the Branch, 4 is the atta, 1 is the panel (or HPANEL or what ever)
+    !newPenetration = object HMPENETRATIONDATA(!data[2], !data[4], !data[1])
+    !newPenetration.setVirtualHoleType(!penetrationData.getHoleType())
+    -- make new temporary object so that old parameter data is not retained
+    !tempPartData   = !gPartData
+    !penetrating    = !penetrationData.penetrating
+
+    if( !tube and !penetrating.type neq 'FLAN' ) then
+      -- check for flanges on either end of tube and use hole size if found, else use OD + clearance
+      VAR !flanges COLL ALL FLAN WITHIN VOL IL TUBE OF $!penetrating FOR OWNER OF $!penetrating
+      handle any
+        !flanges = ARRAY()
+      endhandle
+      if( !flanges.empty().not() ) then
+        !penetrating = !flanges[1].dbref()
+      endif
+    endif
+
+    -- reset clearance for next penetration
+    !clearance    = !penetratingClearance
+
+    -- set parameter to AHDI property if set
+    !autoParam[1] = !penetrating.rProp.attribute('AHDI')
+--    handle any
+--      !autoParam[1] = !penetrating.rProp.attribute('AHX')
+--      handle any
+--        !autoParam = ARRAY()
+--      elsehandle none
+--        !autoParam[2] = !penetrating.rProp.attribute('AHY')
+        handle any
+          -- if no penetration size set then apply clearance
+          !autoParam = ARRAY()
+        elsehandle none
+          -- set clearance to 0 if AHDI property is set
+          !clearance = 0
+        endhandle
+--      endhandle
+--    endhandle
+
+-- Secondly consider any specific elements that need specific adjustments
+    -- if reducer and no AHDI, use largest bore + clearance
+    if( !autoParam.empty() ) then
+      -- deal with reducer case
+      if( !tube.not() and !penetrating.type eq 'REDU' ) then
+        -- use largest bore + clearance
+        !autoParam[1] = !penetrating.aod.max(!penetrating.lod) + !clearance
+        handle any
+          !autoParam = ARRAY()
+        endhandle
+      endif
+    endif
+
+-- Finally if we have a specific auto Parameter adjustment then set it; otherwise we are using the form gadget clearance
+    -- store diameter parameter
+    if( !autoParam.empty().not() ) then
+      !tempPartData.setLastParameterValue(!autoParam)
+    endif
+
+    -- set offset
+    !newPenetration.setOffset(0,0)
+    -- set angle
+    !newPenetration.setAngle(0)
+    -- set clearance
+    !newPenetration.setClearance(!clearance)
+
+    -- set hole type and parameters
+    !newPenetration.setHoleType(!tempPartData)
+
+    -- note penetrating item if not tube
+    if( !tube.not() ) then
+      !newPenetration.setOffsetPenetratingMarker(!penetrating)
+    endif
+
+    -- add to penetration list
+    !multiPenetrationData.append(!newPenetration)
+
+  enddo
+
+  return !multiPenetrationData
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      createHole()
+--
+-- Description: create hole for each HMHOLE in !itemList
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       of HMHOLE - one for each hole to be created
+--    2   R      POSITION    position of penetration
+-- Return:
+--   [Data Type] [Description]
+--------------------------------------------------------------------------
+define method .createHole(!itemList is ARRAY, !position is POSITION) is BOOLEAN
+
+  !interface = object HMINTERFACE()
+  !result = !interface.createPipeHole(!itemList, !position)
+  handle any
+    -- not all error cases handle correctly by original objects so have to catch errors here
+    !errorText    = !!error.text
+    !errorLine    = !!error.line
+    !errorCommand = !!error.command
+    !this.errorLog.addError('ERROR')
+    !this.errorLog.setErrorContext('Create Hole')
+    !this.errorLog.setErrorText(!errorText + ' ['+ !itemList[2].fullname + ' in ' + !itemList[1].fullname + ']')
+    !this.errorLog.setErrorCommand(!errorCommand)
+    !this.errorLog.setErrorLine(!errorLine)
+    return false
+  endhandle
+  if (!result.not()) then
+    !this.errorLog.addError('ERROR')
+    !this.errorLog.setErrorContext('Create Hole')
+    !this.errorLog.setErrorText('Cannot create penetration for ' + !itemList[2].fullname + ' in ' + !itemList[1].fullname)
+  endif
+  return !result
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      message()
+--
+-- Description: update progress messages using message open callback
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Message text
+--    2   R      REAL        progress percentage (0<100)
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .message(!message is STRING, !progress is REAL)
+
+  -- check if progress open callback has been defined
+  if( !this.messageAction.empty() ) then
+    return
+  endif
+
+  -- execute open callback with message and percentage progress
+  !callback = !this.messageAction + '|' + !message + '|, ' + !progress.string() + ')'
+  !callback.block().evaluate()
+  handle any
+  endhandle
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      messageCallback()
+--
+-- Description: set call back for progress messages
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Callback message or '' to stop callback
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .messageCallback(!messageCallback is STRING)
+
+  !this.messageAction = !messageCallback
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      checkExistingHole()
+--
+-- Description: check for existing penetration at given position
+--              Work around for standard hole management bug
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Clashing element
+--    2   R      DBREF       Penetrated element
+--    3   R      Position    Clash Position
+-- Return:
+--   [Data Type] [Description]
+--   BOOLEAN      true if hole at given position
+--
+------------------------------------------------------------------------
+define method .checkExistingHole(!element is DBREF, !panel is DBREF, !position is POSITION) is BOOLEAN
+
+  !find      = object COLLECTION()
+  !find.type('COUP')
+  !find.scope(!element)
+  !couplings = !find.results()
+  if (!couplings.size() eq 0) then
+    return false
+  endif
+
+  -- find out if any of the couplings have an association and if so is its location the same
+  -- as the supplied clash position
+  do !item values !couplings
+    !assoc = !item.assos
+    !holeAssociation = object DBREF()
+    do !association values !assoc
+      -- avoid MDS and other associations
+      skip if( !association.type neq 'ASSOC' )
+      skip if( !association.owner.purpose neq 'HOLE' )
+      !holeAssociation = !association
+      break
+    enddo
+    skip if (badref(!holeAssociation) )
+    if (!position.near(!item.pos, 6mm )) then
+      return true
+    endif
+    -- Are the clashing items the same and
+    -- does the clash position lie within the profile of the virtual hole.
+    !hole = object HMHOLE(!holeAssociation)
+    if (!hole.holeOwner eq !panel) then
+      !virtualHole = !hole.virtualHole
+      if (!hole.fixiType.upcase() eq 'FREE') then
+    	   !find = object COLLECTION()
+    	   !find.type('LOOP')
+    	   !find.scope(!virtualHole)
+        !freeProfile = !find.results()
+        !fixingProfile = object PROFILE(!freeProfile[1])
+      else
+        !fixingProfile = !!hmFindHoleProfile(!virtualHole)
+      endif
+      if (!fixingProfile.isWithin(!position)) then
+        return true
+      endif
+      if (!fixingProfile.onProfile(!position)) then
+      	  return true
+      endif
+    endif
+  enddo
+
+  return false
+
+endmethod
+-- End of method definition
+
+----------------------------------------------------------------------
+--
+-- Method:      .getNormalisedPosition
+--
+-- Description: Adjust penetration position to lie on intersection of
+--              pipe CL and plane of penetrated
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .getNormalisedPosition(!item is DBREF, !pv is POINTVECTOR, !clashPosition is POSITION) is POSITION
+
+  -- First calculate simple projection of clash position onto point vector
+  !normalisedPosition = !pv.through(!clashPosition).position
+
+  -- set penetrating data for each type of penetrated object
+  if( !item.hardType eq 'PANE' or ( !item.hardType inset('HPLATE','HPANEL') and !item.knuckl.not() ) ) then
+    -- planar panel
+    !plane          = object PLANE(!clashPosition, !item.orientation)
+    !intersection   = !plane.intersection(!pv)
+    handle any
+      !intersection = !normalisedPosition
+    endhandle
+    !normalisedPosition = !intersection
+  endif
+
+  return !normalisedPosition
+
+endmethod

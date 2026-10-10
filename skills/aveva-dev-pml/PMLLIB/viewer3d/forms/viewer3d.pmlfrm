@@ -1,0 +1,951 @@
+--    Type:          Form Definition
+--    Group:         Undefined
+--      Keyword:     Undefined
+--    Module:        Undefined
+--  Author:          Undefined
+--  Created:         Fri Jan 11 14:54:53 2013
+------------------------------------------------------------------------------------------
+--                                                                                      --
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--                                                                                      --
+-- File:            viewer3d.pmlfrm                                               --
+--                                                                                      --
+-- Description:                                                                         --
+--   Methods used by viewer3d addin.                                              --
+--                                                                                      --
+--                                                                                      --
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  close()                          -
+--  firstShown()                     -
+--  getAuxiliaryDrawListSglId()      REAL
+--  getBox()                         ARRAY
+--  getClipBox()                     ARRAY
+--  getDirection()                   ARRAY
+--  getDrawListSglId()               REAL
+--  getIso()                         STRING
+--  getLimits()                      ARRAY
+--  getLook()                        STRING
+--  getMouseMode()                   STRING
+--  getPlan()                        STRING
+--  getProjection()                  STRING
+--  getRadius()                      STRING
+--  getRange()                       STRING
+--  getShowAxes()                    REAL
+--  getThrough()                     ARRAY
+--  getVisible()                     REAL
+--  initialiseClipBox()              -
+--  setBox(STRING,STRING,STRING,STRING,STRING,STRING) -
+--  setClipBox(STRING,STRING,STRING,STRING,STRING,STRING) -
+--  setDirection(STRING,STRING,STRING) -
+--  setIso(STRING)                   -
+--  setLimits(STRING,STRING,STRING,STRING,STRING,STRING) -
+--  setLook(STRING)                  -
+--  setMouseMode(STRING)             -
+--  setPlan(STRING)                  -
+--  setProjection(STRING)            -
+--  setRadius(STRING)                -
+--  setRange(STRING)                 -
+--  setShowAxes(BOOLEAN)             -
+--  setThrough(STRING,STRING,STRING) -
+--  setVisible(BOOLEAN)              -
+--  setupView()                      -
+--  slide()                          -
+--  slide(GADGET,STRING)             -
+--  slide2(GADGET,STRING)            -
+--  slidePlane(STRING,REAL)          -
+--  slidePlane(STRING,REAL,STRING)   -
+--  stopSliding()                    -
+--  stopSlidingPlane()               -
+--  viewer3d()                       -
+--
+--  Description:     ----   Methods used by viewer3d addin.                                              ----                                                                                      ----                                                                                      --
+--
+------------------------------------------------------------------------
+import 'Aveva.Pdms.Viewer3D.Addin'
+------------------------------------------------------------------------------------------
+-- Form definition                                                                      --
+------------------------------------------------------------------------------------------
+setup form !!viewer3d dialog docking r
+
+  -- Set the form title
+  !this.formTitle = |3D View|
+
+  -- Set the callbacks on the form
+  !this.firstShownCall  = |!this.firstShown()|
+  !this.killingCall     = |!this.close()|
+
+  -- Define the volume view element
+  frame .volumeFrame panel anchor all width 50 height 10
+    view .volumeView  volume
+      -- Set the size and the initial viewing direction
+      width 60 height 12
+      limits auto
+      isometric 3
+    exit
+  exit
+
+  para .clip   at x1 ymax-0.1 anchor b+l text |Clipbox|
+  -- Define the slider
+  !sliderInfo = |horizontal range -100 100 step 1 val 10|
+  slider .slider at xmax ymin+0.2 anchor b+l $!sliderInfo width 18
+
+  para .clip2   at xmax ymin.clip anchor b+l text |Translucency|
+  !sliderInfo2 = |horizontal range 1 99 step 1 val 10|
+  slider .slider2 at xmax ymin.slider anchor b+l $!sliderInfo2 width 18
+
+  -- A form member
+
+  -- Drawing list
+  member .drawlist is REAL
+
+  -- Auxiliary drawing list
+  member .auxiliaryDrawList is REAL
+
+  -- Box
+  member .box      is GMFBOX
+
+  -- Temporary box used by slide functions
+  member .modBox   is GMFBOX
+
+  -- ISO
+  member .iso is STRING
+
+  -- Plan
+  member .plan is STRING
+
+  -- Look
+  member .look is STRING
+
+  -- Translucency
+  member .translucency is REAL
+
+exit
+------------------------------------------------------------------------------------------
+-- Constructor Method - Setup the form when it is loaded                                --
+------------------------------------------------------------------------------------------
+define method .viewer3d()
+
+  -- Setup the slider
+  !this.slider.tickStyle = 0
+  !this.slider.active    = TRUE
+  !this.slider.callback  = |!this.slide(|
+
+  -- Set common translucency
+  !this.translucency = 50
+
+  -- Setup the slider
+  !this.slider2.tickStyle = 0
+  !this.slider2.active    = TRUE
+  !this.slider2.val = !this.translucency
+  !this.slider2.callback  = |!this.slide2(|
+
+  -- If not already defined, setup the global objects required for a VIEW
+  -- Graphic View Control
+  if undefined(!!gphViews) then
+    call !!comDefineGlobal(object GPHVIEWS())
+  endif
+
+  -- Drawlists
+  if undefined(!!gphdrawlists) then
+    !!comDefineGlobal(object gphDrawlists())
+  endif
+
+  -- Create local drawlist within the global object
+  !this.drawlist = !!gphDrawlists.createDrawList()
+
+  !!gphDrawlists.drawlists[!this.drawlist].holes(TRUE)
+  !!gphDrawlists.drawlists[!this.drawlist].arcTol(0.1)
+
+  -- Create auxiliary drawlist within the global object
+  !this.auxiliaryDrawList = !!gphDrawlists.createDrawList()
+
+  -- Setup the VIEW as required
+  !this.setupView()
+
+  -- Setup the clipbox + associated objects
+  !this.initialiseClipBox()
+  -- !this.volumeView.clipping = TRUE
+
+  -- View empty pop-up menu
+  !this.volumeview.popup = !!viewer3d.newMenu('viewer3demptypopupmenu')
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- First Shown Method - Register the view gadget and attach the drawlist                --
+------------------------------------------------------------------------------------------
+define method .firstShown()
+  -- Add 3D view to view system
+  !!gphViews.add(!this.volumeView)
+  -- Add local drawlist add to 3D view
+  !!gphDrawlists.attachView(!this.drawlist, !this.volumeView)
+  -- Ensure the holes are displayed in the drawlist, with a presentation arc tolerance
+  !!gphDrawlists.drawlists[!this.drawlist].holes(TRUE)
+  !!gphDrawlists.drawlists[!this.drawlist].arcTol(0.1)
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Killing Call Method - Detach the drawlist and then delete it                         --
+------------------------------------------------------------------------------------------
+define method .close()
+  !!gphDrawlists.detachView(!this.volumeView)
+  !!gphDrawlists.deleteDrawlist(!this.drawlist)
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .slide(GADGET, STRING) - Open callback for when the slider is used            --
+------------------------------------------------------------------------------------------
+define method .slide(!gadget is GADGET, !string is STRING)
+
+  if !string.eq(|STOP|) then
+    !this.stopSliding()
+  elseif !string.eq(|START|) then
+    !this.volumeView.clipping = TRUE
+    !this.modBox = !this.box
+  else
+    !this.slide()
+  endif
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .slide2(GADGET, STRING) - Open callback for when the slider is used            --
+------------------------------------------------------------------------------------------
+define method .slide2(!gadget is GADGET, !string is STRING)
+
+  using namespace 'Aveva.Pdms.Viewer3D.Addin'
+
+  -- Remember translucency
+  !this.translucency = !this.slider2.val
+
+  -- Apply transluency for drawlist
+  !myassembly = object PmlViewerThreeDAddin()
+  !myassembly.Translucency(!this.translucency)
+
+  -- Refresh the view
+  !this.volumeView.refresh()
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .stopSliding() - Reset the slider and update the drawlist                     --
+------------------------------------------------------------------------------------------
+define method .stopSliding()
+
+  using namespace 'Aveva.Pdms.Viewer3D.Addin'
+
+  -- Reset the slider
+  !this.slider.val = 0
+
+  -- Store the modified box as the one to use
+  !this.box = !this.modBox
+
+  -- Update the drawlist
+  !myassembly = object PmlViewerThreeDAddin()
+  !myassembly.StopClipping()
+
+endmethod
+------------------------------------------------------------------------------------------
+-- Method .slide() - As the slider moves, dynamically update the clipbox                --
+------------------------------------------------------------------------------------------
+define method .slide()
+
+  !value = !this.slider.val * !this.slider.val.abs()
+
+  !xlen = !this.box.xlength + !value
+  if !xlen.gt(5mm) then
+    !this.modbox.xlength = !xlen
+  else
+    !this.modbox.xlength = 5mm
+  endif
+
+  !ylen = !this.box.ylength + !value
+  if !ylen.gt(5mm) then
+    !this.modbox.ylength = !ylen
+  else
+    !this.modbox.ylength = 5mm
+  endif
+
+  !zlen = !this.box.zlength + !value
+  if !zlen.gt(5mm) then
+    !this.modbox.zlength = !zlen
+  else
+    !this.modbox.zlength = 5mm
+  endif
+
+  !this.volumeView.clipBoxXlen = !this.modbox.xlength
+  !this.volumeView.clipBoxYlen = !this.modbox.ylength
+  !this.volumeView.clipBoxZlen = !this.modbox.zlength
+
+  -- Refresh the view
+  !this.volumeView.refresh()
+
+endmethod
+
+define method .setupView()
+
+  -- Apply some default settings to the view element
+  !this.volumeView.borders = FALSE
+  !this.volumeView.background = |white|
+  !this.volumeView.shaded = TRUE
+  !this.volumeView.projection = |perspective|
+  !this.volumeView.radius = 100
+  !this.volumeView.range = 500.0
+  !this.volumeView.eyemode = FALSE
+  !this.volumeView.step = 25
+  !this.volumeView.showAxes = TRUE
+
+endmethod
+
+define method .initialiseClipBox()
+
+  !this.box.position = object POSITION(|E 0 N 0 U 0 WRT /* |)
+  !this.box.orientation = object ORIENTATION('Y is N')
+  !this.box.xLength = 1mm
+  !this.box.yLength = 1mm
+  !this.box.zLength = 1mm
+  !this.modbox = !this.box
+
+endmethod
+
+-------------------------------------------------------------------------------------------
+-- Method .slidePlane(!direction is STRING, !value is REAL, !action is STRING) - Called when the slider is used --
+-- direction: DOWN UP SOUTH NORTH WEST EAST
+-- action: START SLIDE STOP
+-------------------------------------------------------------------------------------------
+define method .slidePlane(!direction is STRING, !value is REAL, !action is STRING)
+
+  if !action.eq(|STOP|) then
+    !this.stopSlidingPlane()
+  elseif !action.eq(|START|) then
+    !this.volumeView.clipping = TRUE
+    !this.modBox = !this.box
+  else
+    !this.slidePlane(!direction,!value)
+  endif
+
+endmethod
+
+-------------------------------------------------------------------------------------------
+-- Method .slidePlane(!direction is STRING, !value is REAL) - As the slider moves, dynamically update the clipbox --
+-- direction: DOWN UP SOUTH NORTH WEST EAST
+-------------------------------------------------------------------------------------------
+define method .slidePlane(!direction is STRING, !value is REAL)
+
+  !tmpValue = 0
+
+  if !direction.eq(|EAST|) then
+     !this.modbox.xlength = !this.box.xlength + !value
+     !this.modbox.position.east = !this.box.position.east + (!value / 2)
+  endif
+
+  if !direction.eq(|NORTH|) then
+     !this.modbox.ylength = !this.box.ylength + !value
+     !this.modbox.position.north = !this.box.position.north + (!value / 2)
+  endif
+
+  if !direction.eq(|UP|) then
+     !this.modbox.zlength = !this.box.zlength + !value
+     !this.modbox.position.up = !this.box.position.up + (!value / 2)
+  endif
+
+  if !direction.eq(|WEST|) then
+     !this.modbox.position.east = !this.box.position.east + ( !value / 2)
+     !this.modbox.xlength = !this.box.xlength - !value
+  endif
+
+  if !direction.eq(|SOUTH|) then
+     !this.modbox.position.north = !this.box.position.north + ( !value / 2)
+     !this.modbox.ylength = !this.box.ylength - !value
+  endif
+
+  if !direction.eq(|DOWN|) then
+     !this.modbox.position.up = !this.box.position.up + ( !value / 2)
+     !this.modbox.zlength = !this.box.zlength - !value
+  endif
+
+  !clipboxposition[1] = !this.modbox.position.east
+  !clipboxposition[2] = !this.modbox.position.north
+  !clipboxposition[3] = !this.modbox.position.up
+
+  !this.volumeView.clipboxposition = !clipboxposition
+  !this.volumeView.clipBoxXlen = !this.modbox.xlength
+  !this.volumeView.clipBoxYlen = !this.modbox.ylength
+  !this.volumeView.clipBoxZlen = !this.modbox.zlength
+
+endmethod
+
+-------------------------------------------------------------------------------------------
+-- Method .stopSliding() - Reset the slider and update the drawlist --
+-- direction: DOWN UP SOUTH NORTH WEST EAST
+-------------------------------------------------------------------------------------------
+define method .stopSlidingPlane()
+
+  using namespace 'Aveva.Pdms.Viewer3D.Addin'
+
+  -- Store the modified box as the one to use
+  !this.box = !this.modBox
+
+  -- Update the drawlist
+  !myassembly = object PmlViewerThreeDAddin()
+  !myassembly.StopClipping()
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .setShowAxes( !showaxes is BOOLEAN) - Sets new value of showaxes member and updates view. --
+------------------------------------------------------------------------------------------
+define method .setShowAxes( !showaxes is BOOLEAN)
+
+    !this.volumeView.showaxes = !showaxes
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .getShowAxes() is REAL - Returns current value of showaxes member. --
+------------------------------------------------------------------------------------------
+define method .getShowAxes() is REAL
+
+	if !this.volumeView.showaxes then
+		return 1
+	endif
+
+	return 0
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .setVisible( !visible is BOOLEAN) - Sets a value that indicates whether a window should be visible or not. --
+------------------------------------------------------------------------------------------
+define method .setVisible( !visible is BOOLEAN)
+
+    if !visible then
+        show !this
+     else
+        hide !this
+     endif
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .getVisible() is REAL - Gets a value that indicates whether a window is visible or not. --
+------------------------------------------------------------------------------------------
+define method .getVisible() is REAL
+
+	if !this.shown() then
+		return 1
+	endif
+
+	return 0
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .setProjection( !projection is STRING) - Sets new value of projection member and updates view. --
+-- Valid input: PERSPECTIVE PARALLEL
+------------------------------------------------------------------------------------------
+define method .setProjection( !projection is STRING)
+
+    !this.volumeView.projection =!projection
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .getProjection() is STRING - Returns current value of projection member. --
+------------------------------------------------------------------------------------------
+define method .getProjection() is STRING
+
+    return !this.volumeView.projection
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .setIso( !iso is STRING) - Sets new value of iso member and updates view. --
+-- Valid input: ISO1 ISO2 ISO3 ISO4
+------------------------------------------------------------------------------------------
+define method .setIso( !iso is STRING)
+
+  if !iso.eq(|ISO1|) then
+    -- Remember iso
+    !this.iso = !iso
+    -- Reset plan
+    !this.plan = ''
+    -- Reset look
+    !this.look = ''
+    -- Set direction
+    !dir[1] = -0.577350273783069
+    !dir[2] = -0.577350273783069
+    !dir[3] = -0.57735026000274
+    !this.volumeView.direction = !dir
+  elseif !iso.eq(|ISO2|) then
+    -- Remember iso
+    !this.iso = !iso
+    -- Reset plan
+    !this.plan = ''
+    -- Reset look
+    !this.look = ''
+    -- Set direction
+    !dir[1] = -0.577350273783069
+    !dir[2] = 0.577350273783069
+    !dir[3] = -0.57735026000274
+    !this.volumeView.direction = !dir
+  elseif !iso.eq(|ISO3|) then
+    -- Remember iso
+    !this.iso = !iso
+    -- Reset plan
+    !this.plan = ''
+    -- Reset look
+    !this.look = ''
+    -- Set direction
+    !dir[1] = 0.577350273783069
+    !dir[2] = 0.577350273783069
+    !dir[3] = -0.57735026000274
+    !this.volumeView.direction = !dir
+  elseif !iso.eq(|ISO4|) then
+    -- Remember iso
+    !this.iso = !iso
+    -- Reset plan
+    !this.plan = ''
+    -- Reset look
+    !this.look = ''
+    -- Set direction
+    !dir[1] = 0.577350273783069
+    !dir[2] = -0.577350273783069
+    !dir[3] = -0.57735026000274
+    !this.volumeView.direction = !dir
+  endif
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .getIso() is STRING - Returns current value of iso member. --
+------------------------------------------------------------------------------------------
+define method .getIso() is STRING
+
+	return !this.iso
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .setPlan( !plan is STRING) - Sets new value of plan member and updates view. --
+-- Valid input: PLANN PLANS PLANE PLANW
+------------------------------------------------------------------------------------------
+define method .setPlan( !plan is STRING)
+
+  -- Update view
+  if !plan.subString(1,4).eq(|PLAN|) then
+
+    -- Remember plan
+    !this.plan = !plan
+
+    -- Reset iso
+    !this.iso = ''
+
+    -- Reset look
+    !this.look = ''
+
+    !direction = object DIRECTION(!plan.after(|PLAN|))
+    !pVector = object POINTVECTOR(object POSITION(|E 0 N 0 U 0 WRT /* |), !direction)
+    !line = !pVector.line(1)
+
+    !dir[1] = !line.endPosition.east.value()
+    !dir[2] = !line.endPosition.north.value()
+    !dir[3] = !line.endPosition.up.value()
+
+    !this.volumeView.direction = !dir
+
+  endif
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .getPlan() is STRING - Returns current value of plan member. --
+------------------------------------------------------------------------------------------
+define method .getPlan() is STRING
+
+	return !this.plan
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .setLook( !look is STRING) - Sets new value of look member and updates view. --
+-- Valid input: LOOKN LOOKS LOOKE LOOKW LOOKU LOOKD
+------------------------------------------------------------------------------------------
+define method .setLook( !look is STRING)
+
+  if !look.subString(1,4).eq(|LOOK|) then
+
+    if !look.eq(|LOOKU|).or(!look.eq(|LOOKD|)) then
+
+      !dir[1] = 0
+      !dir[2] = -1
+      !dir[3] = 0
+
+      !this.volumeView.direction = !dir
+
+    endif
+
+    -- Remember look
+    !this.look = !look
+
+    -- Reset plan
+    !this.plan = ''
+
+    -- Reset iso
+    !this.iso = ''
+
+    !direction = object DIRECTION(!look.after(|LOOK|))
+    !pVector = object POINTVECTOR(object POSITION(|E 0 N 0 U 0 WRT /* |), !direction)
+    !line = !pVector.line(1)
+
+    !dir[1] = !line.endPosition.east.value()
+    !dir[2] = !line.endPosition.north.value()
+    !dir[3] = !line.endPosition.up.value()
+
+    !this.volumeView.direction = !dir
+
+  endif
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .getLook() is STRING - Returns current value of look member. --
+------------------------------------------------------------------------------------------
+define method .getLook() is STRING
+
+	return !this.look
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .setMouseMode( !mouseMode is STRING) - Sets new value of mouseMode member and updates view. --
+-- Valid input: Rotate Pan Zoom
+------------------------------------------------------------------------------------------
+define method .setMouseMode( !mouseMode is STRING)
+
+    !this.volumeView.mouseMode = !mouseMode
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .getMouseMode() is STRING - Returns current value of mouseMode member. --
+------------------------------------------------------------------------------------------
+define method .getMouseMode() is STRING
+
+	return !this.volumeView.mouseMode
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .setBox() - Sets new value of this.box member. --
+-- Note:                                                         --
+--  x,  y,  z                                                    --
+-- [0],[1],[2] - From                                            --
+-- [3],[4],[5] - To                                              --
+------------------------------------------------------------------------------------------
+define method .setBox(!box1 is STRING, !box2 is STRING, !box3 is STRING, !box4 is STRING, !box5 is STRING, !box6 is STRING)
+
+   !tmpbox1 = object real(!box1)
+   !tmpbox2 = object real(!box2)
+   !tmpbox3 = object real(!box3)
+   !tmpbox4 = object real(!box4)
+   !tmpbox5 = object real(!box5)
+   !tmpbox6 = object real(!box6)
+
+   !this.box.xlength = !tmpbox4 - !tmpbox1
+   !this.box.ylength = !tmpbox5 - !tmpbox2
+   !this.box.zlength = !tmpbox6 - !tmpbox3
+
+   !this.box.position.east = !tmpbox1 + (!this.box.xlength / 2)
+   !this.box.position.north = !tmpbox2 + (!this.box.ylength / 2)
+   !this.box.position.up = !tmpbox3 + (!this.box.zlength / 2)
+
+endmethod
+
+--------------------------------------------------------------------------------------------
+-- Method .getBox() is ARRAY - Returns current value of this.box member. --
+-- Note:                                                                           --
+--  x,  y,  z                                                                      --
+-- [0],[1],[2] - From                                                              --
+-- [3],[4],[5] - To                                                                --
+--------------------------------------------------------------------------------------------
+define method .getBox() is ARRAY
+
+  -- Box
+  !box = object array()
+
+  !tmpbox1 = (!this.box.position.east - !this.box.xlength / 2)
+  !tmpbox2 = (!this.box.position.north - !this.box.ylength / 2)
+  !tmpbox3 = (!this.box.position.up - !this.box.zlength / 2)
+  !tmpbox4 = (!this.box.position.east + !this.box.xlength / 2)
+  !tmpbox5 = (!this.box.position.north + !this.box.ylength / 2)
+  !tmpbox6 = (!this.box.position.up + !this.box.zlength / 2)
+
+  !box[1] = !tmpbox1.string()
+  !box[2] = !tmpbox2.string()
+  !box[3] = !tmpbox3.string()
+  !box[4] = !tmpbox4.string()
+  !box[5] = !tmpbox5.string()
+  !box[6] = !tmpbox6.string()
+
+  return !box
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .setLimits() - Sets new value of this.volumeView.limits member.              --
+-- Note:                                                                                --
+--       E,     N,    U                                                                 --
+-- From  1,     3,    5                                                                 --
+-- To    2,     4,    6                                                                 --
+------------------------------------------------------------------------------------------
+define method .setLimits(!limit1 is STRING, !limit2 is STRING, !limit3 is STRING, !limit4 is STRING, !limit5 is STRING, !limit6 is STRING)
+
+    -- Limits
+    !limits = object array()
+
+    !limits[1] = object real(!limit1)
+    !limits[2] = object real(!limit2)
+    !limits[3] = object real(!limit3)
+    !limits[4] = object real(!limit4)
+    !limits[5] = object real(!limit5)
+    !limits[6] = object real(!limit6)
+
+    !this.volumeView.limits = !limits
+
+endmethod
+
+---------------------------------------------------------------------------------------------
+-- Method .getLimits() is ARRAY - Returns current value of this.volumeView.limits member. --
+-- Note:                                                                                   --
+--       E,     N,    U                                                                    --
+-- From  1,     3,    5                                                                    --
+-- To    2,     4,    6                                                                    --
+---------------------------------------------------------------------------------------------
+define method .getLimits() is ARRAY
+
+    -- Limits
+    !limits = object array()
+    !tmpLimits = !this.volumeView.limits
+
+    !limits[1] = !tmpLimits[1].string()
+    !limits[2] = !tmpLimits[2].string()
+    !limits[3] = !tmpLimits[3].string()
+    !limits[4] = !tmpLimits[4].string()
+    !limits[5] = !tmpLimits[5].string()
+    !limits[6] = !tmpLimits[6].string()
+
+    return !limits
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .setClipBox - Sets new value of the !this.volumeView.clip... members.        --
+-- Note:                                                                                --
+-- pos1, pos2, pis3 - Center of box.                                                    --
+-- xLen, yLen, zLen - Box's dimensions along x, y and z axis.                           --
+------------------------------------------------------------------------------------------
+define method .setClipBox(!pos1 is STRING, !pos2 is STRING, !pos3 is STRING, !xLen is STRING, !yLen is STRING, !zLen is STRING)
+
+  !clipboxposition = object array()
+
+  -- Set clipbox
+  !clipboxposition[1] = object real(!pos1)
+  !clipboxposition[2] = object real(!pos2)
+  !clipboxposition[3] = object real(!pos3)
+
+  !this.volumeView.clipping = TRUE
+
+  !this.volumeView.clipboxposition = !clipboxposition
+  !this.volumeView.clipBoxXlen = object real(!xLen)
+  !this.volumeView.clipBoxYlen = object real(!yLen)
+  !this.volumeView.clipBoxZlen = object real(!zLen)
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .getClipBox() - Gets current value of the !this.volumeView.clip... members.  --
+-- Note:                                                                                --
+-- 1, 2, 3 - Center of box.                                                             --
+-- 4 - Box's length in x direction.                                                     --
+-- 5 - Box's length in y direction.                                                     --
+-- 6 - Box's length in z direction.                                                     --
+------------------------------------------------------------------------------------------
+define method .getClipBox() is ARRAY
+
+  -- clipBox
+  !clipBox = object array()
+
+  !clipboxposition = !this.volumeView.clipboxposition
+
+  !clipBox[1] = !clipboxposition[1].string()
+  !clipBox[2] = !clipboxposition[2].string()
+  !clipBox[3] = !clipboxposition[3].string()
+  !clipBox[4] = !this.volumeView.clipBoxXlen.string()
+  !clipBox[5] = !this.volumeView.clipBoxYlen.string()
+  !clipBox[6] = !this.volumeView.clipBoxZlen.string()
+
+  return !clipBox
+
+endmethod
+
+------------------------------------------------------------------------------------------
+--                                                                                      --
+------------------------------------------------------------------------------------------
+
+define method .getRange() is STRING
+
+   return !this.volumeView.range.string()
+
+endmethod
+
+------------------------------------------------------------------------------------------
+--                                                                                      --
+------------------------------------------------------------------------------------------
+
+define method .setRange(!range is STRING)
+
+   !this.volumeView.range = object real(!range)
+
+endmethod
+
+------------------------------------------------------------------------------------------
+--                                                                                      --
+------------------------------------------------------------------------------------------
+
+define method .getRadius() is STRING
+
+   return !this.volumeView.radius.string()
+
+endmethod
+
+------------------------------------------------------------------------------------------
+--                                                                                      --
+------------------------------------------------------------------------------------------
+
+define method .setRadius(!radius is STRING)
+
+   !this.volumeView.radius = object real(!radius)
+
+endmethod
+
+------------------------------------------------------------------------------------------
+--                                                                                      --
+------------------------------------------------------------------------------------------
+
+define method .getThrough() is ARRAY
+
+  !through = object array()
+
+  !tmpthrough = !this.volumeView.through
+
+  !through[1] = !tmpthrough[1].string()
+  !through[2] = !tmpthrough[2].string()
+  !through[3] = !tmpthrough[3].string()
+
+  return !through
+
+endmethod
+
+------------------------------------------------------------------------------------------
+--                                                                                      --
+------------------------------------------------------------------------------------------
+
+define method .setThrough(!pos1 is STRING, !pos2 is STRING, !pos3 is STRING)
+
+  !through = object array()
+
+  -- Set clipbox
+  !through[1] = object real(!pos1)
+  !through[2] = object real(!pos2)
+  !through[3] = object real(!pos3)
+
+  !this.volumeView.through = !through
+
+endmethod
+
+------------------------------------------------------------------------------------------
+--                                                                                      --
+------------------------------------------------------------------------------------------
+
+define method .getDirection() is ARRAY
+
+  !direction = object array()
+
+  !tmpdirection = !this.volumeView.direction
+
+  !direction[1] = !tmpdirection[1].string()
+  !direction[2] = !tmpdirection[2].string()
+  !direction[3] = !tmpdirection[3].string()
+
+  return !direction
+
+endmethod
+
+------------------------------------------------------------------------------------------
+--                                                                                      --
+------------------------------------------------------------------------------------------
+
+define method .setDirection(!pos1 is STRING, !pos2 is STRING, !pos3 is STRING)
+
+  !direction = object array()
+
+  -- Set clipbox
+  !direction[1] = object real(!pos1)
+  !direction[2] = object real(!pos2)
+  !direction[3] = object real(!pos3)
+
+  !this.volumeView.direction = !direction
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .getAuxiliaryDrawListSglId() is REAL - Gets SGL id of auxiliary draw list.    --
+-- Note. In case of error returns -1.0 .
+------------------------------------------------------------------------------------------
+define method .getAuxiliaryDrawListSglId() is REAL
+
+   -- Set default value which means error.
+   !sglid = -1.0
+
+   -- Get the drawlist associated with the view.
+   !drawlist = !!gphDrawlists.drawlist(!this.auxiliaryDrawList)
+
+   if !drawlist.unset().not() then
+      !sglid = !drawlist.sglid()
+   endif
+
+   return !sglid
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- Method .getDrawListSglId() is REAL - Gets SGL id of draw list. --
+-- Note. In case of error returns -1.0 .
+------------------------------------------------------------------------------------------
+define method .getDrawListSglId() is REAL
+
+   -- Set default value which means error.
+   !sglid = -1.0
+
+   -- Get the drawlist associated with the view.
+   !drawlist = !!gphDrawlists.drawlist(!this.drawlist)
+
+   if !drawlist.unset().not() then
+      !sglid = !drawlist.sglid()
+   endif
+
+   return !sglid
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- End of Form definition and methods                                                   --
+------------------------------------------------------------------------------------------
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+------------------------------------------------------------------------------------------

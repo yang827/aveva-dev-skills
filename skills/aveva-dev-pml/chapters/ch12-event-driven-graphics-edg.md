@@ -102,7 +102,7 @@ Data objects populated by the engine and delivered to the `.action()` callback (
 setup form !!nozzleEdgTool dialog
   title 'Modern EDG Nozzle Inspector'
   
-  paragraph .lbl text 'Click Pick to engage 3D view interaction:' at x 1 y 1
+  paragraph .lbl at x 1 y 1 text 'Click Pick to engage 3D view interaction:'
   button .btnPick 'Engage EDG Pick' at xmin ymax+0.5 callback '!this.startEdg()'
   
   text .txtTag  'Nozzle Name:' at xmin ymax+0.5 is STRING width 25
@@ -143,7 +143,7 @@ define method .startEdg()
   $P EDG Pick engaged. 3D view is interactive.
 endmethod
 
-define method .onPickSuccess(!pickData is ANY)
+define method .onPickSuccess(!pickData is ANY)  -- Legal ANY use: formal-parameter position only (Ch 5 ANY rules)
   -- Callback invoked by EDG engine on successful canvas pick
   !dbItem = !pickData.item()
   !pos    = !pickData.position()

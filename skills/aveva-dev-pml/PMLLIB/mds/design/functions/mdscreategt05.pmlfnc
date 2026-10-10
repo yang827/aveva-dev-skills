@@ -1,0 +1,499 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:		Mdscreategt05.pml
+--   Type:		Function Definition
+--   Group:		Multi Discipline Supports Application
+--     Keyword:		MDS
+--   Module:		design
+--   Replaces:          MPS132
+--
+-- Author:		I.Osborne
+-- Created:		Tue Jul 01
+--
+--
+-- Description:
+-- function to create support guide type 05
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         STRING       Method of creating support
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!MdsCreateGt05(!Method is string)
+
+-- Find current units and set the distance unit to metric
+
+    !CurrentUnits = !!KGetSetUnits()
+
+  -- Initialise variables
+    call !!MdsResetPins(1,9)
+
+--<wd>may2007<mds12>
+--    !IDType = 'GENSEC SCTN PANE FLOOR WALL GWALL STWALL SCREED CFLOOR CSCREED CWALL BOX'
+    !session = current session
+    if !session.module().upcase().match('DESIGN').gt(0) then
+      !IDType = 'GENSEC SCTN PANE FLOOR WALL GWALL STWALL SCREED CFLOOR CSCREED CWALL BOX'
+    elseif  !session.module().upcase().match('OUTFITTING').gt(0) then
+      !IDType = 'GENSEC SCTN PANE FLOOR WALL GWALL STWALL SCREED CFLOOR CSCREED CWALL BOX HSTIFF HPLATE'
+    endif
+--<wd>may2007<mds12>
+
+    !Support    = !!MdsGt05.Support
+    !Clearance  = !!MdsOptions.Clear.val
+    !Overlap    = !!MdsOptions.Overlap.val
+    !Selection  = !!MdsGt05.Size.Selection('Rtext')
+    !Datum      = !Support.Datum
+    !Stru       = !Support.Stru
+    !Name       = !Stru.name
+    !P9dir      = !Support.P9Dir
+    !P10Dir     = !Support.P10Dir
+    !P10DirSnap = !Support.P10Dir
+    !P11Dir     = !Support.P11Dir
+    !P11DirSnap = !Support.P11Dir
+    !PLDir      = !Support.PlDir
+    !PADir      = !Support.PaDir
+    !Alias      = !Support.Alias
+
+--$(
+----------------------------- **** connexions **** -----------------------------
+
+    !Refe = !!CE
+    !Form = !!MdsGT05
+
+--<wd>jun2007<mds12>
+-- Initialise the MDS Associations Data Creation Object MDSASSOC
+    !mdsassoc = object mdsassoc()
+-- Ensure !method is always 'CLEARANCE' for Creating the Associations ONLY
+    !mdsassoc.mode = 'CLEARANCE'
+--<wd>jun2007<mds12>
+
+-- Can we write to the spref attribute of the SREF atta
+-- and the stru
+
+  if !Support.Datum.badref().not() then
+    !SrefName = !Support.Datum.Name.before('/DATUM') + '/SREF'
+      if !!MdsComClaimDac(!Support.Stru,'DACMOD','POS').not() or !!MdsComClaimDac(!SrefName.dbref(),'DACMOD','SPREF').not() then
+        !Despars = !Srefname.dbref().despar
+        !!MdsResetDims(!Form,!Despars)
+        !!kRestoreUnits(!currentunits)
+        !!Alert.Error('Unable to change the support as write access to the SREF atta is not available')
+        return
+      endif
+  endif
+
+    !HaveJoints = FALSE
+
+    if(!Form.Support.Joints.unset().not()) then
+      !Joints     = !Support.Joints
+      !Attributes = array()
+      !HaveJoints = !!KRestoreJoints(!Joints,!Attributes,'SAVE','')
+      handle ANY
+        !HaveJoints = FALSE
+        !Support.Joints.Clear()
+-- in case they have been deleted and cancel is used
+      endhandle
+    endif
+--$)
+---------------------------------------------------------------------------------
+
+  -- Check that Datum atta has been created
+   if (!Datum.set().not())then
+      !!Alert.message('Datum support atta has not been created')
+      !!kRestoreUnits(!currentunits)
+        return
+    endif
+
+  -- Check that Datum atta has been positioned
+    if (!Support.position.not())then
+      !!Alert.message('Position atta before identifying supporting steelwork')
+      !!kRestoreUnits(!currentunits)
+        return
+    endif
+
+  -- Check which attas to work from
+    if (!Support.Bars.size() leq 1)then
+      !Atta = !Support.Atta
+    else
+      !Atta = !Support.Bars[1]
+    endif
+
+  -- This guide can only be built if the p9 of the atta is in one the
+  -- six orthogonal directions
+
+    !CheckDir = !!KSnapOrth(!P9Dir)
+
+    if (!CheckDir.string().length().real() neq 8) then
+      !!Alert.error('Orientation of the support atta is not suitable for this guide. The P9 direction must be in one the six orthogonal directions')
+      !!kRestoreUnits(!currentunits)
+        return
+    endif
+
+  -- Set initial orientation
+      !PUdir = !Support.P9Dir
+      !Udir = !!KSnapOrth(!PUdir)
+      VAR !P3P9Dir CONST DIR P3 OF $!Datum TO P9 OF $!Datum
+      !PDdir = !P3P9Dir.Direction()
+      !DDir = !!KSnapOrth(!PDdir)
+
+-- Store section name and matref for each member
+-- for reseting later
+
+    !StoreMat = array()
+    !StoreMat = !!MdsStoreMat(!Name)
+
+-- Generate pin positions for each creation type
+    if (!Method eq |CURSOR|)then
+
+--$(
+------------ *** Connexion Warnings *** -------------
+      !ErrorMessage = string()
+      !DummyS       = ''
+
+      if(!!kErrorsForConns(!Form, !ErrorMessage, !DummyS).eq('UNJOINTED')) then
+        -- nothing to do
+      elseif(!!kErrorsForConns(!Form, !ErrorMessage, !DummyS).eq('WARNING')) then
+        !Continue = !!Alert.Confirm(!ErrorMessage)
+        if(!Continue.eq('NO')) then
+          !!kRestoreUnits(!currentunits)
+          return
+        endif
+      elseif(!!kErrorsForConns(!Form, !ErrorMessage, !DummyS).eq('ERROR')) then
+        !!Alert.Error(!ErrorMessage)
+        !!kRestoreUnits(!currentunits)
+        return
+      else
+      -- leave in case
+      endif
+--$)
+---------------------------------------------
+
+      label /Element1
+
+      PROMPT OFF
+      PROMPT LOAD ESCAPE |Identify element to support from|
+      ID $!IDType @
+        handle (61,528)
+          PROMPT ON
+          !!CE = !Stru
+          !!kRestoreUnits(!currentunits)
+        return
+        endhandle
+      PROMPT DISMISS
+      PROMPT ON
+      !Picked = !!CE
+
+-- Check if identified element is suitable to support from
+      !TestCe = !!MdsRelToDatum(!Datum, !Picked, !p9dir, !Clearance.real())
+
+      if (!Testce[1].upcase() neq 'ABOVE') then
+        !!Alert.error('Unable to build guide with the open end direction as set')
+        golabel /Element1
+      endif
+
+      !!MdsCreateMess(true)
+
+---------------****** Connexions ******----------------------
+
+--<wd>may2007<mds12>
+--      if (!picked.type eq 'SCTN') or (!picked.hardtype eq 'GENSEC') then
+      if (!picked.type eq 'SCTN') or (!picked.hardtype eq 'GENSEC')  or (!picked.hardtype eq 'HSTIFF') then
+--<wd>may2007<mds12>
+
+        !Support.Connections.clear()
+        !Support.Connections[1] = !Picked
+        !Support.Connections[2] = !Picked
+        -- !!MdsGT05.LineUp.Active = True
+------------------this bit will stop clearance being used if support is not under picked sctn-----------------------
+        if(!HaveJoints) then
+          !Connected = !!MdsGetBeamConn(!Support,!Attributes[1][8].dbref())
+          if(!Connected.Unset()) then
+            !!alert.Error('Support is not positioned correctly through the new joints. Position "Through", before continuing.')
+            !!CE = !Refe
+            return
+          endif
+        endif
+------------------------take it out and it will create joints however far apart the support and steel is------------
+      endif
+-------------------------------------------------------------
+
+--<wd>jun2007<mds12>
+-- Save !picked for Associations
+      !mdsassoc.pick3 = !picked
+--<wd>jun2007<mds12>
+
+    endif
+
+    if (!Method eq |DIMENSION|)then
+    -- Initialise variables for dimension check
+      if (!!MdsGt05.Dim1.val eq 0) then
+        !!Alert.error('Dimension 1 has not been completed.')
+        !!kRestoreUnits(!currentunits)
+        return
+      endif
+    endif
+
+    !!CE = !Stru
+
+    delete STRU MEM
+      handle (41,66) (2,113) (2,113)
+      endhandle
+
+--<wd>oct2000
+    !mdstemp = /MDS/GT05/$!Selection
+    :mdscheck $!mdstemp.:mdscheck
+--<wd>oct2000
+
+    AT $!Datum
+
+    NEW FRMW $!NAME/MAIN
+    !FrmwSupport = !!CE
+
+-- Copy required template/s
+    !!CE = /MDS/GT05/$!Selection
+
+    !Subs = !!KCollectAllFor('SUBS', '', !!CE)
+    !Frmw = !!KCollectAllFor('FRMW', '', !!CE)
+    !FrameFormat = before(!Frmw[1].name, '-FRMW')
+
+-- Navigate back to support and create template elements
+    !!CE = !FrmwSupport
+    COPY ATTRIB OF $!Frmw[1]
+    COPY MEM OF $!Frmw[1] RENAME $!FrameFormat $!NAME
+    do !I indices !Subs
+      NEW SUBS $!NAME/SUBS$!I COPY ATTRIB OF $!Subs[$!I]
+      COPY MEM OF $!Subs[$!I] RENAME $!FrameFormat $!NAME
+    enddo
+
+    !!CE = $!<Name>/DATUM
+    var !Dirp3p9 const dir p3 to p9
+
+    var !insu insu
+
+    !!CE = !Stru
+
+    MOVE $!Ddir THRO P9 OF $!Datum
+
+  -- Ori x is the p11 dir of the atta and z is the opposite of p9
+  -- both snapped to the orth direction
+
+    !Orix = !!KSnapOrth(!P11Dir)
+    !Oriz = !!KSnapOrth(!Dirp3p9.direction())
+
+    ORI X IS $!Orix AND Z IS $!Oriz
+
+  -- Extend and move steelwork
+    !!CE = $!<Name>-BAR-1
+    pin 9 at $!<Name>/DATUM
+    pin 9 dir $!Ddir
+    pin 9 clear 25mm beh $!<Name>/DATUM
+    pin 9 dist $!Insu
+    Move $!Udir clear 0 inf pin 9
+    !!CE = $!<Name>-V2
+    pin 9 dir $!P10DirSnap
+    pin 9 clear 2mm BEH $!<Name>/DATUM
+    Move $!P11DirSnap clear 0 inf pin 9
+    !!CE = $!<Name>-V1
+    pin 9 dir $!P11DirSnap
+    pin 9 clear 2mm BEH $!<Name>/DATUM
+    Move $!P10DirSnap clear 0 inf pin 9
+    !!CE = $!<Name>-BAR-1
+    pin 9 at ce
+    pin 9 dir $!P10dirsnap
+    pin 9 clear -$!Overlap beh $!<Name>-V2
+    extend start thro pin 9
+    pin 9 dir $!P11dirsnap
+    pin 9 clear -$!Overlap beh $!<Name>-V1
+    extend end thro pin 9
+    pin 9 dir $!Oriz
+    pin 9 plane pin 9 thro $!<Name>/DATUM
+    if (!Method.upcase() eq 'CURSOR') then
+      pin 9 plane pin 9 clear 0 inf $!Picked
+    else
+      pin 9 dist $!!MdsGt05.Dim1
+    endif
+
+    !!CE = $!<Name>-V1
+    extend end thro pin 9
+------------------****** connexions *******----------------------
+--$(
+    if(!Support.Connections.unset()) then
+    -- dimensions are being used first
+      :MDSConn default
+    else
+      !Vertical1 = !!CE
+      !Connected = !!MdsGetBeamConn(!Support,!Vertical1)
+      :MDSConn $!connected
+        handle ANY
+        endhandle
+    endif
+--$)
+--------------------*******************--------------------------
+
+    !!CE = $!<Name>-V2
+    extend end thro pin 9
+----------------------- ****** connexions ******* --------------------
+--$(
+    if(!Support.Connections.unset()) then
+    -- dimensions are being used first
+      :MDSConn default
+    else
+      !Vertical2 = !!CE
+      !Connected = !!MdsGetBeamConn(!Support,!Vertical2)
+      :MDSConn $!connected
+        handle ANY
+        endhandle
+    endif
+--$)
+---------------------------********************-----------------------
+
+    pin 8 copy pin 9
+    pin 8 plane pin 8 thro $!<Name>/DATUM
+
+  -- Grab dimension 1 before moving pin
+     !Dim1 = !!KStrReal('const dist pin 9 to pin 8')
+     !!MdsGt05.Dim1.Val = !Dim1
+    pin 8 dist -$!Clearance
+    extend start thro pin 8
+
+    !!CE = $!<Name>-V1
+    extend start thro pin 8
+
+-- Select correct spref
+    !!CE = $!<Name>/SREF
+    !!MdsDacControl(true)
+    if (!Insu.real() eq 0) then
+      SEL SPREF WITH STYP 'GT05-B-$!Selection' SPEC /MDF
+    else
+      SEL SPREF WITH STYP 'GT05-A-$!Selection' SPEC /MDF
+    endif
+
+    !!MdsSetIspe()
+
+    !!MdsSelLstu(!!CE)
+    !!MdsDacControl(TRUE)
+    !!CE = !Stru
+
+  -- Check to see if support is mirrored
+    if (!Support.Mirror)then
+      call !!MdsMirrorGt05()
+      !Support.Mirror = true
+    endif
+
+    -- Set atta reference to datum cross bar
+    !!CE = $!<Name>-BAR-1
+    :MDSAttaRef $!<Name>/DATUM
+    !Support.BarLen[1] = deri length of CE
+    !!CE = !Stru
+
+  -- Store dimensions in design parameters in mm only
+
+    !!CE = $!<Name>/SREF
+    !!MdsDacControl(true)
+    DESPAR $!!MdsGt05.Dim1.Val
+    !!MdsDacControl(false)
+  -- Reset materials of sections
+
+    !!MdsResetMat(!StoreMat)
+
+----------------------***** connexions *****--------------------------
+    !!CE = !Stru
+--$(
+    if(!HaveJoints) then
+      do !index indices !Joints
+
+      -- xif support cursor picking is too unlike the existing then the connections will fail
+        -- if(!Joints[!Index].badref()) then
+          --  !!alert.Error('Reconnection is not possible, connections will be deleted.')
+            --!!MdsSelectJoints(!Form,'DISCONNECT','')
+            --!Support.Joints.clear()
+          --  break
+          --endif
+        if(!Joints[!index].badref().not() and !Attributes[!index][8].dbref().:MDSConn.eq(!Joints[!index].owner.owner)) then
+          !Mainstl = !Attributes[!index][8].dbref().:MDSConn
+          !Support.Joints[!index] =  !!MdsCreateJoint(!MainStl, !Attributes[!index][8].dbref(),!Joints[!index],!Attributes[!index])
+        else
+          !Dummy = object dbref()
+          !DummyA = array()
+          !Mainstl = !Support.Connections[!index]
+          !Support.Joints[!index] =  !!MdsCreateJoint(!MainStl, !Attributes[!index][8].dbref(),!Dummy,!DummyA)
+        endif
+      enddo
+    endif
+--$)
+
+    !!CE = !Stru
+
+  -- Enhance elements using colour set for highlight
+    !ColourList = array()
+    !ColourList.append(!!CE)
+    !ColourList.appendarray(!Support.Atta)
+    !colourlist.appendarray(!support.joints)
+
+  -- Colour Support
+    call !!KEnhanceList(!ColourList)
+
+  -- Reset all pins associated with this support
+    call !!MdsResetPins(1,9)
+
+  -- Update support data held in form
+    !!MdsGt05.Support = !Support
+
+    !!MdsCreateMess(false)
+
+  -- Show dimensions on graphics if required
+    if !!MdsGt05.GraphicalDim then
+      !!Mdsshowdim(!!MdsGt05)
+    endif
+
+---------------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------------------------
+--<wd>jun2007<mds12>
+-- Create the Cross Reference ASSOCIATIONS between the MDS SUPPORT SCTN members $!name-V1 and $!name-V2
+-- and the Main Structure supporting elements for:
+-- <a> CURSOR mode !pick1 and !pick2 -- or -- <b> CLEARANCE mode !pick3
+--
+-- Store the Original Current Element
+   !xce = !!ce
+
+-- Store the Array of MDS Support Members in the MDSASSOC Object
+   !mdsassoc.mdsmember[1] = $!name-V1
+   !mdsassoc.mdsmember[2] = $!name-V2
+
+-- Initialising the MDSASSOWL object always DELETES ALL of the EXISTING Cross Reference Associations
+-- (ASSOC) elements for the Current MDS Support, irrespective of the Creation MODE (!method)
+   !mdsassowl = object mdsassowl(!form)
+   !mdsassowl.mdsform  = !form
+   !mdsassowl.mdsassoc = !mdsassoc
+
+-- Create the Association (ASSOCs) for the Current Support
+   !mdsassowl.mdsassoc(!mdsassoc)
+
+-- Update the FORM SUPPORT object to reference the current MDSASSOWL Associations object
+   !form.support.associations[1] = !mdsassowl
+   !support = !form.support
+
+-- Navigate back to the Original Current Element
+   !!ce = !xce
+
+--<wd>jun2007<mds12>
+---------------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------------------------
+
+-- Reset Units
+   !!kRestoreUnits(!currentunits)
+
+-- End function
+endfunction
+
+-- End of file Mdscreategt05.pml

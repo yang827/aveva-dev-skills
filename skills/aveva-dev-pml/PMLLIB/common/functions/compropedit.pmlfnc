@@ -1,0 +1,419 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            compropedit.pmlfnc
+--   Type:          Function Definition
+--   Group:         General Application
+--     Keyword:     PROP
+--   Module:        common
+--   Replaces:
+--
+-- Author:          C.Brown
+-- Created:         Thu Aug 27 9:29:13 BST 1998
+--
+--
+-- Description:
+-- Build edit form for properties object
+--
+------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--    1   R      REAL        Pointer to global index of COMPROPDATA object
+--    2   R      ARRAY       List of valid purposes
+--    3   R      ARRAY       2 dimensional array storing refs of data elements grouped by purpose
+--    4   R      BOOLEAN     Flag to indicate if form is a blocking form
+--    5   R      BOOLEAN     Flag to indicate if form has apply/dismiss or ok/cancel buttons
+--    6   R      STRING      Data type
+-- Return:
+--   [FORM] [Form that has been created by this function]
+--
+------------------------------------------------------------------------
+define function !!comPropEdit(!pointer is REAL, !purposeList is ARRAY, !propertyData is ARRAY, !blocking is BOOLEAN, !apply is BOOLEAN, !dummyDataType is STRING) is FORM
+
+  -- Get index numbers for propertyData
+  !attrIndex = !purposeList.findFirst('ATTR')
+  !despIndex = !purposeList.findFirst('DESP')
+  !spreIndex = !purposeList.findFirst('SPRE')
+  !sbreIndex = !purposeList.findFirst('SBRE')
+  !plotIndex = !purposeList.findFirst('PLOT')
+
+  !maxEditWidth     = !!comPropOpt.maxEntryWidth()
+  --Ensure there is a sensible value here otherwise the controls end up overlapping
+  if (!maxEditWidth lt 1) then
+  	!maxEditWidth = 1
+  	!!comPropOpt.maxEntryWidth(!maxEditWidth)
+  endif
+  !maxEditLength    = !!comPropOpt.maxEntryGadgets()
+  !minGadgetWidth   = 16
+  !minFormWidth     = 38
+  !minFormHeight    = 1
+  !editListWidth    = 40
+  !editListHeight   = 10
+
+  !measureIcon  = !!pml.getPathName('measure16.png')
+  !comboBoxIcon = !!pml.getPathName('comboboxarrow5x11.png')
+  !dialogIcon   = !!pml.getPathName('dialog16.png')
+
+  -- Local variable storing 50 spaces
+  !spaces = '                                                  '
+
+  -- define blocking form
+  if (!blocking) then
+    !blockingString = 'blocking'
+  else
+    !blockingString = ''
+  endif
+
+  ---------------------------------------------------------------------------
+  -- calculate longest dTitle from data elements
+  -- (this may slow things down too much)
+  ---------------------------------------------------------------------------
+  !dataArray = !propertyData[!attrIndex]
+  !dataArray.appendArray(!propertyData[!despIndex])
+  !dataArray.appendArray(!propertyData[!spreIndex])
+  !dataArray.appendArray(!propertyData[!sbreIndex])
+  !maxWidth = 0
+  !gadgetTotal = 0
+  do !i indices !dataArray
+     -- Ignore hidden properties
+    skip if (!dataArray[!i].ldisp.not())
+    handle any
+      skip if (!dataArray[!i].lhide)
+    endhandle
+    !maxWidth = max(!dataArray[!i].dTitle.length() +  1, !maxWidth)
+    -- Get total number of visible gadgets
+    !gadgetTotal = !gadgetTotal + 1
+  enddo
+
+  -- Increase maxWidth by to give a margin for error in the gadget width calculation
+  !maxWidth = !maxWidth + 1
+
+  if (!gadgetTotal le !maxEditLength) then
+    !purposes[1] = 'ATTR'
+    !purposes[2] = 'DESP'
+    !purposes[3] = 'SPRE'
+    !purposes[4] = 'SBRE'
+
+    !lwidth = !minGadgetWidth
+    -- get the required maximum width for the input gadgets
+    !propFormats    = ARRAY()
+    !propValueTypes = ARRAY()
+    do !purp values !purposes
+      !purpIndex = !purposeList.findFirst(!purp)
+
+      -- Build input gadgets for each property
+      do !j indices !propertyData[!purpIndex]
+        -- Get the corresponding property element
+        !data = !propertyData[!purpIndex][!j]
+
+        -- Ignore hidden properties
+        skip if (!data.ldisp.not())
+        handle any
+          skip if (!data.lhide)
+        endhandle
+
+        -- Check for Valid values
+        !contents = !!comPropCntrl.data[!pointer].getVValuesString(!data)
+        if (!contents.set()) then
+          !lwidth = max(!lwidth,!contents[1].width())
+        endif
+        !propContents[!purpIndex][!j] = !contents
+        -- record format for this property
+        !propFormats[!purpIndex][!j]  = !!comFormats.getGlobalUnitsFormatName(!data.ptyp)
+        !values                       = !!comPropCntrl.data[!pointer].getPropertyValues(!data)
+        !propValueTypes[!purpIndex][!j] = !values[2].objectType()
+
+        !max = REAL()
+        !min = REAL()
+        if (!data.attributes().findFirst('Maxmin').set()) then
+          if (!data.maxMin.set()) then
+            !max = !data.maxMin[1]
+            !min = !data.maxMin[2]
+          endif
+        endif
+        !propMaxMin[!purpIndex][!j][1] = !max
+        !propMaxMin[!purpIndex][!j][2] = !min
+      enddo
+    enddo
+    if (!maxEditWidth gt !lwidth) then
+      !maxEditWidth = !lwidth
+    endif
+  endif
+
+  -- Define form
+  setup form !!comPropEdit$!<pointer> size $!<minFormWidth> $!<minFormHeight> resize $!<blockingString>
+
+    -- Define and set pointer member
+    member .pointer is REAL
+    !this.pointer = !pointer
+
+    path down
+    vdist 0.2
+
+    -- pointer to main form
+    member .mainForm is FORM
+    member .listEdit is BOOLEAN
+    member .nameWidth is REAL
+    member .dimToggles is ARRAY
+
+    if (!gadgetTotal gt !maxEditLength) then
+      -- paragraph gadget to display name of element
+      -- para .name height 1 width $!<editListWidth>
+      text .name ''     anchor t+l+r width $!<editListWidth> is STRING
+      !this.name.setEditable(false)
+      !this.nameWidth = !editListWidth
+
+      member .lastSelection is REAL
+      list .properties  anchor all at xmin ymax columns single width $!<editListWidth> height $!<editListHeight>
+      !this.properties.callback = '!!comPropCntrl.data[!this.pointer].setListMenu(!this.properties)'
+      !this.newMenu('editMenu')
+      !this.properties.setPopup(!this.editMenu)
+      !this.listEdit = true
+
+    else
+      !this.listEdit = false
+
+      ---------------------------------------------------------------------------
+      -- build input gadgets for all 'ATTR, DESP, SPRE, SBRE' data elements
+      ---------------------------------------------------------------------------
+      -- paragraph gadget to display name of element
+      !paraWidth = !maxWidth + !maxEditWidth
+      -- para .name height 1 width $!<paraWidth>
+      text .name ''  anchor t+l+r width $!<paraWidth> is STRING
+      !this.name.setEditable(false)
+      !this.nameWidth = !paraWidth
+
+      !nextYPos = ''
+
+      do !purp values !purposes
+
+        -- Create array to store attribute gadget pointers
+        member .$!<purp>Gadget is ARRAY
+
+        !purpIndex = !purposeList.findFirst(!purp)
+
+        -- Build input gadgets for each property
+        do !j indices !propertyData[!purpIndex]
+
+          -- Get the corresponding property element
+          !data = !propertyData[!purpIndex][!j]
+
+          -- Ignore hidden properties
+          skip if (!data.ldisp.not())
+          handle any
+            skip if (!data.lhide)
+          endhandle
+
+          -- initialise measure button creation flag
+          !measureButton = false
+          !dimToggle     = false
+
+          -- Set the gadget title to the correct width
+          !gadgetTitle = !data.dTitle
+          !!format     = !!realfmt
+
+          -- Define the primary gadget name
+          !name = !purp & !j
+
+          -- Check for Valid values
+          !contents = !propContents[!purpIndex][!j]
+          !globalFormat = !propFormats[!purpIndex][!j]
+          !valueType    = !propValueTypes[!purpIndex][!j]
+          -----------------------------------------------------------------------------
+          -- If there are valid values, the values are displayed in an option gadget
+          -- If there are no valid values, a text input box is used
+          -----------------------------------------------------------------------------
+
+          if (!contents[1].set()) then
+
+            -- If longest display text is greater than the maximum edit gadget width
+            -- then build a combo box, otherwise create an option gadget
+            if (!contents[1].width() gt !maxEditWidth) then
+              -- Text gadget with combo button
+              text   .$!<name>       '$!<gadgetTitle>' anchor t+l+r at xmin.name $!<nextYPos> tagwidth $!<maxWidth> width $!<maxEditWidth> is STRING
+              button .$!<name>select 'sel'             anchor t+r   at xmax ycen - 0.5 * size pixmap sel "$!<comboBoxIcon>" width 5 height 11
+
+              member .$!<name>list is ARRAY
+
+              !listHeight = MIN(10, max(3, !contents[1].size()))
+
+              !this.$!<name>.setEditable(false)
+              !this.$!<name>list = !contents
+              !this.$!<name>select.callback = '!!comPropList(|$!<purp>|, $!<j>, |$!<data.ptyp>|, |$!<data.dTitle>|, $!<listHeight>, !this.$!<name>list, !this.$!<name>.val, !this.pointer)'
+
+            else
+              option .$!<name> '$!<gadgetTitle>' anchor t+l+r at xmin.name $!<nextYPos> tagwidth $!<maxWidth> width $!<maxEditWidth>
+
+              -- populate option gadget
+              do !k indices !contents[1]
+                !contents[1][!k] = SUBSTRING(!contents[1][!k] + !spaces, 1, !maxEditWidth)
+              enddo
+
+              !this.$!<name>.dText = !contents[1]
+              !this.$!<name>.rText = !contents[2]
+              !this.$!<name>.callback = '!!comPropCntrl.data[!this.pointer].inputValue(|$!<purp>|, $!<j>, |$!<data.ptyp>|, !this.$!<name>, false)'
+
+            endif
+
+            if (!data.ptyp eq 'DIST' or !data.ptyp eq 'BORE') then
+              -- check for dimension toggle
+              if (defined(!!comPropCntrl.data[!this.pointer].dimPoints[!data.number])) then
+                !dimToggle = true
+              endif
+            endif
+
+          else
+
+            -- Create Text gadget
+            if (!data.ptyp eq 'DIST') then
+              text .$!<name> '$!<gadgetTitle>' anchor t+l+r at xmin.name $!<nextYPos> tagwidth $!<maxWidth> width $!<maxEditWidth> is REAL format !!distanceFmt
+              !measureButton = true
+              -- check for dimension toggle
+              if (defined(!!comPropCntrl.data[!this.pointer].dimPoints[!data.number])) then
+                !dimToggle = true
+              endif
+            elseif (!data.ptyp eq 'BORE') then
+              text .$!<name> '$!<gadgetTitle>' anchor t+l+r at xmin.name $!<nextYPos> tagwidth $!<maxWidth> width $!<maxEditWidth> is REAL format !!boreFmt
+              !measureButton = true
+              -- check for dimension toggle
+              if (defined(!!comPropCntrl.data[!this.pointer].dimPoints[!data.number])) then
+                !dimToggle = true
+              endif
+            elseif (!data.ptyp eq 'LOG') then
+              toggle .$!<name> '$!<gadgetTitle>' anchor t+l+r at xmin.name $!<nextYPos>
+            elseif (!data.ptyp inset('TEXT','WORD')) then
+              text .$!<name> '$!<gadgetTitle>'   anchor t+l+r at xmin.name $!<nextYPos> tagwidth $!<maxWidth> width $!<maxEditWidth> is STRING
+            else
+              if( !valueType eq 'REAL' )then
+                -- Property returns type REAL
+                if( !globalFormat.empty() ) then
+                  -- No dimension set for this field
+                  text .$!<name> '$!<gadgetTitle>' anchor t+l+r at xmin.name $!<nextYPos> tagwidth $!<maxWidth> width $!<maxEditWidth> is REAL
+                else
+                  -- use given dimension format
+                  text .$!<name> '$!<gadgetTitle>' anchor t+l+r at xmin.name $!<nextYPos> tagwidth $!<maxWidth> width $!<maxEditWidth> is REAL format $!<globalFormat>
+                endif
+              else
+                text .$!<name> '$!<gadgetTitle>'   anchor t+l+r at xmin.name $!<nextYPos> tagwidth $!<maxWidth> width $!<maxEditWidth> is STRING
+              endif
+            endif
+
+            -- Set gadget callback
+            !this.$!<name>.callback = '!!comPropCntrl.data[!this.pointer].inputValue(|$!<purp>|, $!<j>, |$!<data.ptyp>|, !this.$!<name>, false)'
+
+            -- Set max/min validation callback, uses validateCall if 11.3 or later
+            if (!data.attributes().findFirst('Maxmin').set()) then
+              if (!data.maxMin.set()) then
+                !max = !propMaxMin[!purpIndex][!j][1]
+                !min = !propMaxMin[!purpIndex][!j][2]
+                !this.$!<name>.validateCall = |!!comValidateRange(!this.$!<name>.val, $!<max>, $!<min>, '$!<data.ptyp>')|
+                handle any
+                  !this.$!<name>.callback   = '!!comPropCntrl.data[!this.pointer].validateValue(|$!<purp>|, $!<j>, |$!<data.ptyp>|, !this.$!<name>, $!<max>, $!<min>, false)'
+                endhandle
+              endif
+            endif
+          endif
+
+          if (!dimToggle) then
+            -- Create dimension toggle
+            toggle .$!<name>Dim '' tooltip 'Show/Hide $!<data.dTitle> Dimension' anchor t+r at xmax+0.2 ymin
+            !this.$!<name>Dim.callback = '!!comPropCntrl.data[$!<this.pointer>].displayDimension($!<data.number>, !this.$!<name>Dim.val)'
+            !this.dimToggles.append(!this.$!<name>Dim)
+          endif
+
+          if (!measureButton) then
+            -- Create measure button
+            !ypos = 'ycen.' & !name & ' - 0.5 * size'
+            !xpos = 'xmax.' & !name & ' + 1.9'
+            button .$!<name>Measure 'Measure' tooltip 'Measure $!<data.dTitle>' anchor t+r at $!xpos $!ypos pixmap sel "$!<measureIcon>" width 16 height 16
+            !this.$!<name>Measure.callback = '!!comGadgetMeasure(|!!comPropCntrl.data[$!<this.pointer>].setGadget(|, !this.$!<name>, |Edit Property Measurement|, |Measure property dimension|)'
+          endif
+
+          if (!purp eq 'SBRE') then
+            -- Add property setting button to right of option gadget
+            !ypos = 'ycen.' & !name & ' - 0.5 * size'
+            !xpos = 'xmax.' & !name & ' + 1.9'
+            button .$!<name>Prop 'Edit' tooltip 'Modify properties for $!<data.dTitle>' anchor t+r at $!xpos $!ypos pixmap sel "$!<dialogIcon>" width 16 height 16
+            !this.$!<name>Prop.callback = '!!comPropCntrl.data[!this.pointer].editSbre($!<j>)'
+          endif
+
+          -- Set gadget pointer
+          !this.$!<purp>Gadget[!j] = !this.$!<name>
+
+          !nextYPos = 'ymax.' + !name + '+0.1'
+
+        enddo
+      enddo
+    endif
+
+    ---------------------------------------------------------------------------
+    -- build display gadget for 'PLOT' data element
+    ---------------------------------------------------------------------------
+
+    -- Get plot data
+    !plots = !propertyData[!plotIndex]
+    !plotfile = !!comPropCntrl.data[!pointer].getPlotFile()
+
+    if (!plotfile.set()) then
+      !ptyp = !plots[1].ptyp
+
+      if (!!comPropOpt.displayPlotfile()) then
+        !max = 0
+
+        if (!ptyp eq 'LPLT') then
+          !max = MAX(MIN(!max, 16), 12)
+          !size = 'height ' & !max & ' aspec 1.414'
+        else
+          !max = MAX(MIN(!max, 20), 16)
+          !size = 'height ' & !max & ' aspec 0.707'
+        endif
+
+        if (!gadgetTotal gt 5) then
+          frame .plotFrame panel anchor t+r  at xmax form+1 ymin.name
+        else
+          frame .plotFrame panel anchor t+l+r at xmin.name ymax+0.2
+        endif
+          view .plot plot
+          $!<size>
+          borders on
+          cursor pointer
+          add "$!<plotfile>"
+          handle any
+            exit
+          endhandle
+        exit
+        exit
+        !this.plot.background = 'black'
+
+      else
+        -- plotfile button
+        button .plotfile 'Plotfile...' anchor t+l at xmin.name ymax+0.2 callback |!!comPropCntrl.data[$!<pointer>].displayPlot('$!<plotfile>', '$!<ptyp>', '$!<plots[1].dTitle>')|
+      endif
+    endif
+
+    vdist 0.5
+
+    -- Add ok, default, reset, cancel buttons
+    if (!apply) then
+      button .ok      ' Apply ' anchor b+l at xmin.name ymax form+0.3 apply
+      button .cancel  'Dismiss' anchor b+l at xmax form-size ymin cancel
+    else
+      button .ok      '  OK  '  anchor b+l at xmin.name ymax form+0.3 ok
+      button .cancel  'Cancel'  anchor b+l at xmax form-size ymin cancel
+    endif
+    button .default 'Default'   anchor b+l   at xcen form-1-size ymin
+    !this.default.callback = '!!comPropCntrl.data[!this.pointer].initEditForm(|DEFAULT|, true)'
+    button .reset   ' Reset '   anchor b+l   at xcen form+1 ymin reset
+    !this.reset.callback = '!!comPropCntrl.data[!this.pointer].initEditForm(|INITIAL|, true)'
+
+  exit
+  -- end form definition
+
+  !form = !!comPropEdit$!<pointer>
+
+  return !form
+
+endfunction
+-- End of function definition for !!comPropEdit

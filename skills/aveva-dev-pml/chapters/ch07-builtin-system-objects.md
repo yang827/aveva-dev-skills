@@ -27,7 +27,7 @@ AVEVA PML provides foundational system objects in its runtime library covering f
 - **Use `.wrt()` for relative coordinate transforms**: When reading a position, `!pos.wrt(!vesselRef)` transforms coordinates from world space into the local reference frame of the vessel.
 
 ## Anti-patterns
-- **Forgetting to check EOF on File Reads**: Reading past the end of a file raises an error; always check loop conditions or wrap `readRecord()` in `HANDLE`.
+- **Forgetting to check EOF on File Reads**: Reading past the end of a file raises an error; always check loop conditions, or issue the read and let a `HANDLE` clause trail it (the read stays outside the trap — see SKILL.md Core Framework 9).
 - **Hardcoding Coordinate String Formats**: Constructing position strings manually with raw string concatenation instead of using `POSITION` objects causes parsing errors when regional decimal settings differ.
 - **Assuming `.badRef()` is False**: Never dereference attributes on a `DBREF` without checking `!ref.badRef()` first.
 

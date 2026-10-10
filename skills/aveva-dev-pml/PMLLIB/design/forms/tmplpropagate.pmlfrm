@@ -1,0 +1,1086 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            tmplpropagate.pmlfrm
+--   Type:          Form Definition
+--   Group:         Utilities
+--     Keyword:     GENERAL
+--   Module:        design
+--   Replaces:
+--
+-- Author:          M.Barlow
+-- Created:         Wed Nov 1 00:00:00 BST 2006
+--
+--
+-- Description:
+--   Propagate changes to a Design Template to its linked instances
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  clear()                          -                   Clear form gadgets
+--  clearMessages()                  -                   Clear message panel
+--  close()                          -                   Form close action
+--  display()                        -                   Show graphical view containing all entries
+--  displayLog()                     -                   Popup menu callback - Navigate to selected element
+--  getInstanceFromID(STRING)        DBREF               get instance from row ID
+--  initialise()                     -                   Form initialisation
+--  initialise(DBREF)                -                   Load all zones for site
+--  instanceMessage(DBREF)           STRING              Returns information relevant to the propagation process
+--  navigate()                       -                   Popup menu callback - Navigate to selected element
+--  popupActive(BOOLEAN)             -                   Set active state of popup menu
+--  popupCallback(ARRAY)             -                   Pop-up callback
+--  print()                          -                   Show graphical view containing all entries
+--  propagate()                      -                   Propagate Design Template changes to the selected instances
+--  propagateList()                  -                   Propagate Design Template changes to the selected instances
+--  select(ARRAY)                    -
+--  selectAll()                      -                   Select all entries
+--  showProgress(REAL)               -                   Update progress bar
+--  tidy()                           -                   Tidy
+--  tmplPropagate()                  -                   Constructor
+--  updateList()                     -                   Update the displayed instance list
+--  updateUndo()                     -                   Undo callback
+--
+import 'GridControl'
+handle any
+endhandle
+
+setup form !!tmplPropagate dialog resize
+
+  using namespace 'Aveva.Pdms.Presentation'
+  member .tmpListCtrl is NETGRIDCONTROL
+
+  !this.formTitle     = 'Propagate Changes'
+  !this.iconTitle     = 'TMPLCHANGE'
+  !this.callback      = '!this.initialise()'
+  !this.cancelCall    = ''
+  !this.formRevision  = ' $Revision$ '
+
+  -- Current template information
+  paragraph .tmplName          anchor left + right + top  at x0.5  ymin   width 49 lines 1
+  paragraph .tmplLastModified  anchor left + right + top  at x0.5  ymax   width 49 lines 1
+
+  -- List of template instances
+  frame .tmplList panel  anchor all                    at x0.5  ymax height 12 width 52
+    container .tmplContainer PMLNETControl 'NET' dock fill
+  exit
+
+  frame .frameMessage anchor left + right + bottom  at x0.5  ymax
+    paragraph .tmplMessageHead   anchor left + right + bottom  at x0.5  ymax   width 51 lines 1
+    paragraph .tmplMessage       anchor left + right + bottom  at x0.5  ymax   width 51 lines 2
+  exit
+
+  path down
+  frame .frameShow panel anchor left + bottom  at xmin ymax+0.2
+    rtoggle .showAll     'Show All'          anchor left + bottom
+    rtoggle .showSuspect 'Show Suspect Only' anchor left + bottom
+    rtoggle .showFailed  'Show Failed Only'  anchor left + bottom
+  exit
+  button .selectAll 'Select All' anchor right + bottom width 10 at xmax form-size  ymin.showAll  callback '!this.selectAll()'
+  halign right
+  path down
+  button .displayAll 'Display' anchor right + bottom   width 10  callback '!this.display()'
+  button .print      'Print...' anchor right + bottom   width 10  callback '!this.print()'
+
+  button .update   'Update'    anchor left + bottom   at xmin.frameShow  ymax.frameShow  callback '!this.propagate()'
+  paragraph .progressMessage   anchor left + bottom   at xmax+0.5 ymin   width 30 lines 1
+  button .dismiss  'Dismiss'   anchor right + bottom  at xmax form-size  ymin      callback '!this.close()'
+
+  -- Form members
+
+  -- Column headings
+  member .columnHeadings      is ARRAY
+
+  -- Table of instance elements found for the current Template
+  member .table               is ARRAY
+  member .tmplListRtext       is ARRAY
+  -- Array (row) index of full table element corresponding to the filtered table row
+  member .filterIndexTable     is ARRAY
+
+  -- error log containing messages from the update (Array of COMPROPERROR)
+  member .errorLog            is ARRAY
+  -- list of indexes of items selected to be propagated
+  member .scanList            is ARRAY
+
+  -- Aid Tag
+  member .aidTag              is REAL
+
+  -- Undo event handlers
+  member .undoUpdate          is UNDOABLE
+
+  -- Have active graphical view?
+  member .graphView           is BOOLEAN
+  -- 3D graphical view form linked to this object
+  member .linkedForm          is FORM
+  -- view token of linked view
+  member .viewToken           is REAL
+
+exit
+-- End of form definition
+
+------------------------------------------------------------------------
+--
+-- Method:      tmplPropagate
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .tmplPropagate()
+
+  -- Initialise Variables
+  using namespace  'Aveva.Pdms.Presentation'
+  -- create instance of .Net control
+  !this.tmpListCtrl = object NETGRIDCONTROL()
+  -- add .Net control to PML container
+  !this.tmplContainer.control = !this.tmpListCtrl.handle()
+
+  -- Events handled
+  !this.tmpListCtrl.addEventHandler('onPopup', !this, 'popupCallback')
+  !this.tmpListCtrl.addEventHandler('afterSelectChange', !this, 'select')
+--  !this.tmpListCtrl.addEventHandler('beforeCellUpdate', !this, 'update')
+--  !this.tmpListCtrl.addEventHandler('afterCellUpdate', !this, 'change')
+
+  -- Control configuration
+  !this.tmpListCtrl.columnExcelFilter(false)
+  !this.tmpListCtrl.outlookGroupStyle(false)
+  !this.tmpListCtrl.fixedHeaders(false)
+  !this.tmpListCtrl.headerSort(true)
+  !this.tmpListCtrl.fixedRows(false)
+  !this.tmpListCtrl.columnSummaries(false)
+  !this.tmpListCtrl.singleRowSelection(false)
+  !this.tmpListCtrl.editableGrid(false)
+  !this.tmpListCtrl.setLabelVisibility(false)
+
+  -- Define pop-up for Design Template list
+  !menu = !this.newMenu('designTmplMenu')
+  !menu.add('callback', 'Navigate To',  '!this.navigate()','navigate')
+  !menu.add('callback', 'Update details',  '!this.displayLog()','messages')
+  !menu.add('separator')
+  !menu.add( 'callback', 'Export to Excel...', '!!exportToExcel(!this.tmpListCtrl, ||, |Save As|)' )
+  !menu.add( 'callback', 'Print Preview...', '!this.tmpListCtrl.printpreview()' )
+  !this.tmplContainer.popup = !menu
+
+  -- Aid Tags
+  !this.aidTag            = !!aidNumbers.add('Template Propagation')
+
+  -- Cancel
+  !this.cancelCall        = '!this.tidy()'
+  !this.killingCall       = '!!aidNumbers.hide(' + !this.aidTag.string() + ')'
+
+  -- Define list information
+  !this.clear()
+
+  -- column headings
+  !this.columnHeadings[1] = 'Name'
+  !this.columnHeadings[2] = 'Date'
+  !this.columnHeadings[3] = 'State'
+  !this.columnHeadings[4] = 'Message'
+
+  !this.update.active = false
+  !this.graphView     = false
+  -- initialise to display all instances
+  !this.frameShow.callback = |!this.updateList()|
+  !this.frameShow.val = 1
+
+  -- Initialise create button undo
+  !this.undoUpdate.description('Propagate Changes')
+  !this.undoUpdate.undoAction('!!tmplPropagate.updateUndo()')
+  !this.undoUpdate.redoAction('!!tmplPropagate.close()')
+  !this.update.setUndoable(!this.undoUpdate)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      popupCallback
+--
+-- Description: Pop-up callback
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .popupCallback(!passedArray is ARRAY)
+
+  -- Initialise Variables
+  !this.select(!passedArray[2])
+  !this.tmplContainer.showPopup(!passedArray[0], !passedArray[1])
+
+endmethod
+
+-------------------------------------------------------------------
+--
+-- Method:      navigate
+--
+-- Description: Popup menu callback - Navigate to selected element
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .navigate()
+
+  !selectedElements = !this.tmpListCtrl.getSelectedRowTags()
+
+  if( !selectedElements.size() neq 1 ) then
+    return
+  endif
+
+  !ref = !this.getInstanceFromID(!selectedElements[1])
+  handle any
+    return
+  endhandle
+  !!ce = !ref
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      displayLog
+--
+-- Description: Popup menu callback - Navigate to selected element
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .displayLog()
+
+  !selectedElements = !this.tmpListCtrl.getSelectedRowTags()
+  if( !selectedElements.size() neq 1 ) then
+    !this.clearMessages()
+    return
+  endif
+  !filterTableIndex = !selectedElements[1].real()
+
+  -- Get pointer into full list
+  !index = !this.filterIndexTable[!filterTableIndex]
+
+  !this.tmplMessage.val = ' '
+  if( defined(!this.errorLog[!index]) ) then
+    if( !this.errorLog[!index].hasErrors() ) then
+      !this.tmplMessageHead.val = 'Severity: ' + !this.errorLog[!index].getErrorSeverity()
+      !this.tmplMessage.val = !this.errorLog[!index].getErrorContext() + ': ' + !this.errorLog[!index].getErrorText()
+    else
+      !this.tmplMessageHead.val = 'No messages'
+    endif
+  else
+    !this.tmplMessageHead.val = 'No messages'
+  endif
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      clearMessages
+--
+-- Description: Clear message panel
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .clearMessages()
+
+  !this.tmplMessageHead.val = ' '
+  !this.tmplMessage.val = ' '
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      tidy
+--
+-- Description: Tidy
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .tidy()
+  !!aidNumbers.hide(!this.aidTag)
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      clear
+--
+-- Description: Clear form gadgets
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .clear()
+
+  using namespace  'Aveva.Pdms.Presentation'
+
+  -- Template Information
+  !this.tmplName.val         = ''
+  !this.tmplLastModified.val = ''
+  !this.progressMessage.val  = ''
+  !this.clearMessages()
+  -- set back to show all
+  !this.frameShow.val = 1
+  -- Initialise progress bar
+  !this.showProgress(-1)
+  !this.update.active    = false
+  -- clear members
+  !this.table            = ARRAY()
+  !this.tmplListRtext    = ARRAY()
+  !this.filterIndexTable = ARRAY()
+  !this.errorLog         = ARRAY()
+
+endmethod
+-- End of method
+
+----------------------------------------------------------------------
+--
+-- Method:      close
+--
+-- Description: Form close action
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .close()
+
+  !this.tidy()
+  !this.hide()
+  !!gphViews.close(!this.linkedForm)
+  handle any
+  endhandle
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      initialise
+--
+-- Description: Form initialisation
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .initialise()
+
+  -- get current template name
+  !temp = !!tmpGetCurrentTemplate()
+  if(badref(!temp)) then
+    !temp = !!ce
+  endif
+
+  -- Collect and display all zones
+  !this.initialise(!temp)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      initialise
+--
+-- Description: Load all zones for site
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .initialise(!element is DBREF)
+
+  -- check for good reference
+  if( badref(!element) ) then
+    return error 1 'Bad Design Template Reference'
+  endif
+
+  -- clear the form gadgets
+  !this.clear()
+
+  !type = !element.hardType
+  if( !type eq 'TMPL' ) then
+
+    -- check for TMPL definition
+    if(!element.owner.hardType eq 'TMAR') then
+      -- this element is the template
+      !templateMaster = !element
+    else
+      -- this element is a TMPL instance - find the master
+      !templateMaster = !element.owner.spref.tmpref
+      handle any
+        !templateMaster = object DBREF()
+      endhandle
+    endif
+
+  elseif( !type eq 'SPCO' or !type eq 'GPART' or !type eq 'TABITE' ) then
+
+    -- At a SPCO - find TMPL master from here
+    if( not badref(!element.tmpref) ) then
+      !templateMaster = !element.tmpref
+    else
+      !templateMaster = object DBREF()
+    endif
+
+  else
+
+    -- check for element referencing a Template
+    !templateMaster = !element.spref.tmpref
+    handle any
+      !templateMaster = object DBREF()
+    endhandle
+
+    -- check for TMPL owning this element
+    if( badref(!templateMaster) ) then
+      !templateMaster = !!dtbGetOwnerType(!element,'TMPL')
+      if( not badref(!templateMaster) ) then
+        -- check for TMPL definition
+        if(!templateMaster.owner.hardType neq 'TMAR') then
+          -- this element is a TMPL instance - find the master
+          !templateMaster = !templateMaster.owner.spref.tmpref
+          handle any
+            !templateMaster = object DBREF()
+          endhandle
+        endif
+      endif
+    endif
+
+  endif
+
+  if( badref(!templateMaster) ) then
+    return error 1 'Cannot Find Design Template Reference'
+  endif
+
+  -- find all references to this template master
+  -- first get spec worlds in the MDB to prune the search
+  VAR !spwl COLLECT ALL ( SPWL PRTWLD TABGRO )
+  -- collection definition for elements that reference design templates
+  !spcoCollection = object COLLECTION()
+  !spcoCollection.type('SPCO')
+  !spcoCollection.addType('TABITE')
+  !spcoCollection.addType('GPART')
+  !spcoCollection.filter(object EXPRESSION( |TMPREF eq | + !templateMaster.string() ) )
+  !spcoArray = object ARRAY()
+
+  -- now find SPCO elements pointing to the Template
+  do !spwlRef values !spwl
+    !spcoCollection.scope(!spwlRef.dbref())
+    !spcoArray.appendArray(!spcoCollection.results())
+  enddo
+
+  !templateInstances = object ARRAY()
+  do !spco values !spcoArray
+    -- now use DESGEO to find all Design Template Instances linked to the SPCO's
+    !templateInstances.appendArray(!spco.desgeo)
+  enddo
+  !templateInstances.unique()
+  -- get (session) time that the master was last modified
+  !templateLastModified = object DATETIME(!templateMaster.lastmod.hier)
+
+  -- loop through the design template instances getting last modified time
+  -- and work out if the master has been modified since the instance
+  !this.tmplListRtext = object ARRAY()
+  !this.table         = object ARRAY()
+  do !instance values !templateInstances
+    -- Get data
+    !this.tmplListRtext.append(!instance.string())
+    -- name in column 1
+    !row[1] = !instance.namn
+    -- last modified date in column 2
+    !instanceLastModified = object DATETIME(!instance.lastmod.hier)
+    !row[2] = !instanceLastModified.string()
+    if( !templateLastModified geq !instanceLastModified ) then
+      -- master probably updated since the instance
+      -- Note that time comparison cannot be made if changes are made
+      -- within the same session
+      !row[3] = 'Suspect'
+    else
+      -- Instance updated after master
+      !row[3] = 'OK'
+    endif
+    !row[4] = !this.instanceMessage(!instance)
+    !this.table.append(!row)
+  enddo
+
+  -- initialise the instance list
+  !this.updateList()
+  !this.tmplName.val   = 'Name: ' + !templateMaster.namn
+  !this.tmplLastModified.val = 'Last Modified: ' + !templateLastModified.string()
+
+  -- deactivate the failed option when presenting analysis result
+  !this.showFailed.active  = false
+  -- activate the Suspect option when presenting analysis result
+  !this.showSuspect.active = true
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      updateList
+--
+-- Description: Update the displayed instance list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .updateList()
+
+  -- initialise list of states
+  !stateList[1] = 'OK'
+  !stateList[2] = 'FAILED'
+  !stateList[3] = 'UPDATED'
+  !stateList[4] = 'SUSPECT'
+  !stateList[5] = 'CRITICAL'
+  -- initialise list of Icons matching the states
+  !stateIconList[1] = !!pml.getPathname('valid12.png')
+  !stateIconList[2] = !!pml.getPathname('failed12.png')
+  !stateIconList[3] = !!pml.getPathname('valid12.png')
+  !stateIconList[4] = !!pml.getPathname('requires12.png')
+  !stateIconList[5] = !!pml.getPathname('failed12.png')
+
+  -- Check filter for displayed items
+  if( !this.frameShow.val eq 2) then
+    -- filter out OK and updated
+    !filterOut[1] = !stateList[1]
+    !filterOut[2] = !stateList[2]
+    !filterOut[3] = !stateList[3]
+  elseif( !this.frameShow.val eq 3) then
+    -- filter out all except failed
+    !filterOut[1] = !stateList[1]
+    !filterOut[2] = !stateList[3]
+    !filterOut[3] = !stateList[4]
+  else
+    -- match all
+    -- end result is filteredtable = full table with filterIndexTable set
+    !filterOut = ARRAY()
+  endif
+
+  -- records index of displayed items into the table of instances
+  !this.filterIndexTable = ARRAY()
+  !filteredTable    = ARRAY()
+  !filteredRtext    = ARRAY()
+  -- filter out unwanted entries
+  do !index indices !this.tmplListRtext
+    skip if(  !filterOut.findFirst(!this.table[!index][3].upcase().trim()).set() )
+    -- copy pointer into original table
+    !this.filterIndexTable.append(!index)
+    -- copy row to displayed filtered table
+    !filteredTable.append(!this.table[!index])
+    -- store element reference for this filtered row
+    !filteredRtext.append(!this.tmplListRtext[!index])
+  enddo
+
+  -- populate the displayed table
+  using namespace 'Aveva.Pdms.Presentation'
+  !nds = object NETDATASOURCE('tmplPropagate', !this.columnHeadings, !filteredTable, '')
+  !this.tmpListCtrl.bindToDataSource(!nds)
+
+  -- set cell icons to indicate state
+  do !index indices !filteredTable
+    -- get state from third column
+    !state = !filteredTable[!index][3]
+    !stateIndex = !stateList.findFirst(!state.upcase().trim() )
+    skip if(!stateIndex.unset())
+    -- set cell image
+    !this.tmpListCtrl.setCellImage(!index,3,!stateIconList[!stateIndex])
+  enddo
+
+  !this.displayLog()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      selectTmpl
+--
+-- Description: Callback when template is selected
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .select(!selectArray is ARRAY)
+
+  -- control single versus multi select options
+  if( !selectArray.size() ne 1 ) then
+    -- zero or multi-select
+    !this.popupActive(false)
+    !this.clearMessages()
+  else
+    -- single select
+    !this.popupActive(true)
+    !this.displayLog()
+  endif
+
+  !this.update.active = ( !selectArray.size() neq 0 )
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      selectAll
+--
+-- Description: Select all entries
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .selectAll()
+
+  -- get row tags and select all entries
+  !rowIDs = ARRAY()
+  do !i indices !this.tmplListRtext
+    !rowIDs.append(!i.string())
+  enddo
+  !this.tmpListCtrl.setSelectedRowTags(!rowIDs)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      display
+--
+-- Description: Show graphical view containing all entries
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .display()
+
+  -- get selected template instances
+  !tmplList = ARRAY()
+  do !temp values !this.tmplListRtext
+    !templateInstance = !temp.dbref()
+    handle any
+      skip
+    endhandle
+    !tmplList.append(!templateInstance)
+  enddo
+
+  -- Check for valid template
+  if( !tmplList.empty() ) then
+    return
+  endif
+
+  !vol = object VOLUME(!tmplList)
+  -- set a default view size if no geometry found
+  if( !vol.unset() ) then
+    !begin = object POSITION('E2000mm N2000mm U2000mm wrt world')
+    !end   = object POSITION('W2000mm S2000mm D2000mm wrt world')
+    !vol = object VOLUME(!begin,!end)
+  endif
+
+  -- extend the view a bit
+  !box = !vol.box()
+  !box.xlength = !box.xlength + 100mm
+  !box.ylength = !box.ylength + 100mm
+  !box.zlength = !box.zlength + 100mm
+  !vol = object VOLUME(!box)
+
+  -- Create the next available view if there isn't one already created
+  !this.linkedForm.formTitle = 'Template Propagation View'
+  handle any
+    !this.graphView = false
+  endhandle
+  if (!this.graphView.not()) then
+    !this.linkedForm      = !!gphViews.addDesignform()
+--    handle any
+--      REM ALL
+--      do !templateElement values !tmplList
+--        ADD $!templateElement
+--      enddo
+--      return
+--    endhandle
+    !this.graphView  = true
+    -- Create a drawlist if one doesn't exist already
+    if (!this.viewToken.unset()) then
+      !this.viewToken  = !!gphDrawlists.createDrawlist()
+    endif
+    !!gphDrawlists.attachView(!this.viewToken,!this.linkedForm.view)
+    !this.linkedForm.formTitle = 'Template Propagation View'
+  endif
+
+  --Create a new drawlist
+  !drawlist = !!gphDrawlists.drawlist(!this.viewToken)
+  !drawlist.removeAll()
+  !drawlist.addOnlyMembers(!tmplList)
+  !!gphViews.limits(!this.linkedForm.view, !vol)
+
+endmethod
+-- End of function definition
+
+------------------------------------------------------------------------
+--
+-- Method:      print
+--
+-- Description: Show graphical view containing all entries
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .print()
+
+  -- control single versus multi select options
+  !this.tmpListCtrl.printpreview()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      popupActive
+--
+-- Description: Set active state of popup menu
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .popupActive(!active is BOOLEAN)
+
+  -- control single versus multi select options
+  !this.tmplContainer.popup.setfieldProperty('navigate','ACTIVE',!active)
+  !this.tmplContainer.popup.setfieldProperty('messages','ACTIVE',!active)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      propagate
+--
+-- Description: Propagate Design Template changes to the selected instances
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .propagate()
+
+  !this.progressMessage.val = 'Performing update - Please wait'
+  !this.progressMessage.refresh()
+
+  -- get selected template instances
+  !this.scanList = ARRAY()
+  do !rowID values !this.tmpListCtrl.getSelectedRowTags()
+    !this.scanList.append(!rowID.real())
+  enddo
+
+  -- scan list of Design Template Instances and propagate changes
+  !this.propagateList()
+  !suspectStatus  = false
+  !failStatus			= false
+  do !value values !this.tmpListCtrl.getrows()
+     if(!value[3].upcase() eq 'SUSPECT')then
+     	!suspectStatus = true
+    endif
+    if(!value[3].upcase() eq 'FAILED')then
+     	!failStatus = true
+    endif
+  enddo
+
+  -- activate the failed option when presenting result of update
+  !this.showFailed.active  = !failStatus
+  -- deactivate the Suspect option when presenting result of update
+  !this.showSuspect.active = !suspectStatus
+
+  !this.progressMessage.val = ''
+  !this.progressMessage.refresh()
+
+  -- refresh local display if shown
+  !localDisplay = !this.linkedForm.shown()
+  handle any
+    !localDisplay = false
+  endhandle
+  if(!localDisplay) then
+    !this.display()
+  endif
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      propagateList
+--
+-- Description: Propagate Design Template changes to the selected instances
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+
+--
+------------------------------------------------------------------------
+define method .propagateList()
+
+  -- get selected template instances
+  !selected = !this.scanList
+
+  -- configure the progress bar
+  !progressMax = !selected.size()
+  -- stop if nothing is selected
+  if( !progressMax eq 0 ) then
+    return
+  endif
+  !progressIncrement = 100 / !progressMax
+  !progress          = 0
+  !this.showProgress(0)
+  !criticalError     = false
+
+  -- loop through selected instances and perform the update
+  do !filterTableIndex values !selected
+
+    -- get index into full table from the filtered table
+    !tableIndex = !this.filterIndexTable[!filterTableIndex]
+    -- create an error object to log any errors found during the update
+    !errorObject = object COMPROPERROR()
+
+    !templateInstance = !this.tmplListRtext[!tableIndex].dbref()
+    handle any
+
+      -- handle the case where the list has got out of date
+      -- while the dialogue is on the screen
+      !errorObject.addError('FAIL')
+      !errorObject.setErrorText('Cannot access element ' + !this.tmplListRtext[!tableIndex])
+      !errorObject.setErrorContext('Find update element')
+
+    elsehandle none
+
+      -- update the Design Template Instance, forcing changes to the Design
+      -- Template definition to be made to the instance
+      !errorObject = !!propagateTemplate(!templateInstance)
+
+    endhandle
+
+    -- add error status to error log
+    !this.errorLog[!tableIndex] = !errorObject
+    -- update the table of instances
+    if( !errorObject.hasErrors() ) then
+      if( !errorObject.isCritical() ) then
+        !criticalError = true
+        !this.table[!tableIndex][3] = 'Critical'
+      else
+        !this.table[!tableIndex][3] = 'Failed'
+      endif
+      !this.table[!tableIndex][4] = !errorObject.getErrorText()
+    else
+      !this.table[!tableIndex][3] = 'Updated'
+      !this.table[!tableIndex][2] = !templateInstance.lastmod.hier
+      !this.table[!tableIndex][4] = ' '
+    endif
+    -- update the progress bar
+    !progress = !progress + !progressIncrement
+    !this.showProgress(!progress)
+
+  enddo
+
+  -- display the update instance list
+  -- change filter to all otherwise table may be left empty
+  !this.frameShow.val = 1
+  !this.updateList()
+  -- clear the progress indicator
+  !this.showProgress(0)
+  -- return false only if critical error found
+  !this.update.active = false
+  return !criticalError
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      updateUndo
+--
+-- Description: Undo callback
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .updateUndo()
+
+  -- Close the form if shown so user does not see out of date information
+  if(!this.shown()) then
+    !this.close()
+  endif
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      getInstanceFromID
+--
+-- Description: get instance from row ID
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .getInstanceFromID(!rowID is STRING) is DBREF
+
+  !filterTableIndex = !rowID.real()
+
+  -- Get pointer into full list
+  !tableIndex = !this.filterIndexTable[!filterTableIndex]
+
+  !templateInstance = !this.tmplListRtext[!tableIndex].dbref()
+
+  return !templateInstance
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      instanceMessage
+--
+-- Description: Returns information relevant to the propagation process
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .instanceMessage(!item is DBREF) is STRING
+
+  -- Note that this has the same checks as DBREFUPDATABLE with different actions
+
+  -- Is the item locked
+  if(!item.lock) then
+    return 'Element is locked'
+  endif
+
+  -- Check if we have read/write access to the element
+  if(!!exists(!item.string(),'','Update').not()) then
+    return 'Cannot modify: Read only'
+  endif
+
+  -- Check if item has been claimed out by any other user
+  if(!item.dbAccess eq 'MULTIWRITE') then
+    if (not !item.okClaim and not !item.lclm) then
+      return 'Cannot modify: Claimed by ' + !item.userC
+    endif
+  endif
+
+  return ''
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      showProgress
+--
+-- Description: Update progress bar
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .showProgress(!percent is REAL)
+
+  if (!percent lt 0) then
+    !!fmsys.setProgress(0)
+  else
+    !!fmsys.setProgress(!percent)
+  endif
+
+endmethod
+-- End of method definition

@@ -1,0 +1,840 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            fabmachinencs.pmlfrm
+--   Type:          Form Definition
+--   Group:         Document production
+--     Keyword:     Fabrication
+--   Module:        DESIGN
+--   Replaces:
+--
+-- Author:          Steve.Bentley
+-- Created:         Fri Sep 11 08:00:00 GMT 2009
+--
+-- Description:
+-- Form for Creating Pipe Piece NC Reports
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  activateGadgets()                -                   Activate gadgets based on what is selected
+--  activeApply()                    -                   Activate the apply gadget
+--  apply()                          -                   Apply the form
+--  fabMachineNCs()                  -                   Constructor
+--  getSpool(DBREF)                  DBREF               return the spool owning a passed pipe piece
+--  init()                           -                   Initialise Form
+--  listPopUpCallback()              -                   Call back for the pop up menu on the spool list
+--  newElement(STRING)               -                   New Design Element for form to action on
+--  readDefaultFile()                ARRAY               read the default file to restore defaults to gadgets
+--  savedFile(STRING)                -                   Set the log File to record each Pipe Report process
+--  search()                         -                   Search for the Pieces to list
+--  setSavedFile(STRING)             -                   Set the log File and log file gadget to record each Pipe Report process
+--  validateCeName(GADGET,STRING)    -                   Validate the input to the ceName gadget
+--  validateSavedFile(GADGET,STRING) -                   Validate the input to the output file gadget
+--  writeDefaultFile()               -                   Write a default file so we can restore gadget settings
+--
+setup form !!fabMachineNCs dialog dock r
+  Import 'pmlfilebrowser'
+  handle any
+  endhandle
+
+  !this.formTitle     = 'Fabrication NC Reports'
+  !this.iconTitle     = 'Fab NC'
+  !this.callback      = '!this.init()'
+
+  -- Form Members
+  member .actionElement   is DBREF
+
+  hdist 0
+
+  para .searchUnderParagraph   at x0 ymax width 30 lines 1
+  !this.searchUnderParagraph.val = 'Find Bent Pipe Pieces in:'
+
+  -- Paragraph showing export element / CE name
+  text .ceName '' anchor top + left + right at xmin ymax call '!this.newElement(|val|)' width 27 scroll 90 STRING
+
+  -- Body of form definition
+  button .ce 'CE ' anchor top + right at xmax+1 ymin   callback '!this.newElement(|ce|)'
+
+  para .filterPiecesParagraph   at x0 ymax+0.5 width 20 lines 1
+  !this.filterPiecesParagraph.val = 'Filter the Pipe Pieces using:'
+
+  para .nameIncludesParagraph   at xmin+1 ymax width 30 lines 1
+  !this.nameIncludesParagraph.val = 'Pipe Piece name (All or part):'
+  text .nameFilter '' anchor top + left + right at xmin ymax call '' tooltip |Wildcard expression expected. The character '*' stands for an arbitrary sequence of characters.
+The character '?' stands for a single character only. Examples: ABC*, *XYZ, A?XYZ*| width 33 scroll 90 STRING
+
+  para .boreRangeParagraph   at x1 ymax width 20 lines 1
+  !this.boreRangeParagraph.val = 'Bore Range:'
+  text .boreFrom '' anchor top + left at xmin ymax call '' width 11 is REAL format !!boreFmt
+  text .boreTo '' anchor top + left at xmax+1 ymin call '' width 11 is REAL format !!boreFmt
+
+  para .bendingMachineParagraph   at x1 ymax width 20 lines 1
+  !this.bendingMachineParagraph.val = 'Bending Machine:'
+  option .bendingMachineOption '' anchor top + left + right at xmin ymax callback '' width 31
+
+  button .search 'Search' anchor top + right at xmax.boreTo ymax+0.5  call '!this.search()'
+
+  list   .list   'Search Results (Bent Pipe Pieces):' anchor top + bottom + left + right at x0 ymax+0.5 call '!this.activateGadgets()' columns MULTI width 33 length 6
+
+  !menu = !this.newMenu('listPopUp')
+  !menu.add(|callback|, 'Select All',      '!this.listPopUpCallback()', 'Select All')
+  !menu.add(|callback|, 'Clear Selection', '!this.listPopUpCallback()', 'Clear Selection')
+
+  path down
+  vdist 0.5
+
+  frame .optionsFrame  'Report Options: '   anchor bottom + left + right at x0 ymax
+
+    para .savedFileParagraph   at xmin+0.5 ymax width 20 lines 1
+    !this.savedFileParagraph.val = 'Save in File:'
+    text .savedFile      '' anchor bottom + left + right at xmin ymax call '' width 21 string
+    button .browse     'Browse...' anchor bottom + right at xmax+1 ymin  callback |!!fileBrowser('%PDMSUSER%', '*.txt', 'Fabrication NC Report', FALSE, '!!fabMachineNCs.setSavedFile(!!fileBrowser.file.name())') |
+
+  exit
+
+  -- Bottom Line
+  button .apply    'Create Report'   anchor bottom + right at xmax form-16     ymax+0.5  callback '!this.apply()'
+
+  -- Members
+  member .file is FILE
+
+-- End of form definition
+exit
+------------------------------------------------------------------------
+--
+-- Method:      fabMachineNCs
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .fabMachineNCs()
+
+  -- Set the list pop-up menu
+  !this.list.setPopup(!this.listPopUp)
+
+  -- Heading For list gadget
+  !headings = ARRAY()
+  !headings.append('Name of Pipe Piece')
+  !headings.append('Pipe Spool')
+  !headings.append('Valid')
+  !headings.append('Bending Machine')
+  !this.list.setHeadings(!headings)
+
+  -- Heading For bending machine gadget
+  var !machines collect all FMBEND
+  !headings = ARRAY()
+  !headings.append('All')
+  !returnText = ARRAY()
+  !returnText.append('ALL')
+  do !i indices !machines
+    !thisMachine = !machines[!i].dbref()
+    if (!thisMachine.description.length() gt 0) then
+      !headings.append(!thisMachine.namn & ' (' & !thisMachine.description & ')' )
+    else
+      !headings.append(!thisMachine.namn)
+    endif
+    !returnText.append(!machines[!i])
+  enddo
+  !this.bendingMachineOption.dtext = !headings
+
+  !this.savedFile.validateCall = '!this.validateSavedFile('
+
+  !this.killingCall = 'unenhance all'
+  !this.quitCall = 'unenhance all'
+
+endmethod
+-- End of method definition for .fabMachineNCs()
+------------------------------------------------------------------------
+--
+-- Method:      init
+--
+-- Description:  Initialise Form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .init()
+
+  if defined(!!productionChecksEnabled) and !!productionChecksEnabled.not() then
+    -- prevent the form from being shown if production checks is disabled
+    return error 33 noalert
+  endif
+
+  -- Element to be actioned on
+  !this.actionElement = !!ce
+
+  -- Show ce as the element
+  !this.ceName.val   = !this.actionElement.name
+
+  -- Read the defaults file from previous time this function was run
+  !defaults = ARRAY()
+  !defaults = !this.readDefaultFile()
+  if (!defaults.size() eq 1) then
+    !this.savedFile.val  = !defaults[1]
+  else
+  	-- Must be contaminated?
+  endif
+  -- Store on this form member also
+  !this.file = object FILE(!this.savedFile.val)
+
+  -- Run the gadget validation
+  !this.validateCeName(!this.ceName, 'unused')
+
+  -- Populate the list gadget with all the Pieces of the ce
+  !this.search()
+
+endmethod
+-- End of method definition for .init()
+------------------------------------------------------------------------
+--
+-- Method:      apply
+--
+-- Description: Apply the form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .apply()
+
+  !memory = !!ce
+
+  -- Initialise variables
+  !allPipePieces = ARRAY()
+
+  -- Get Pieces for the selected element
+  !allPipePiecesStrings = !this.list.selection('rtext')
+  !numberOfPieces = !allPipePiecesStrings.size()
+  -- Need the string as dbref
+  do !i indices !allPipePiecesStrings
+    !allPipePieces[!i] = !allPipePiecesStrings[!i].dbref()
+  enddo
+
+  -- Stop if no Pieces selected
+  if (!numberOfPieces eq 0) then
+    !!alert.error('No Pipe Pieces selected')
+    return
+  endif
+
+  -- Stop if a bad file name
+  if (!this.file.unset()) then  	
+    !!alert.error('No File name')
+    return
+  endif
+  if (!this.file.directory().exists().not()) then  	
+    !!alert.error('File directory does not exist')
+    return
+  endif
+  if (!this.file.exists() and !this.file.type().eq('DIRECTORY')) then  	
+    !!alert.error('Invalid File name')
+    return
+  endif
+
+  -- Navigate to the element to action on
+  !!ce = $!this.actionElement
+
+  -- switch a prompt on
+  prompt 'Generating Fabrication NC Report'
+
+  -- Check user wishes to overwrite the file
+  if (!this.file.exists()) then
+    !answer = !!alert.confirm('File ' & !this.file.fullname() & ' already exists, do you wish to overwrite it?')
+    if (!answer.boolean()) then
+    	-- OK continue
+    else    	
+      -- Switch off any prompts
+      prompt dismiss
+      !!ce = !memory
+      return
+    endif
+  endif	
+
+  -- This is it... Do it
+  !fabMachineNcObject = object FABMACHINENC(!allPipePieces, !this.file)
+  !fabMachineNcObject.getReportForPipePieceArray()
+
+  -- Ask the user if he wants to view the file
+  !answer = !!alert.confirm('File ' & !this.file.fullname() & ' has been written, do you wish to view it?')
+  if (!answer.boolean()) then
+  	show !!cadcReq
+    !!cadcReq.cadcReq.clear()
+    !allLines = !this.file.readFile()
+    do !i indices !allLines
+      write |$!allLines[$!i]|
+    enddo
+  else
+  	hide !!cadcReq
+  endif
+
+  -- Record the file storage in a file ...pdmsuser\fabMachineNCs.pmldat
+  !this.writeDefaultFile()
+
+  -- Switch off any prompts
+  prompt dismiss
+
+  !!ce = !memory
+
+endmethod
+-- End of method definition for .apply()
+------------------------------------------------------------------------
+--
+-- Method:      savedFile
+--
+-- Description: Set the log File to record each Pipe Report process
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     STRING      File name to be used as the log file
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .savedFile(!filename is STRING)
+
+  !this.savedFile = object FILE(!filename)
+
+endmethod
+-- End of method definition for .savedFile()
+------------------------------------------------------------------------
+--
+-- Method:      setSavedFile
+--
+-- Description: Set the log File and log file gadget to record each Pipe Report process
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     STRING      File name to be used as the log file
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setSavedFile(!filename is STRING)
+
+  !this.savedFile.val = !filename
+  !this.file = !!fileBrowser.file
+  -- Record the value in a file for use next time ...pdmsuser\fabMachineNCs.pmldat
+  !this.writeDefaultFile()
+
+endmethod
+-- End of method definition for .setSavedFile()
+------------------------------------------------------------------------
+--
+-- Method:      validateCeName
+--
+-- Description: Validate the input to the ceName gadget
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .validateCeName(!gadget is GADGET, !dummyString is STRING)
+
+  !s = !gadget.val.string().trim()
+  -- Test if there is any input
+  if (!s.length().eq(0)) then
+    return error 1 'Invalid input in CE Name field'
+  endif
+
+  -- Test it is an existing dbref element
+  !element = !s.dbref()
+  handle ANY
+    return error 1 'Invalid input in CE Name field'
+  endhandle
+
+  -- test if the dbref is a valid element
+  if (!element.type inset('SITE','ZONE','PIPE','PSLIST','PSPOOL','PPLIST','PPIECE')) then
+    -- OK
+  else
+    PIPE
+    handle ANY
+      return error 1 'Must be a valid element i.e. SITE, ZONE, PIPE, PSLIST, PSPOOL, PPLIST, PPIECE'
+    elsehandle NONE
+      !this.newElement(|ce|)
+    endhandle
+  endif
+
+endmethod
+-- End of method definition for .validateCeName()
+------------------------------------------------------------------------
+--
+-- Method:      validateSavedFile
+--
+-- Description: Validate the input to the output file gadget
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .validateSavedFile(!gadget is GADGET, !dummyString is STRING)
+
+  -- Test if there is any input
+  if (!gadget.val.string().trim().length().eq(0)) then
+    return error 1 'Invalid input for File'
+  endif
+
+  -- test if the input is a valid file element
+  !file = object FILE(!gadget.val)
+  handle ANY
+    return error 1 'Invalid input for File'
+  endhandle
+
+  -- test the file is an existing directory
+  if (!file.exists() and !file.type() eq 'DIRECTORY') then
+    return error 1 'Invalid input. Cannot be an existing Directory, must be a file name'
+  endif
+
+  -- If OK then set this.file
+  !this.file = !file
+  -- Record the value in a file for use next time ...pdmsuser\fabMachineNCs.pmldat
+  !this.writeDefaultFile()
+
+endmethod
+-- End of method definition for .validateSavedFile()
+------------------------------------------------------------------------
+--
+-- Method:      writeDefaultFile
+--
+-- Description: Write a default file so we can restore gadget settings
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .writeDefaultFile()
+
+  -- Store on this form member also
+  !this.file = object FILE(!this.savedFile.val)
+
+  !defaultFile = object FILE('%PDMSUSER%/fabMachineNCs.pmldat')
+  !defaultFile.open('OVERWRITE')
+  !defaultEntry[1] = !this.savedFile.val
+  !defaultFile.writeFile('APPEND', !defaultEntry)
+  !defaultFile.close()
+
+  -- Change the callback on the Browse button
+  !this.browse.callback = |!!fileBrowser(!this.file.directory().string(), '*.txt', 'Fabrication NC Report', FALSE, '!!fabMachineNCs.setSavedFile(!!fileBrowser.file.name())') |
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      readDefaultFile
+--
+-- Description: read the default file to restore defaults to gadgets
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .readDefaultFile() is ARRAY
+
+  !result = ARRAY()
+
+  !defaultFile = object FILE('%PDMSUSER%/fabMachineNCs.pmldat')
+  if (!defaultFile.exists()) then
+    -- File should only be 1 line long so lets just read that
+    !result = !defaultFile.readFile()
+  endif
+
+  return !result
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      listPopUpCallback
+--
+-- Description: Call back for the pop up menu on the spool list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .listPopUpCallback()
+
+  if (!this.listPopUp.pickedField eq 'Select All') then
+    !this.list.select('rtext', !this.list.rtext)
+    !this.activateGadgets()
+  elseif (!this.listPopUp.pickedField eq 'Clear Selection') then
+    !this.list.clearSelection()
+    !this.activateGadgets()
+  endif
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      search
+--
+-- Description: Search for the Pieces to list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .search()
+
+  --Initialise variables
+  !dtext = ARRAY()
+  !rtext = ARRAY()
+
+  if (!this.actionElement.type eq 'SITE') then
+  	!answer = !!alert.confirm('Are you sure you wish to get Pipe pieces from SITE level?')
+  	if (!answer.boolean()) then
+  		-- OK carry on
+  	  -- Collect all the Pieces
+      var !allPipePieces collect all PPIECE for $!this.actionElement
+    else
+    	-- Clear the list
+      !this.list.dtext = ARRAY()
+      !this.list.rtext = ARRAY()
+      -- Display number found by search
+      !this.list.tag = 'Search Results:  ( 0 found )'
+
+      -- Make the apply active
+      !this.activateGadgets()
+    	
+    	return
+    endif
+  elseif (!this.actionElement.type eq 'PSLIST') then
+  	-- Special Case
+  	var !spoolList collect all PSPOOL for $!this.actionElement
+  	!allPipePieces = ARRAY()
+  	do !i indices !spoolList  	
+      -- Get all the members of the spool
+      !pipeSpoolManager = object PIPESPOOLMANAGER()
+      !pipePieces       = !pipeSpoolManager.getPipePieces(!spoolList[!i].dbref())
+      !allPipePieces.appendArray(!pipePieces)   	
+  	enddo  	
+  elseif (!this.actionElement.type eq 'PSPOOL') then
+  	-- Special Case  	  	
+    -- Get all the members of the spool
+    !pipeSpoolManager = object PIPESPOOLMANAGER()
+    !allPipePieces    = !pipeSpoolManager.getPipePieces(!this.actionElement)
+  else
+  	-- Collect all the Pieces
+    var !allPipePieces collect all PPIECE for $!this.actionElement
+  endif
+
+  !nameFilterString = !this.nameFilter.val.trim().lowcase()
+  -- if '*', turn to empty string to speed up processing
+  if (!nameFilterString eq '*') then
+    !nameFilterString = ''
+  endif
+  !nfsLength = !nameFilterString.length()
+
+  do !piece values !allPipePieces
+
+    -- Reference
+    !pieceRef = !piece.dbref()
+    handle (2,779)
+      -- We already have it as a dbref()
+      !pieceRef = !piece
+    endhandle
+    !reference = !pieceRef.string()
+    -- Name
+    !name = !pieceRef.name
+    if (!nfsLength gt 0) then
+      skip if (!name.lowcase().matchwild(!nameFilterString).not())
+    endif
+
+    -- Get the spool name of the pipe piece
+    !spool = !this.getSpool(!pieceRef)
+
+    if (!spool.set()) then
+    	!spoolName = !spool.namn
+    	!valid     = !spool.psvld.string()
+    else
+    	!spoolName = 'Unknown'
+    	!valid     = 'False'
+    endif
+
+    -- We want to skip any straight pipe spools
+    !bendArray = !pieceRef.cmprfa
+    -- See if we have a bend
+    !found = false
+    do !m indices !bendArray
+      if (!bendArray[!m].type eq 'BEND') then
+      	!found = true
+      	break
+      endif
+    enddo
+    -- Skip if there is no bend
+    if (!found.not()) then
+    	skip
+    endif
+
+    -- Bending Machine Filtering
+    !bendingMachine = !pieceRef.bendmc.namn
+    handle ANY
+      -- If the anything is invalid set to unknown
+      !bendingMachine = 'Unset'
+    endhandle
+
+    -- Skip if this bending machine is filtered out (so we should get All or just pieces using the named one
+    if (!this.bendingMachineOption.selection('rtext').upcase() neq 'ALL') then
+      skip if (!this.bendingMachineOption.selection('rtext').part(1) neq !bendingMachine)
+    endif
+
+    --Bore Filtering
+    !toBore = object BORE(!this.boreTo.val)
+    !fromBore = object BORE(!this.boreFrom.val)
+
+    -- If both unset then no filtering required to let it all carry on
+    if (!toBore.unset() and !fromBore.unset()) then
+      -- OK
+    elseif (!toBore.set() and !fromBore.set()) then
+    	-- Both are set
+      -- Some data has to come from the bend rather than the pipe piece object
+      !bendArray = !pieceRef.cmprfa
+      !bendBore  = object BORE(0)
+      -- See if we have a bend
+      do !m indices !bendArray
+        if (!bendArray[!m].type eq 'BEND') then
+          !bendBore = !bendArray[!m].abore
+          break
+        endif
+      enddo
+
+    	-- So we need to check between this range
+      if (!bendBore.real().between(!fromBore.real(), !toBore.real())) then
+      	-- Got one
+      else
+      	-- NOT got one so skip to filter it out
+      	skip
+      endif
+    elseif ((!toBore.set() and !fromBore.unset()) or (!fromBore.set() and !toBore.unset())) then
+
+    	-- Only one is set
+    	!toOrFromBore = !toBore.real()
+    	if (!toOrFromBore.unset()) then
+    	  !toOrFromBore = !fromBore.real()
+    	endif
+    	
+      -- Some data has to come from the bend rather than the pipe piece object
+      !bendArray = !pieceRef.cmprfa
+      !bendBore  = object BORE(0)
+      -- See if we have a bend
+      do !m indices !bendArray
+        if (!bendArray[!m].type eq 'BEND') then
+          !bendBore = !bendArray[!m].abore
+          break
+        endif
+      enddo
+
+    	-- So we need an exact match
+      if (!bendBore.real().eq(!toOrFromBore.real())) then
+       	-- Got one (exact)
+      else
+       	-- NOT got one so Skip (exact) to filter it out
+      	skip
+      endif
+    endif
+
+    -- Display the elements
+   !rtext.append(!reference)
+   !theDText = !name & '	' & !spoolName & '	' & !valid & '	' & !bendingMachine
+   !dtext.append(!theDText)
+
+  enddo
+
+  -- Populate the gadget
+  !this.list.dtext = !dtext
+  !this.list.rtext = !rtext
+  -- Display number found by search
+  !this.list.tag = 'Search Results:  ( ' & !dtext.size().string() & ' found )'
+
+  -- Make the apply active
+  !this.activateGadgets()
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      activeApply
+--
+-- Description: Activate the apply gadget
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .activeApply()
+
+  -- Make the apply active
+  if (!this.list.selection('rtext').size() eq 0) then
+    !this.apply.active = FALSE
+  else
+    !this.apply.active = TRUE
+  endif
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      activateGadgets
+--
+-- Description: Activate gadgets based on what is selected
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .activateGadgets()
+
+  -- Activate the Apply or not
+  !this.activeApply()
+  unenhance all
+  !array = !this.list.val
+  do !i indices !array
+    !item = !this.list.rtext[!array[!i]].dbref()
+    do !j indices !item.cmprfa
+      !bend = !item.cmprfa[!j]
+      enhance $!bend colour $!!gphColOpt.highlight.code
+      enhance il tub of $!bend colour $!!gphColOpt.highlight.code
+      handle ANY
+      endhandle
+      if (!bend.seq eq 1) then
+      	enhance il tub of owner of $!bend colour $!!gphColOpt.highlight.code
+        handle ANY
+        endhandle
+      else
+      	enhance il tub of prev of $!bend colour $!!gphColOpt.highlight.code
+        handle ANY
+        endhandle
+      endif      	
+    enddo
+  enddo
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      newElement
+--
+-- Description: New Design Element for form to action on
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .newElement(!valOrCurrentElement is STRING)
+
+  -- Remember the gadget setting
+  !memory = !this.actionElement.name
+
+  if (!valOrCurrentElement.lowcase() eq 'ce') then
+    !this.ceName.val = !!ce.name
+  endif
+
+  -- Run the gadget validation
+  !this.validateCeName(!this.ceName, 'unused')
+  handle ANY
+    !!alert.error(!!error.text)
+    !this.ceName.val = !memory
+    return
+  endhandle
+
+  -- Navigate to the new Element
+  !!ce = !this.ceName.val.dbref()
+  handle ANY
+    -- This should never happen because we've just validated it
+    return
+  endhandle
+
+  -- Initialise
+  call !!fabMachineNCs()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      getSpool
+--
+-- Description: return the spool owning a passed pipe piece
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R       DBREF     Pipe Piece
+-- Return:
+--   [Data Type] [Description]
+--     DBREF     Pipe Spool
+--
+------------------------------------------------------------------------
+define method .getSpool(!piece is DBREF) is DBREF
+
+  -- Memory
+  !memory = !!ce
+  !spool = object DBREF()
+
+  !!ce = !piece
+  PIPE
+  var !pslist collect all PSLIST for ce
+  do !i indices !pslist
+    var !pspool collect all PSPOOL for $!pslist[$!i]
+    do !j indices !pspool
+      !!ce = !pspool[!j].dbref()
+      !listOfPieces = !!ce.melrfa
+      !test = !listOfPieces.findFirst(!piece)
+      if (!test.set()) then
+      	!spool = !!ce
+        -- Navigate back to the original
+        !!ce = !memory
+        return !spool
+      endif
+    enddo
+  enddo
+
+  -- Navigate back to the original
+  !!ce = !memory
+  return !spool
+
+endmethod
+-- End of method

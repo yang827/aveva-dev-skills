@@ -1,0 +1,1071 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  Author:          Undefined
+-------------------------------------------------------------------------------
+--
+-- File:                VNETWriteASMXML.pmlobj
+--   Type:              Function Definition
+--   Group:             VNET Navigator - PDMS model export
+--     Keyword:         VNET
+--   Module:            Design
+--   Replaces:
+--
+-- Author:           I. Stanbrook
+-- Created:          March 2007
+--
+--
+-- Description:
+-- Output AVEVA(formally Cadcentre) VM12 Assembly data into XML format
+-- Data output from user specified hierarchy position or list of hierarchy elements
+-- Output hierarchy list stored in VNETExport member ".HierList"
+
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  CollectAssem(DBREF)              VNETAssembly
+--  GetAttributes(string,string)     -
+--  IncludeAtts()                    -
+--  Output(vnetassembly,string,string,boolean) -
+--  RVMRead()                        -
+--  TransClass(string,string)        -
+--  VNETWriteASMXML()                -
+--  logfile(string,string)           -
+--  logfilehead(VNETLOG)             -
+--  percomplete(real,real)           -
+--
+--------------------------------------------------------------------------------
+
+define object VNETWriteASMXML
+
+  -- Used as a temporary store to store results
+  member .result is string
+
+  -- Used as a temporary store to store results
+  member .resultarray is array
+
+  -- Used as a counter so we can display progress on the main form
+  member .totalcount is real
+
+  -- Used to store the type of the main Looping element
+  member .Eletype is string
+
+  -- Attributes and UDAs
+  member .IncludedAttribs is array
+  member .IncludedAttribsTyp is array
+
+  -- Psuedo Attributes
+  member .IncludedPsuedos is array
+  member .IncludedPsuedosTyp is array
+
+  -- VNETXMLOutFile
+  member .VNETXMLOutFile is file
+
+  -- Attributes found for item
+  member .CEAttName is array
+  member .CEAttDesc is array
+  member .CEAttValue is array
+  member .CEAttDefVal is array
+
+  -- Previous Item Type
+  member .PrevItemType is string
+
+  -- Character encoding
+  member .CharEnc is string
+
+  -- Original CE Container
+  member .ce is DBREF
+
+  member .logtime is string
+
+  -- Assembly Items Design Items Asscociated Sites
+  member .AssociatedSites is array
+
+  -- RVM Template
+  member .RVMTemplateFile  is STRING
+  member .RVMTemplateData  is ARRAY
+
+endobject
+
+-- End of object definition for VNETWriteASMXML()
+
+--------------------------------------------------------------------------------
+
+define method .VNETWriteASMXML()
+
+ -- Switch off echoing of navigation through db
+   trace off
+
+ -- Remember the current element
+   !this.ce = !!ce
+
+ -- Reload Classes
+   !!VNETExport.ClassRead()
+
+ -- Set Error text
+   if undefined (!!VNETError) then
+      pml load object VNETErrorStore
+      !!VNETError = object VNETErrorStore()
+      !!VNETError.Reset()
+   endif
+
+ -- Check folder destinations exist
+   !!VNETxsettings.checkdir('outputasm')
+   !!VNETxsettings.checkdir('outputlnk')
+
+   !RVMCreate = !!VNETxsettings.CreateAsmRVM.val
+
+ -- Check RVM file if required
+   if !RVMCreate then
+
+      !this.RVMRead()
+
+      if !!VNETxsettings.CreateAsmRVM.active.not() then
+         !RVMCreate = false
+      else
+         !!runSynonym('CALLXR INIT')
+         !!runSynonym('CALLXR IDRVSEL')
+         !!VNETxsettings.checkdir('outputasmrvm')
+      endif
+   endif
+
+   prompt |Exporting VNET XML (Please Wait...)|
+
+ -- Empty Temporary User Class storage areas
+   !!VNETExport.UserClassStore1.clear()
+   !!VNETExport.UserClassStore2.clear()
+   !!VNETExport.UserClassStore3.clear()
+   !!VNETExport.UserClassStore4.clear()
+   !!VNETExport.UserClassStore5.clear()
+   !!VNETExport.UserClassStore6.clear()
+   !!VNETExport.UserClassStore7.clear()
+   !!VNETExport.UserClassStore8.clear()
+   !!VNETExport.UserClassStore9.clear()
+   !!VNETExport.UserClassStore10.clear()
+
+ -- Determine the mapping file
+   !this.IncludeAtts()
+
+ -- Update the list of assemblies
+   !!VNETAssmObj.Update()
+
+   !VNETTopItemsAssNm = Array()
+
+  -- Check to see if it is the Whole MDB...
+   if (!!VNETExport.HierList[1] eq '/*') then
+      !VNETTopItems = !!VNETAssmObj.memdbref
+      !VNETTopItemsAssNm = !!VNETAssmObj.memasslocname
+   else
+      !VNETTopItems = Array()
+      do !loop indices !!VNETExport.HierList
+         !pos = !!VNETAssmObj.memfullname.findfirst(!!VNETExport.HierList[!loop])
+         skip if !pos.unset()
+         !VNETTopItems.append(!!VNETAssmObj.memdbref[!pos])
+         !VNETTopItemsAssNm.append(!!VNETAssmObj.memasslocname[!pos])
+      enddo
+   endif
+
+   if !VNETTopItems.size() eq 0 then
+     !!error.text = 'VNETError-No ASMBLY(s) where exported as there are none in the currently selected MDB'
+     return
+   endif
+
+  -- Set the progress bar gadgets...
+   !!VNETExport.FProgress.active = true
+   !this.percomplete( 1 , 1 )
+
+  -- Character Encoding
+   !this.CharEnc = !!VNETCharEncode()
+
+  -- Initiate a log file
+   !this.logtime = !!VNETLogTime()
+   !OutFile = !!file(!!VNETxsettings.logfile.val & '/VNETExport-ASM_' & !this.logtime & '.log')
+
+   !!assyLogNormal = object VNETLOG()
+   !!assyLogNormal.initialise(!OutFile)
+
+   !this.logfilehead(!!assyLogNormal)
+
+  -- Storage for referenced SITES
+   !this.AssociatedSites.clear()
+
+  -- Counters
+   !Elemcount = 0
+   !sitecount = 0
+
+  -- Output the "Plant" 3 character code....
+   var !proj proj code
+   !proj = !!VNETStripXML(!proj)
+
+   do !VNETTopItm values !VNETTopItems
+
+     $!VNETTopItm
+     var !VNETTopItmFNM ( fullname of $!VNETTopItm )
+     !VNETTopItmNM = !!VNETFileName(!VNETTopItmFNM.replace('/','~'))
+
+     !sitecount = !sitecount + 1
+
+   -- Check that site is correctly named
+     if (!VNETTopItemsAssNm[!sitecount].match('ASWLD') gt 0) or (!VNETTopItemsAssNm[!sitecount].match('unset') gt 0) then
+        if !!VNETxsettings.IncludeUnNamedSite.val.not() then
+           !!VNETError.SetErrorFlag('')
+           !this.logfile('std','   ' & !VNETTopItmFNM & ' : ASMBLY is not Named')
+           !this.logfile('std','              WARNING: ' & !!CE.type.upcase() & ' not Exported as Unnamed ASMBLY Export setting is set to FALSE')
+           !this.logfile('std','')
+           $P Skipping $!VNETTopItmFNM
+           skip
+        else
+ --          !VNETTopItmNM = !VNETTopItmNM.before(' of WORLD').trim().replace(' ','-')
+        endif
+     endif
+
+  -- Counter for progress reporting
+     !Elemcount  = !Elemcount + 1
+     !TotalCount = !VNETTopItems.size()
+
+-- Set progress bar gadgets...
+     !this.percomplete( !Elemcount , !TotalCount )
+
+-- Loop through the listed collection selections and collect the items
+-- Add then to an array that has sub-arrays for each selection
+
+     !totalitems = 0
+
+     !assem = !!ce
+     !SelectedItems = !!ce.mem
+
+     -- get total list of items found
+     !totalitems = !totalitems + !SelectedItems.size()
+
+     !this.logfile('std','_________________________________________________________________________')
+
+  -- Get the current element type
+     !this.eletype = !!ce.type
+     !this.PrevItemType = !!ce.type
+
+  -- Check for funny chars in names
+     !outname = !!VNETStripName(!VNETTopItmFNM)
+     !this.logfile('std','')
+     !this.logfile('std','      Outputting data for ASMBLY $!outname')
+     !this.logfile('std','')
+
+     $p Outputting data for ASMBLY $!VNETTopItmFNM
+
+     !this.logfile('std','')
+     !this.logfile('std','      Total number of items found : ' & !totalitems )
+     !this.logfile('std','')
+
+  -- Set the total number of items
+
+     !this.totalcount = !totalitems
+
+    -- Update Progress Text
+     !text = '$!this.eletype ' & '$!elemcount' & ' of ' & '$!totalcount' & ' (' & !outname & ')'
+     if (!text.length() gt 55) then
+       !text = !text.substring(1,46) & '...)'
+     endif
+     !!VNETExport.progress.val = '$!text'
+     !!VNETExport.NumberOfItems.val = 'Exporting ' & !this.totalcount.string() & ' items'
+     refresh !!VNETExport.progress
+     refresh !!VNETExport.NumberOfItems
+
+    -- Get Assembly Data
+     !assemdata = !this.CollectAssem(!assem)
+
+    -- Create XML
+     !this.Output(!assemdata, !this.CharEnc, !proj, !RVMCreate)
+     !outputxml = !this.resultarray
+
+    -- Write out XML
+     !VNETASMName = !!VNETxsettings.outputasm.val & '\Asmb_' & !assemdata.AsmblyFileName & '_VPD.xml'
+     !VNETASMFile = !!file(!VNETASMName)
+     !VNETASMFile.writefile('OVERWRITE',!outputxml)
+     handle any
+        !this.logfile('std','')
+        !this.logfile('std','Error Opening Output file : $!VNETASMFile')
+        !this.logfile('std','                          : $!!ERROR.TEXT')
+     elsehandle none
+        !this.logfile('std','')
+        !this.logfile('std','           Output file: $!VNETASMFile')
+        !this.logfile('std','')
+     endhandle
+
+     !VNETASMFile.close()
+     handle any
+     endhandle
+
+    -- Create Document Links
+     if !assemdata.LinksToDocs.empty().not() then
+        !!VNETExport.LogfileMes.clear()
+        !!VNETLinkDocs(!assem,!assemdata.AsmblyFileName)
+        !this.logfile('std','ARRAY')
+     endif
+
+    -- RVM Creation
+     if !RVMCreate then
+        if !this.RVMTemplateData.empty() then
+           !this.logfile('std','Error in RVM Template file : ' & !!VNETxsettings.rvmtempname.val)
+           $P      Error creating RVM files
+        else
+           !!VNETExport.LogfileMes.clear()
+           !!VNETassemrvm(!assemdata, !VNETTopItmFNM, !this.RVMTemplateData, !this.RVMTemplateFile)
+           !this.logfile('std','ARRAY')
+        endif
+     endif
+
+     site
+     handle any
+     endhandle
+
+  enddo
+
+-- Store file name before closing
+  !!assyLogNormal.stop()
+  !logfilename = !!assyLogNormal.file
+
+  !!assyLogNormal.delete()
+  handle any
+  endhandle
+
+-- Reset the gadgets after export
+  !!VNETExport.Progress.val = ''
+  !!VNETExport.NumberOfItems.val = ''
+  refresh !!VNETExport.Progress
+  refresh !!VNETExport.NumberOfItems
+
+-- Set progress bar gadgets...
+  !this.percomplete( 1 , 1 )
+
+  !!VNETExport.FProgress.active = false
+
+-- Empty Temporary User Class storage areas
+  !!VNETExport.UserClassStore1.clear()
+  !!VNETExport.UserClassStore2.clear()
+  !!VNETExport.UserClassStore3.clear()
+  !!VNETExport.UserClassStore4.clear()
+  !!VNETExport.UserClassStore5.clear()
+  !!VNETExport.UserClassStore6.clear()
+  !!VNETExport.UserClassStore7.clear()
+  !!VNETExport.UserClassStore8.clear()
+  !!VNETExport.UserClassStore9.clear()
+  !!VNETExport.UserClassStore10.clear()
+
+-- Return to original Current Element
+  !!ce = !this.ce
+
+  if !VNETTopItems.size() eq 0 then
+     !!assyLogNormal.file.deletefile()
+     !!Alert.Warning('No ASMBLY(s) where exported as there are none in the currently selected MDB')
+  else
+
+   -- Export referenced SITES
+     if !!VNETxsettings.IncludeSITES.val and !this.AssociatedSites.empty().not() then
+
+        $p
+        $p Exporting Associated Design Item(s)
+        $p
+
+       -- Set to Design Items (Sites) as Export Type
+        !curdesigntype = !!VNETExport.designtype.val
+        !!VNETExport.designtype.val = 1
+
+       -- Collect the sites that items exported belong to and export them as well
+        !currenthier = !!VNETExport.HierList
+
+        !!VNETExport.HierList.clear()
+        !!VNETExport.HierList = !this.AssociatedSites.unique()
+
+        !exportsites = object VNETWriteXML()
+
+        !!VNETExport.HierList.clear()
+        !!VNETExport.HierList = !currenthier
+
+       -- Set back to Assemblies as Export Type
+        !!VNETExport.designtype.val = !curdesigntype
+
+     endif
+  endif
+
+-- Reset logfile
+  !!VNETExport.NormalLog = object file('')
+
+-- Finish off by refreshing the screen
+  prompt dismiss
+
+-- Return to original Current Element
+  !!ce = !this.ce
+
+  if defined(!!VNETBatchMode) then
+     $p Assembly Export Complete. Check Log file(s)
+     $p $!logfilename
+  endif
+
+endmethod
+
+-- End of method definition for .VNETWriteASMXML()
+
+------------------------------------------------------------------------------
+-- Method:           .CollectAssem(!assembly is DBREF)
+-- Author:           Ian Stanbrook
+-- Created:          Fri March 28
+--
+--
+-- Description:
+-- Collect Assembly information
+--------------------------------------------------------------------------------
+
+define method .CollectAssem(!assembly is DBREF) is VNETAssembly
+
+   $!assembly
+
+  -- Create object for current spool
+   !asscollect = object VNETAssembly()
+
+  -- Get ASMBLY Name
+
+   if !assembly.name eq ('/' & !assembly.namn) then
+      !asscollect.AsmblyName = !assembly.name
+      !asscollect.AsmblyNPName = !assembly.namn
+   else
+      !asscollect.AsmblyName = !assembly.namn
+      !asscollect.AsmblyNPName = !assembly.namn.replace('/','_')
+   endif
+
+  -- Filenames replace / with a _ and replace (spaces) with a ~
+   !asscollect.AsmblyFileName = !!VNETFileName(!asscollect.AsmblyNPName.replace('/','_').replace(' ','~'))
+
+   !asscollect.AsmblyOName = !assembly.asname
+
+   !OrigID = object VNETOriginalID(!assembly, !assembly.asname)
+   !asscollect.AsmblyVName = !OrigID.result
+
+  -- Are any attributes set for exporting
+   if !this.IncludedAttribs.empty().not() or !this.IncludedPsuedos.empty().not() then
+      !this.GetAttributes(!assembly.fullname, !assembly.type.substring(1,4))
+      !asscollect.AsmblyChars = !!VNETCharactAttrs(!this.CEAttDesc, !this.CEAttValue)
+   endif
+
+   !this.TransClass(!assembly.type, !assembly.asname)
+   !asscollect.AsmblyClass = !this.result
+
+  -- Sort out hierarchy
+   !asscollect.AsmblyHier = !assembly.ownlst
+
+  -- Get links for use later
+   !asscollect.LinksToDocs = !assembly.lnkdoc
+
+   !AsmblyHierName = array()
+   !AsmblyHierNPName = array()
+   !AsmblyHierClass = array()
+   !AsmblyFileName = array()
+
+   do !indx2 indices !asscollect.AsmblyHier
+
+      !AsmblyHierName.append(!asscollect.AsmblyHier[!indx2].name)
+
+      if !asscollect.AsmblyHier[!indx2].name eq ('/' & !asscollect.AsmblyHier[!indx2].namn) then
+         !AsmblyHierNPName.append(!asscollect.AsmblyHier[!indx2].namn)
+      else
+         !AsmblyHierNPName.append(!asscollect.AsmblyHier[!indx2].namn.replace('/','_'))
+      endif
+
+      !this.TransClass(!asscollect.AsmblyHier[!indx2].type, !asscollect.AsmblyHier[!indx2].name)
+      !AsmblyHierClass.append(!this.result)
+
+      !AsmblyFileName.append(!!VNETFileName(!asscollect.AsmblyHier[!indx2].name.after('/').replace('/','_').replace(' ','~')))
+
+   enddo
+
+   !asscollect.AsmblyHierName = !AsmblyHierName
+   !asscollect.AsmblyHierNPName = !AsmblyHierNPName
+   !asscollect.AsmblyHierClass = !AsmblyHierClass
+   !asscollect.AsmblyHierFileName = !AsmblyFileName
+
+  -- Process Assembly Members
+   !count = 1
+
+   do !asmfld values !assembly.members
+
+  -- Members name
+
+      if !asmfld.type eq 'ASMBLY' then
+
+         !assitm[1] = !asmfld.fullname
+         !assitm[2] = !asmfld.type
+
+      else
+
+         !tempasitem = !asmfld.sitem
+
+         !assitm[1] = !tempasitem.fullname
+         handle any $* Item is unset has missing DBREF
+            skip
+         endhandle
+
+         !assitm[2] = !tempasitem.type
+
+         !sitename = 'Unset'
+
+         var !sitename site of $!tempasitem
+         handle any
+            !splittyp = !!VNETExport.MarineTypes.split()
+            do !martypes values !splittyp
+               var !sitename $!martypes of $!tempasitem
+               handle any
+               elsehandle none
+                  break
+               endhandle
+            enddo
+         endhandle
+
+         if !sitename neq 'Unset' then
+            !this.AssociatedSites.append(!sitename)
+            !this.AssociatedSites.unique()
+         endif
+      endif
+
+      !asscollect.members[!count] = !assitm
+
+      !count = !count + 1
+
+   enddo
+
+   return !asscollect
+
+endmethod
+
+-- End of method definition for .CollectAssem()
+
+------------------------------------------------------------------------------
+-- Method:           .Output(!assembly is Object, !charenc is STRING ,!project is STRING, !RVMCreate is BOOLEAN)
+-- Author:           Ian Stanbrook
+-- Created:          Fri March 28
+--
+--
+-- Description:
+-- Collect Assembly information
+--------------------------------------------------------------------------------
+
+define method .Output(!assembly is vnetassembly, !charenc is string ,!project is string, !RVMCreate is boolean)
+
+   !this.resultarray.clear()
+
+-- Create output data for each ASSEMBLY
+   !output = array()
+
+   !output.append(|<?xml version="1.0" encoding="| & !this.CharEnc & |"?>|)
+   !output.append('<vl:VNETList xmlns:vl="http://www.aveva.com/VNET/List" xmlns="http://www.aveva.com/VNET/eiwm">')
+   !output.append(|<!--Exported by | & !!VNETExport.user & | - | & !this.logtime & |-->|)
+
+   !output.append('  <Template>')
+--   !output.append('    <ID>VPD ASMBLY Associations ' & !assembly.AsmblyName & '</ID>')
+   !output.append('    <ID>VPD ASMBLY Associations ' & !assembly.AsmblyNPName & '</ID>')
+
+   !output.append('   <Object>')
+   !output.append('      <ID>$!project</ID>')
+   !output.append('      <Context>')
+   !output.append('         <ID>VPD</ID>')
+   !output.append('      </Context>')
+   !output.append('      <ClassID>Plant</ClassID>')
+   !output.append('   </Object>')
+
+
+   do !hiercnt indices !assembly.AsmblyHierName
+
+      !output.append('    <Object>')
+
+      !Outname = !!VNETStripXML(!assembly.AsmblyHierName[!hiercnt])
+      !OutnameNP = !!VNETStripXML(!assembly.AsmblyHierNPName[!hiercnt])
+
+      !output.append('      <ID>' & !OutnameNP & '</ID>')
+      !output.append('      <Context>')
+      !output.append('        <ID>PROJECTCONTEXT</ID>')
+      !output.append('      </Context>')
+
+      !output.append('      <ClassID>' & !assembly.AsmblyHierClass[!hiercnt] & '</ClassID>')
+
+      !output.append('      <Association type="is identified by">')
+      !output.append('        <Object>')
+      !output.append('          <ID>' & !Outname &'</ID>')
+      !output.append('          <Context>')
+      !output.append('            <ID>VPD</ID>')
+      !output.append('            <Context>')
+      !output.append('              <ID>PROJECTCONTEXT</ID>')
+      !output.append('            </Context>')
+      !output.append('          </Context>')
+      !output.append('        </Object>')
+      !output.append('      </Association>')
+
+     -- Output association to the "Plant" if current element is a SITE....
+     -- Note the the Project is the same as the Top Object so must not be given a context
+      if !hiercnt eq 1 then
+         !output.append('      <Association type="is a part of">')
+         !output.append('          <Object>')
+         !output.append('             <ID>' & !project & '</ID>')
+         !output.append('          </Object>')
+         !output.append('      </Association>')
+      endif
+
+      if !hiercnt neq 1 then
+
+         !this.result = !!VNETStripXML(!assembly.AsmblyHierNPName[!hiercnt - 1])
+
+--         !output.append('      <Association type="is a part of">')
+         !output.append('      <Association type="is an element of">')
+         !output.append('        <Object>')
+         !output.append('          <ID>' & !this.result &'</ID>')
+         !output.append('          <Context>')
+         !output.append('              <ID>PROJECTCONTEXT</ID>')
+         !output.append('          </Context>')
+         !output.append('        </Object>')
+         !output.append('      </Association>')
+      endif
+
+      !output.append('    </Object>')
+
+   enddo
+
+   !output.append('    <Object>')
+
+   !this.result = !!VNETStripXML(!assembly.AsmblyNPName)
+
+   !output.append('      <ID>' & !this.result & '</ID>')
+   !output.append('      <Context>')
+   !output.append('        <ID>PROJECTCONTEXT</ID>')
+   !output.append('      </Context>')
+
+   !output.append('      <ClassID>' & !assembly.AsmblyClass & '</ClassID>')
+
+   !output.append('      <Association type="is identified by">')
+   !output.append('        <Object>')
+
+   !this.result = !!VNETStripXML(!assembly.AsmblyName)
+
+   !output.append('          <ID>' & !this.result &'</ID>')
+   !output.append('          <Context>')
+   !output.append('            <ID>VPD</ID>')
+   !output.append('            <Context>')
+   !output.append('              <ID>PROJECTCONTEXT</ID>')
+   !output.append('            </Context>')
+   !output.append('          </Context>')
+   !output.append('        </Object>')
+   !output.append('      </Association>')
+
+
+--   !output.append('      <Association type="is a part of">')
+   !output.append('      <Association type="is an element of">')
+   !output.append('        <Object>')
+
+   !this.result = !!VNETStripXML(!assembly.AsmblyHierNPName.last())
+
+   !output.append('          <ID>' & !this.result &'</ID>')
+   !output.append('          <Context>')
+   !output.append('              <ID>PROJECTCONTEXT</ID>')
+   !output.append('          </Context>')
+   !output.append('        </Object>')
+   !output.append('      </Association>')
+
+  -- Output any Characteristics found
+   !output.appendarray(!assembly.AsmblyChars)
+
+  -- Output relationships to owned items
+   do !membcnt indices !assembly.members
+      if !assembly.members[!membcnt][2] eq 'ASMBLY' then
+         !output.append('      <Association type="is a collection including">')
+      else
+         !output.append('      <Association type="is an assembly including">')
+      endif
+
+      !output.append('        <Object>')
+
+      !this.result = !!VNETStripXML(!assembly.members[!membcnt][1])
+
+      !output.append('          <ID>' & !this.result &'</ID>')
+      !output.append('          <Context>')
+      !output.append('            <ID>VPD</ID>')
+      !output.append('            <Context>')
+      !output.append('              <ID>PROJECTCONTEXT</ID>')
+      !output.append('            </Context>')
+      !output.append('          </Context>')
+      !output.append('        </Object>')
+      !output.append('      </Association>')
+   enddo
+
+  -- Create RVM Associations
+
+     -- Hierarchy first
+      do !owncnt indices !assembly.AsmblyHier
+         skip if !owncnt eq 1
+         !output.append('      <Association type="is referenced in">')
+         !output.append('        <Object>')
+         !output.append('          <ID>' & !assembly.AsmblyHierFileName[!owncnt] & '-Complete</ID>')
+         !output.append('          <Context>')
+         !output.append('            <ID>VPD</ID>')
+         !output.append('            <Context>')
+         !output.append('              <ID>PROJECTCONTEXT</ID>')
+         !output.append('            </Context>')
+         !output.append('          </Context>')
+         !output.append('        </Object>')
+         !output.append('      </Association>')
+      enddo
+
+      !output.append('      <Association type="is referenced in">')
+      !output.append('        <Object>')
+      !output.append('          <ID>' & !assembly.AsmblyFileName & '-Complete</ID>')
+      !output.append('          <Context>')
+      !output.append('            <ID>VPD</ID>')
+      !output.append('            <Context>')
+      !output.append('              <ID>PROJECTCONTEXT</ID>')
+      !output.append('            </Context>')
+      !output.append('          </Context>')
+      !output.append('        </Object>')
+      !output.append('      </Association>')
+
+      !output.append('      <Association type="is referenced in">')
+      !output.append('        <Object>')
+      !output.append('          <ID>' & !assembly.AsmblyFileName & '</ID>')
+      !output.append('          <Context>')
+      !output.append('            <ID>VPD</ID>')
+      !output.append('            <Context>')
+      !output.append('              <ID>PROJECTCONTEXT</ID>')
+      !output.append('            </Context>')
+      !output.append('          </Context>')
+      !output.append('        </Object>')
+      !output.append('      </Association>')
+
+   if !assembly.LinksToDocs.empty().not() then
+      do !lnkcnt indices !assembly.LinksToDocs
+
+         !output.append('      <Association type="is referenced in">')
+         !output.append('        <Object>')
+         !output.append('          <ID>' & !assembly.LinksToDocs[!lnkcnt].flnn & '</ID>')
+         !output.append('          <Context>')
+         !output.append('            <ID>PROJECTCONTEXT</ID>')
+         !output.append('          </Context>')
+         !output.append('        </Object>')
+         !output.append('      </Association>')
+
+      enddo
+   endif
+
+   !output.append('    </Object>')
+
+   !output.append('  </Template>')
+   !output.append('</vl:VNETList>')
+
+   !this.resultarray = !output
+
+endmethod
+
+-- End of method definition for .Output()
+
+------------------------------------------------------------------------------
+-- Method:           .TransClass(!type is string, !name is string)
+-- Author:           D. Laird
+-- Created:          Fri March 28
+--
+--
+-- Description:
+-- Output hierarchy list stored in VNETExport member ".HierList"
+--------------------------------------------------------------------------------
+
+define method .TransClass(!type is string, !name is string)
+
+-- Translate PDMS class into VNET class from a default list specified in a file
+
+-- Get list of classes from VNETExport form member .Classes
+-- Part1 (Left side) is the PDMS value
+-- Part2 (Right side) is the VNET value
+
+-- After setting OUR default class we allow users to write their owne code
+-- to do some post processing for their own class definitions....
+
+-- Set default type (Class) if no match is found...
+   !this.Result = !type
+
+-- Check for funny chars in names
+   !outname = !!VNETStripName(!name)
+
+   -- Loop through defined classes to find match to set default...
+   do !line values !!VNETExport.Classes
+      !ClassPDMS = !line.Before('+')
+      !ClassVNET = !line.After('+')
+      if ( !ClassPDMS eq 'Otherwise' ) then
+         -- found default
+         !this.Result = !ClassVNET
+         break
+      endif
+   enddo
+
+   -- Loop through defined classes to find match...
+   do !line values !!VNETExport.Classes
+      !ClassPDMS = !line.Before('+')
+      !ClassVNET = !line.After('+')
+      if ( !Type eq !ClassPDMS ) then
+         -- found a match
+         !this.Result = !ClassVNET
+         break
+      endif
+   enddo
+
+   -- Now allow user to overwrite our choice...
+   -- First check the Users Function is set in the settings form...
+   if (!!VNETxsettings.uclass.val eq 'Unset') then
+      -- No user function, so stick with our AVEVA choice.
+      !this.logfile('full','               $!outname is class: $!ClassVNET')
+      return
+   endif
+
+   -- If we got here then they have a user function defined...
+   -- Just realised this bit is a bit pointless as a function MUST be in the PMLLIB seearch path
+   -- anyway, so the system will already know about it... Still, needs to know the name though!
+
+   if !!VNETExport.UserClass then
+   -- Object to get Originalname for items for this project name found
+
+      !UserObject = object $!!VNETExport.UserClassFileName(!type, !name, !this.result)
+      handle (46,58)
+       -- Error Mapping file not found
+         !!VNETError.SetErrorFlag('')
+         !this.logfile('full','         $!outname is class: $!ClassVNET')
+         !this.logfile('full','               ERROR: Mapping file Not Found - $!!VNETExport.uclass')
+         return
+      elsehandle any
+       -- Error in Mapping file code
+         !!VNETError.SetErrorFlag('')
+         !this.logfile('full','         $!outname is class: $!ClassVNET')
+         !this.logfile('full','               ERROR: In Mapping file - Check syntax')
+         return
+      endhandle
+
+      !this.Result = !UserObject.result
+
+      if (!ClassVNET neq !UserObject.result) then
+         !this.logfile('full','         $!outname is class: $!UserObject.result >> $!!VNETExport.uclass')
+      else
+         !this.logfile('full','         $!outname is class: $!ClassVNET')
+      endif
+
+   endif
+
+endmethod
+
+-- End of method definition for .TransClass(!type is string, !name is string)
+
+-------------------------------------------------------------------------------
+-- Method:           .GetAttributes(!fullname is STRING, !type is STRING)
+-- Author:           D.Laird
+-- Created:          Fri March 28
+--
+--
+-- Description:
+-- Get the necessary attribrutes for current element
+--------------------------------------------------------------------------------
+
+define method .GetAttributes(!fullname is string, !type is string)
+
+   !this.CEAttName.clear()
+   !this.CEAttDesc.clear()
+   !this.CEAttValue.clear()
+   !this.CEAttDefVal.clear()
+
+   !CEAttrs = object VNETGetAttributes(!fullname, !type, !this.IncludedAttribs, !this.IncludedAttribsTyp, !this.IncludedPsuedos, !this.IncludedPsuedosTyp )
+
+   if !CEAttrs.CEAttDesc.empty().not() then
+      !this.CEAttDesc = !CEAttrs.CEAttDesc
+      !this.CEAttValue = !CEAttrs.CEAttValue
+   endif
+
+   if !CEAttrs.CEErrors.empty.not() and !!VNETxsettings.AttrErr.val.not() then
+      !!VNETError.SetErrorFlag('')
+      do !loop indices !CEAttrs.CEErrors
+         !this.logfile('full',!CEAttrs.CEErrors[!loop])
+      enddo
+   endif
+
+endmethod
+
+-- End of method definition for .GetAttributes(!fullname is STRING, !type is STRING)
+
+--------------------------------------------------------------------------------
+-- Method:           .percomplete(!progresscount is REAL, !totalcount is REAL)
+-- Author:           C. Pearson
+-- Created:          Fri March 28
+--
+--
+-- Description:
+-- Display progress on main form....
+--------------------------------------------------------------------------------
+
+define method .percomplete(!progresscount is real, !totalcount is real)
+
+  -- Update Progress Bar
+   if !progresscount eq 1 and !totalcount eq 1 then
+      !!fmsys.setprogress(0)
+   else
+      !percomplete  = (( !progresscount / !totalcount ) * 100)
+      !!fmsys.setprogress(!percomplete)
+   endif
+
+endmethod
+
+-- End of method definition .percomplete(!progresscount is REAL, !totalcount is real)
+
+--------------------------------------------------------------------------------
+
+-- Method:           .IncludeAtts()
+-- Author:           Ian Stanbrook
+-- Created:          Fri December 05
+--
+--
+-- Description:
+-- Find out the mapping file to use
+
+--------------------------------------------------------------------------------
+
+define method .IncludeAtts()
+
+   !this.IncludedAttribs.clear()
+   !this.IncludedAttribsTyp.clear()
+   !this.IncludedPsuedos.clear()
+   !this.IncludedPsuedosTyp.clear()
+
+   !IncludedAttrs = !!VNETLoadAttrib(!!VNETxsettings.incattrsname)
+   handle any
+      return
+   endhandle
+
+   !this.IncludedAttribs = !IncludedAttrs[1]
+   !this.IncludedAttribsTyp = !IncludedAttrs[2]
+   !this.IncludedPsuedos = !IncludedAttrs[3]
+   !this.IncludedPsuedosTyp = !IncludedAttrs[4]
+
+endmethod
+
+-- End of method definition for .IncludeAtts()
+
+---------------------------------------------------------------------------
+-- Method:           .RVMRead
+-- Author:           I.Stanbrook
+-- Created:          Fri March 28
+--
+--
+-- Description:
+-- Read in the Class Library file
+----------------------------------------------------------------------------
+
+define method .RVMRead()
+
+  !RVMArray = object ARRAY()
+
+  !this.RVMTemplateData = !RVMArray
+
+  -- Open Class Definition file and read in all contents...
+  !InFile = !!VNETxsettings.rvmtempname.val
+  !InputFile = object FILE(!InFile)
+  if (!InputFile.exists()) then
+     !this.RVMTemplateData = !InputFile.ReadFile()
+  else
+     !!VNETxsettings.checkrvmtemp()
+     return
+  endif
+
+  var !unique unique
+
+  do !loop indices !this.RVMTemplateData
+     if !this.RVMTemplateData[!loop].upcase() eq 'RETURN' then
+        !this.RVMTemplateData[!loop] = ''
+     elseif !this.RVMTemplateData[!loop].upcase().matchwild('*CDCAXREF APPEND*') then
+        !this.RVMTemplateData[!loop] = ''
+     elseif !this.RVMTemplateData[!loop].upcase().matchwild('*CDCAXREF APPEND*') then
+        !this.RVMTemplateData[!loop] = ''
+     elseif !this.RVMTemplateData[!loop].upcase().matchwild('*CDCNXFIL*') then
+        !CDCNXFIL = !this.RVMTemplateData[!loop].after('|').before('|')
+        !CDCNXFILNEW = |%PDMSUSER%\VNETAssembly-$!unique$N.xr|
+        !this.RVMTemplateData[!loop] = !this.RVMTemplateData[!loop].replace(!CDCNXFIL,!CDCNXFILNEW)
+        !this.RVMTemplateFile = !CDCNXFILNEW
+     elseif !this.RVMTemplateData[!loop].upcase().matchwild('*CDXEXPMAIN_FNAME*') then
+        !CDXEXPMAINFNAME = !this.RVMTemplateData[!loop].after('|').before('|')
+        !CDXEXPMAINFNAMEN = |%PDMSUSER%\VNETAssembly-$!unique$N.xr|
+        !this.RVMTemplateData[!loop] = !this.RVMTemplateData[!loop].replace(!CDXEXPMAINFNAME,!CDXEXPMAINFNAMEN)
+     endif
+  enddo
+
+  !this.RVMTemplateData.compress()
+
+endmethod
+
+-- End of method definition for .RVMRead()
+
+-------------------------------------------------------------------------------
+
+-- Method:           .logfile()
+-- Author:           Ian Stanbrook
+-- Created:          Fri December 05
+--
+--
+-- Description:
+-- Output the data to the relevent log file or files depending on the settings
+
+--------------------------------------------------------------------------------
+
+define method .logfile(!whichfile is string, !message is string)
+
+   if !!VNETxsettings.FullLog.val and !whichfile eq 'full' then
+         if !message eq 'ARRAY' then
+            !!assyLogNormal.addarray(!!VNETExport.LogfileMes)
+         else
+            !!assyLogNormal.add(!message)
+         endif
+
+   elseif (!whichfile neq 'full') then
+      if !message eq 'ARRAY' then
+         !!assyLogNormal.addarray(!!VNETExport.LogfileMes)
+      else
+         !!assyLogNormal.add(!message)
+      endif
+   endif
+
+   !!VNETExport.LogfileMes.clear()
+
+endmethod
+
+-- End of method definition for .logfile(!whichfile is string, !message is string)
+
+-------------------------------------------------------------------------------
+
+-- Method:           .logfilehead(!logfile is VNETLOG)
+-- Author:           Ian Stanbrook
+-- Created:          Fri December 05
+--
+--
+-- Description:
+-- Output the data to the relevent log file or files depending on the settings
+
+--------------------------------------------------------------------------------
+
+define method .logfilehead(!logfile is VNETLOG)
+
+ -- Write Logfile entries
+  !logfile.add(' ')
+  !logfile.add('_________________________________________________________________________')
+  !logfile.add('Assembly Specific Settings ')
+
+  !logfile.add('Assembly Output Folder  : ' + !!VNETxsettings.outputasm.val)
+  !logfile.add('RVM Output Folder       : ' + !!VNETxsettings.outputasmrvm.val)
+  !logfile.add('RVM Template            : ' + !!VNETxsettings.rvmtempname.val)
+  !logfile.add('Create RVM              : ' + !!VNETxsettings.CreateAsmRVM.val.string())
+  !logfile.add('Create RVM Text         : ' + !!VNETxsettings.rvmtxt.val.string())
+  !logfile.add('_________________________________________________________________________')
+  !logfile.add(' ')
+
+endmethod
+
+-- End of method definition for .logfilehead(!logfile is VNETLOG)
+
+-------------------------------------------------------------------------------
+-- End of File

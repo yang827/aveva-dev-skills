@@ -1,0 +1,372 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            mdsAutoPicker.pmlobj
+--   Type:          Object Definition
+--   Group:         Multi Discipline Supports Application
+--     Keyword:     MDS
+--   Module:
+--   Replaces:
+--
+-- Author:          Wojciech Sakowicz
+-- Created:         01/04/2012
+--
+--
+-- Description:
+--  Object to simulate user pick on support datum creation with given element
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  cancel()                         -                   Cancel selection by clearing object, closing form
+--  clear()                          -                   Clear object
+--  disable()                        -                   Temporary disable autopick but do not cancel or clear completely
+--  enabled()                        BOOLEAN             Test if autopick is on
+--  findType(STRING)                 DBREF               Find element of the given type in the same position as picked element
+--  mdsAutoPicker()                  -                   Default constructor
+--  pick(STRING,STRING)              DBREF               Pick element next to given
+--  pickShoe()                       DBREF               Pick shoe next to current atta for guide
+--  removePickedAtta()               -                   Removes picked ATTA from database
+--  set(DBREF,FORM)                  -                   Set preliminary support element
+--
+define object MDSAUTOPICKER
+
+  member .originForm is FORM
+  -- number of allowed picks by autopicker, decreased while picking
+  -- value -1 means autopicker disabled
+  member .allowedPicks is REAL
+  member .preliminarySupp is DBREF
+
+endobject
+
+------------------------------------------------------------------------
+--
+-- Method:      mdsAutoPicker
+--
+-- Description: Default constructor
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]      [Description]
+--
+-- Return:
+--   [Data Type]       [Description]
+--
+------------------------------------------------------------------------
+define method .mdsAutoPicker()
+
+  !this.allowedPicks = -1
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      set
+--
+-- Description: Set preliminary support element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]      [Description]
+--    1   R      DBREF            Element to be used as picked
+-- Return:
+--   [Data Type]       [Description]
+--
+------------------------------------------------------------------------
+define method .set(!ref is DBREF, !form is FORM)
+
+  !this.originForm = !form
+  !this.preliminarySupp = !ref
+  !this.allowedPicks = 1
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      enabled
+--
+-- Description: Test if autopick is on
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]      [Description]
+-- Return:
+--   [Data Type]       [Description]
+--    BOOLEAN           True if autopick, false if normal pick
+------------------------------------------------------------------------
+define method .enabled() is BOOLEAN
+
+  return !this.allowedPicks.gt(-1)
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      pickShoe
+--
+-- Description: Pick shoe next to current atta for guide
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]      [Description]
+-- Return:
+--   [Data Type]       [Description]
+--
+------------------------------------------------------------------------
+define method .pickShoe() is DBREF
+
+  -- decrease number of allowed picks - doesn't matter if found or not
+  !this.allowedPicks = !this.allowedPicks - 1
+
+  -- try with next
+  !elem = NEXT of $!this.preliminarySupp
+  handle any
+  elsehandle none
+    if (!elem.type eq 'ATTA' and !elem.catref.owner.:MdsGuidable) then
+      !arr = ARR of $!elem
+      !elemPos = PPOS $!arr of $!elem
+      handle any
+      elsehandle none
+        if (!elemPos.near(!this.preliminarySupp.pos,1mm)) then
+          return !elem
+        endif
+
+      endhandle
+    endif
+  endhandle
+
+  -- try with prev
+  !elem = PREV of $!this.preliminarySupp
+  handle any
+  elsehandle none
+    if (!elem.type eq 'ATTA' and !elem.catref.owner.:MdsGuidable) then
+      !lea = LEA of $!elem
+      !elemPos = PPOS $!lea of $!elem
+      handle any
+      elsehandle none
+        if (!elemPos.near(!this.preliminarySupp.pos,1mm)) then
+          return !elem
+        endif
+      endhandle
+    endif
+  endhandle
+
+  -- not found
+  return object DBREF()
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      pick
+--
+-- Description: Pick element next to given
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]      [Description]
+--    1   R      STRING            Type searched
+--    2   R      STRING            Purpose as in MDSIDTUBE
+-- Return:
+--   [Data Type]       [Description]
+--
+------------------------------------------------------------------------
+define method .pick(!type is STRING, !dummyPurp is STRING) is DBREF
+
+  -- decrease number of allowed picks - doesn't matter if found or not
+  !this.allowedPicks = !this.allowedPicks - 1
+
+  -- if type is 'TUBE' or 'FTUB' (or 'PCOM'?)
+  if !type.eq(!!mdsOptions.pipes) then
+    -- return previous OR next (if atta is touching next) OR branch ref
+    return !!mdsAutoTubePicker.findType(object STRING())
+  endif
+
+  -- return unset if not found
+  return !!mdsAutoTubePicker.findType(!type)
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      findType
+--
+-- Description: Find element of the given type in the same position as picked element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]      [Description]
+--    1   R      STRING           Type searched
+-- Return:
+--   [Data Type]       [Description]
+--    DBREF           Elbow reference on success, unset on failure
+------------------------------------------------------------------------
+define method .findType(!type is STRING) is DBREF
+
+  if (badref(!this.preliminarySupp)) then
+    return object DBREF()
+  endif
+
+  -- try with prev
+  !prev = PREV of $!this.preliminarySupp
+  handle any
+  elsehandle none
+    if (UNSET(!type) or (!prev.type eq !type)) then
+      -- test LEAVE and main position
+      !lea = LEA of $!prev
+      !elemPos = PPOS $!lea of $!prev
+      !elemCentrPos = PPOS of $!prev
+      handle any
+      elsehandle none
+        if (!elemPos.near(!this.preliminarySupp.pos,1mm) OR !elemCentrPos.near(!this.preliminarySupp.pos,1mm)) then
+          return !prev
+        endif
+      endhandle
+    endif
+  endhandle
+
+  -- try with next
+  !elem = NEXT of $!this.preliminarySupp
+  handle any
+  elsehandle none
+    if (UNSET(!type) or (!elem.type eq !type)) then
+      !arr = ARR of $!elem
+      !elemPos = PPOS $!arr of $!elem
+      !elemCentrPos = PPOS of $!elem
+      handle any
+      elsehandle none
+        if (!elemPos.near(!this.preliminarySupp.pos,1mm) OR !elemCentrPos.near(!this.preliminarySupp.pos,1mm)) then
+          return !elem
+        endif
+
+      endhandle
+    endif
+  endhandle
+
+  if (!type EQ 'BRAN') then
+    return !this.preliminarySupp.parent
+  endif
+
+  -- on unspecified type return previous regardless of position
+  if (UNSET(!type)) then
+    if (DEFINED(!prev) AND NOT BADREF(!prev)) then
+      return !prev
+    else
+      return !this.preliminarySupp.parent
+    endif
+  endif
+
+  return object DBREF()
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      removePickedAtta
+--
+-- Description: Removes picked ATTA from database
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]      [Description]
+-- Return:
+--   [Data Type]       [Description]
+--
+------------------------------------------------------------------------
+define method .removePickedAtta()
+
+  !oldCe = !!ce
+  !!ce = !this.preliminarySupp
+  delete ATTA
+  handle any
+  elsehandle none
+    !this.clear()
+  endhandle
+  if (NOT BADREF(!oldCe)) then
+    !!ce = !oldCe
+  endif
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      clear
+--
+-- Description: Clear object
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]      [Description]
+--
+-- Return:
+--   [Data Type]       [Description]
+--
+------------------------------------------------------------------------
+define method .clear()
+
+  !this.preliminarySupp = object DBREF()
+  !this.allowedPicks = -1
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      disable
+--
+-- Description: Temporary disable autopick but do not cancel or clear completely
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]      [Description]
+--
+-- Return:
+--   [Data Type]       [Description]
+--
+------------------------------------------------------------------------
+define method .disable()
+
+  -- do not clear .preliminarySupp
+  !this.allowedPicks = -1
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      cancel
+--
+-- Description: Cancel selection by clearing object, closing form
+--              and restoring name of preliminary support
+--              Used in MDSIDTUBE when selection fails
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]      [Description]
+--
+-- Return:
+--   [Data Type]       [Description]
+--
+------------------------------------------------------------------------
+define method .cancel()
+
+  if (UNSET(!this.preliminarySupp)) then
+    return
+  endif
+
+  -- restore name
+  !name = !this.preliminarySupp.name
+  if (!name.substring(!name.length() - 3).eq('_Pre')) then
+    -- remove _Pre from name
+    !this.preliminarySupp.name = !name.substring(-5)
+    handle ANY
+      !!alert.warning('Error when restoring name of preliminary support')
+    endhandle
+  endif
+
+  !this.clear()
+  if (set(!this.originForm) and !this.originForm.shown()) then
+    !this.originForm.hide()
+  endif
+
+endmethod

@@ -1,0 +1,261 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            specselect.pmlfnc
+--   Type:          Function Definition
+--   Group:         Specification handling utilities
+--     Keyword:     SPECS
+--   Module:        common
+--   Replaces:
+--
+-- Author:          N.Holmes
+-- Created:         Wed Jul 2 16:32:49 WAT 1997
+--
+--
+-- Description:
+-- Select spec entry and included selected list gadget.
+--
+------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   RW     SPECDATA    Spec data
+--    2   R      STRING      Selection Option:
+--                              RESELECT  - reselect the from the picked level
+--                              SELECT    - add selected to selected list
+--                              SPEC      - reselect from spec level
+--                              COMP      - select component explicitly
+--                              SETUP     - set up to current spec
+--                              CURRENT   - use current selection item
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define function
+define function !!specSelect (!specData is SPECDATA, !option is STRING)
+
+  -- Reselect
+  if(!option eq |RESELECT|) then
+    !specData.currentSelection = !specData.specLink.selected.selection().dbRef().owner
+
+  -- Select Permissible Entry
+  elseif (!option eq |SELECT|) then
+
+    -- Set Picked item to currently selected item
+    !specData.currentSelection = !specData.specLink.permissible.selection().dbRef()
+
+  -- Setup for specification set in SPECNAME
+  elseif (!option eq |SETUP|) then
+
+    -- Set Picked item to currently selected item
+    !specData.currentSelection = !specData.specName
+
+  -- Select Selection component explicitly
+  elseif (!option eq |COMP|) then
+
+    -- Set Picked item to currently selected item
+    !specData.currentSelection = !specData.specLink.specComp.val.dbRef()
+    handle any
+      !!messageFile.error(143, 007, !specData.specLink.specComp.val)
+    endhandle
+
+  -- Select current selection
+  elseif (!option eq |CURRENT|) then
+
+  -- Select specification entry
+  elseif (!option eq |SPEC|) then
+
+    -- Set current element to current spec select data
+    !newSpec = !specData.specLink.specifications.selection().dbRef()
+    handle any
+      !!messageFile.error(153, 007, !specData.specLink.specifications.selection('DTEXT'))
+      return
+    endhandle
+
+    -- If Current selection set, then get its specification
+    if(!specData.currentSelection.set()) then
+      !oldSpec = SPEC of $!specData.currentSelection
+    else
+      !oldSpec = object DBREF()
+    endif
+
+    -- If NewSpec and OldSpec are the same, we don't need to do anything
+--    if(!newSpec eq !oldSpec) then
+--      return
+--    endif
+
+    -- Make NewSpec the current selection
+    !specData.specName         = !newSpec
+    !specData.currentSelection = !newSpec
+  endif
+
+  -- Selection
+  label /Selection
+
+  -- Clear the permissible list
+  !specData.permissibles.clear()
+
+  -- Can we derive any lower selections automatically
+  do
+
+    -- Initialise Variable
+    !default = object DBREF()
+
+    -- Get any off-spring which either conform to the get answer or default
+    -- criteria
+    !possible = !!specGetAnswer(!specData.currentSelection, !specData.reference, !default)
+
+    -- Is there any possible elements, we will use them
+    if(!possible.set()) then
+
+      -- If there is only one, then we'll use that
+      if(!possible.size() eq 1) then
+        !specData.currentSelection = !possible[1]
+
+        -- Call action is there is one defined
+        if(!specData.actionState and !specData.action.trim().empty().not()) then
+
+          -- Carry out action
+          $!specData.action
+          handle any
+            !!alert.error('Error on selection action [' & !specData.action & '] - (' & !!error.text & ').')
+          endhandle
+
+        endif
+        skip
+
+      -- If there is more than one
+      else
+        -- If the default is set, then we'll use that
+        if(!specData.defaultSelection and !default.set()) then
+          !specData.currentSelection = !default
+          -- Call action is there is one defined
+          if(!specData.actionState and !specData.action.trim().empty().not()) then
+
+          -- Carry out action
+          $!specData.action
+          handle any
+            !!alert.error('Error on selection action [' & !specData.action & '] - (' & !!error.text & ').')
+          endhandle
+
+          endif
+          skip
+        endif
+
+        -- If there are more than one possible
+        !specData.permissibles = !possible
+
+        -- Abort auto selection
+        break
+      endif
+
+    -- Is there a default item and are we bothered?
+    elseif (!specData.defaultSelection and !default.set()) then
+      !specData.currentSelection = !default
+      -- Call action is there is one defined
+      if(!specData.actionState and !specData.action.trim().empty().not()) then
+
+        -- Carry out action
+        $!specData.action
+        handle any
+          !!alert.error('Error on selection action [' & !specData.action & '] - (' & !!error.text & ').')
+        endhandle
+
+      endif
+      skip
+    endif
+
+    break
+
+  enddo
+
+  -- Build permissible list, if the are no entries in it
+  if(!specData.permissibles.unset()) then
+
+    -- If we are looking at a "standard" spec, allow the displaying
+    -- of all the lower spec components
+    if(!specData.standardSpec) then
+
+      !specData.permissibles = !!collectMembersOf(!specData.currentSelection,'TYPE neq |TEXT|')
+
+    -- "None Standard" specification, selectors containing only SPCO are
+    -- classed as the "bottom" level.
+    else
+
+      -- Count the number of members and spec components
+      !mCount    = !specData.currentSelection.mCount
+      !scount    = !specData.currentSelection.mCount('SPCO')
+
+      -- If there is a difference between the number of SPCO and members
+      -- then we can show the permissibles
+      if(!mCount ne !scount) then
+        !specData.permissibles = !!collectMembersOf(!specData.currentSelection,'TYPE eq |SELE|')
+      endif
+    endif
+
+  endif
+
+  -- If there is only one permissible item, then we'll use it
+  if(!specData.permissibles.size() eq 1) then
+    !specData.currentSelection = !specData.permissibles[1]
+    golabel /Selection
+  endif
+
+  -- If there is a specification list, then select the correct specification from it
+  if(!specData.specLink.specifications.set()) then
+
+    -- If spec is not selected
+    if(!specData.specName.string() neq !specData.specLink.specifications.selection('RTEXT')) then
+
+      -- See if spec is within the specification list
+      !specPos = !specData.specLink.specifications.rText.findFirst(!specData.specName.string())
+
+      if(!specPos.unset()) then
+
+        -- Add Specification into Specification list
+        !!messageFile.message(153, 010, !specData.specName.flnn )
+
+        !dText = !specData.specLink.specifications.dText
+        !rText = !specData.specLink.specifications.rText
+
+        -- If There is a description, use it
+        if(!specData.specName.description.empty().not()) then
+          !dText.append(!specData.specName.description)
+        else
+          !dText.append(!specData.specName.flnn)
+        endif
+        !rText.append(!specData.specName.string())
+
+        -- Write data back to gadget
+        !specData.specLink.specifications.dText = !dText
+        !specData.specLink.specifications.rText = !rText
+
+      endif
+
+      -- select specification
+      !specData.specLink.specifications.select('RTEXT',!specData.specName.string())
+
+    endif
+
+  endif
+
+  -- Call action is there is one defined
+  if(!specData.actionState.not() and !specData.action.trim().empty().not()) then
+
+    -- Carry out action
+    $!specData.action
+    handle any
+      !!alert.error('Error on selection action [' & !specData.action & '] - (' & !!error.text & ').')
+    endhandle
+
+  endif
+
+
+  -- Get the selected entry
+  call !!specDisplay(!specData)
+
+endfunction
+-- End of function definition for !!specSelect

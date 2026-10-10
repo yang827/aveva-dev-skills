@@ -11,7 +11,8 @@ System errors are identified as a 2-part numeric tuple `(module_id, error_code)`
 * `error_code`: Specific error reason (e.g., `8` for invalid hierarchy position, `12` for duplicate element name).
 
 ### 2. `HANDLE` Exception Trapping Pipeline
-* Must follow the error-prone command immediately without intervening code.
+* `HANDLE` is a **post-attached trap**, not a block wrapper: the risky command comes FIRST, and the `handle ... endhandle` clause follows IMMEDIATELY after it with no intervening statements. The statements between `handle` and `endhandle` are the **recovery code** that runs only when the preceding command fails — they are NOT the guarded code.
+* Never place the risky command inside `handle ... endhandle`. There is no `try`/`catch` in PML; thinking of `handle` as a try-block produces code where the real command only runs on the error path.
 * Supports targeted error matching `HANDLE (mod, code)`, chained `ELSEHANDLE (mod, code)`, catch-all `ELSEHANDLE ANY`, and success branching `ELSEHANDLE NONE`.
 
 ### 3. Exception Propagation (`RETURN ERROR`)
@@ -98,6 +99,19 @@ endif
 
 ## Anti-patterns
 * **Using `try / catch` or `throw`**: Modern keywords like `try`, `catch`, and `throw` do not exist in PML; using them causes syntax errors.
+* **Writing the risky command INSIDE `handle ... endhandle`** (the try/catch mistake): The guard traps the command written *before* it, not the commands written inside it. Putting the real work inside the trap means it only runs on the error path, and the failure you wanted to catch is never caught.
+  ```pml
+  -- WRONG: assignment misplaced into the recovery block
+  handle any
+    !modelNo = !elem.:SPEC
+  endhandle
+
+  -- CORRECT: risky command first, recovery code in the trap
+  !modelNo = !elem.:SPEC
+  handle any
+    !modelNo = ''
+  endhandle
+  ```
 * **Placing `HANDLE` detached from the failing command**: Placing intervening statements between the risky command and its `HANDLE` will cause the error to bubble up uncaught, aborting execution.
 * **Silently absorbing errors with empty `HANDLE ANY`**: Never write an empty `HANDLE ANY` without at least logging the condition via `$P` or status message `$S`.
 * **Performing Major Batch Edits Without `MARK`**: Modifying hundreds of elements without periodic `MARK` checkpoints prevents clean rollback on crash.
@@ -117,7 +131,7 @@ endif
 
 ## Key Takeaways
 1. AVEVA PML handles errors using `HANDLE ... ELSEHANDLE ... ENDHANDLE`, NOT `try/catch`.
-2. `HANDLE` must immediately follow the command that may fail.
+2. `HANDLE` must immediately follow the command that may fail — it trails (post-attaches to) the guarded command and never encloses it; the guarded command goes BEFORE the trap, the recovery code goes inside it.
 3. Guard complex database mutations with `MARK '<name>'` and `UNDO` rollback handlers.
 4. Diagnose runtime issues with `PML TRACE ON`, `ALPHA LOG`, and `Q PML` query commands.
 

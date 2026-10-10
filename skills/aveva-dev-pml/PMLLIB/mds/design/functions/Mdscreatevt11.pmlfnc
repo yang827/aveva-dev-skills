@@ -1,0 +1,463 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:  Mdscreatevt11.pmlfnc
+--   Type:  Function Definition
+--   Group:  Multi Discipline Supports Application
+--     Keyword:  MDS
+--   Module:  design
+--   Replaces:          MVS101
+--
+-- Author:  Neale Morris
+-- Created:  Tuesday 16th April 2002
+--
+--
+-- Description:
+-- function to create Vessel support frame type 'Vt11'
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         STRING       Method of creating support
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdscreateVt11(!dummymethod is STRING)
+
+  -- Save current db position
+  !ce = !!ce
+
+  -- Find current units and set the distance unit to metric
+  !currentunits = !!kgetsetunits()
+
+  -- Initialise variables
+  call !!mdsresetpins(1,10)
+  !form      = !!mdsVt11
+  !support   = !!mdsVt11.support
+  !selection = !!mdsSetSteel.size.selection('Rtext')
+  !datum     = !support.datum
+  !stru      = !support.stru
+  !name      = !stru.name
+  !p9dir     = !support.p9dir
+  !p10dir    = !support.p10dir
+  !p11dir    = !support.p11dir
+  !alias     = !support.alias
+  !srefName  = !name & '/' & 'SREF'
+  !unlocked  = ARRAY()
+  !resetLock = false
+
+  --------------------------------------------------------------------------------
+  -- Check that Datum atta has been created
+  if (!datum.set().not())then
+    !!alert.message('Datum support atta has not been created')
+    !!kRestoreUnits(!currentunits)
+    return
+  endif
+
+  -- Can we write to the spref attribute of the SREF atta
+  -- and the stru
+
+  if !support.datum.badref().not() then
+    !srefName = !support.datum.name.before('/DATUM') + '/SREF'
+    if !!mdsComClaimDac(!support.stru,'DACMOD','POS').not() or !!mdsComClaimDac(!srefName.dbref(),'DACMOD','SPREF').not() then
+      !despars = !srefName.dbref().despar
+      !!mdsResetDims(!form,!despars)
+      !!kRestoreUnits(!currentunits)
+      !!alert.error('Unable to change the support as write access to the SREF atta is not available')
+      return
+    endif
+  endif
+
+  -- Store section name and matref for each member
+  -- for reseting later
+  !storeMat = ARRAY()
+  !storeMat = !!mdsStoreMat(!name)
+
+  -- Identify Veseel Support Clip/Bracket
+  label /Element1
+  prompt off
+  prompt load escape |Identify support bracket|
+  id box @
+  handle (61,528)
+    prompt on
+    !!kRestoreUnits(!currentunits)
+    return
+  endhandle
+  prompt dismiss
+  prompt on
+  !box1 = !!ce
+
+  -- Is the identified box owned by a piece of equipment
+  equi
+  handle any
+    !!alert.error('Identified box is not owned by a piece of equipment. Please retry')
+    golabel /Element1
+  elsehandle none
+    !equip1 = !!ce
+  endhandle
+
+  label /Element3
+  prompt off
+  prompt load escape |Identify vessel wall|
+  id cyli @
+  handle (61,528)
+    prompt on
+    !!kRestoreUnits(!currentunits)
+    return
+  endhandle
+  prompt dismiss
+  prompt on
+  !wall = !!ce
+
+  -- Is the identified cyli owned by a piece of equipment
+  equi
+  handle any
+    !!alert.error('Identified cylinder is not owned by a piece of equipment. Please retry')
+    golabel /Element3
+  elsehandle none
+    !equip3 = !!ce
+  endhandle
+
+  -- Is the identified cyli owned by the same piece of equipment
+  if !equip1.name.neq(!equip3.name) then
+    !!alert.error('Identified cylinder is not owned by the same equipment. Aborting!')
+    return
+  endif
+
+  -- Identify dummy leg
+  label /Atta
+  prompt off
+  prompt load escape |Identify Dummy Leg|
+  id bran @
+  handle (61,528)
+    prompt on
+    !!kRestoreUnits(!currentunits)
+    return
+  endhandle
+  prompt dismiss
+  prompt on
+
+  !atta = !!ce
+
+  branch
+  -- Is it a dummy branch
+  if !!ce.:mdstrun.not() then
+    !!alert.error('Identified branch is not a dummy leg')
+    return
+  endif
+
+  !dummyLeg = !!ce
+
+  -- Find the support name of the branch and access the sref
+  !suppNameOfBranch = !!mdsGetSuppName(!!ce)
+  !!ce = $!suppNameOfBranch/SREF
+  !styp = !!ce.styp
+  if !styp.match('TT17').eq(0) then
+    !!alert.error('Incorrect type of dummy leg identified')
+    return
+  endif
+
+  -- Check if the identified dummy branch is on the same branch as the datm atta
+  !!ce = !atta
+  if !!ce.lock then
+    unlock all
+    !resetLock = true
+    !unlocked.append(!!ce)
+  endif
+  !datumBranch = !datum.owner.owner
+  !idBranch = !!ce.owner
+  if !datumBranch.neq(!idBranch) then
+    !!alert.error('The identified element is not in the same pipe as the datum atta. Aborting creation!')
+    return
+  endif
+
+  -- Generate Please Wait... Prompt
+  !!mdscreatemess(true)
+
+  -- Set elevation to top of bracket
+  !bore = ph bore
+
+  -- Get design parameters
+
+  --<dw>sep2008 dun979 - To operate with defaults in Paragon for mds12
+  !mdsattaobj  = object MDSREADPARSDATA()
+  !unusedmdsattadefs = !mdsattaobj.mdsdefsdata(!alias,!bore.real().value())
+  !despars = !mdsattaobj.despars
+  --!despars = !!mdsPar$!alias[$!bore].despars
+  --<dw>sep2008 dun979 - End of mod
+
+  -- Navigate to Stru
+  !!ce = !stru
+
+  -- Pins now in position create Framework
+  delete stru mem
+  handle (41,66) (2,113) (2,113)
+  endhandle
+
+  !mdstemp = /MDS/$!alias/$!selection
+  :mdscheck $!mdstemp.:mdscheck
+
+  -- Temporarily Position Structure at Datum Atta
+  at $!datum
+
+  new frmw $!name/MAIN
+  !frmwsupport = !!ce
+
+  -- Copy required template/s
+  !!ce         = /MDS/$!alias/$!selection
+  !frmw        = !!kCollectAllFor('FRMW', '', !!ce)
+  !subs        = !!kCollectAllFor('SUBS', '', !!ce)
+  !frameFormat = before(!frmw[1].name, '-FRMW')
+
+  --------------------------------------------------------------------------------------
+  -- Navigate back to support and create template elements
+  !!ce = !frmwsupport
+  copy attrib of $!frmw[1]
+  copy mem of $!frmw[1] rename $!frameFormat $!name
+
+  -- Set stru description for template recognition
+  !desc = desc of /MDS/$!alias/$!selection
+
+  -- Position and Orientate Structure
+  !!ce = !stru
+  desc '$!desc'
+
+  -- Navigate back to support and create template elements
+  do !i indices !subs
+    NEW SUBS $!name/SUBS$!i COPY ATTRIB OF $!subs[$!i]
+    COPY MEM OF $!subs[$!i] RENAME $!frameFormat $!name
+  enddo
+
+  -- Orientate stru
+  stru
+  pin 6 copy p5 of $!box1
+  ori x is pin 6 and z is U wrt /*
+  --------------------------------------------------------------------------------------
+
+  !!ce = !atta
+  !!mdsDacControl(true)
+
+  -- Move bran into correct elevation for identified bracket
+  pin 9 copy ph
+  !phOd = ph od
+  !ptod = pt od
+
+  pin 9 dir d wrt /*
+  pin 9 plane pin 9 clear 0 inf $!box1
+  pin 9 dist $!despars[5]
+
+  pin 8 copy pin 9
+  pin 8 plane pin 8 thro ph of $!atta
+  pin 8 dist ($!ptod / 2)
+
+  var !distToMove const dist pin 9 to pin 8
+  var !dirToMove const dir pin 8 to pin 9
+
+  !!ce = !atta
+  goto href
+  drag move $!dirToMove dist $!distToMove
+
+  -- Move stru into correct elevation for identified bracket
+  !!ce = $!<name>-BAR-1
+  pin 8 plane pin 9 clear 0 inf ce
+  var !distToMove const dist pin 9 to pin 8
+  var !dirToMove const dir pin 8 to pin 9
+
+  stru
+  move $!dirToMove dist $!distToMove
+
+  !!ce = !atta
+
+  pin 9 copy ph
+  pin 9 dist ($!phOd / 2)
+  !dummyDir = ph dir wrt /*
+
+  -- Cross Bar SCTN
+  !!ce = $!<name>-BAR-1
+  pin 8 copy pin 9
+  pin 9 dir d wrt /*
+  pin 9 dist ($!ptod / 2)
+  pin 8 plane pin 8 thro $!box1
+  pin 8 dist $!despars[2]
+  pin 6 at poss
+  move $!dummyDir clear 0 inf pin 8
+  pin 7 at poss
+  var !moved const dist pin 7 to pin 6
+
+  -- Vertical Support SCTN
+  !!ce = $!<name>-V1
+  move $!dummyDir dist $!moved
+
+  -- Subs Box/Plate at End of Cross Bar
+  !!ce = $!<name>-SUBS1/PLATE1
+  handle none
+    move $!dummyDir dist $!moved
+  elsehandle any
+  endhandle
+  pin 7 copy p5 of $!box1
+  pin 7 plane pin 7 clear 0 beh $!wall
+  pin 7 dist $!despars[3]
+  pin 7 dist $!despars[2]
+
+  -- Vertical Support SCTN
+  !!ce = $!<name>-V1
+  var !moveDir pin 7 dir wrt /*
+  pin 5 at poss
+  move $!moveDir wrt /* clear 0 inf pin 7
+  pin 6 at poss
+  var !moved const dist pin 5 to pin 6
+
+  -- Cross Bar SCTN
+  !!ce = $!<name>-BAR-1
+  extend start $!moved
+
+
+  -- Reset distance gadget to new position
+  !!ce = !datum
+  call !!mdsDistance(!!mdsVt11)
+
+  -- Calculate Dimension 1 value
+  --<wd>oct2002
+  --pin 9 copy pin 5
+
+  -- pin 6 is in the correct orientation having copied PPOINT P5 of !box1
+  pin 5 copy pin 6
+  pin 5 plane pin 5 thro $!<name>/DATUM
+  --pin 6 copy pin 5
+  --<wd>oct2002
+
+  pin 6 plane pin 6 clear 0 beh $!wall
+  var !dim1 const dist pin 5 to pin 6
+  !!mdsVt11.dim1.val = $!dim1
+
+  -- Cross Bar SCTN
+  !!ce = $!<name>-BAR-1
+  pin 8 copy pin 6
+  pin 8 at poss
+  pin 9 copy pin 8
+  pin 9 plane pin 9 thro $!<name>/DATUM
+  pin 9 dist (!despars[4] - !despars[5])
+  extend end thro pin 9
+
+  -- Subs Box/Plate at End of Cross Bar
+  !!ce = $!<name>-SUBS1/PLATE1
+  handle none
+    var !pin6dir pin 6 dir wrt /*
+    move $!pin6dir wrt /* clear 0 beh pin 9
+  elsehandle any
+  endhandle
+
+  !!mdsDacControl(false)
+
+  -- Select correct spref for sref
+  !!ce = $!<name>/SREF
+  !!mdsDacControl(true)
+  sel spref with styp '$!alias-$!selection' spec /MDF
+  !!ce = $!<name>/SREF
+  !!mdsSetIspe()
+  !!mdsSelLstu(!!ce)
+
+  -- Reposition and Orientate DATUM/SREF at dummy branch level
+  --<wd>oct2002
+  !xp5dir = !box1.pdir[5].wrt( /* ).opposite()
+
+  !!ce = $!<name>/SREF
+  plane u wrt /* thro ph of $!dummyLeg
+  --<wd>oct2002
+  ori and p9 is $!xp5dir
+
+  !!ce = $!<name>/DATUM
+  plane u wrt /* thro ph of $!dummyLeg
+  --<wd>oct2002
+  ori and p9 is $!xp5dir
+
+  -- Set position flag
+  !support.position = true
+
+  -- Set dimensions into SREF's despars
+  -- Store design parameters
+  !!ce = $!<name>/SREF
+  !!mdsDacControl(true)
+  despar $!dim1 $!despars[2] $!despars[3] $!despars[4] $!despars[5]
+  !!mdsDacControl(false)
+
+  -- In order to use minimum dimensions for different sizes these have to be stored as a
+  -- property called MINA
+  -- !min = (prop MINA)
+  -- !!ce = $!<name>-BAR-1
+  -- despar n2 $!min
+
+  -- Reset materials of sections
+  !!mdsResetMat(!storeMat)
+
+  -- Reset datum tag
+  !!ce = !datum
+  VAR !pOS POS WRT WORLD
+  $M/%PDMSUI%/DES/CLIB/GAIDTEXT 210 Datum $<$!pOS$>
+
+  -- Navigate to Structure
+  !!ce = !stru
+
+  -- Enhance elements using colour set for highlight
+  !colourlist = ARRAY()
+  !colourlist.append(!!ce)
+  !colourlist.appendarray(!support.atta)
+
+  -- Colour Support
+  !!kenhancelist(!colourlist)
+
+  -- Reset all pins associated with this support
+  !!mdsresetpins(1,10)
+
+  -- Update support data held in form
+  !!mdsVt11.support = !support
+
+  -- Show dimensions on graphics if required
+  if !!mdsVt11.graphicalDim then
+    !!mdsshowdim(!!mdsVt11)
+  endif
+
+  -- Lock any items that have been locked
+  if !resetLock then
+    do !lock values !unlocked
+      !!ce = !lock
+      lock all
+    enddo
+  endif
+
+  -- We need to add the associated branches to the ADP drawlist so they draw on the ADP drawing
+  -- plus the equipment
+
+  !!mdsDacControl(true)
+
+  !!ce = !datum
+  !mdsAdp = :MdsAdp
+  !mdsAdp.append(equi of $!box1 )
+  !mdsAdp.append(pipe of $!atta )
+  !mdsAdp.unique()
+
+  do !add from 1 to !mdsAdp.size()
+    :MdsAdp number $!add $!mdsAdp[$!add]
+  enddo
+
+
+  !!ce = !stru
+
+  --------------------------------------------------------------------------------------
+  -- Remove Wait.. Prompt from Screen
+  !!mdscreatemess(false)
+
+  -- Reset Units
+  !!kRestoreUnits(!currentunits)
+
+  !!ce = !ce
+
+endfunction

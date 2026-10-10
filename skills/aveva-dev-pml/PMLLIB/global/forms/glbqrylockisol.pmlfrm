@@ -1,0 +1,365 @@
+--
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            glbqrylockisol.pmlfrm
+--   Type:          Form Definition
+--   Group:         PDMS Global Application
+--     Keyword:     GLOBAL
+--   Module:        All modules
+--   Replaces:
+--
+-- Author:          S.G.Karthik
+-- Created:         Tue Oct 17 13:40:39 BST 2006
+--
+-- Description:
+-- Form definition to all the user to query the lock of a remote
+-- location (must be on-line).
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  apply()                          -                   To execute the command
+--  init()                           -                   Method to initialise the form
+--  locnTxtList(ARRAY,GADGET)        -                   To construct the list texts for LOC elements
+--  qryLockIsolSel()                 -                   To update the values according to the selected location
+--
+------------------------------------------------------------------------
+-- Define form
+setup form !!glbQryLockIsol
+
+  !this.formTitle     = 'Query Location Lock & Isolation'
+  !this.iconTitle     = 'QLOCKISOL'
+  !this.callback      = '!this.init()'
+
+  -- Body of form definition
+  list .locn at x 0 y 0 |On-Line Locations| anchor top+left+right call |!this.qryLockIsolSel()| columns width 45 height 10
+
+  para .queryTx at xmin.locn+4 ymax+0.5 text |Query|
+  toggle .qLock at xmax+3 ymin |Lock|
+  toggle .qIsol at xmax+3 ymin |Isolation|
+
+  para .locIdTx at xmin.locn ymax+0.5 text |Location ID:|
+  para .locId   at xmax+1 ymin width 5 line 1
+
+  para .lockTx at xmin.locn+4 ymax+0.2 text |Location Lock      :|
+  para .lock   at xmax+1 ymin width 14 line 1
+
+  para .isolTx at xmin.locn+4 ymax text |Location Isolation :|
+  para .isol   at xmax+1 ymin width 14 line 1
+
+  para .status at xmin.isolTx ymax width 40 line 1
+
+  button .apply at xmin.locn ymax+0.5 |Apply| call |!this.apply()| APPLY
+  button .testComms at xmax.apply+0.5 ymin |Test Communications| call |show !!glbmodulesping|
+  button .dismiss at xmax form-size ymin |Dismiss| CANCEL
+
+  member .hubref is DBREF
+  member .curloc is DBREF
+
+exit
+-- End of form definition for !!glbQryLockIsol
+----------------------------------------------------------------------------
+--
+-- Method: .init()
+--
+-- Description: Method to initialise the form.
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  [Data Type] [Description]
+--
+----------------------------------------------------------------------------
+define method .init()
+
+  -- Initialise variables
+  !locn   = ARRAY()
+  !this.curloc = CURLOC
+
+  -- Make sure current location is online
+  if (!this.curloc.iconn.boolean().not()) then
+    -- Cannot run for an off-line site
+    !!messageFile.error(141, 602)
+  endif
+
+  -- Collect all on-line initialised location for this project
+  !project      = CURRENT PROJECT
+  !prjLocations = !project.locations()
+  -- to get the dbref for all locations.
+  !locations    = !prjLocations.evaluate(object BLOCK('!prjLocations[!evalindex].refno.dbRef()'))
+  -- to get the hubref through /*GL element other than admin module.
+  !currentElem  = !!ce
+  !!ce          = !locations[1]
+  /*GL
+  !this.hubref  = !!ce.hubRf
+
+  !clause = 'ICONN eq 1 and LINIT eq TRUE and REF neq '+ !this.curloc.string()
+  !locn   = !!collectAllFor('LOC', !clause, !!ce)
+
+  -- Check that we have some locations
+  if (!locn.unset()) then
+    !!messageFile.error(141, 701)
+  endif
+
+  -- Sort the list of locations (on name)
+  do !i indices !locn
+    !name[!i]  = !locn[!i].name.substring(2)
+  enddo
+
+  !sortOrder = !name.sortedIndices()
+  !locn.reIndex(!sortOrder)
+
+  -- Build the list of texts
+  !this.locnTxtList(!locn,!this.locn)
+
+  -- Unset the toggle gadgets (so no query is performed right away)
+  !this.qLock.val  = false
+  !this.qIsol.val  = false
+
+  -- Get selection
+  !this.qryLockIsolSel()
+  -- !this.status.val = 'Establishing connection'
+  -- !this.status.visible = false
+  !!ce          = !currentElem
+
+endmethod
+-- End of form definition for .init()
+----------------------------------------------------------------------------
+--
+-- Method:      .locnTxtList(ARRAY, GADGET)
+--
+-- Description: To construct the list texts for LOC elements
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       Array of DBREFs of LOC elements.
+--    2   RW     GADGET      List gadget to populate
+-- Return:
+--   [Data Type] [Description]
+--
+----------------------------------------------------------------------------
+define method .locnTxtList(!dbRefArray is ARRAY, !list is GADGET)
+
+  -- Initialise variables
+  !dText       = ARRAY()
+  !rText       = ARRAY()
+
+  -- Check that we have some locations to process
+  if (!dbRefArray.unset()) then
+    return
+  endif
+
+  -- Loop through array
+  do !i indices !dbRefArray
+
+    -- Collect attributes
+    !name[!i]   = !dbRefArray[!i].name.substring(2)
+    !id[!i]     = !dbRefArray[!i].locId
+    if (!dbRefArray[!i].iconn eq 1) then
+      !conn[!i]   = '(On )'
+    else
+      !conn[!i]   = '(Off)'
+    endif
+    !desc[!i]   = !dbRefArray[!i].desc
+    if (!desc[!i].empty()) then
+      !desc[!i] = |unset|
+    endif
+
+    if(!!admControl.isValid('Centralised Admin')) then
+      if (!dbRefArray[!i].prmRf.unset() AND !dbRefArray[!i].prvRf.set()) then
+        if (!dbRefArray[!i] EQ !this.hubref) then
+          !prmRf[!i] = |{Adm:HUB  }|
+        else
+          !prmRf[!i] = |{Adm:!!!  }|
+        endif
+      else
+        -- last clause add in upgrade functionality from phase 1, prmRf.unset and prvRf.unset then it is administered locally
+        if ((!dbRefArray[!i].prmRf EQ !dbRefArray[!i]) OR (!dbRefArray[!i].prmRf.unset() AND !dbRefArray[!i].prvRf.unset()))then
+          !prmRf[!i] = |{Adm:LOCAL}|
+        else
+          !prmRf[!i] = |{Adm:| + !dbRefArray[!i].prmRf.locId + |  }|
+        endif
+      endif
+    endif
+
+  enddo
+
+  -- Calculate column widths
+  !cwName = !name.width()
+
+  -- Loop through array and build texts
+  do !i indices !dbRefArray
+
+    -- Build Masks
+    !name[!i]    = !name[!i] + |                                |
+    !this.curloc = CURLOC
+
+    -- Build Display text
+    if (!dbRefArray[!i] eq !this.curloc) then
+      !displayText  = |<LOC>*|
+    else
+      !displayText  = |<LOC> |
+    endif
+    if (!dbRefArray[!i] eq !this.hubref) then
+      !displayText  = !displayText + |Hub |
+    else
+      !displayText  = !displayText + |    |
+    endif
+
+    if(!!admControl.isValid('Centralised Admin')) then
+      !heading[1]   = 'Name' !heading[2] = 'Location Id' !heading[3] = 'Connection' !heading[4] = 'Administered By' !heading[5] = 'Description'
+      !displayText  = !displayText  & '  ' &  !name[!i].substring(1,!cwName)  & '	' &  |[| & !id[!i] & |]|  & '	' &  !conn[!i]  & '	' &  !prmRf[!i]  & '	' &  !desc[!i]
+    else
+      !heading[1]   = 'Name' !heading[2] = 'Location Id' !heading[3] = 'Connection' !heading[4] = 'Description'
+      !displayText  = !displayText  & '  ' &  !name[!i].substring(1,!cwName)  & '	' &  |[| & !id[!i] & |]|  & '	' &  !conn[!i]  & '	' &  !desc[!i]
+    endif
+
+    -- Construct texts
+    !dText.append(!displayText)
+    !rText.append(!dbRefArray[!i].string())
+
+  enddo
+
+  -- Assign elements to the list gadget
+  !list.setheadings(!heading)
+  !list.dText   = !dText
+  !list.rText   = !rText
+
+endmethod
+-- End of method definition for .locnTxtList(ARRAY, GADGET)
+----------------------------------------------------------------------------
+--
+-- Method: .qryLockIsolSel()
+--
+-- Description: To update the values according to the selected location.
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  [Data Type] [Description]
+--
+----------------------------------------------------------------------------
+define method .qryLockIsolSel()
+
+  -- Initialise variables
+  !locRef          = !this.locn.selection('rtext').dbRef()
+  -- Set form variables
+  !this.locId.val  = !locRef.locId
+  !this.lock.val   = 'Unknown'
+  !this.isol.val   = 'Unknown'
+
+endmethod
+-- End of method definition for .qryLockIsolSel()
+----------------------------------------------------------------------------
+--
+-- Method: .apply()
+--
+-- Description: To execute the command.
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  [Data Type] [Description]
+--
+----------------------------------------------------------------------------
+define method .apply()
+
+  -- Initialise Variables
+  !qryLocRef   = !this.locn.selection('rtext').dbRef()
+  !qryLocName  = !qryLocRef.namn
+  !qryLocId    = !qryLocRef.locId
+
+  -- Query Lock
+  if (!this.qLock.val) then
+    -- Message will popped up when daemon is not connected for selected location.
+    !this.status.val        = |Establishing connection to the location $!qryLocName ...|
+    !this.status.visible    = true
+    !this.status.background = 'grey'
+    !this.status.refresh()
+    -- To check the communication status
+    var !daemonCheck COMMS $!qryLocId
+    handle  (1,500) (1,501)
+
+      -- Daemon errors
+      !this.lock.val       = |Unknown|
+      !this.status.val     = ||
+      !this.status.visible = false
+      !!messageFile.error(141, 705, !!error.text.after(')').trim('L') + ' $!qryLocName')
+
+    elsehandle any
+
+      -- Non-specific error
+      !this.lock.val       = |Unknown|
+      !this.status.val     = ||
+      !this.status.visible = false
+      !!messageFile.error(141, 705, !!error.text)
+
+    elsehandle none
+      --!lockResult  = LOCK AT $!qryLocId
+      -- *** OLD PML SYNTAX ***
+      var !lockResult PROJ LOCK AT $!qryLocId
+      !this.status.val     = ||
+      !this.status.visible = false
+      -- Post the result
+      !this.lock.val   = !lockResult
+
+    endhandle
+
+  endif
+
+  -- Query Isolation
+  if (!this.qIsol.val) then
+
+    -- Message will popped up when daemon is not connected for selected location.
+    !this.status.val        = |Establishing connection to the location $!qryLocName ...|
+    !this.status.visible    = true
+    !this.status.background = 'grey'
+    !this.status.refresh()
+
+    -- To check the communication status.
+    -- *** OLD PML SYNTAX ***
+    var !daemonCheck COMMS $!qryLocId
+    handle  (1,500) (1,501)
+
+      -- Daemon errors
+      !this.isol.val       = |Unknown|
+      !this.status.val     = ||
+      !this.status.visible = false
+      !!messageFile.error(141, 705, !!error.text.after(')').trim('L') + ' $!qryLocName')
+
+    elsehandle any
+
+      -- Non-specific error
+      !this.isol.val       = |Unknown|
+      !this.status.val     = ||
+      !this.status.visible = false
+      !!messageFile.error(141, 705, !!error.text)
+
+    elsehandle none
+
+    -- !isolResult  = ISOLATION AT $!qryLocId
+    -- *** OLD PML SYNTAX ***
+    var !isolResult ISOLATION AT $!qryLocId
+      -- Post the result
+      !this.status.val     = ||
+      !this.status.visible = false
+      if (!isolResult.boolean()) then
+        !this.isol.val  = 'Isolated'
+      else
+        !this.isol.val  = 'Connected'
+      endif
+    endhandle
+
+  endif
+
+endmethod
+-- End of method definition for .apply()
+----------------------------------------------------------------------------

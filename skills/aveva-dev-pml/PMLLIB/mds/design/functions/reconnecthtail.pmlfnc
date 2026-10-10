@@ -1,0 +1,118 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+----------------------------------------------------------------------------------
+-- File:    reconnecthtail.pmlfnc
+--   Type:    Function Definition
+--   Group:   Multi Discipline Supports Application
+--     Keyword:   MDS
+--   Module:    design
+--   Replaces:
+--
+-- Author:    R.Martin
+-- Created:   Wed August 6th 2008
+--
+--
+-- Description:
+-- this is used in any of the mdsposdist, posthrough etc. functions to reconnect the hanger tail to the correct location
+-- on a piece of steelwork. this happens for instance when you have a hanger that is connected to one pline of some steelwork
+-- but when the atta position changes it is more logical to connect to another pline of the steelwork.
+--
+------------------------------------------------------------------------
+
+define function !!reconnecthtail(!atta is DBREF, !steelref is DBREF, !hanger is DBREF, !dummycurrentpline is STRING)
+
+  !configNumber = :MdsHConfig of $!atta
+
+  -- Remove any alpha chars H and V from configNumber
+  !configNumber = !configNumber.replace('V','').replace('H','')
+  !formName = '!!mdsHangerType' + !configNumber
+  !form = $!formName
+
+
+  --check to see whether or not we are using a virtual fitting
+  if !form.virtualFitting.set() then
+    !virtualFitting = TRUE
+  else
+    !virtualFitting = FALSE
+  endif
+
+  var !attapos pos pl of $!atta wrt /*
+  var !pipetosteeldir const dir $!attapos to ppli na start of $!steelref
+
+  if !configNumber.eq('2') or !configNumber.eq('32') then
+    --need to do a furthest pline command
+    !closestPline = !!kFarPline(!steelref,!attapos.position(),!pipetosteeldir.direction())  	
+  else
+    --need to do a closest pline command
+    !closestPline = !!kClosestPline(!steelref,!attapos.position(),!pipetosteeldir.direction())
+  endif
+
+  -- We only need the pline that can be connected to, these are
+  -- TOS, BOS, TOC, BOC, LEFT, RIGH
+  do !getPlineNumber from 1 to !closestPline.size() by 2
+    if !closestPline[$!getPlineNumber].pkey inset ('TOS','BOS','TOC','BOC','LEFT','RIGH','OBOW','OTOW','IBOW','ITOW') then
+      !plineNumber = !getPlineNumber
+      break
+    endif
+  enddo
+  !plineName = pkey of $!closestPline[$!plineNumber]
+
+  -- now get the orientation of the pline so we can get its z direction
+  var !ori ppli $!plineName ori wrt /*
+  !zdir = !ori.orientation().zdir()
+
+  -- get a position at the start of the closest pline
+  var !steelpos ppli $!plineName start of $!steelref wrt /*
+
+  -- construct a pointvector at the closest pline in the pline z direction so we can construct a plane from it
+  !planepv = object POINTVECTOR(!steelpos.position(), !zdir)
+  -- construct a pointvector at the atta in the closest pline opposite z direction so we can intersect with the above plane
+  !attapv = object POINTVECTOR(!attapos.position(), !zdir.opposite())
+
+  -- get the intersect point so we know where to put tpos of the hanger
+  !intersect = !attapv.intersection(!planepv.plane())
+
+  -- if the supporting element is an stwall we need to runback through the above steps to confirm that we have the correct pline to connect to
+  if !steelref.type.eq('STWALL') then
+    !currentPline = !plineName
+    var !attapos pos pl of $!atta wrt /*
+    var !pipetosteeldir const dir $!attapos to $!intersect
+      !closestPline = !!kClosestPline(!steelref,!attapos.position(),!pipetosteeldir.direction())
+    -- We only need the pline that can be connected to, these are
+    -- TOS, BOS, TOC, BOC, LEFT, RIGH
+    do !getPlineNumber from 1 to !closestPline.size() by 2
+      if !closestPline[$!getPlineNumber].pkey inset ('TOS','BOS','TOC','BOC','LEFT','RIGH','OBOW','OTOW','IBOW','ITOW') then
+        !plineNumber = !getPlineNumber
+        break
+      endif
+    enddo
+    !plineName = pkey of $!closestPline[$!plineNumber]
+
+    -- if the current pline name and the new one are different then we used the wrong pline to create our intersection from
+    if !plineName.neq(!currentPline) then
+      -- get a position at the start of the closest pline
+      var !steelpos ppli $!plineName start of $!steelref wrt /*
+     !planepv = object POINTVECTOR(!steelpos.position(), !zdir)
+     -- get the intersect point so we know where to put tpos of the hanger
+     !intersect = !attapv.intersection(!planepv.plane())
+     -- now get the orientation of the pline so we can get its z direction
+     var !ori ppli $!plineName ori wrt /*
+     !zdir = !ori.orientation().zdir()
+    endif
+  endif
+
+  -- if the !currentPline and the new pline are different then reposition the hanger tail and change the tpos
+  --if !currentPline.neq(!plineName) then
+    !hanger.tpos = !intersect
+    !hanger.tdir = !zdir
+    -- change the posl of the hanger fitting
+    if !virtualFitting then
+      !form.virtualFitting.posline = !plineName
+    else
+    !atta.cref.tref.posl = !plineName
+    endif
+  --endif
+
+endfunction

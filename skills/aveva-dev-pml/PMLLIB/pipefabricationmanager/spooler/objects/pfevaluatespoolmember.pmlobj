@@ -1,0 +1,687 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            pfevaluatespoolmember.pmlobj
+--    Type:          Object Definition
+--    Group:         Pipe Fabrication
+--      Keyword:     PF
+--    Module:        Design
+--  Author:          Jaehun Choi(Daniel)
+--  Created:         11 January 2013
+--
+--  Description:     evaluate spool members
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  evaluate(DBREF)                  -                   evaluate
+--  findBackwardSpoolBreak (DBREF)   -
+--  findForwardSpoolBreak (DBREF)    -
+--  findHeadReferenceSpoolBreak(DBREF) -                   Checks the the head reference of a branch for a spool break (searching backwards on the pipe)
+--  findTailReferenceSpoolBreak(DBREF) -                   Checks the the tail reference of a branch for a spool break (searching forwards on the pipe)
+--  findTeeOffLegConnectionSpoolBreak(DBREF,DBREF) -                   Checks the Off-leg connection of a TEE for the next spool break along
+--  getBranTubeRef(DBREF)            DBREF               get brantube ref
+--  getTubeRef(DBREF)                DBREF               get tube ref
+--  highlightSpool()                 -                   highlight spool
+--  isIsolatedComponent (DBREF)      BOOLEAN
+--
+------------------------------------------------------------------------
+-- Define object
+define object PFEVALUATESPOOLMEMBER
+  member .spoolMembers  is ARRAY
+  member .branchMembers is ARRAY
+  member .connectMembers is ARRAY
+  member .checkedForward is ARRAY
+  member .checkedBackward is ARRAY
+  member .searchStopFlag     is BOOLEAN
+  member .breakArrive        is BOOLEAN
+  member .pickedElement      is DBREF
+  member .spoolLimitForWorld is BOOLEAN
+  member .loopconectingmembers is BOOLEAN
+
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:      evaluate
+-- Description: evaluate
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       element
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .evaluate(!element is DBREF)
+
+  !this.spoolMembers.clear()
+  !this.branchMembers.clear()
+  !this.connectMembers.clear()
+  !this.checkedForward.clear()
+  !this.checkedBackward.clear()
+  !this.searchStopFlag = false
+  !this.loopconectingmembers = false
+  !this.breakArrive = false
+  !this.pickedElement = !element
+
+  !this.findForwardSpoolBreak(!this.pickedElement)
+  !this.findBackwardSpoolBreak(!this.pickedElement)
+
+  !this.spoolMembers.unique()
+  !this.highlightSpool()
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      isIsolatedComponent
+-- Description: Checks if component is isolated
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       element
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if isolated component, false if not
+--
+------------------------------------------------------------------------
+define method .isIsolatedComponent (!element is DBREF) is BOOLEAN
+
+  if(!element.hardtype inset ('OLET', 'TEE')) then
+    !allBreaksSet = !element.csfbreak and !element.asfbreak and !element.lsfbreak
+  else
+    !allBreaksSet = !element.asfbreak and !element.lsfbreak
+  endif
+
+  !isIsolatedComponent = !element.shop.not() OR !allBreaksSet
+  handle any
+    !isIsolatedComponent = false
+  endhandle
+
+  if (!isIsolatedComponent) then
+    return true
+  endif
+
+  return false
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      findForwardSpoolBreak
+-- Description: scans forward from picked element for where to break the spool
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       element
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .findForwardSpoolBreak (!element is DBREF)
+
+  !elementBranOrTubi = !element.hardtype inset ('BRAN', 'TUBI')
+
+  --Check if we have already checked this element forwards...
+  if(!this.checkedForward.findFirst(!element).set()) then
+    return
+  endif
+
+  --If Isolated component it is its own spool
+  if (!elementBranOrTubi.not()) then
+    if(!this.isIsolatedComponent(!element)) then
+      !this.spoolMembers.append(!element)
+      return
+    endif
+  endif
+
+  !branchRef = bran of $!<element>
+  !pipeRef = pipe of $!<branchRef>
+  !members   = !branchRef.members
+  !maxIndex  = !branchRef.mCount
+  !toIndex   = !maxIndex
+  !step      = 1
+
+  --If we pass a branch through, we want to start at the start and work our way forwards
+  if(!element.hardtype.eq('BRAN')) then
+    !fromIndex = 1
+  else
+    !fromIndex = !element.sequ
+  endif
+
+  --Handle selecting a TUBI of a BRAN or passing BRAN with TUBI through
+  !pickedTubiOfBranch = false
+  if((!element.hardtype.eq('BRAN') OR !element.mtbegref.eq(!branchRef)) AND !branchRef.tGeom) then
+    !this.spoolMembers.append(!this.getTubeRef(!branchRef))
+    if(!element.hardtype.eq('TUBI')) then
+      !pickedTubiOfBranch = true
+      !fromIndex = 1
+    endif
+  endif
+
+  --Spool break on the tube of the branch
+  if(!branchRef.tsfbreak) then
+    --Should we check if the branch is connected to a TEE?
+    --If it is, then check CSFBREAK of the TEE as this would be the reason tsfbreak is set.
+    --In which case the TSFBREAK doesn't mean break the spool at the branches tube, as it is broken at the TEE.
+  endif
+
+  --TEE selected
+  if(!element.hardType inset ('OLET','TEE')) then
+    --Check if the connection to the 'Off Leg' of the TEE needs to be searched
+    if(!element.csfbreak.not()) then
+      !this.findTeeOffLegConnectionSpoolBreak(!pipeRef, !element)
+    endif
+
+    --Break at the start of the TEE, check next component along
+    if(!element.asfbreak) then
+      !this.spoolMembers.append(!element)
+      !fromIndex = !fromIndex + 1
+      if(!toIndex.lt(!fromIndex)) then
+        --We were at the end if the branch, check if the element has TGEOM and add it, then go to next branch.
+        if(!element.lsfbreak.not()) then
+          if(!element.tgeom) then
+            !this.spoolMembers.append(!this.getTubeRef(!element))
+          endif
+        endif
+      endif
+    endif
+  elseif(!element.hardType.neq('BRAN') AND !element.hardType.neq('TUBI')) then
+    if(!element.lsfbreak.not() AND !element.tgeom) then
+      !this.spoolMembers.append(!this.getTubeRef(!element))
+    endif
+  endif
+
+  --Handle TUBI of prev Component, need to search component after it
+  if(!element.hardType.eq('TUBI') AND !element.mtbegref.hardType.neq('BRAN')) then
+    !this.spoolMembers.append(!element)
+    !fromIndex = !fromIndex + 1
+  endif
+
+  do !i from !fromIndex to !toIndex by !step
+
+    !entry = !members[!i]
+
+    if(!this.checkedForward.findFirst(!entry).set()) then
+      return
+    endif
+
+    !this.checkedForward.append(!entry)
+
+    --Entry is not a shop component therefore a spool break, look no further
+    if(!entry.shop.not()) then
+      return
+    endif
+
+    --Entries arrive is a spool break, look no further
+    if(!entry.asfbreak) then
+      --If the element is equal to the entry then we want to really look beyond it, if not then look no further
+      if(!element.neq(!entry)) then
+        return
+      endif
+    endif
+
+    if(!entry.hardType inset ('OLET','TEE')) then
+      --Check if the connection to the 'Off Leg' of the TEE needs to be searched
+      if(!entry.csfbreak.not()) then
+        !this.findTeeOffLegConnectionSpoolBreak(!pipeRef, !entry)
+      endif
+    endif
+
+    --Leave of component is spool break, search no further
+    if (!entry.lsfbreak) then
+      !this.spoolMembers.append(!entry)
+      return
+    endif
+
+    !this.spoolMembers.append(!entry)
+
+    if(!entry.tgeom) then
+      !this.spoolMembers.append(!this.getTubeRef(!entry))
+    endif
+  enddo
+
+  --No spool break found, continue searching forward from the branch
+  if (!branchRef.tref.badref().not()) then
+    !this.findTailReferenceSpoolBreak(!branchRef)
+  endif
+
+  !this.checkedForward.append(!element)
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      findBackwardSpoolBreak
+-- Description: scans backward from picked element for where to break the spool
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       element
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .findBackwardSpoolBreak (!element is DBREF)
+
+  !elementBranOrTubi = !element.hardtype inset ('BRAN', 'TUBI')
+
+  --Check if we have already checked this element backwards...
+  if(!this.checkedBackward.findFirst(!element).set()) then
+    return
+  endif
+
+    --If Isolated component it is its own spool
+  if (!elementBranOrTubi.not()) then
+    if(!this.isIsolatedComponent(!element)) then
+      !this.spoolMembers.append(!element)
+      return
+    endif
+  endif
+
+  !branchRef = bran of $!<element>
+  !pipeRef = pipe of $!<branchRef>
+  !members   = !branchRef.members
+  !maxIndex  = !branchRef.mCount
+  !toIndex   = 1
+  !step      = -1
+
+  --If we pass a branch through, we want to start at the end and work our way backwards
+  if(!element.hardtype.eq('BRAN')) then
+    !fromIndex = !members.size()
+    if(!fromIndex.lt(!toIndex)) then
+      if(!element.tgeom) then
+        !this.spoolMembers.append(!this.getTubeRef(!element))
+      endif
+    endif
+  else
+    !fromIndex = !element.sequ
+  endif
+
+  --TEE selected
+  if(!element.hardType inset ('OLET','TEE')) then
+    --Check if the connection to the 'Off Leg' of the TEE needs to be searched
+    if(!element.csfbreak.not()) then
+      !this.findTeeOffLegConnectionSpoolBreak(!pipeRef, !element)
+    endif
+
+    --Break at the end of the TEE, check previous component
+    if(!element.lsfbreak) then
+      !this.spoolMembers.append(!element)
+      !fromIndex = !fromIndex - 1
+
+      if(!toIndex.gt(!fromIndex)) then
+        --We were at the end if the branch. Check ASFBREAK is set, if so at the end of the spool
+        if(!element.asfbreak) then
+          return
+        endif
+      endif
+    endif
+  endif
+
+  --If we picked a TUBI, check to see if it was the TUBI on the branch. If so don't check any members, go backwards straight away.
+  !pickedTubiOfBranch = false
+  if(!element.hardtype.eq('TUBI')) then
+    !tubiOf = !element.mtbegref
+    if (!tubiOf.eq(!branchRef)) then
+      !pickedTubiOfBranch = true
+    endif
+  endif
+
+  if(!pickedTubiOfBranch.not()) then
+    do !i from !fromIndex to !toIndex by !step
+
+      !entry = !members[!i]
+
+      if(!this.checkedBackward.findFirst(!entry).set()) then
+        return
+      endif
+
+      !this.checkedBackward.append(!entry)
+
+      if(!entry.shop.not()) then
+        --Tube of the entry is part of the spool
+          if(!entry.tgeom) then
+            !this.spoolMembers.append(!this.getTubeRef(!entry))
+          endif
+        return
+      endif
+
+      --Entries leave is a spool break, look no further
+      if(!entry.lsfbreak) then
+        --If the element is equal to the entry then we want to really look beyond it, if not then look no further
+        if(!element.neq(!entry)) then
+          if(!entry.tgeom) then
+            !this.spoolMembers.append(!this.getTubeRef(!entry))
+          endif
+          return
+        endif
+      endif
+
+      if(!entry.hardType inset ('OLET','TEE')) then
+        --Check if the connection to the 'Off Leg' of the TEE needs to be searched
+        if(!entry.csfbreak.not()) then
+          !this.findTeeOffLegConnectionSpoolBreak(!pipeRef, !entry)
+        endif
+      endif
+
+      --Arrive of component is spool break, component is part of the spool as going backward
+      if (!entry.asfbreak) then
+        !this.spoolMembers.append(!entry)
+        if(!entry.tgeom) then
+          !this.spoolMembers.append(!this.getTubeRef(!entry))
+        endif
+        return
+      endif
+
+      if (!entry.tgeom AND !entry.lsfbreak.not()) then
+        !this.spoolMembers.append(!this.getTubeRef(!entry))
+      endif
+
+      !this.spoolMembers.append(!entry)
+    enddo
+  endif
+
+
+  --Spool break on the tube of the branch
+  if(!branchRef.tsfbreak) then
+    --Should we check if the branch is connected to a TEE?
+    --If it is, then check CSFBREAK of the TEE as this would be the reason tsfbreak is set.
+    --In which case the TSFBREAK doesn't mean break the spool at the branches tube, as it is broken at the TEE.
+  endif
+
+  if(!branchRef.tgeom) then
+    !tubi = !this.getTubeRef(!branchRef)
+    !tubiEndRef = !tubi.mtendref
+    if(!tubiEndRef.type.neq('BRAN')) then
+      if (!tubiEndRef.asfbreak.not()) then
+        !this.spoolMembers.append(!this.getTubeRef(!branchRef))
+      endif
+    endif
+  endif
+
+  --No spool break found, continue searching backward from the branch
+  if (!branchRef.href.badref().not()) then
+    !this.findHeadReferenceSpoolBreak(!branchRef)
+  endif
+
+  !this.checkedBackward.append(!element)
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      findHeadReferenceSpoolBreak
+-- Description: Checks the the head reference of a branch for a spool break (searching backwards on the pipe)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       The branch we are searching backward from
+--
+------------------------------------------------------------------------
+define method .findHeadReferenceSpoolBreak(!branchRef is DBREF)
+
+  !pipeRef = pipe of $!<branchRef>
+  handle any
+    !pipeRef = nulref
+  endhandle
+  !headReference = !branchRef.href
+  !headBranchRef = bran of $!<headReference>
+  !headPipeRef = pipe of $!<headBranchRef>
+  !members   = !headBranchRef.members
+  !maxIndex  = !headBranchRef.mCount
+
+
+  if(!pipeRef.eq(!headPipeRef)) then
+    if (!branchRef.hend.eq('TAIL')) then
+      !this.findBackwardSpoolBreak(!headReference)
+    elseif(!branchRef.hend.eq('HEAD')) then
+      !this.findForwardSpoolBreak(!headReference)
+    else
+      --TEND/HEND are unset, check href for a component. If a TEE/OLET add to search forward and backward.
+      if(!headReference.hardtype inset ('OLET', 'TEE')) then
+        if(!headReference.csfbreak) then
+          --Spool broken on the third connection, which is where we are coming from. So do nothing
+          return
+        endif
+
+        !eleSequence = !headReference.sequence
+        !this.checkedBackward.append(!branchRef)
+
+        if(!headReference.asfbreak and !headReference.lsfbreak) then
+          --Isolated component, just add the TEE/OLET and end the spool
+          !this.spoolMembers.append(!headReference)
+        elseif(!headReference.asfbreak) then
+          !this.spoolMembers.append(!headReference)
+
+          --Add tube geom to spool for the TEE
+          if(!headReference.tgeom) then
+            !this.spoolMembers.append(!this.getTubeRef(!headReference))
+          endif
+
+          !nextSequence = !eleSequence + 1
+          if(!maxIndex.lt(!nextSequence)) then
+            !this.findBackwardSpoolBreak(!headBranchRef)
+          else
+            --Pass next component to start looking from
+            if(!headReference.tgeom) then
+              !this.spoolMembers.append(!this.getTubeRef(!headReference))
+            endif
+            !this.findForwardSpoolBreak(!members[!nextSequence])
+          endif
+        elseif(!headReference.lsfbreak) then
+          !this.spoolMembers.append(!headReference)
+          !prevSequence = !eleSequence - 1
+          if(!prevSequence.lt(1)) then
+            !this.findForwardSpoolBreak(!headBranchRef)
+          else
+            --Add tube geom to spool for the prev comp, then pass prev component to start looking from
+            !prevComp = !members[!prevSequence]
+            if(!prevComp.tgeom) then
+              !this.spoolMembers.append(!this.getTubeRef(!prevComp))
+            endif
+            !this.findBackwardSpoolBreak(!prevComp)
+          endif
+        else
+          !this.findForwardSpoolBreak(!headReference)
+          !this.findBackwardSpoolBreak(!headReference)
+        endif
+      endif
+    endif
+  endif
+
+endmethod
+--End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      findTailReferenceSpoolBreak
+-- Description: Checks the the tail reference of a branch for a spool break (searching forwards on the pipe)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       The branch we are searching backward from
+--
+------------------------------------------------------------------------
+define method .findTailReferenceSpoolBreak(!branchRef is DBREF)
+
+  !pipeRef = pipe of $!<branchRef>
+  handle any
+    !pipeRef = nulref
+  endhandle
+  !tailReference = !branchRef.tref
+  !tailBranchRef = bran of $!<tailReference>
+  !tailPipeRef = pipe of $!<tailBranchRef>
+  !members   = !tailBranchRef.members
+  !maxIndex  = !tailBranchRef.mCount
+
+  if(!pipeRef.eq(!tailPipeRef)) then
+    if (!branchRef.tend.eq('HEAD')) then
+      !this.findForwardSpoolBreak(!tailReference)
+    elseif(!branchRef.tend.eq('TAIL')) then
+      !this.findBackwardSpoolBreak(!tailReference)
+    else
+      --TEND/HEND are unset, check tref for a component. If a TEE/OLET add to search forward and backward.
+      if(!tailReference.hardtype inset ('OLET', 'TEE')) then
+        if(!tailReference.csfbreak) then
+          --Spool broken on the 'Off Leg' connection, which is where we are coming from. So do nothing
+          return
+        endif
+
+        !eleSequence = !tailReference.sequence
+        !this.checkedForward.append(!branchRef)
+
+        if(!tailReference.asfbreak and !tailReference.lsfbreak) then
+          --Isolated component, just add the TEE/OLET and end the spool
+          !this.spoolMembers.append(!tailReference)
+        elseif(!tailReference.asfbreak) then
+          !this.spoolMembers.append(!tailReference)
+          --Add tube geom to spool for the TEE
+          if(!tailReference.tgeom) then
+            !this.spoolMembers.append(!this.getTubeRef(!tailReference))
+          endif
+          !nextSequence = !eleSequence + 1
+          if(!maxIndex.lt(!nextSequence)) then
+            !this.findBackwardSpoolBreak(!tailBranchRef)
+          else
+            --Pass next component to start looking from
+            !this.findForwardSpoolBreak(!members[!nextSequence])
+          endif
+        elseif(!tailReference.lsfbreak) then
+          !this.spoolMembers.append(!tailReference)
+          !prevSequence = !eleSequence - 1
+          if(!prevSequence.lt(1)) then
+            !this.findForwardSpoolBreak(!tailBranchRef)
+          else
+            --Add tube geom to spool for the prev comp, then pass prev component to start looking from
+            !prevComp = !members[!prevSequence]
+            if(!prevComp.tgeom) then
+              !this.spoolMembers.append(!this.getTubeRef(!prevComp))
+            endif
+            !this.findBackwardSpoolBreak(!prevComp)
+          endif
+        else
+          !this.findForwardSpoolBreak(!tailReference)
+          !this.findBackwardSpoolBreak(!tailReference)
+        endif
+      endif
+    endif
+  endif
+
+endmethod
+--End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      findTeeOffLegConnectionSpoolBreak
+-- Description: Checks the Off-leg connection of a TEE for the next spool break along
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       Pipe that the TEE belongs to
+--    2    R     DBREF       The TEE
+--
+------------------------------------------------------------------------
+define method .findTeeOffLegConnectionSpoolBreak(!pipeRef is DBREF, !element is DBREF)
+
+  !connectedElement = !element.cref
+
+  if(!connectedElement.badref()) then
+    -- tee is not connected, do not search
+    return
+  endif
+
+  !connectedPipe = pipe of $!<connectedElement>
+
+  if(!pipeRef.eq(!connectedPipe)) then
+    if (!element.cend.eq('HEAD')) then
+      !this.findForwardSpoolBreak(!connectedElement)
+    elseif(!element.cend.eq('TAIL')) then
+      !this.findBackwardSpoolBreak(!connectedElement)
+    endif
+  endif
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      getTubeRef
+-- Description: get tube ref
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       element
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       return to tube ref
+--
+------------------------------------------------------------------------
+define method .getTubeRef(!element is DBREF) is DBREF
+  !tubeRef = il tube of $!<element>
+  handle any
+    !tubeRef = object DBREF()
+  endhandle
+
+  return !tubeRef
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      getBranTubeRef
+-- Description: get brantube ref
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       element
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       return to bran tube ref
+--
+------------------------------------------------------------------------
+define method .getBranTubeRef(!element is DBREF) is DBREF
+  !branchRefTemp = !element.owner
+  !brantubeRef = il tube of $!<branchRefTemp>
+  handle any
+    !brantubeRef = object DBREF()
+  endhandle
+
+  return !brantubeRef
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      highlightSpool
+-- Description: highlight spool
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .highlightSpool()
+  !this.spoolMembers.unique()
+  do !entry values !this.spoolMembers
+    enhance $!entry colour red
+  enddo
+
+endmethod
+-- End of method

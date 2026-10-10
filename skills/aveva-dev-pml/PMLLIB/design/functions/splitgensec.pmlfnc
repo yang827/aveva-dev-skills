@@ -1,0 +1,900 @@
+--
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            splitGensec1.pmlfnc
+--   Type:          Function Definition
+--   Group:         Structural Application
+--
+--     Keyword:     SPLIT
+--   Module:        design
+--   Replaces:
+--
+-- Author:          Jaideep (DDC - Chennai)
+-- Created:
+--
+--
+--
+-- Description:
+--    Splits the GENSEC passed - DDC
+--
+------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define function
+define function !!splitGensec(!gensec is DBREF,!ptIntrsctn is ARRAY,!disPtIntr is ARRAY,!gap is REAL,!cutPlaneDir is DIRECTION)
+
+if(!gensec.hardType ne |GENSEC| ) then
+    !!alert.error('Element is not a GENSEC')
+    return
+endif
+
+!!ce = !gensec
+
+-- Gensec-spine converted to a profile object - DDC
+!spine   = !!dtbMemberOfType(!gensec,'SPINE',1)
+!profile = object PROFILE(!spine)
+
+-- Take out lines/arcs used in constructing a spine - DDC
+!geometry  = !profile.edges()
+
+-- Store distances of POINSPs from POINSP1
+!disPoinsp  = ARRAY()
+-- Store distances of arc-starts from POINSP1
+!stDist     = ARRAY()
+-- Store distances of arc-ends from POINSP1
+!endDist    = ARRAY()
+-- Store POINSPs
+!poinsp     = ARRAY()
+-- Store CURVEs
+!curve      = ARRAY()
+-- Collect all arcs from the profile
+!arcColl    = ARRAY()
+-- Collect the split parts (GENSECS)
+!newGensec  = ARRAY()
+
+!members    = !spine.members
+
+do !i indices !members
+   if(!members[!i].type eq 'POINSP') then
+      !dPoinsp = !!spineDisPos(!!ce,!members[!i].pos)
+      !disPoinsp.append(!dPoinsp)
+      !poinsp.append(!members[!i])
+   else
+      !curve.append(!members[!i])
+   endif
+enddo
+
+-- For closed profiles
+!firstElePos   = !poinsp.first().position
+!lastElePos    = !poinsp.last().position
+-- The value '0.01' is assumed
+!isClosed      = !firstElePos.near(!lastElePos,0.01mm)
+
+$(
+if(!profile.IsClosed()) --> This will not work if the first and last positions have
+a small difference in values (i.e in the second or third significant figure).
+$)
+
+if(!isClosed) then
+   !size = !disPoinsp.size()
+   !disPoinsp[!size] = !profile.length()
+endif
+
+
+-- Collect all fittings
+!fittCount = !gensec.mCount('JLDATU')
+
+
+-- Take out distance/positions of start and end positions of Arcs from Gensec start - DDC
+do !i indices !geometry
+   !objType = !geometry[!i].objectType()
+   if(!objType eq 'ARC') then
+      !startAng    = !geometry[!i].startangle
+      !startAngPos = !geometry[!i].anglePosition(!startAng)
+      !arcStart    = !!spineDisPos(!!ce,!startAngPos)
+      !stDist.append(!arcStart)
+      !endAng      = !geometry[!i].endangle
+      !endAngPos   = !geometry[!i].anglePosition(!endAng)
+      !arcEnd      = !!spineDisPos(!!ce,!endAngPos)
+      !endDist.append(!arcEnd)
+      !arcColl.append(!geometry[!i])
+   endif
+enddo
+
+-- Check if the points lie on the profile - DDC
+
+do !i indices !disPtIntr
+
+   if(!disPtIntr[!i] ge !profile.length()) then
+      !ptIntrsctn[!i].delete()
+      !disPtIntr[!i].delete()
+   endif
+
+enddo
+
+-- Sometimes a closed profile will have
+if(!isClosed)then
+   if(!stDist.last() gt !endDist.last())then
+      !endDist[!endDist.size()]  =  !profile.length()
+   endif
+
+   if(!stDist.first() gt !endDist.first())then
+      !stDist[1]  =  0
+   endif
+endif
+
+-- No split points found
+if(!ptIntrsctn.unset()) then
+   !!alert.error('No split point found')
+   return
+endif
+
+!ptIntrsctn.unique()
+
+!disPtIntr.unique()
+
+-- Gap between gensecs after splitting from form splitgensec
+
+if(!gap.unset())then
+   !gapHalf       =  0
+else
+   !gapHalf       =  !gap / 2
+endif
+
+-- Take out new points based on gap value in form splitgensec
+
+do !i indices !disPtIntr
+   !!ce                = !gensec
+
+   !zDistIntrsctn1     = !disPtIntr[!i]  - (!gapHalf)
+   !zDistIntrsctn2     = !disPtIntr[!i]  + (!gapHalf)
+
+   !jusl               = !!ce.jusl
+   if(!jusl eq '') then
+      !jusl            = 'NA'
+   endif
+
+   var !gapPosStr1  PPLINE $!jusl $!zDistIntrsctn1 WRT /*
+   var !gapPosStr2  PPLINE $!jusl $!zDistIntrsctn2 WRT /*
+
+   !intrsctnNewPosTxt1 = '$!gapPosStr1' + ' WRT /*'
+   !intrsctnNewPosTxt2 = '$!gapPosStr2' + ' WRT /*'
+
+   !ptIntrsctn1[!i]    = !intrsctnNewPosTxt1.position()
+   !ptIntrsctn2[!i]    = !intrsctnNewPosTxt2.position()
+
+enddo
+
+-- Split gensec
+
+-- If profile is a full RING
+-- Jaideep to do change this check.
+if(!!ce.function eq 'RING' AND !isClosed) then
+
+   if(!ptIntrsctn.size() eq 1) then
+      !!alert.error('No or Only one split point found')
+   else
+
+      !ref   =  !!ce
+
+      -- Collect all fittings
+      !fittCount     = !!ce.mCount('JLDATU')
+
+      if(!fittCount gt 0)then
+         do !i from 1 to !fittCount
+            !jldatu[!i]      = !!dtbMemberOfType(!!ce,'JLDATU',!i)
+            JLDATU$!i
+            PLDATU 1
+            FIXING 1
+            !posJldatu[!i]   = !!ce.pos.wrt(world)
+            !!ce   =  !ref
+         enddo
+      endif
+
+      NEW GENSEC COPY PRE
+      if(!fittCount gt 0)then
+         do !i from !fittCount to 1 by -1
+            JLDATU$!i
+            DELETE JLDATU
+         enddo
+      endif
+
+      !newGensec.append(!!ce)
+
+      !index         =  !ptIntrsctn.size() - 1
+
+      do !i from 1 to !index
+         NEW GENSEC COPY PRE
+         !newGensec.append(!!ce)
+      enddo
+
+      do !k indices !newGensec
+
+         if(!newGensec[!k] eq !newGensec.first()) then
+
+            -- Do modifications to the first gensec
+            !!ce         = !!dtbMemberOfType(!newGensec[!k],'SPINE',1)
+            POINSP1
+
+            !newPtIntr   = 2
+
+            !!ce.pos     = !ptIntrsctn[1]
+
+            !newEnd      = !ptIntrsctn[!newPtIntr]
+
+            POINSP2
+            !!ce.pos     = !newEnd
+
+            CURVE1
+
+            !geomDerive         = !arcColl[1].split(2)[1]
+            !geomDerive.sense   = !arcColl[1].sense
+            !ringArc     = !geomDerive.startPosition(!ptIntrsctn[1])
+            --if(!ringArc.angle() lt 0.05)then
+              -- !ringArc
+            --else
+            !ringArc     = !ringArc.endPosition(!newEnd)
+            --endif
+
+            --!ringArc.draw(2,8,9)
+            !newArcAng   = !ringArc.angle()
+            !arcEndAngle = !ringArc.endangle
+
+            if(!ringArc.sense) then
+               !!ce.position = !ringArc.anglePosition(!arcEndAngle - (!newArcAng / 2))
+            else
+               !!ce.position = !ringArc.anglePosition(!arcEndAngle + (!newArcAng / 2))
+            endif
+
+            -- Delete remaining curves and points
+            CURVE2
+            DELETE CURVE
+
+            POINSP3
+            DELETE POINSP
+
+         elseif(!newGensec[!k] eq !newGensec.last()) then
+
+            -- Do modifications to the second gensec
+            !!ce         = !!dtbMemberOfType(!newGensec.last(),'SPINE',1)
+            POINSP1
+            !!ce.pos     = !ptIntrsctn[!newPtIntr]
+            POINSP2
+            !!ce.pos     = !ptIntrsctn[1]
+            CURVE1
+            !ringArc     = !arcColl[1].startPosition(!newEnd)
+            !ringArc     = !ringArc.endPosition(!ptIntrsctn[1])
+            !newArcAng   = !ringArc.angle()
+            !arcEndAngle = !ringArc.endangle
+
+            if(!ringArc.sense) then
+               !!ce.position = !ringArc.anglePosition(!arcEndAngle - (!newArcAng / 2))
+            else
+               !!ce.position = !ringArc.anglePosition(!arcEndAngle + (!newArcAng / 2))
+            endif
+
+            -- Delete remaining curves and points
+            CURVE2
+            DELETE CURVE
+
+            POINSP3
+            DELETE POINSP
+
+         else
+            -- Do modifications to the second gensec
+
+            !!ce         = !!dtbMemberOfType(!newGensec[!k],'SPINE',1)
+
+            !newStart    = !ptIntrsctn[!newPtIntr]
+            !newPtIntr   = !newPtIntr + 1
+            !newEnd      = !ptIntrsctn[!newPtIntr]
+
+            POINSP1
+            !!ce.pos     = !newStart
+
+            POINSP2
+            !!ce.pos     = !newEnd
+
+            CURVE1
+            !ringArc     = !arcColl[1].startPosition(!newStart)
+            !ringArc     = !ringArc.endPosition(!newEnd)
+            !newArcAng   = !ringArc.angle()
+            !arcEndAngle = !ringArc.endangle
+
+            if(!ringArc.sense) then
+               !!ce.position = !ringArc.anglePosition(!arcEndAngle - (!newArcAng / 2))
+            else
+               !!ce.position = !ringArc.anglePosition(!arcEndAngle + (!newArcAng / 2))
+            endif
+
+            -- Delete remaining curves and points
+            CURVE2
+            DELETE CURVE
+
+            POINSP3
+            DELETE POINSP
+
+         endif
+         -- Set the end directions for the GENSEC
+         --!newGensec[!k].drns = !cutPlaneDir
+         --!newGensec[!k].drne = !cutPlaneDir
+
+         -- Rearrange first gensec for gap
+         !!ce           = !newGensec[!k]
+
+         !zDistNew      = !!ce.length - (!gapHalf)
+
+         !jusl          = !!ce.jusl
+
+         if(!jusl eq '') then
+            !jusl       = 'NA'
+         endif
+
+         var !poinspNewPosStr1  PPLINE $!jusl $!gapHalf WRT /*
+         var !poinspNewPosStr2  PPLINE $!jusl $!zDistNew WRT /*
+
+         !poinspNewPosTxt1 = '$!poinspNewPosStr1' + ' WRT /*'
+         !poinspNewPosTxt2 = '$!poinspNewPosStr2' + ' WRT /*'
+
+         !poinspNewPos1    = !poinspNewPosTxt1.position()
+         !poinspNewPos2    = !poinspNewPosTxt2.position()
+
+
+         SPINE 1
+
+         POINSP1
+
+         !!ce.pos   = !poinspNewPos1
+         POINSP2
+
+         !!ce.pos   = !poinspNewPos2
+
+         -- Position JLDATUs based on new ZDIST
+
+         if(defined(!jldatu) AND !jldatu.set() ) then
+
+            !!ce    = !newGensec[!k]
+
+            SPINE1
+
+            !newProfile = object PROFILE(!!ce)
+
+            !jldatuCount= !jldatu.size()
+            do !i from !jldatuCount to 1 by -1
+
+               !!ce = !jldatu[!i]
+
+
+               !posOnProfile = !newProfile.near(!posJldatu[!i])
+
+               !disPosPro    = !posOnProfile.distance(!posJldatu[!i])
+
+               -- The value 0.1 used below is empirical
+               if(!disPosPro lt 0.1mm) then
+
+                  !zdist     = !!spineDisPos(!newGensec[!k],!posJldatu[!i])
+
+                  !!ce.zdist = !zdist
+
+                  !!ce    = !newGensec[!k]
+                  INCLUDE $!jldatu[$!i]
+
+                  !jldatu[!i].delete()
+                  !posJldatu[!i].delete()
+               endif
+            enddo
+            !jldatu.compress()
+            !posJldatu.compress()
+
+         endif
+      enddo
+      if(defined(!jldatu))then
+         if(!jldatu.set())then
+            !confirm = !!alert.confirm('Fitting positioning error!! Continue splitting?')
+            if(!confirm eq 'NO')then
+               UNDODB
+               return
+            endif
+         endif
+      endif
+      !!ce = !ref
+      !elemRef  =  !ref.ref
+      DELETE GENSEC
+
+      NEW GENSEC REF $!elemRef
+      COPY $!newGensec[1]
+
+      !!ce = !newGensec[1]
+      DELETE GENSEC
+      !!ce = !ref
+   endif
+else
+   !!ce =  !gensec
+
+   !newGensec.append(!!ce)
+
+   do !i indices !ptIntrsctn
+      NEW GENSEC COPY PRE
+      !newGensec.append(!!ce)
+   enddo
+
+   do !k indices !newGensec
+      -- Modify the first split component
+      if(!newGensec[!k] eq !newGensec.first()) then
+
+         -- Assumed that GENSEC contains only one spine
+         !newSpine    =  !!dtbMemberOfType(!newGensec[!k],'SPINE',1)
+         !newPtIntr   =  1
+         !newEnd      =  !ptIntrsctn1[!newPtIntr]
+
+
+         -- Position JLDATUs based on new ZDIST
+         if(!fittCount gt 0) then
+
+            do !i from 1 to !fittCount
+               !jldatuFirst[!i]  =  !!dtbMemberOfType(!newGensec[!k],'JLDATU',!i)
+            enddo
+
+            do !i indices !jldatuFirst
+               !!ce   =  !jldatuFirst[!i]
+
+               -- Some fittings will not have the attribute ZDIST set.
+               !jldatuPlacement   =  !!spineDisPos(!newGensec[!k],!!ce.pos)
+
+               if(!jldatuPlacement gt (!disPtIntr[!newPtIntr] - !gapHalf )) then
+                  DELETE JLDATU
+                  !jldatuFirst[!i].delete()
+               endif
+            enddo
+
+            !jldatuFirst.compress()
+         endif
+
+         !newSpine.members.last().pos = !newEnd
+
+         -- Modify/ delete curves
+         do !i indices !stDist
+
+            if(!stDist[!i] lt (!disPtIntr[!newPtIntr] - !gapHalf )) then
+               if(!endDist[!i] ge (!disPtIntr[!newPtIntr] - !gapHalf )) then
+
+                  !!ce     =  !curve[!i]
+                  !newArc  =  !arcColl[!i].endPosition(!newEnd)
+                  -- Set new position for the curve
+                  if(!!ce.curType eq 'FILL') then
+
+                     !!ce.position    = !newArc.pole()
+                     handle ANY
+                        DELETE CURVE
+                        skip
+                     endhandle
+                  else
+
+                     !newArcAng       = !newArc.angle()
+                     --q var !newArcAng
+                     handle ANY
+                        DELETE CURVE
+                        skip
+                     endhandle
+
+                     -- If you get a distorted gensec with ring shape remove this comment
+                     -- if(!newArcAng.angle() gt !arcColl[!i].angle())then
+                     --    DELETE CURVE
+                     --    skip
+                     -- endif
+
+                     !arcEndAngle     = !newArc.endangle
+                     if(!newArc.sense) then
+                        if(!!ce.curType eq 'THRU') then
+                           !!ce.position = !newArc.anglePosition(!arcEndAngle - (!newArcAng / 2))
+                        else
+                           !!ce.cposition= !newArc.anglePosition(!arcEndAngle - (!newArcAng / 2))
+                        endif
+                     else
+                        if(!!ce.curType eq 'THRU') then
+                           !!ce.position = !newArc.anglePosition(!arcEndAngle + (!newArcAng / 2))
+                        else
+                           !!ce.cposition= !newArc.anglePosition(!arcEndAngle + (!newArcAng / 2))
+                        endif
+                     endif
+                  endif
+               endif
+            else
+               !!ce   =   !curve[!i]
+               DELETE CURVE
+            endif
+         enddo
+
+         -- Delete irrelevant POINSPs
+         if(!poinsp.size() gt 2) then
+            !points = !poinsp.size() - 1
+
+            do !i indices !poinsp
+               !poinCol[!i] = !!dtbMemberOfType(!newSpine,'POINSP',!i)
+            enddo
+
+            do !i from 2 to !points
+               !!ce = !poinCol[!i]
+               skip if(!disPoinsp[!i] lt (!disPtIntr[!newPtIntr] - !gapHalf ))
+               DELETE POINSP
+            enddo
+
+            !lastPoinsp    = !poinCol.last()
+            !lastPoinspPos = !lastPoinsp.pos
+            $!lastPoinsp
+            PRE
+            if(!!ce.type eq 'POINSP')then
+               !prePoinspPos  = !!ce.pos
+               if(!lastPoinspPos.distance(!prePoinspPos) lt 0.01mm)then
+                  $!lastPoinsp
+                  DELETE POINSP
+               endif
+            endif
+
+         endif
+         -- Set the end directions for the GENSEC
+         --!newGensec[!k].drne = !cutPlaneDir
+
+      -- Modify the last split component
+      elseif(!newGensec[!k] eq !newGensec.last()) then
+         !newSpine   =  !!dtbMemberOfType(!newGensec[!k],'SPINE',1)
+         !newStart   =  !ptIntrsctn2.last()
+
+
+         -- Position JLDATUs based on new ZDIST
+         if(!fittCount gt 0) then
+
+            do !i from 1 to !fittCount
+               !jldatuLast[!i] = !!dtbMemberOfType(!newGensec[!k],'JLDATU',!i)
+            enddo
+
+            do !i indices !jldatuLast
+               !!ce          =  !jldatuLast[!i]
+               !jldatuDis    =  !!spineDisPos(!newGensec[!k],!!ce.pos)
+               if(!jldatuDis gt (!disPtIntr.last() + !gapHalf )) then
+                  !!ce.zdist =  !jldatuDis - (!disPtIntr.last() + !gapHalf )
+               else
+                  DELETE JLDATU
+                  !jldatuLast[!i].delete()
+               endif
+            enddo
+            !jldatuLast.compress()
+         endif
+
+         !newSpine.members.first().pos = !newStart
+
+         -- Modify/ delete curves
+         do !i indices !curve
+            !curvLast[!i]    =  !!dtbMemberOfType(!newSpine,'CURVE',!i)
+         enddo
+
+         do !i indices !endDist
+            if(!endDist[!i] gt (!disPtIntr.last() + !gapHalf )) then
+               if(!stDist[!i] lt (!disPtIntr.last() + !gapHalf )) then
+                  !!ce    = !curvLast[!i]
+                  !newArc = !arcColl[!i].startPosition(!newStart)
+
+                  if(!!ce.curType eq 'FILL') then
+                     !!ce.position = !newArc.pole()
+                     handle ANY
+                       DELETE CURVE
+                       skip
+                     endhandle
+                  else
+                     !newArcAng       = !newArc.angle()
+                     handle ANY
+                       DELETE CURVE
+                       skip
+                     endhandle
+
+                     -- If you get a distorted gensec with ring shape remove this comment
+                     -- if(!newArcAng.angle() gt !arcColl[!i].angle())then
+                     --    DELETE CURVE
+                     --    skip
+                     -- endif
+
+                     !arcEndAngle     = !newArc.endangle
+                     if(!newArc.sense) then
+                        if(!!ce.curType eq 'THRU') then
+                           !!ce.position = !newArc.anglePosition(!arcEndAngle - (!newArcAng / 2))
+                        else
+                           !!ce.cposition= !newArc.anglePosition(!arcEndAngle - (!newArcAng / 2))
+                        endif
+                     else
+                        if(!!ce.curType eq 'THRU') then
+                           !!ce.position = !newArc.anglePosition(!arcEndAngle + (!newArcAng / 2))
+                        else
+                           !!ce.cposition= !newArc.anglePosition(!arcEndAngle + (!newArcAng / 2))
+                        endif
+                     endif
+                  endif
+               endif
+            else
+
+               !!ce   =  !curvLast[!i]
+               DELETE CURVE
+            endif
+         enddo
+
+         -- Delete irrelevant POINSPs
+         if(!poinsp.size() gt 2) then
+            !points = !poinsp.size() - 1
+
+            do !i indices !poinsp
+               !poinCol[!i] = !!dtbMemberOfType(!newSpine,'POINSP',!i)
+            enddo
+
+            do !i from 2 to !points
+               !!ce = !poinCol[!i]
+               if(!disPoinsp[!i] gt (!disPtIntr.last() + !gapHalf )) then
+               else
+                  DELETE POINSP
+               endif
+            enddo
+
+            !firstPoinsp    = !poinCol.first()
+            !firstPoinspPos = !firstPoinsp.pos
+            $!firstPoinsp
+            NEX
+            if(!!ce.type eq 'POINSP')then
+               !nexPoinspPos  = !!ce.pos
+               if(!firstPoinspPos.distance(!nexPoinspPos) lt 0.01mm)then
+                  $!firstPoinsp
+                  DELETE POINSP
+               endif
+            endif
+         endif
+
+         -- If profile is closed - DDC
+         if(!isClosed AND (!ptIntrsctn.size() gt 1 )) then
+            !lenLastGensec = !disPoinsp.last() - (!disPtIntr.last() + !gapHalf )
+            if(defined(!jldatuFirst)) then
+
+               -- Calculating new Zdistance for JLDATUs in the first gensec relative to the new merged gensec
+               do !i indices !jldatuFirst
+                  !jldatuFirst[!i].zdist = !jldatuFirst[!i].zdist + !lenLastGensec
+               enddo
+
+            endif
+
+            -- Merge first and last split components
+            !include = !newSpine.members
+            !!ce = !!dtbMemberOfType(!newGensec[1],'SPINE',1)
+            !count = !include.size() - 1
+
+            do !i from 1 to !count
+               INCLUDE $!include[$!i]
+            enddo
+
+            !!ce = !newGensec[1]
+
+            if(defined(!jldatuLast)) then
+               do !i indices !jldatuLast
+                  INCLUDE $!jldatuLast[$!i]
+               enddo
+            endif
+
+            -- Delete the last split component
+            !!ce = !newGensec[!k]
+            DELETE GENSEC
+         endif
+
+      -- Set the end directions for the GENSEC
+      --!newGensec[!k].drns = !cutPlaneDir
+
+      -- Modify the intermediate split components
+      else
+
+         !newSpine  = !!dtbMemberOfType(!newGensec[!k],'SPINE',1)
+         !oldPtIntr = !newPtIntr
+         !newPtIntr = !newPtIntr + 1
+         !newStart  = !ptIntrsctn2[!oldPtIntr]
+         !newEnd    = !ptIntrsctn1[!newPtIntr]
+
+         -- Position JLDATUs based on new ZDIST
+         if(!fittCount gt 0) then
+
+            do !i from 1 to !fittCount
+               !jldatuNext[!i] = !!dtbMemberOfType(!newGensec[!k],'JLDATU',!i)
+            enddo
+
+            do !i indices !jldatuNext
+               !!ce        = !jldatuNext[!i]
+               !jldatuDis  =  !!spineDisPos(!newGensec[!k],!!ce.pos)
+
+               if(!jldatuDis  gt (!disPtIntr[!oldPtIntr] + !gapHalf )) then
+                  if(!jldatuDis gt (!disPtIntr[!newPtIntr] - !gapHalf)) then
+                     DELETE JLDATU
+                  else
+                     !!ce.zdist = !jldatuDis - (!disPtIntr[!oldPtIntr] + !gapHalf )
+                  endif
+               else
+                  DELETE JLDATU
+               endif
+            enddo
+         endif
+
+         !newSpine.members.first().pos = !newStart
+         !newSpine.members.last().pos  = !newEnd
+
+         -- Modify / delete CURVEs
+         do !i indices !curve
+            !curvNext[!i] = !!dtbMemberOfType(!newSpine,'CURVE',!i)
+         enddo
+
+         do !i indices !stDist
+            !checkVal = (!disPtIntr[!oldPtIntr] + !gapHalf )
+
+            if(!stDist[!i] lt !checkVal) then
+
+               if(!endDist[!i] gt !checkVal)then
+                  !!ce    = !curvNext[!i]
+                  !newArc = !arcColl[!i].startPosition(!newStart)
+
+                  if(!!ce.curType eq 'FILL') then
+                     !!ce.position = !newArc.pole()
+                     handle ANY
+                       DELETE CURVE
+                       skip
+                     endhandle
+
+                     if(!endDist[!i] gt (!disPtIntr[!newPtIntr] - !gapHalf ))then
+                        !newArc       = !newArc.endPosition(!newEnd)
+                        !!ce.position = !newArc.pole()
+                        handle ANY
+                          DELETE CURVE
+                          skip
+                        endhandle
+                     endif
+
+                  else
+                     if(!endDist[!i] gt (!disPtIntr[!newPtIntr] - !gapHalf ))then
+                        !newArc          = !newArc.endPosition(!newEnd)
+                     endif
+
+                     !newArcAng       = !newArc.angle()
+
+                     handle ANY
+                       DELETE CURVE
+                       skip
+                     endhandle
+
+                     -- if(!newArcAng lt 1 OR !newArcAng gt 180 )then
+                     --    DELETE CURVE
+                     --    skip
+                     -- endif
+                     !arcEndAngle     = !newArc.endangle
+
+                     if(!newArc.sense)  then
+                        if(!!ce.curType eq 'THRU') then
+                           !!ce.position  = !newArc.anglePosition(!arcEndAngle - (!newArcAng / 2))
+                        else
+                           !!ce.cposition = !newArc.anglePosition(!arcEndAngle - (!newArcAng / 2))
+                        endif
+                     else
+                        if(!!ce.curType eq 'THRU') then
+                           !!ce.position  = !newArc.anglePosition(!arcEndAngle + (!newArcAng / 2))
+                        else
+                           !!ce.cposition = !newArc.anglePosition(!arcEndAngle + (!newArcAng / 2))
+                        endif
+                     endif
+
+                  endif
+               else
+                  !!ce = !curvNext[!i]
+                  DELETE CURVE
+               endif
+            elseif(!stDist[!i] lt (!disPtIntr[!newPtIntr] - !gapHalf )) then
+               if(!endDist[!i] ge (!disPtIntr[!newPtIntr] - !gapHalf ))then
+
+                  !!ce    = !curvNext[!i]
+                  !newArc = !arcColl[!i].endPosition(!newEnd)
+
+                  if(!!ce.curType eq 'FILL') then
+                     !!ce.position = !newArc.pole()
+                     handle ANY
+                       DELETE CURVE
+                       skip
+                     endhandle
+                  else
+
+                     !newArcAng       = !newArc.angle()
+                     handle ANY
+                       DELETE CURVE
+                       skip
+                     endhandle
+                     !arcEndAngle     = !newArc.endangle
+
+                     if(!newArc.sense)  then
+                        if(!!ce.curType eq 'THRU') then
+                           !!ce.position = !newArc.anglePosition(!arcEndAngle - (!newArcAng / 2))
+                        else
+                           !!ce.cposition = !newArc.anglePosition(!arcEndAngle - (!newArcAng / 2))
+                        endif
+                     else
+                        if(!!ce.curType eq 'THRU') then
+                           !!ce.position = !newArc.anglePosition(!arcEndAngle + (!newArcAng / 2))
+                        else
+                           !!ce.cposition = !newArc.anglePosition(!arcEndAngle + (!newArcAng / 2))
+                        endif
+                     endif
+
+                  endif
+               endif
+            else
+               !!ce = !curvNext[!i]
+               DELETE CURVE
+            endif
+         enddo
+
+         -- Delete irrelevant POINSPs
+         if(!poinsp.size() gt 2) then
+            !points = !poinsp.size() - 1
+
+            do !i indices !poinsp
+               !poinCol[!i] = !!dtbMemberOfType(!newSpine,'POINSP',!i)
+            enddo
+
+            do !i from 2 to !points
+               !!ce = !poinCol[!i]
+               if(!disPoinsp[!i] gt !checkVal) then
+                  if(!disPoinsp[!i] lt (!disPtIntr[!newPtIntr] - !gapHalf )) then
+                  else
+                     DELETE POINSP
+                  endif
+               else
+                  DELETE POINSP
+               endif
+            enddo
+
+            !firstPoinsp    = !poinCol.first()
+            !firstPoinspPos = !firstPoinsp.pos
+            $!firstPoinsp
+            NEX
+            if(!!ce.type eq 'POINSP')then
+               !nexPoinspPos  = !!ce.pos
+               if(!firstPoinspPos.distance(!nexPoinspPos) lt 0.01mm)then
+                  $!firstPoinsp
+                  DELETE POINSP
+               endif
+            endif
+
+            !lastPoinsp    = !poinCol.last()
+            !lastPoinspPos = !lastPoinsp.pos
+            $!lastPoinsp
+            PRE
+            if(!!ce.type eq 'POINSP')then
+               !prePoinspPos  = !!ce.pos
+               if(!lastPoinspPos.distance(!prePoinspPos) lt 0.01mm)then
+                  $!lastPoinsp
+                  DELETE POINSP
+               endif
+            endif
+
+         endif
+         -- Set the end directions for the GENSEC
+         --!newGensec[!k].drne = !cutPlaneDir
+         --!newGensec[!k].drns = !cutPlaneDir
+      endif
+   enddo
+
+   do !i indices !newGensec
+      !newGensec[!i]   =   !!spineTidy(!newGensec[!i])
+      -- If the tidy up activity fails.
+      handle ANY
+      endhandle
+   enddo
+   !!ce =  !gensec
+   UNENHANCE CE
+endif
+endfunction
+-- End of function definition for !!splitGensec

@@ -1,0 +1,936 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            isocwdimnoverall.pmlfnc
+--   Type:          Function Definition
+--   Group:         ISOADP
+--     Keyword:     Isometric
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         25 March 2001
+--
+-- Description:
+-- Creates overal dimensions in both the horizontal and the vertical
+-- It only dimensions a component when the constrained centreline
+-- changes direction, unless it is a TEE component.
+--
+-- Assumptions:
+-- The ce is the dimension laye
+------------------------------------------------------------------------
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     ARRAY       All components in the drawlist
+--    2    R     ISODEFAULTS The defaults settings
+--    3    R     BOOLEAN     Whether to only display horizontal dimensions
+--
+-------------------------------------------------------------------------
+define function !!isoCwDimnOverall(!allComp is ARRAY, !data is ISODEFAULTS, !horizontal is BOOLEAN)
+
+  -- Get the settings from the default ISODIMENSION object
+  !dimnDef = !data.elecDimn
+
+  -- Initialise variables
+  !dter       = !dimnDef.term
+  !dtch       = !dimnDef.cHei.queryString()
+  !tColour    = !dimnDef.tColour
+  !lColour    = !dimnDef.lColour
+  !lStyle     = !dimnDef.lStyle
+  !lThickness = !dimnDef.lThickness
+  !accuracy   = !dimnDef.gapAccuracy
+  !viewRefe   = !!ce.owne
+  !dimnLaye   = !!ce
+  !parts      = ARRAY()
+  !dimns      = ARRAY()
+  !gaps       = ARRAY()
+
+  -- Get this drawlist spool number
+  !thisDrawListNo = !viewRefe.idln.func.real()
+
+  -- Get all drawlists for this drawing
+  !allDrawlists   = !!isoCwDrawLists(!viewRefe)
+
+  -- Do not draw the centreline for gaps at this time, as am undecided if it is useful
+  -- Primarily because the lines are not rendered, but we could make it a switch
+  !drawGaps   = false
+
+  -- Set the line style depending on line thickness
+  if (!lThickness.upcase().neq('THIN')) then
+    !lStyle = !lStyle & !lThickness
+  endif
+
+  -- Set the laye colours
+  DLStyle $!lStyle  PLStyle $!lStyle  DLColour $!lColour  PLColour $!lColour
+
+  -- Get the owning part for all spool components
+  -- These will be the parts we dimension
+  do !compRefe val !allComp
+
+    -- Get component type
+    !compType = !compRefe.type.upcase()
+
+    -- Test for template and section as these are one level further down in the hierarchy
+    if (!compType.eq('TMPL') or !compType.eq('GENSEC')) then
+      !parts.append(!compRefe.owne.owne)
+
+    -- We need all other components
+    else
+
+      -- Unless they do not have any children, in which case they do not have any form
+      if (!compRefe.mem.size().neq(0)) then
+        !parts.append(!compRefe)
+      endif
+
+    endif
+
+  enddo
+
+  -- Remove duplicates
+  !parts.unique()
+
+  -- Determine the dimension offset
+  -- If the layer value is not the default then use that
+  if (!dimnLaye.doff.neq(!dimnDef.offset)) then
+
+    !doff = !dimnLaye.doff
+
+  -- Calculate the dimension offset depending on width
+  else
+
+    -- Set the doff relative to the bore size
+    if (!dimnDef.relBore) then
+
+      -- Use the first part to find the tray width
+      -- We have to loop through the parts here as the first may be a POINTR
+      do !partRefe val !parts
+
+        -- Initialise variables
+        !partType = !partRefe.type.upcase()
+
+        -- Avoid any POINTR
+        skip if (!partType.eq('POINTR'))
+
+        if (!partType.eq('TMPL')) then
+          !width      = !partRefe.owne.owne.trayw
+
+        else
+          !width      = !partRefe.owne.trayw
+
+        endif
+
+        break if (defined(!width))
+
+      enddo
+
+      -- Test for a found width
+      if (undefined(!width)) then
+      	!width = 0
+      endif
+
+      !viewScale  = !viewRefe.vsca
+      !doff       = !dimnDef.offset + ((!width / 2) * !viewScale)
+      !range      = !!isoedit.doffset.range
+      !units      = !doff.units().shortName()
+
+      -- Check that the value does not exceed the edit form doff gadget limit
+      if (!doff.gt(!range[2])) then
+        !doff = !!comConvertUnknownValue(!range[2],!units)
+      endif
+
+    -- Just use the default offset
+    else
+      !doff = !dimnDef.offset.queryString()
+
+    endif
+
+    -- Store the calculated value at the layer for later reuse
+    DOFF $!doff
+
+  endif
+
+  -- Process each component
+  do !index ind !parts
+
+    -- Initialise variables
+    !partRefe = !parts[!index]
+    !partType = !partRefe.type.upcase()
+
+    -- Get this parts arrive and leave ppoints
+    if (!partType.neq('POINTR')) then
+      !pArrive = !partRefe.arrive
+        handle (2,201)
+          -- Element does not have attribute ARRI
+          VAR !pA PA OF $!partRefe
+          !pArrive = !pA.split()[2].real()
+        endhandle
+
+      !pLeave  = !partRefe.leave
+        handle (2,201)
+          -- Element does not have attribute LEAV
+          VAR !pL PL OF $!partRefe
+          !pLeave = !pL.split()[2].real()
+        endhandle
+
+    endif
+
+    -- Start at the first part
+    if (!index.eq(1)) then
+
+      -- For a head POINTR, we dimension it if there is a gap between it and the first or last part
+      if (!partType.eq('POINTR')) then
+
+        -- For a next part
+        if (defined(!parts[!index + 1])) then
+
+          -- Get the next part
+          !nextRefe = !parts[!index + 1]
+          !nextType = !nextRefe.type.upcase()
+
+          -- Get the next part arrive point
+          !nextPArrive = !nextRefe.arrive
+            handle (2,201)
+              -- Element does not have attribute ARRI
+              VAR !pA PA OF $!nextRefe
+              !nextPArrive = !pA.split()[2].real()
+            endhandle
+
+          !nextPLeave  = !nextRefe.leave
+            handle (2,201)
+              -- Element does not have attribute ARRI
+              VAR !pL PL OF $!nextRefe
+              !nextPLeave = !pL.split()[2].real()
+            endhandle
+
+          -- For a gap greater than the defined accuracy, create a dimension
+          if (!nextRefe.distfh[1].gt(!accuracy)) then
+
+            -- Get the current direction from this pointr to the next part arrive
+            !currDir = !!isoClDir(!partRefe.pos.wrt(world), !nextRefe.ppos[!nextPArrive].wrt(world), false)
+
+            -- Create the dimension
+            NEW LDIM  DIR $!currDir  DTCH $!dtch  DTAN PARA  DTER $!dter  DOFF $!doff  PLDI U
+             DLStyle DEF  PLStyle DEF  DLColour DEF  PLColour DEF  DTColour $!tColour  PTColour $!tColour
+
+            !dimns.append(!!ce)
+
+            -- Start the dimension from the head pointr
+            FROM $!partRefe
+
+            -- Finish the dimension at the arrive point of the next part
+            TO PA OF $!nextRefe
+              handle (64,313) (64,314)
+                END
+
+                -- It is only possible to set the PLDIR to 90 here
+                -- As It is not possible to calculate a direction using a POINTR as it does not have an orientation
+                PLDI 90
+
+              elsehandle any
+                !!isoLog.messages.append('  Error in dimensioning to ' & !partRefe.flnm)
+                  handle any
+                  endhandle
+
+              endhandle
+
+            -- Remember this gap for drawing the centreline
+            !gaps.append('FPT ' & !partRefe & ' TPT PA OF ' & !nextRefe)
+
+          endif
+
+          -- Start the next dimension
+          -- Get the next direction depending upon the next part type
+          -- Straight through types
+          if (!nextType.eq('CTSTRA') or !nextType.eq('CTREDU')) then
+
+            -- Get the current direction from this next arrive to the next leave
+            !currDir = !!isoDimnDir(!nextRefe, !nextPArrive, !nextRefe, !nextPLeave, false)
+
+          -- Those with a possible change in direction
+          else
+
+            -- Get the current direction from this next arrive to the next origin
+            !currDir = !!isoDimnDir(!nextRefe, !nextPArrive, !nextRefe, 0, false)
+
+          endif
+
+          -- This is the current dimension direction
+          !dimnDir = !currDir
+
+          -- Create the dimension
+          NEW LDIM  DIR $!currDir  DTCH $!dtch  DTAN PARA  DTER $!dter  DOFF $!doff  PLDI U
+           DLStyle DEF  PLStyle DEF  DLColour DEF  PLColour DEF  DTColour $!tColour  PTColour $!tColour
+
+          !dimns.append(!!ce)
+
+          -- Start the dimension from the arrive of the next part
+          FROM PA OF $!nextRefe
+
+          -- Remember this place in the hierarchy
+          !currentRefe = !!ce
+
+          -- We are done here
+          skip
+
+        endif
+
+      -- For anything else
+      else
+
+        -- Check for a gap to the last part of the previous drawing if any
+        -- Also check that this is not the first drawing as this will be covered by the first pointr
+        if (!thisDrawListNo.neq(1)) then
+
+          -- Get the drawlist of the previous drawing
+          !prevIdli = !allDrawlists[!thisDrawListNo - 1]
+
+          -- Get addes on the previous drawlist
+          !prevDrwgAddes =  !prevIdli.mem
+
+          -- Get the last part on the previous drawing
+          !lastPartPrevRefe = !prevDrwgAddes[!prevDrwgAddes.size()].idnm
+
+          -- Look for a CTFEAT
+          if (!lastPartPrevRefe.type.upcase().eq('CTFEAT')) then
+            !lastPartPrevRefe = !lastPartPrevRefe.owne
+          endif
+
+          -- Get the last part on the previous drawing leave point
+          VAR !lastPartPrevPL PL OF $!lastPartPrevRefe
+          !lastPartPrevLeave = !lastPartPrevPL.split()[2].real()
+
+          -- Check the distance between this part arrive and the last part leave on the previous drawing
+          !distance = !lastPartPrevRefe.ppos[!lastPartPrevLeave].wrt(world).distance(!partRefe.ppos[!pArrive].wrt(world))
+
+          -- For a gap greater than the defined accuracy, create a dimension
+          if (!distance.gt(!accuracy)) then
+
+            -- Get the current direction from last part on the prev drwg to this part arrive
+            !currDir = !!isoClDir(!lastPartPrevRefe.ppos[!lastPartPrevLeave].wrt(world), !partRefe.ppos[!pArrive].wrt(world), false)
+
+            -- Create the dimension
+            NEW LDIM  DIR $!currDir  DTCH $!dtch  DTAN PARA  DTER $!dter  DOFF $!doff  PLDI U
+             DLStyle DEF  PLStyle DEF  DLColour DEF  PLColour DEF  DTColour $!tColour  PTColour $!tColour
+
+            !dimns.append(!!ce)
+
+            -- Start the dimension from the last part on the previous drawing
+            FROM PL OF $!lastPartPrevRefe
+
+            -- Finish the dimension at the arrive point of this part
+            TO PA OF $!partRefe
+              handle (64,313) (64,314)
+                END
+
+                -- Try finding a pldir orthogonal to this part centreline
+                VAR !pDir PA DIR OF $!partRefe IN WORLD
+                !plDir = !!isoCwOrientation(!partRefe, object DIRECTION('$!pDir'))
+                PLDI $!plDir
+                  handle any
+                  PLDI 90
+                  endhandle
+
+              elsehandle any
+                !!isoLog.messages.append('  Error in dimensioning to ' & !partRefe.flnm)
+                  handle any
+                endhandle
+
+              endhandle
+
+            -- Remember this gap for drawing the centreline
+            !gaps.append('FPT PL OF ' & !lastPartPrevLeave & ' TPT PA OF ' & !partRefe)
+
+          endif
+
+        endif
+
+      endif
+
+      -- For multiple ppoint parts
+      if (!partType.eq('CTRISE') or !partType.eq('CTBEND') or !partType.eq('CTTEE') or !partType.eq('CTCROS')) then
+
+        -- Get the current direction from this part arrive to the origin
+        !currDir = !!isoDimnDir(!partRefe, !pArrive, !partRefe, 0, false)
+
+      -- For straight through parts
+      else
+
+        -- For a next part
+        if (defined(!parts[!index + 1])) then
+
+          -- Get the current direction from this part arrive to the origin
+          !currDir = !!isoDimnDir(!partRefe, 0, !parts[!index + 1], 0, false)
+
+        else
+
+          -- Get the current direction from this part arrive to this part leave
+          !currDir = !!isoDimnDir(!partRefe, !pArrive, !partRefe, !pLeave, false)
+
+        endif
+
+      endif
+
+      -- This is the current dimension direction
+      !dimnDir = !currDir
+
+      -- Create the dimension
+      NEW LDIM  DIR $!currDir  DTCH $!dtch  DTAN PARA  DTER $!dter  DOFF $!doff  PLDI U
+       DLStyle DEF  PLStyle DEF  DLColour DEF  PLColour DEF  DTColour $!tColour  PTColour $!tColour
+
+      !dimns.append(!!ce)
+
+      -- Start the dimension from the arrive of this part
+      FROM PA OF $!partRefe
+
+      -- Remember this place in the hierarchy
+      !currentRefe = !!ce
+
+    endif
+
+    -- For all parts with a possible change in direction, dimension to the origin and start the next dimension
+    if (!partType.eq('CTRISE') or !partType.eq('CTBEND') or !partType.eq('CTTEE') or !partType.eq('CTCROS')) then
+
+      -- Finish the dimension at the origin of this part
+      TO $!partRefe
+        handle (64,313) (64,314)
+          END
+
+          -- Try finding a pldir orthogonal to this part centreline
+          VAR !pDir PA DIR OF $!partRefe IN WORLD
+          !plDir = !!isoCwOrientation(!partRefe, object DIRECTION('$!pDir'))
+          PLDI $!plDir
+            handle any
+              PLDI 90
+            endhandle
+
+        elsehandle any
+          !!isoLog.messages.append('  Error in dimensioning to ' & !partRefe.flnm)
+            handle any
+            endhandle
+
+        endhandle
+
+      -- Start the next dimension
+
+      -- Get the current direction from this part origin to the leave
+      !currDir = !!isoDimnDir(!partRefe, 0, !partRefe, !pLeave, false)
+
+      -- This is the current dimension direction
+      !dimnDir = !currDir
+
+      -- Create the dimension
+      NEW LDIM  DIR $!currDir  DTCH $!dtch  DTAN PARA  DTER $!dter  DOFF $!doff  PLDI U
+       DLStyle DEF  PLStyle DEF  DLColour DEF  PLColour DEF  DTColour $!tColour  PTColour $!tColour
+
+      !dimns.append(!!ce)
+
+      -- Start the dimension at the origin of this part
+      FROM $!partRefe
+        handle any
+          !!isoLog.messages.append('  Error in dimensioning to ' & !partRefe.flnm)
+            handle any
+            endhandle
+        endhandle
+
+      -- Remember this place in the hierarchy
+      !currentRefe = !!ce
+
+      -- For a tee or cross dimension from the origin to third leg
+      if (!partType.eq('CTTEE') or !partType.eq('CTCROS')) then
+
+        -- Find the remaining p-point of three
+        !allPpoints[1] = 1
+        !allPpoints[2] = 2
+        !allPpoints[3] = 3
+        !allPpoints.deleteFrom(!pArrive,1)
+        !allPpoints.deleteFrom(!pLeave,1)
+        !allPpoints.compress()
+        !thirdPoint = !allPpoints[1]
+
+        -- Get the current direction from this part origin to the remaining ppoint
+        !currDir = !!isoDimnDir(!partRefe, 0, !partRefe, !thirdPoint, false)
+
+        -- Create the dimension
+        NEW LDIM  DIR $!currDir  DTCH $!dtch  DTAN PARA  DTER $!dter  DOFF $!doff  PLDI U
+         DLStyle DEF  PLStyle DEF  DLColour DEF  PLColour DEF  DTColour $!tColour  PTColour $!tColour
+
+        !dimns.append(!!ce)
+
+        -- Start the dimension at the origin of this part
+        FROM $!partRefe
+
+        -- Finish the dimension at the remaining point of this part
+        TO P$!thirdPoint OF $!partRefe
+          handle (64,313) (64,314)
+            END
+
+            -- Try finding a pldir orthogonal to this part centreline
+            VAR !pDir P$!thirdPoint DIR OF $!partRefe IN WORLD
+            !plDir = !!isoCwOrientation(!partRefe, object DIRECTION('$!pDir'))
+            PLDI $!plDir
+              handle any
+                PLDI 90
+              endhandle
+
+          elsehandle any
+            !!isoLog.messages.append('  Error in dimensioning to ' & !partRefe.flnm)
+              handle any
+              endhandle
+
+          endhandle
+
+      endif
+
+      -- For a cross dimension from the origin to p4
+      if (!partType.eq('CTCROS')) then
+
+        -- Get the current direction from this part origin to the fourth ppoint
+        !currDir = !!isoDimnDir(!partRefe, 0, !partRefe, 4, false)
+
+        -- Create the dimension
+        NEW LDIM  DIR $!currDir  DTCH $!dtch  DTAN PARA  DTER $!dter  DOFF $!doff  PLDI U
+         DLStyle DEF  PLStyle DEF  DLColour DEF  PLColour DEF  DTColour $!tColour  PTColour $!tColour
+
+        !dimns.append(!!ce)
+
+        -- Start the dimension at the origin of this part
+        FROM $!partRefe
+
+        -- Finish the dimension at the fourth point of this part
+        TO P4 OF $!partRefe
+          handle (64,313) (64,314)
+            END
+
+            -- Try finding a pldir orthogonal to this part centreline
+            VAR !pDir P4 DIR OF $!partRefe IN WORLD
+            !plDir = !!isoCwOrientation(!partRefe, object DIRECTION('$!pDir'))
+            PLDI $!plDir
+              handle any
+                PLDI 90
+              endhandle
+
+          elsehandle any
+            !!isoLog.messages.append('  Error in dimensioning to ' & !partRefe.flnm)
+              handle any
+              endhandle
+
+          endhandle
+
+      endif
+
+      -- Return to the original overall dimension
+      !!ce = !currentRefe
+
+    endif
+
+    -- For all but the last part, dimension between the end of this one and the start of the next when there is a gap between them
+    if (!index.neq(!parts.size())) then
+
+      -- Get the next component
+      !nextRefe = !parts[!index + 1]
+      !nextType = !nextRefe.type.upcase()
+
+      -- Ignore this step if the next part is a pointr, as it will be picked up as part of the last but one step
+      if (!nextRefe.type.upcase().neq('POINTR')) then
+
+        -- Get the next part leave ppoint
+        !nextPArrive = !nextRefe.arrive
+          handle (2,201)
+            -- Element does not have attribute ARRI
+            VAR !pA PA OF $!nextRefe
+            !nextPArrive = !pA.split()[2].real()
+          endhandle
+
+        !nextPLeave  = !nextRefe.leave
+          handle (2,201)
+            -- Element does not have attribute ARRI
+            VAR !pL PL OF $!nextRefe
+            !nextPLeave = !pL.split()[2].real()
+          endhandle
+
+        -- Get the distance between this part leave point and the next arrive
+        !distance = !partRefe.ppos[!pLeave].wrt(world).distance(!nextRefe.ppos[!nextPArrive].wrt(world))
+
+        -- For a gap worth dimensioning
+        if (!distance.gt(!accuracy)) then
+
+          -- Complete the previous dimension
+          TO PL OF $!partRefe
+            handle (64,313) (64,314)
+              END
+
+              -- Try finding a pldir orthogonal to the centreline
+              VAR !pDir PL DIR OF $!partRefe IN WORLD
+              !plDir = !!isoCwOrientation(!partRefe, object DIRECTION('$!pDir'))
+              PLDI $!plDir
+                handle any
+                  PLDI 90
+                endhandle
+
+            elsehandle any
+              !!isoLog.messages.append('  Error in dimensioning to ' & !partRefe.flnm)
+                handle any
+                endhandle
+
+            endhandle
+
+          -- Get the current direction from this part leave to the next arrive
+          !currDir = !!isoDimnDir(!partRefe, !pLeave, !nextRefe, !pArrive, false)
+
+          -- Create the dimension
+          NEW LDIM  DIR $!currDir  DTCH $!dtch  DTAN PARA  DTER $!dter  DOFF $!doff  PLDI U
+           DLStyle DEF  PLStyle DEF  DLColour DEF  PLColour DEF  DTColour $!tColour  PTColour $!tColour
+
+          !dimns.append(!!ce)
+
+          -- Start the dimension from this part leave point
+          FROM PL OF $!partRefe
+
+          -- Finish the  dimension at the next arrive point
+          TO P$!pArrive OF $!nextRefe
+            handle (64,313) (64,314)
+              END
+
+              -- Try finding a pldir orthogonal to the centreline
+              VAR !pDir PL DIR OF $!nextRefe IN WORLD
+              !plDir = !!isoCwOrientation(!nextRefe, object DIRECTION('$!pDir'))
+              PLDI $!plDir
+                handle any
+                  PLDI 90
+                endhandle
+
+            elsehandle any
+              !!isoLog.messages.append('  Error in dimensioning to ' & !nextRefe.flnm)
+                handle any
+                endhandle
+
+            endhandle
+
+          -- Remember this gap for drawing the centreline
+          !gaps.append('FPT PL OF' & !partRefe & ' TPT PA OF' & !nextRefe)
+
+          -- Start the next dimension
+          -- Get the next direction depending upon the next part type
+          -- Straight through types
+          if (!nextType.eq('CTSTRA') or !nextType.eq('CTREDU')) then
+
+            -- Get the current direction from this next arrive to the next leave
+            !currDir = !!isoDimnDir(!nextRefe, !nextPArrive, !nextRefe, !nextPLeave, false)
+
+          -- Those with a possible change in direction
+          else
+
+            -- Get the current direction from this next arrive to the next origin
+            !currDir = !!isoDimnDir(!nextRefe, !nextPArrive, !nextRefe, 0, false)
+
+          endif
+
+          -- This is the current dimension direction
+          !dimnDir = !currDir
+
+          -- Create the dimension
+          NEW LDIM  DIR $!currDir  DTCH $!dtch  DTAN PARA  DTER $!dter  DOFF $!doff  PLDI U
+           DLStyle DEF  PLStyle DEF  DLColour DEF  PLColour DEF  DTColour $!tColour  PTColour $!tColour
+
+          !dimns.append(!!ce)
+
+          -- Start the dimension at the arrive of the next part
+          FROM PA OF $!nextRefe
+            handle any
+              !!isoLog.messages.append('  Error in dimensioning to ' & !nextRefe.flnm)
+                 handle any
+                endhandle
+            endhandle
+
+          -- Remember this place in the hierarchy
+          !currentRefe = !!ce
+
+        endif
+
+      endif
+
+    endif
+
+    -- In the case of the last part but one, check for a final part being a POINTR in which case complete the dimension here
+    if (!index.eq(!parts.size() - 1)) then
+
+      -- Get the last part type
+      !lastType = !parts[!parts.size()].type.upcase()
+
+      -- If the last part is a pointr
+      if (!lastType.eq('POINTR')) then
+
+        -- Complete the dimension
+        TO P$!pLeave OF $!partRefe
+          handle (64,313) (64,314)
+            END
+
+            -- Try finding a pldir orthogonal to this part centreline
+            VAR !pDir P$!pLeave DIR OF $!partRefe IN WORLD
+            !plDir = !!isoCwOrientation(!partRefe, object DIRECTION('$!pDir'))
+            PLDI $!plDir
+              handle any
+                PLDI 90
+              endhandle
+
+          elsehandle any
+            !!isoLog.messages.append('  Error in dimensioning to ' & !partRefe.flnm)
+              handle any
+              endhandle
+
+          endhandle
+
+      endif
+
+    endif
+
+    -- For the last part, dimension to the leave point
+    if (!index.eq(!parts.size())) then
+
+      -- For a tail pointr, look for a gap
+      if (!partType.eq('POINTR')) then
+
+        -- For a previous part
+        if (defined(!parts[!index - 1])) then
+
+          -- Get the previous part
+          !prevRefe = !parts[!index - 1]
+
+          -- Get the next part arrive point
+           VAR !prevPL PL OF $!prevRefe
+          !prevPLeave = !prevPL.split()[2].real()
+
+          -- Get the distance between the previous part leave point and the tail pointr
+          !distance = !prevRefe.ppos[!prevPLeave].wrt(world).distance(!partRefe.pos.wrt(world))
+
+          -- For a gap greater than the defined accuracy, create a dimension
+          if (!distance.gt(!accuracy)) then
+
+            -- Get the current direction from this pointr to the next part arrive
+            !currDir = !!isoClDir(!prevRefe.ppos[!prevPLeave].wrt(world), !partRefe.pos.wrt(world), false)
+
+            -- Create the dimension
+            NEW LDIM  DIR $!currDir  DTCH $!dtch  DTAN PARA  DTER $!dter  DOFF $!doff  PLDI U
+             DLStyle DEF  PLStyle DEF  DLColour DEF  PLColour DEF  DTColour $!tColour  PTColour $!tColour
+
+            !dimns.append(!!ce)
+
+            -- Start the dimension from the leave of the previous part
+            FROM PL OF $!prevRefe
+
+            -- Finish the dimension at tail pointr
+            TO $!partRefe
+              handle (64,313) (64,314)
+                END
+
+                -- Set the pldir to the previously calculated direction
+                PLDI $!plDir
+                  handle any
+                    PLDI 90
+                  endhandle
+
+              elsehandle any
+                !!isoLog.messages.append('  Error in dimensioning to ' & !partRefe.flnm)
+                  handle any
+                  endhandle
+
+              endhandle
+
+            -- Remember this gap for drawing the centreline
+            !gaps.append('FPT PL OF' & !prevRefe & ' TPT ' & !partRefe)
+
+          endif
+
+        endif
+
+      -- For anything else
+      else
+
+        -- Complete the dimension
+        TO P$!pLeave OF $!partRefe
+          handle (64,313) (64,314)
+            END
+
+            -- Try finding a pldir orthogonal to this part centreline
+            VAR !pDir P$!pLeave DIR OF $!partRefe IN WORLD
+            !plDir = !!isoCwOrientation(!partRefe, object DIRECTION('$!pDir'))
+            PLDI $!plDir
+              handle any
+                PLDI 90
+              endhandle
+
+          elsehandle any
+            !!isoLog.messages.append('  Error in dimensioning to ' & !partRefe.flnm)
+              handle any
+              endhandle
+
+          endhandle
+
+        -- Check for a gap to the first part of the next drawing if any
+        -- Also check that this is not the last drawing as this will be covered by the last pointr
+        if (!thisDrawListNo.neq(!allDrawlists.size())) then
+
+          -- Get the drawlist of the next drawing
+          !nextIdli = !allDrawlists[!thisDrawListNo + 1]
+
+          -- Get addes on the next drawlist
+          !nextDrwgAddes =  !nextIdli.mem
+
+          -- Get the first part on the next drawing
+          !firstPartNextRefe = !nextDrwgAddes[1].idnm
+
+          -- Look for a CTFEAT
+          if (!firstPartNextRefe.type.upcase().eq('CTFEAT')) then
+            !firstPartNextRefe = !firstPartNextRefe.owne
+          endif
+
+          -- Get the last part on the previous drawing arrive point
+          VAR !firstPartNextPA PA OF $!firstPartNextRefe
+          !firstPartNextArrive = !firstPartNextPA.split()[2].real()
+
+          -- Check the distance between this part leave and the first part arrive on the next drawing
+          !distance = !firstPartNextRefe.ppos[!firstPartNextArrive].wrt(world).distance(!partRefe.ppos[!pLeave].wrt(world))
+
+          -- For a gap greater than the defined accuracy, create a dimension
+          if (!distance.gt(!accuracy)) then
+
+            -- Get the current direction from this part leave to the first part arrive on the next drwg
+            !currDir = !!isoClDir(!partRefe.ppos[!pLeave].wrt(world), !firstPartNextRefe.ppos[!firstPartNextArrive].wrt(world), false)
+
+            -- Create the dimension
+            NEW LDIM  DIR $!currDir  DTCH $!dtch  DTAN PARA  DTER $!dter  DOFF $!doff  PLDI U
+             DLStyle DEF  PLStyle DEF  DLColour DEF  PLColour DEF  DTColour $!tColour  PTColour $!tColour
+
+            !dimns.append(!!ce)
+
+            -- Start the dimension from this part leave
+            FROM PL OF $!partRefe
+
+            -- Finish the dimension at the arrive point of the first part on the next drawing
+            TO PA OF $!firstPartNextRefe
+              handle (64,313) (64,314)
+                END
+
+                -- Try finding a pldir orthogonal to this part centreline
+                VAR !pDir PL DIR OF $!partRefe IN WORLD
+                !plDir = !!isoCwOrientation(!partRefe, object DIRECTION('$!pDir'))
+                PLDI $!plDir
+                  handle any
+                  PLDI 90
+                  endhandle
+
+              elsehandle any
+                !!isoLog.messages.append('  Error in dimensioning to ' & !partRefe.flnm)
+                  handle any
+                endhandle
+
+              endhandle
+
+            -- Remember this gap for drawing the centreline
+            !gaps.append('FPT PL OF ' & !partRefe & ' TPT PA OF ' & !firstPartNextRefe)
+
+          endif
+
+        endif
+
+      endif
+
+    endif
+
+  enddo
+
+  -- Sort each dimension and delete any that have a value of zero
+  do !ldimRefe val !dimns
+
+    -- Access the dimension
+    !!ce = !ldimRefe
+
+    -- Sort current dimension
+    SORT DIM
+      handle (64,324)(64,368)
+        -- Dimension point sort failed
+      endhandle
+
+    -- Test each dimension leg for a zero value
+    do !dpptRefe val !ldimRefe.mem
+
+      -- Access the dimension point and read the dimension value
+      !!ce = !dpptRefe
+
+      VAR !value EXDMTX
+
+      -- Ignore the first point
+      skip if (!value.upcase().eq('UNSET'))
+
+      -- Look for less than the dimension accuracy
+      if (!value.real().int().eq(0)) then
+
+        -- Delete this point
+        DELETE $!!ce.type
+
+      endif
+
+    enddo
+
+    -- Delete the dimension if contains only a single point
+    if (!ldimRefe.mcount.eq(1)) then
+      DELETE LDIM
+
+    endif
+
+  enddo
+
+  -- Display only horizontal dimensions
+  if (!horizontal) then
+
+    -- Process any compound or vertical dimension
+    do !ldimRefe val !!ce.mem
+
+      -- Get the dimension direction
+      !direction = !ldimRefe.dir
+
+      -- For any direction up or down
+      if (!direction.up.eq(1) or !direction.up.eq(-1)) then
+
+        -- Delete the dimension
+        !!ce = !ldimRefe
+        DELETE LDIM
+
+      -- For any angle set the direction horizontal
+       elseif (!direction.up.neq(0)) then
+
+        -- Calculate the horizontal direction
+        !direction.up = 0
+        !horizDir = !direction.string().before(' WRT')
+
+        !!ce = !ldimRefe
+        DIR $!horizDir
+
+      endif
+
+    enddo
+
+  endif
+
+  -- Draw the centreline for any gaps
+  if (!drawGaps) then
+
+    do !define val !gaps
+
+      -- Create a vnot to hold the straights
+      NEW VNOT
+        NLSTYLE ChainedThick NLCOLOUR Red
+
+      -- Create a straight and set the ends
+      NEW STRA $!define
+
+    enddo
+
+  endif
+
+  -- Return
+  !!ce = !dimnLaye
+
+endfunction

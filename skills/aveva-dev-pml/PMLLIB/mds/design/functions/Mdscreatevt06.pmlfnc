@@ -1,0 +1,976 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:      Mdscreatevt06.pmlfnc
+-- Type:      Function Definition
+-- Group:     Multi Discipline Supports Application
+-- Keyword:   MDS
+-- Module:    design
+-- Replaces:  MVS101
+--
+-- Author:    Andrew Kirkland
+-- Created:   Wednesday 13th May 1998
+--
+--
+-- Description:
+-- function to create Vessel support frame type 'VT06'
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         STRING       Method of creating support
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsCreateVT06(!method is STRING)
+
+-- Find current units and set the distance unit to metric
+  !currentUnits = !!kgetsetunits()
+
+-- Initialise variables
+  call !!mdsresetpins(1,10)
+  !form      = !!mdsVT06
+    !idtype    = 'PANE FLOOR WALL GWALL STWALL SCREED CFLOOR CSCREED CWALL CYLI'
+  !support   = !!mdsVT06.support
+  !clearance = !!mdsoptions.clear.val
+  -- !selection = !!mdsVT06.size.selection()
+  !selection = !!mdsSetSteel.size.selection('Rtext')
+    !datum     = !support.datum
+    !stru      = !support.stru
+    !name      = !stru.name
+    !p9dir     = !support.p9dir
+    !p10dir    = !support.p10dir
+    !p11dir    = !support.p11dir
+  !unusedpldir     = !support.pldir
+  !unusedpadir     = !support.padir
+  !rotated   = false
+
+-- to get the ori of the atta correct (check whether the support is mirrored).
+
+  if(!support.mirror) then
+    !!ce = !datum
+       rotate by 180
+    !rotated = true
+    endif
+
+--------------------------------------------------------------------------------
+-- Check that Datum atta has been created
+    if (!datum.set().not())then
+      !!alert.message('Datum support atta has not been created')
+    !!kRestoreUnits(!currentUnits)
+        return
+    endif
+
+-- Check that Datum atta has been positioned
+    if (!support.position.not())then
+      !!alert.message('Position atta before Identifying supporting element')
+    !!kRestoreUnits(!currentUnits)
+        return
+    endif
+
+-- Can we write to the spref attribute of the SREF atta
+-- and the stru
+
+  if !support.datum.badref().not() then
+    !srefName = !support.datum.name.before('/DATUM') + '/SREF'
+    if !!mdsComClaimDac(!support.stru,'DACMOD','POS').not() or !!mdsComClaimDac(!srefName.dbref(),'DACMOD','SPREF').not() then
+      !despars = !srefName.dbref().despar
+      !!mdsResetDims(!form,!despars)
+      !!kRestoreUnits(!currentUnits)
+      !!alert.error('Unable to change the support as write access to the SREF atta is not available')
+        return
+      endif
+  endif
+
+-- Check which attas to work from
+  !unusedatta = !support.bars[1]
+
+--------------------------------------------------------------------------------
+-- Set orientation - 'VT06' is  Only Allowed on Vertical Pipes
+    !ddir = D wrt world
+    !udir = U wrt world
+-- Get original ORI for Datum Atta
+    !!ce       = !datum
+    !oridatum  = ori wrt /*
+
+  --<dw>mar2009 dun1119 - HPD0038470 Allow for selection of U-bolts where bolt diameter is set
+  -- 1. As desparameter with dkey BDIA and pipe od = parameter 2 or
+  -- 2. As parameter 5 and pipe od = parameter 3
+
+  !boltdesp  = true
+  var !whichData coll all data with dkey eq 'BDIA' for dtre of ce
+  !despnum = !whichData[1].dbref().num
+  handle ANY
+    !boltdesp = false
+  elsehandle none
+    !boltdia = !!ce.desp[$!despnum]
+    handle(2,752)
+      !boltdesp  = false
+    endhandle
+  endhandle
+
+  !odPara = true
+  var !whichData coll all data with dkey eq 'OD' for dtre of ce
+  !odparanum = !whichData[1].dbref().num
+  handle ANY
+    !odPara = false
+  elsehandle none
+    !unusedodtest = !!ce.para[$!odparanum]
+    handle(2,752)
+      !odPara  = false
+    endhandle
+  endhandle
+
+  if !boltdesp then
+    !boltdia = !!ce.desp[$!despnum]
+  else
+    var !paratest unset(para[5])
+    if !paratest.eq('true') then
+      !boltdia = 0
+    else
+      !boltdia  = !!ce.param[5]
+    endif
+  endif
+
+  if !odPara then
+    !pipodia = !datum.catref.param[!odparanum]
+    --TFS NUMBER 74953 - start
+    if !pipodia.string().eq('546562') or !pipodia.string().eq('ATT') then
+    	--'546562' is a string value for 'ATT' when the wrong data type is entered against a catref element, i.e. the dataset values for od and the catref values do not match up
+    	--we need to swap the parameter values around so that if the DKEY OD para number returns 2 we need 3 and visa versa.
+    	--NOTE: this is a quick fix for 12.1.sp3 and a more robust fix needs to be implemented as a catalogue fix.
+    	if !odparanum.eq(2) then
+        !pipodia = !datum.catref.param[3]    		
+    	else
+        !pipodia = !datum.catref.param[2]    	
+      endif
+    endif
+    --TFS NUMBER 74953 - end
+  else
+    !pipodia = 0
+  endif
+
+  !mindist  = ((!pipodia / 2) + !boltdia)
+
+  --<dw>mar2009 dun1119 - HPD0038470 End of change to U-bolt settings
+
+-- Navigate to Template  Member '*-BAR-1'
+-- Determine the Main Channel Cross Bar Depth
+   !!ce = /MDS/$!<support.type>/$!<selection>-BAR-1
+  !overHang = !!ce.desp[2]
+
+    pin 1 at ce
+    pin 2 copy pin 1
+    pin 2 dir n wrt /*
+    pin 1 dir s wrt /*
+    pin 2 plane pin 2 clear 0 beh ce
+    pin 1 plane pin 1 clear 0 beh ce
+
+  !unusedwidt = !!kStrReal('cons dist pin 1 to plane pin 2')
+
+-- dummy value for Mdsreltocomp
+
+    !halfwidth = 200mm
+
+-- Store section name and matref for each member
+  -- for resetting later
+
+  !storeMat = ARRAY()
+  !storeMat = !!mdsStoreMat(!name)
+
+
+--------------------------------------------------------------------------------
+-- Generate pin positions for each creation type
+--------------------------------------------------------------------------------
+
+    if (!method eq |CURSOR|) then
+-- Create Framework by Cursor
+--------------------------------------------------------------------------------
+
+-- Identify the  Element , Check if Framework Cross Bars will Fit
+-- and/or Intersect Higher Element with the correct Clearance
+
+    label /Element1
+
+      !!ce = !datum
+      ori $!oridatum
+      prompt off
+      prompt load escape |Identify element to support from|
+      id $!idtype @
+        handle (61,528)
+          prompt on
+          !!ce = !datum
+          ori $!oridatum
+          !!ce = !stru
+      !!kRestoreUnits(!currentUnits)
+        return
+        endhandle
+      prompt dismiss
+      prompt on
+
+      !pick1 = !!ce
+      !picknum = 'FIRST'
+
+--------------------------------------------------------------------------------------
+
+-- Orientate atta relative to the Identified Element Type
+
+--------------------------------------------------------------------------------------
+      if (!pick1.type.string().eq('CYLI')) then
+        !cyldir = p0 dir of $!pick1 wrt /*
+--------------------------------------------------------------------------------------
+        if (!cyldir eq U or !cyldir eq D) then
+          pin 1 copy p1 of $!datum
+          pin 2 copy p2 of $!datum
+          pin 2 plane pin 2 thro p0 of $!pick1
+          pin 2 dir to p0 of $!pick1
+          pin 10 copy pin 2
+          pin 10 plane pin 10 thro p0 of $!pick1
+          pin 10 dir to pin 2
+          pin 9 copy pin 10
+          pin 9 plane pin 9 clear 0 beh $!pick1
+          pin 8 copy pin 9
+          pin 8 dir $!ddir
+          pin 7 copy pin 8
+          pin 7 dir $!ddir
+          pin 8 plane pin 8 clear 0 inf $!pick1
+          pin 7 plane pin 7 clear 0 beh $!pick1
+          var !pin1dir pin 1 dir wrt /*
+          var !pin2dir pin 2 dir wrt /*
+
+        !pin2pin9dist = !!kStrReal('const dist pin 2 to plane pin 9')
+        !pin9pin10dist = !!kStrReal('const dist pin 9 to plane pin 10')
+
+-- Orientate Atta and Determine
+-- Dimension1 - CL of Atta to 'Normal' Face of Cylinder
+          !!ce = !datum
+          ori and p10 is $!pin2dir wrt /*
+          !!ce = $!<name>/SREF
+          ori and p10 is $!pin2dir wrt /*
+          !!ce = !pick1
+
+        -- Modify '.support' Object Members to Reflect New Orientation
+-- of the Datum Atta
+          !support.p10dir = p10 dir of $!datum wrt /*
+          !p10dir         = !support.p10dir
+          !support.p11dir = p11 dir of $!datum wrt /*
+          !p11dir         = !support.p11dir
+
+        else
+
+        !!alert.error('If this FRAMEwork type is to be attached to a Vessel it may only be supported from a VERTICAL Vessel')
+          golabel /Element1
+        endif
+--------------------------------------------------------------------------------------
+
+
+--------------------------------------------------------------------------------------
+
+      else
+
+        if (!pick1.hardtype.string().eq('PANE')) then
+          !panlori  = ori of $!pick1 wrt /*
+          !panlxdir = !panlori.xdir()
+          !panlydir = !panlori.ydir()
+          !panlzdir = !panlori.zdir()
+
+-- Check if Panel is Vertical ie. Wall
+--------------------------------------------------------------------------------------
+          if (!panlydir.up.abs() eq 1 or !panlxdir.up.abs() eq 1) then
+            pin 1 at $!pick1
+            pin 1 dir $!panlzdir
+            pin 2 copy pin 1
+            pin 2 at $!datum
+            pin 10 copy pin 2
+            pin 10 plane pin 10 thro pin 1
+            pin 2 dir to pin 10
+            var !pin2dir pin 2 dir wrt /*
+            pin 9 copy pin 2
+            pin 9 plane pin 9 clear 0 inf $!pick1
+          !pin2pin9dist = !!kStrReal('const dist pin 2 to plane pin 9')
+
+--------------------------------------------------------------------------------------
+            if (!panlydir.up eq 1) then
+-- Ydir is UP wrt /*
+              pin 5 copy pin 1
+              pin 5 dir $!panlxdir
+              pin 6 copy pin 5
+              pin 5 plane pin 5 clear 0 inf $!pick1
+              pin 6 plane pin 6 clear 0 beh $!pick1
+              pin 7 copy pin 1
+              pin 7 dir $!panlydir
+              pin 8 copy pin 7
+              pin 7 plane pin 7 clear 0 inf $!pick1
+              pin 8 plane pin 8 clear 0 beh $!pick1
+
+            elseif (!panlydir.up eq -1) then
+-- Ydir is DOWN wrt /*
+              pin 5 copy pin 1
+              pin 5 dir $!panlxdir
+              pin 6 copy pin 5
+              pin 5 plane pin 5 clear 0 inf $!pick1
+              pin 6 plane pin 6 clear 0 beh $!pick1
+              pin 7 copy pin 1
+              pin 7 dir $!panlydir
+              pin 8 copy pin 7
+              pin 7 plane pin 7 clear 0 beh $!pick1
+              pin 8 plane pin 8 clear 0 inf $!pick1
+
+            elseif (!panlxdir.up eq 1) then
+-- Xdir is UP wrt /*
+              pin 5 copy pin 1
+              pin 5 dir $!panlydir
+              pin 6 copy pin 5
+              pin 5 plane pin 5 clear 0 inf $!pick1
+              pin 6 plane pin 6 clear 0 beh $!pick1
+              pin 7 copy pin 1
+              pin 7 dir $!panlxdir
+              pin 8 copy pin 7
+              pin 7 plane pin 7 clear 0 inf $!pick1
+              pin 8 plane pin 8 clear 0 beh $!pick1
+
+            elseif (!panlxdir.up eq -1) then
+-- Xdir is DOWN wrt /*
+              pin 5 copy pin 1
+              pin 5 dir $!panlydir
+              pin 6 copy pin 5
+              pin 5 plane pin 5 clear 0 inf $!pick1
+              pin 6 plane pin 6 clear 0 beh $!pick1
+              pin 7 copy pin 1
+              pin 7 dir $!panlxdir
+              pin 8 copy pin 7
+              pin 7 plane pin 7 clear 0 beh $!pick1
+              pin 8 plane pin 8 clear 0 inf $!pick1
+
+            endif
+--------------------------------------------------------------------------------------
+
+-- Orientate Atta and Determine
+-- Dimension1 - CL of Atta to 'Normal' Face of Vertical Panel
+            !!ce = !datum
+            ori and p10 is $!pin2dir wrt /*
+            !!ce = !pick1
+
+          -- Modify '.support' Object Members to Reflect New Orientation
+-- of the Datum Atta
+            !support.p10dir = p10 dir of $!datum wrt /*
+            !p10dir         = !support.p10dir
+            !support.p11dir = p11 dir of $!datum wrt /*
+            !p11dir         = !support.p11dir
+
+          else
+
+          !!alert.error('If this FRAMEwork type is to be attached to a Panel it may only be supported from a VERTICAL Panel')
+            golabel /Element1
+
+
+
+          endif
+--------------------------------------------------------------------------------------
+
+        endif
+--------------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------------
+      endif
+--------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------
+
+-- Determine if Identified element is suitable to support from
+      !single = FALSE
+
+-------------------------------------------------------------------------------------
+
+        !picknum = 'FIRST'
+    !testce  = !!mdsreltocomp(!datum, !pick1, !p10dir, !clearance, !form , !picknum, !halfwidth )
+
+
+--------------------------------------------------------------------------------------
+       if (!testce[1].upcase() eq 'UNSET')then
+          !!alert.error('Identified element is unsuitable to support from.')
+          golabel /Element1
+        elseif (!testce[1].upcase() eq '')then
+          golabel /Element1
+--------------------------------------------------------------------------------------
+
+        elseif (!testce[1].upcase() eq 'LOWER')then
+-- not reqd for vt06 (no angled support.
+            !single     = FALSE
+            !vessenddir = !p10dir
+            !freeenddir = !p11dir
+      !pick2 = !pick1
+-- left in the aid code tracing  <<ak>>
+--------------------------------------------------------------------------------------
+        elseif (!testce[1].upcase() eq 'UPPER')then
+          !!alert.error('Identified element is NOT suitable for Supporting the Top Members of the Framework ')
+-- Ask if USER to Identify Cylinder again
+          golabel /Element1
+
+--------------------------------------------------------------------------------------
+        elseif (!testce[1].upcase() eq 'DIAMETER')then
+          !!alert.error('Identified Cylinder is NOT of Sufficient Diameter to Support the Framework ')
+-- Ask if USER to Identify Cylinder again
+          golabel /Element1
+
+--------------------------------------------------------------------------------------
+        elseif (!testce[1].upcase() eq 'WIDTH')then
+          !!alert.error('Identified Panel will NOT Support the Framework along its Width ')
+-- Ask if USER to Identify Panel again
+          golabel /Element1
+
+--------------------------------------------------------------------------------------
+        elseif (!testce[1].upcase() eq 'OK')then
+
+-- Check Distance from  Face of Vessel Cylinder or Panel to 'P0' of Datum Atta is
+-- GREATER than the Distance from 'P0' of the Datum Atta to the Outside of the INSIDE
+-- Cross Tie Angle of the Framework, ie. '/<struname>-TIE-2'
+
+          if (!pin2pin9dist.lt(!mindist)) then
+        !!alert.error('Insufficient Space between the Pipe and the Identified ''$!pick1.fulltype'' to build the Framework')
+            golabel /Element1
+          endif
+
+-- Set ANY data as a Single Element is OK to Support Framework/Atta
+          !single  = TRUE
+          !vessenddir = !p10dir
+          !freeenddir = !p11dir
+          golabel /Single
+
+        endif
+
+--------------------------------------------------------------------------------------
+
+
+
+--------------------------------------------------------------------------------------
+-- Carry On Building Support Framework Attached to a Single Element
+-- Set !pick2 to be the same as !pick1 if the Whole Framework
+-- will fit onto a Single Element
+    label /Single
+      if (!single) then
+        !pick2 = !pick1
+      endif
+
+--------------------------------------------------------------------------------------
+-- Generate Please Wait... Prompt
+    !!mdscreatemess(true)
+
+--------------------------------------------------------------------------------------
+-- Position Pins for Pick1 and Pick2 if required
+      !!ce = !pick1
+
+--------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------
+      if (!pick1.hardtype eq 'PANE') then
+-- Pins are in Position Relative to the 'FIRST' Panel Pick
+
+        !!ce = !datum
+
+-- Temporarily orientate atta to Position Pins 1 and 2 in the Correct Directions
+        rotate by 90
+        pin 1 copy p10 of $!datum
+        pin 2 copy p11 of $!datum
+-- Put Atta Back to the Correct Ori
+        rotate by -90
+        !p10dir =  p10 dir of $!datum wrt /*
+        pin 3 copy p11 of $!datum
+-- Position Pins
+      --<dw>mar2009 dun1119 - HPD0038470 Allow for settings based on pipe OD and bolt diameter (Ref line 106)
+      pin 1 plane pin 1 thro $!datum
+      -- pin 1 dist ($!datum.param[3] / 2)
+      pin 1 dist ($!pipodia / 2)
+      pin 2 plane pin 2 thro $!datum
+      -- pin 2 dist ($!datum.param[3] / 2)
+      pin 2 dist ($!pipodia / 2)
+
+-- position pin for clearance of bar-1
+
+      -- pin 3 dist ($!datum.param[3] / 2 + $!datum.param[5] + $!overHang)
+      pin 3 dist ($!pipodia / 2 + $!boltdia + $!overHang)
+      --<dw>mar2009 dun1119 - HPD0038470 End of allowing for settings based on pipe OD and bolt diameter
+        var !pin1dir pin 1 dir wrt /*
+        var !pin2dir pin 2 dir wrt /*
+        var !pin3dir pin 3 dir wrt /*
+
+        pin 4 copy p10
+        pin 5 copy p10
+        pin 4 at pin 1
+        pin 5 at pin 2
+
+-- Construct Lines
+        var !line1 cons line pin 1
+        var !line4 cons line pin 4
+        var !line5 cons line pin 5
+        var !line10 cons line p10
+
+        pin 9 copy p11 of $!datum
+        pin 9 plane pin 9 clear 0 beh $!pick1
+        var !pin9pos pin 9 pos wrt /*
+
+-- Dimension1(Distance from Datum Atta Origin 'P0' to the Intersection Point of the
+--            '!halfwidth' position of Cross Bar(s) and Panel)
+      !dim1 = !!kStrReal('const dist p0 of $!datum to plane pin 9 ')
+
+-- Construct parallel line
+        var !line9 cons line parallel $!line1 wrt /* through $!pin9pos wrt /*
+
+-- Position Pins on Intersection Points of Stru width and Face of 'FIRST' Panel
+-- and behind the Atta ready to determine Section Start and End Positions
+        var !line4intline9 cons pos intersect $!line4 wrt /* $!line9 wrt /*
+        var !line5intline9 cons pos intersect $!line5 wrt /* $!line9 wrt /*
+
+-- Position Pins for Bottom of Vertical Bracings if 'SECOND' Panel has been Identified
+-- If a SECOND Panel is NOT Required then !pick2 is set to !pick1 - See Above
+        pin 8 copy p11 of $!datum
+        pin 8 plane pin 8 clear 0 beh $!pick2
+        pin 10 copy pin 8
+      !pin8pin10dist = !!kStrReal('const dist pin 8 to plane pin 10')
+        pin 8 at pin 10
+        var !pin8pos pin 8 pos wrt /*
+
+
+-- Construct parallel line
+        var !line8 cons line parallel $!line1 wrt /* through $!pin8pos wrt /*
+
+-- Position Pins on Intersection Points of Stru width and Face of 'SECOND' Panel
+-- and behind the Atta ready to determine Section Start and End Positions
+        var !line4intline8 cons pos intersect $!line4 wrt /* $!line8 wrt /*
+        var !line5intline8 cons pos intersect $!line5 wrt /* $!line8 wrt /*
+
+-- Attached to Vessel End of Framework - pin 4 and pin 5 - for Top Cross Bars '*-BAR-1,
+        pin 4 at $!line4intline9 wrt /*
+        pin 5 at $!line5intline9 wrt /*
+-- Attached to Vessel End of Framework - pin 8 and pin 9 - for Vertical Bracings '*-V1,
+        pin 6 copy pin 4
+        pin 9 copy pin 5
+        pin 6 at $!line4intline8 wrt /*
+        pin 9 at $!line5intline8 wrt /*
+
+-- Free End of Framework - pin 3
+-- pin 3 ia ALREADY positioned correctly -- see line 342 above
+
+--------------------------------------------------------------------------------------
+
+      elseif (!pick1.type eq 'CYLI') then
+
+-- Pins are in Position Relative to the 'FIRST' Cylinder Pick
+
+        !!ce = !datum
+
+-- Temporarily orientate Atta to Position Pins 1 and 2 in the Correct Directions
+        rotate by 90
+        pin 1 copy p10 of $!datum
+        pin 2 copy p11 of $!datum
+-- Put Atta Back to the Correct Ori
+        rotate by -90
+        !p10dir =  p10 dir of $!datum wrt /*
+        pin 3 copy p11 of $!datum
+-- Position Pins
+      --<dw>mar2009 dun1119 - HPD0038470 Allow for settings based on pipe OD and bolt diameter (Ref line 106)
+      pin 1 plane pin 1 thro $!datum
+      -- pin 1 dist  ($!datum.param[3] / 2)
+      pin 1 dist ($!pipodia / 2)
+      pin 2 plane pin 2 thro $!datum
+      -- pin 2 dist  ($!datum.param[3] / 2)
+      pin 2 dist ($!pipodia / 2)
+
+-- position pin for clearance of bar-1 from pipe
+      -- pin 3 dist  ($!datum.param[3] / 2 + $!datum.param[5] + $!overHang)
+      pin 3 dist ($!pipodia / 2 + $!boltdia + $!overHang)
+      --<dw>mar2009 dun1119 - HPD0038470 End of allowing for settings based on pipe OD and bolt diameter
+
+        var !pin1dir pin 1 dir wrt /*
+        var !pin2dir pin 2 dir wrt /*
+        var !pin3dir pin 3 dir wrt /*
+
+        pin 4 copy p10
+        pin 5 copy p10
+        pin 4 at pin 1
+        pin 5 at pin 2
+
+-- Construct Lines
+        var !line1 cons line pin 1
+        var !line4 cons line pin 4
+        var !line5 cons line pin 5
+        var !line10 cons line p10
+
+        pin 9 copy p11 of $!datum
+        pin 9 plane pin 9 thro pin 10
+
+-- Calculate Pin 9 position to construct line
+        !asqre = !pin9pin10dist.power(2) - !halfwidth.power(2)
+        !adist = !asqre.sqrt()
+        pin 9 dist $!adist
+        var !pin9pos pin 9 pos wrt /*
+-- Dimension1 (Distance from Datum Atta Origin 'P0' to the Intersection Point of the
+--            '!halfwidth' position of Cross Bar(s) and Cylinder Diameter)
+      !dim1 = !!kStrReal('const dist p0 of $!datum to plane pin 9 ')
+
+-- Construct parallel line
+        var !line9 cons line parallel $!line1 wrt /* through $!pin9pos wrt /*
+
+-- Position Pins on Intersection Points of Stru width and Face of 'FIRST' Cylinder
+-- and behind the Atta ready to determine Section Start and End Positions
+        var !line4intline9 cons pos intersect $!line4 wrt /* $!line9 wrt /*
+        var !line5intline9 cons pos intersect $!line5 wrt /* $!line9 wrt /*
+
+-- Position Pins for Bottom of Vertical Bracings if 'SECOND' Cylinder has been Identified
+        pin 8 copy p11 of $!datum
+        pin 8 plane pin 8 thro p0 of $!pick2
+        pin 10 copy pin 8
+        pin 10 at $!pick2
+        pin 8 plane pin 8 clear 0 beh $!pick2
+      !pin8pin10dist = !!kStrReal('const dist pin 8 to plane pin 10')
+        pin 8 at pin 10
+
+-- Calculate Pin 8 position to construct line
+        !bsqre = !pin8pin10dist.power(2) - !halfwidth.power(2)
+        !bdist = !bsqre.sqrt()
+        pin 8 dist $!bdist
+        var !pin8pos pin 8 pos wrt /*
+
+-- Construct parallel line
+        var !line8 cons line parallel $!line1 wrt /* through $!pin8pos wrt /*
+
+-- Position Pins on Intersection Points of Stru width and Face of 'SECOND' Cylinder
+-- and behind the Atta ready to determine Section Start and End Positions
+        var !line4intline8 cons pos intersect $!line4 wrt /* $!line8 wrt /*
+        var !line5intline8 cons pos intersect $!line5 wrt /* $!line8 wrt /*
+
+-- Attached to Vessel End of Framework - pin 4 and pin 5 - for Top Cross Bars '*-BAR-1,
+        pin 4 at $!line4intline9 wrt /*
+        pin 5 at $!line5intline9 wrt /*
+-- Attached to Vessel End of Framework - pin 8 and pin 9 - for Vertical Bracings '*-V1, *-V2'
+        pin 6 copy pin 4
+        pin 9 copy pin 5
+        pin 6 at $!line4intline8 wrt /*
+        pin 9 at $!line5intline8 wrt /*
+
+-- Free End of Framework - pin 3
+-- pin 3 ia ALREADY positioned correctly --
+
+--------------------------------------------------------------------------------------
+      endif
+--------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------
+
+
+--------------------------------------------------------------------------------------
+-- Set Rotation to '0' for CURSOR mode
+    -- !!mdsVT06.rotan.val = '0'
+      !support.rotated     = 0
+
+--------------------------------------------------------------------------------
+  elseif (!method eq |DIMENSION|)then
+-- Create  Framework by Dimensions
+
+-- Initialise variables for dimension check
+    !d1 = !!mdsVT06.dim1.val
+
+
+--------------------------------------------------------------------------------------
+-- Check Distance Dimension -'Dim 1' is GREATER than the Distance '!mindist' which is the Minimum
+
+    !unusedhalfpipe = !pipodia / 2
+
+      if (!d1.lt(!mindist)) then
+        !!kformattext.text.val = !mindist
+        !fmindist = !!kformattext.text.val.string(!!$!!kformattext.text.format)
+        !!alert.error('The Dimension - ** Dim 1 ** - must be a Minimum of ' & !fmindist & ' $
+                       for the Current Pipe Size')
+      !!kRestoreUnits(!currentUnits)
+        return
+      endif
+
+--------------------------------------------------------------------------------------
+-- Generate Please Wait... Prompt
+    !!mdscreatemess(true)
+
+--------------------------------------------------------------------------------------
+-- Get Atta Orientation
+      !vessenddir  = !p10dir
+      !freeenddir  = !p11dir
+
+--------------------------------------------------------------------------------------
+-- Position pins
+      !!ce = !datum
+
+-- Temporarily orientate Atta to Position Pins 1 and 2 in the Correct Directions
+      rotate by 90
+      !pl = pl dir wrt worl
+      if(!pl.eq(D)) then
+      !pdir1 = 'p10'
+      !pdir2 = 'p11'
+      else
+      !pdir2 = 'p10'
+      !pdir1 = 'p11'
+      endif
+         pin 1 copy $!pdir1 of $!datum
+        pin 2 copy $!pdir2 of $!datum
+
+-- Put Atta Back to the Correct Ori
+      rotate by -90
+        !p10dir =  $!pdir1 dir of $!datum wrt /*
+
+       pin 3 copy $!pdir2 of $!datum
+-- Position Pins
+    --<dw>mar2009 dun1119 - HPD0038470 Allow for settings based on pipe OD and bolt diameter (Ref line 106)
+    pin 1 plane pin 1 thro $!datum
+    -- pin 1 dist  ($!datum.param[3] / 2)
+    pin 1 dist ($!pipodia / 2)
+    pin 2 plane pin 2 thro $!datum
+    -- pin 2 dist ($!datum.param[3] / 2)
+    pin 2 dist ($!pipodia / 2)
+
+    -- pin 3 dist ($!datum.param[3] / 2 + $!datum.param[5] + $!overHang)
+    pin 3 dist ($!pipodia / 2 + $!boltdia + $!overHang)
+    --<dw>mar2009 dun1119 - HPD0038470 End of allowing for settings based on pipe OD and bolt diameter
+
+      var !pin1dir pin 1 dir wrt /*
+      var !pin2dir pin 2 dir wrt /*
+      var !pin3dir pin 3 dir wrt /*
+
+      pin 4 copy $!pdir1 of $!datum
+      pin 4 at pin 1
+      pin 5 copy $!pdir1 of $!datum
+      pin 5 at pin 2
+
+-- Position Pins 4 and 5 for Top Cross Bars
+    pin 4 dist $!!mdsVT06.dim1.val
+    pin 5 dist $!!mdsVT06.dim1.val
+
+-- Get Position on Atta CL Distance 'Dim 1' from Atta
+      pin 9 copy $!pdir1 of $!datum
+    pin 9 dist $!!mdsVT06.dim1.val
+      pin 9 dir $!ddir
+      var !pin9pos pin 9 pos wrt /*
+
+--------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------
+-- Get Position on Atta CL Distance 'Dim 3' from Atta
+      pin 9 copy $!pdir1 of $!datum
+    pin 9 dist $!!mdsVT06.dim1.val
+      pin 9 dir $!ddir
+      var !pin9pos pin 9 pos wrt /*
+
+-- Position Pins 6 and 9 for Vertical Bracings
+      pin 6 copy $!pdir1 of $!datum
+      pin 6 at pin 1
+      pin 9 copy $!pdir1 of $!datum
+      pin 9 at pin 2
+
+-- Construct Lines
+      var !line1 cons line pin 1
+      var !line4 cons line pin 4
+      var !line5 cons line pin 5
+      var !line9 cons line parallel $!line1 wrt /* through $!pin9pos wrt /*
+
+--------------------------------------------------------------------------------------
+    endif
+
+----------------------------------------------------------------------
+
+----------------------------------------------------------------------
+----------------------------------------------------------------------
+
+-- Navigate to Stru
+    !!ce = !stru
+
+-- Pins now in position create Framework
+    delete stru mem
+      handle (41,66) (2,113) (2,113)
+      endhandle
+
+--<wd>oct2000
+  !mdstemp = /MDS/VT06/$!selection
+    :mdscheck $!mdstemp.:mdscheck
+--<wd>oct2000
+
+
+-- Temporarily Position Structure at Datum Atta
+    at $!datum
+
+    new frmw $!name/MAIN
+    !frmwsupport = !!ce
+
+-- Copy required template/s
+    !!ce         = /MDS/VT06/$!selection
+    !frmw        = !!kcollectallfor('FRMW', '', !!ce)
+    !frameformat = before(!frmw[1].name, '-FRMW')
+
+--------------------------------------------------------------------------------------
+-- Navigate back to support and create template elements
+    !!ce = !frmwsupport
+    copy attrib of $!frmw[1]
+    copy mem of $!frmw[1] rename $!frameformat $!name
+
+  -- Set stru description for template recognition
+
+  !desc = desc of /MDS/VT06/$!selection
+
+-- Position and Orientate Structure
+    !!ce = !stru
+  desc '$!desc'
+
+
+      if((undefined(!pl)) or !pl.eq(D)) then
+         handle any
+         !orix = !freeenddir
+         endhandle
+         !orix = !freeenddir
+      else
+         !orix = !vessenddir
+      endif
+
+    !oriz = !udir
+     ori x is $!orix and z is $!oriz
+
+--------------------------------------------------------------------------------------
+
+-- Extend and move Cross Bar *-BAR-1
+    !!ce = $!<name>-BAR-1
+
+
+    extend end thro pin 3
+
+    extend start thro pin 5
+    move $!pin1dir wrt /* clear 0 beh pin 1
+  !flush = :MDSOlap
+  if !flush eq 'OVERLAP' then
+    !oNum = :MDSOnum
+    extend end $!oNum
+    endif
+
+  !support.bars.append(!!ce)
+  !support.barLen[1] = deri length of CE
+
+-- Re-rotate attas
+         !!ce = !datum
+          ori and p3 is $!pin1dir wrt /*
+          !!ce = $!<name>/SREF
+          ori and p3 is $!pin1dir wrt /*
+
+  if(!!mdsVT06.support.mirror) then
+    !!ce = !name.dbref()
+         mirror plane n wrt stru thro ce
+    !!ce = $!<name>-BAR-1
+         flip
+     endif
+
+--------------------------------------------------------------------------------------
+-- Set dimensions
+  if (!method eq |CURSOR|)then
+
+-- Dimension 1
+      !dimr1 = !dim1.nint()
+    !!mdsVT06.dim1.val = !dimr1
+
+    endif
+
+--------------------------------------------------------------------------------------
+-- Select correct spref
+    !!ce = $!<name>/SREF
+  !!mdsDacControl(true)
+-- Get Bore size in inches
+  !units = object COMUNITS(TRUE)
+  units inch bores
+  !boreSizeIN = pl bore
+       handle any
+    !boreSizeIN = hbor
+       endhandle
+-- Convert the bore size into a string
+  !boreSize = !boreSizeIN.string().before('in')
+
+  !units.restoreSavedUnitsByPtype('BORE')
+
+  sel spref with styp 'VT06-$!boreSize-$!selection' spec /MDF
+
+    !!ce = $!<name>/DATUM
+
+  --<dw>mar2009 dun1119 - HPD0038470 U-bolt already selected from list - Ref. Mdssetdatvt06.pmlfnc
+  -- sel spref with styp 'BT01B' spec /MDS
+
+--<wd>may2003
+      !!mdstransport(!!ce,!!ce.name)
+--<wd>may2003
+
+
+
+    !!ce = $!<name>/SREF
+  !!mdsSetIspe()
+  !!mdsSelLstu(!!ce)
+  !!mdsDacControl(true)
+--------------------------------------------------------------------------------------
+
+
+--------------------------------------------------------------------------------------
+-- Store dimensions in design parameters
+    !!ce = $!<name>/SREF
+  !!mdsDacControl(true)
+  despar $!!mdsVT06.dim1.val
+  !!mdsDacControl(false)
+  -- Reset materials of sections
+
+  !!mdsResetMat(!storeMat)
+
+  -- If a joint is being used and it is handed then their will be a alternative spref of the
+-- opposite hand joint
+
+  -- !!mdsSwapIntJoi(!support.stru,!support.mirror,!support.alias)
+
+-- Reset the zdist for all joints
+
+  var !sjois coll all sjoi for $!name
+
+  do !resetZdist values !sjois
+    !!ce = !resetZdist.dbref()
+     snod
+     zdist thro cref of same
+   enddo
+
+
+--------------------------------------------------------------------------------------
+-- Navigate to Structure
+    !!ce = !stru
+----------------------------------------------------------------------
+
+-- Enhance elements using colour set for highlight
+  !colourlist = ARRAY()
+    !colourlist.append(!!ce)
+    !colourlist.appendarray(!support.atta)
+
+-- Colour Support
+    call !!kenhancelist(!colourlist)
+
+-- Reset all pins associated with this support
+  call !!mdsresetpins(1,10)
+
+-- Update support data held in form
+  !!mdsVT06.support = !support
+
+--------------------------------------------------------------------------------------
+-- Remove Wait.. Prompt from Screen
+  !!mdscreatemess(false)
+
+
+-- Reset Units
+  !!kRestoreUnits(!currentUnits)
+
+  if(!rotated) then
+    !!ce = !datum
+      rotate by -180
+   endif
+
+  !!ce = !stru
+
+--------------------------------------------------------------------------------------
+
+  endfunction

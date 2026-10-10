@@ -1,0 +1,1564 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:  mdsvprm.pmlfnc
+--   Type:  Function Definition
+--   Group:  Multi Discipline Supports Application
+--     Keyword:  MDS
+--   Module:  design
+--   Replaces:
+--
+-- Author:  Wayne Dodwell
+-- Created:  Thursday 24th February 2005
+--
+--
+-- Description:
+-- Function to create a VPRM input file for MDS supports.
+-- --<1>-- Batch MTO from PDMS DESIGN
+--
+-- --<2>-- MDS Support MTO from PDMS DRAFT via the MDS ABA Support Drawing Utility
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R        ARRAY         Array of lines<Pipes> from DESIGN or
+--                                  MDS Support Names from DELIVERY MANAGER and/or PDMS MDS ABA DRAFT
+--
+--     2     RW       FILE          Pass The "MDS MTO Output FILE object FILE" - for ALL MDS Supports in a "SINGLE" transfer file
+-- or  2              FILE          Pass a "MDS MTO Output FILE OBJECT directory" for the storage area for each file for each
+--                                  INDIVIDUAL transfer file for each "MDS Support" found in <argument[1]>
+--                                   i.e. "MULTIPLE" transfer files required.
+--
+-- Return:
+--     [Data Type]     [Description]
+--    MDSVPRMOBJECT   member <1> .errormessages <ARRAY>
+--                    member <2> .fileobjects <ARRAY>
+--                      i.e. An array of File Objects
+--                      "MULTIPLE" = ONE FILE object per Individual MDS Support
+--                      "SINGLE"   = ONE FILE object for ALL MDS Supports
+--                        <a> MDS FRAMEWORK STRUCTURE
+--                        <b> MDS HANGER
+--                        <c> MDS ANCILLARY
+--                        <d> MDS GROUP, comprising of:
+--                           <i>  The MASTER MDS FRAMEWORK STRUCTURE plus
+--                           <ii> MDS HANGERS (up to 30 maximum, but in reality ONLY 1 or 2 will be used)
+--
+------------------------------------------------------------------------------------
+
+-- To test if the VPRM Gateway is loaded and VPRM is AVAILABLE throughout PDMS
+-- see the PDMS ENTRY file ...\PDMS-VPRM4.2\pdmsui\MON\ADMIN\LOGIN.
+-- This FILE sets the global variable !!vprmexists = TRUE
+-- if the VPRM FILE "%PDMSEXE%\pdsc01.exe" EXISTS
+
+------------------------------------------------------------------------------------
+
+
+--<nb>jun2007  HPD0035323/OP48  (Populate the MTO Revision from the DM Revision code)
+define function !!mdsvprm(!list is ARRAY, !revs is ARRAY, !outputfile is FILE) is MDSVPRMOBJECT
+
+  -- Initialise the MDS to VPRM object to return
+  !mdsreturnobj = object MDSVPRMOBJECT()
+
+  -- Initialise ERROR Array etc...
+  !errorarray = ARRAY()
+  !abortmto   = FALSE
+
+  -- Determine the PDMS Module
+  -- <DESIGN> for BULK MTO per Estimate for Passed Pipes/HVAC elements
+  -- <DRAFT>  for ACTUAL<FINAL> MTO per MDS ABA DRAWING Utility of DELIVERY MANAGER
+  -- <ISODRAFT> for ?? PIPE MTO for MDS Supports per PIPE -- ?? FUTURE ??
+  !banner = banner
+  if (!banner.name.upcase().match('DESIGN').gt(0)) then
+    !module  = 'DESIGN'
+    !version = !banner.short.split()[4].after('Mk').before('.sP')
+
+    --<wd>may2007<mds12>
+    --   elseif (!banner.name.upcase().match('OUTFITTING').gt(0)) then
+  elseif (!banner.short.upcase().match('OUTFITTING MK').gt(0)) then
+    --<wd>may2007<mds12>
+
+    !module  = 'DESIGN'
+    !version = !banner.short.split()[4].after('Mk').before('.sP')
+
+    --<wd>may2007<mds12>
+    --   elseif (!banner.name.upcase().match('DRAFT').gt(0)) then
+  elseif (!banner.name.upcase().match('DRAFT').gt(0)) or (!banner.name.upcase().match('OUTFITTINGDRAFT').gt(0)) then
+    --<wd>may2007<mds12>
+
+    !module = 'DRAFT'
+    !version = !banner.short.split()[4].after('Mk').before('.sP')
+
+    --elseif (!banner.name.upcase().match('ISODRAFT').gt(0)) then
+    --  !module = 'ISODRAFT'
+
+  else
+    !errorarray.append('_________________________________________________________________________')
+    !errorarray.append('')
+    !errorarray.append(' ERROR -- "$!banner.name" is an INVALID PDMS module for generating a MDS VPRM transfer file.')
+    !errorarray.append(' ERROR --  Aborting the creation of the "MDS VPRM MTO" transfer file.')
+    !errorarray.append('')
+    !errorarray.append('_________________________________________________________________________')
+    --golabel /errorfile
+    !abortmto = TRUE
+  endif
+
+  -- Determine "START" Date Time Object variables
+  !datetime = object DATETIME()
+  !day      = !datetime.date()
+  if (!day.lt(10)) then
+    !daystring = '0' & !day
+  else
+    !daystring = !day.string()
+  endif
+
+  !monthstring = !datetime.monthstring()
+  !monthstrabb = !monthstring.substring(1,3)
+  !year        = !datetime.year()
+  !hour        = !datetime.hour()
+  if (!hour.lt(10)) then
+    !hourstring = '0' & !hour
+  else
+    !hourstring = !hour.string()
+  endif
+  !minute   = !datetime.minute()
+  if (!minute.lt(10)) then
+    !minutestring = '0' & !minute
+  else
+    !minutestring = !minute.string()
+  endif
+  !second   = !datetime.second()
+  if (!second.lt(10)) then
+    !secondstring = '0' & !second
+  else
+    !secondstring = !second.string()
+  endif
+
+  -- Get Current PDMS Session details
+  !session = current session
+
+  -- Get user id
+  -- Test for Model manager running i.e. the user description is set with the string "login Id:"
+  if (!session.user().description.match('login Id:').neq(0)) then
+    !userid = !session.user().description.after('login Id:').before('(').trim()
+  else
+    !userid = !session.login
+  endif
+
+  -- Set the "Initial" PATH and NAME of the "MDS-to-VPRM-MTO" ERROR LOG File -- Initially Use the %PDMSUSER% directory
+  !errorlog = object FILE('%pdmsuser%/MDS-VPRM-MTO-$!<daystring>$!<monthstrabb>$!<year>-$!<hourstring>$!<minutestring>$!<secondstring>.errlog')
+
+  -- PDMS Project Settings
+  !project = current project
+  !projlow = !project.code().lowcase()
+  !projup  = !project.code()
+  !projdir = object FILE('%$!<projlow>iso%')
+
+  -- Set up the Header Details for the LOG file Array
+  !errlogstart = ARRAY()
+  if (!module.eq('DRAFT')) then
+    -- Log file START etc... is Only required when generating MDS VPRM MTO files from PDMS DRAFT
+    !errlogstart.append('_________________________________________________________________________')
+    !errlogstart.append('')
+    !errlogstart.append('                         MDS SUPPORT VPRM MTO                           ')
+    !errlogstart.append('')
+    !errlogstart.append('_________________________________________________________________________')
+    !errlogstart.append('')
+    !errlogstart.append('LOG file for the "MDS VPRM MTO" transfer file/directory:')
+    !errlogstart.append(' $!outputfile')
+    --    !errlogstart.append(' $!mdsvprmfile')
+    !errlogstart.append('_________________________________________________________________________')
+    !errlogstart.append('')
+    !errlogstart.append('Project    : $!projup')
+    !errlogstart.append('User Name  : $!session.name')
+    !errlogstart.append('User Login : $!userid')
+    !errlogstart.append('Host       : $!session.host')
+    !errlogstart.append('Process ID : $!session.uniqueid')
+    !errlogstart.append('Date       : $!<daystring> $!<monthstring> $!<year>')
+    !errlogstart.append('Time       : $!<hourstring>:$!<minutestring>:$!<secondstring>')
+    !errlogstart.append('_________________________________________________________________________')
+    !errlogstart.append('')
+    !errlogstart.append('Processing Started: $!<hourstring>:$!<minutestring>:$!<secondstring>  $!<daystring> $!<monthstring> $!<year>')
+    !errlogstart.append('_________________________________________________________________________')
+  endif
+
+  -- Set up the END of ERROR LOG Array to append to the ERROR LOG file "!errorlog" when "ABORTING" of this function
+  !errlogend = ARRAY()
+  if (!module.eq('DRAFT')) then
+    -- Log file END etc.. is Only required when generating MDS VPRM MTO files from PDMS DRAFT
+    !errlogend.append('_________________________________________________________________________')
+    !errlogend.append('Processing Complete: $!<hourstring>:$!<minutestring>:$!<secondstring>  $!<daystring> $!<monthstring> $!<year>')
+    !errlogend.append('________________________________________________________________________')
+    !errlogend.append('_________________________________________________________________________')
+    !errlogend.append('')
+    !errlogend.append('END of LOG file for the "MDS VPRM MTO" transfer file/directory:')
+    !errlogend.append(' $!outputfile')
+    !errlogend.append('_________________________________________________________________________')
+  endif
+
+  -- Check and Abort MTO file creation if required
+  if (!abortmto) then
+    golabel /errorfile
+  endif
+
+  -- Check if "!outputfile" FILE object exists! -- ERROR and ABORT transfer if the DIRECTORY DOES NOT exist!
+  if (!outputfile.exists()) then
+
+    -- Determine the output type required i.e. a "SINGLE" or "MULTIPLE" transfer files
+    if (!outputfile.type().eq('DIRECTORY')) then
+      -- "MULTIPLE" files required
+      -- Individual MDS VPRM transfer files required per MDS Support found in the PIPES passed in the !list array
+      !filetype  = 'MULTIPLE'
+      !outputdir = !outputfile
+      !action    = 'WRITE'
+
+    elseif (!outputfile.type().eq('FILE')) then
+      -- "SINGLE" file required
+      -- A Single MDS VPRM transfer file required for ALL MDS Supports found in the PIPES passed in the !list array
+      !filetype = 'SINGLE'
+      !action   = 'OVERWRITE'
+      --else
+      --  !action = 'WRITE'
+      --endif
+      -- TEST if we can WRITE to the file object -- Someone may have it OPEN in a TEXT EDITOR etc...
+      !testfileobject = !outputfile
+      if (!testfileobject.isopen().not()) then
+        !testfileobject.open('$!action')
+        handle (41,322)  $* ERROR - File <!testfileobject> already in use
+          -- FILE is already OPEN by SomeOne in WINDOWS -- ABORT transfer file generation
+          $P *** -- ERROR -- File "<$!outputfile>" is already "OPEN"
+          $P *** -- ERROR -- Aborting the creation of the "MDS VPRM MTO" transfer file
+          !errorarray.append('_________________________________________________________________________')
+          !errorarray.append('')
+          !errorarray.append(' ERROR -- File "<$!outputfile>" is already "OPEN" by others')
+          !errorarray.append(' ERROR -- Unable to WRITE to the passed PDMS FILE Object "$!<outputfile>".')
+          !errorarray.append(' ERROR -- Aborting the creation of the "MDS VPRM MTO" transfer file.')
+          !errorarray.append('')
+          !errorarray.append('_________________________________________________________________________')
+          golabel /errorfile
+        endhandle
+      endif
+    endif
+
+  else
+    -- The passed FILE OBJECT DOES NOT EXIST, therefore it CANNOT be a DIRECTORY
+
+    -- "SINGLE" file required
+    -- A Single MDS VPRM transfer file required for ALL MDS Supports found in the PIPES passed in the !list array
+    !filetype = 'SINGLE'
+    !action   = 'WRITE'
+
+    -- Test if FILE object can be OPENED for WRITING -- ABORT if the CANNOT be OPENED
+    !outputfile.open('$!action')
+    handle NONE
+      -- FILE opened successfully -- Allow transfer file generation
+      !outputfile.close()
+      -- Delete the NEW File just opened so we DO NOT get ASKED the question:-
+      -- 'File exists -- Do You want to OVERWRITE the file?'
+      -- The "!action" is set to 'WRITE' not 'OVERWRITE' at this point.
+      !passedfile = !outputfile
+      !passedfile.deletefile()
+
+    elsehandle ANY
+      -- FILE cannot be opened -- ABORT transfer file generation
+      !errorarray.append('_________________________________________________________________________')
+      !errorarray.append('')
+      !errorarray.append(' ERROR -- INVALID PDMS FILE Object passed for MDS VPRM transfer file.')
+      !errorarray.append(' ERROR -- Unable to WRITE to the passed PDMS FILE Object "$!<outputfile>".')
+      !errorarray.append(' ERROR -- Aborting the creation of the "MDS VPRM MTO" transfer file.')
+      !errorarray.append('')
+      !errorarray.append('_________________________________________________________________________')
+      golabel /errorfile
+    endhandle
+
+  endif
+
+  -- Ensure Test File Objects Closed
+  !testfileobject.close()
+  handle ANY
+  endhandle
+  !outputfile.close()
+  handle ANY
+  endhandle
+
+  -- Check if the MDS HANGER "DESIGN TEMPLATE or MANUFACTURERS INTERFACE" variable !!mdshangif is defined and SET correctly
+  if (defined(!!mdshangif)) then
+    if (!!mdshangif.trim().eq('')) then
+      -- MDS Hanger Variable !!mdshangif is INCORRECTLY defined -- **** Must be set to 'LISEGA' for FANP ****
+      !errorarray.append('_________________________________________________________________________')
+      !errorarray.append('')
+      !errorarray.append(' ERROR -- The MDS Application is NOT loaded in PDMS.')
+      !errorarray.append(' ERROR -- The MDS HANGER variable "!!mdshangif" is NOT defined correctly for the "$!projup" project.')
+      !errorarray.append(' ERROR -- Aborting the creation of the "MDS VPRM MTO" transfer file.')
+      !errorarray.append('')
+      !errorarray.append('_________________________________________________________________________')
+      golabel /errorfile
+    endif
+
+  else
+    -- MDS Hanger Variable !!mdshangif is NOT defined -- MDS is NOT Loaded?
+    !errorarray.append('_________________________________________________________________________')
+    !errorarray.append('')
+    !errorarray.append(' ERROR -- The MDS Application is NOT loaded in PDMS.')
+    !errorarray.append(' ERROR -- The MDS HANGER variable "!!mdshangif" is NOT defined for the "$!projup" project.')
+    !errorarray.append(' ERROR -- Aborting the creation of the "MDS VPRM MTO" transfer file.')
+    !errorarray.append('')
+    !errorarray.append('_________________________________________________________________________')
+    golabel /errorfile
+
+  endif
+
+  -- Initialise variable for "/MDS/TEMPLATES"
+  -- *** This CODE is/may ONLY REQD. if "FANP" templates -- CONFIRM with S.wilson re "partslist.cfg" file
+  !unusedtemplatesite = /MDS/TEMPLATES
+  handle ANY
+    !errorarray.append('_________________________________________________________________________')
+    !errorarray.append('')
+    !errorarray.append(' ERROR -- The MDS template site "/MDS/TEMPLATES" does not exist for the "$!projup" project.')
+    !errorarray.append(' ERROR -- Aborting the creation of the "MDS VPRM MTO" transfer file.')
+    !errorarray.append('')
+    !errorarray.append('_________________________________________________________________________')
+    golabel /errorfile
+  endhandle
+
+  -- Check the <project>ISO directory exists
+  if (!projdir.exists().not()) then
+    !errorarray.append('_________________________________________________________________________')
+    !errorarray.append('')
+    !errorarray.append(' ERROR -- The PDMS directory "$!<projdir>" does not exist for the PDMS "$!projup" project.')
+    !errorarray.append(' ERROR -- Aborting the creation of the "MDS VPRM MTO" transfer file.')
+    !errorarray.append('')
+    !errorarray.append('_________________________________________________________________________')
+    golabel /errorfile
+
+  else
+    --Check the VPRM Gateway Config File EXISTS i.e. <!projup>ISO/pdsc01.cfg
+    !projcfg = object FILE('$!projdir/pdsc01.cfg')
+    if (!projcfg.exists().not()) then
+      !errorarray.append('_________________________________________________________________________')
+      !errorarray.append('')
+      !errorarray.append(' ERROR -- The VPRM configuration file "$!<projcfg>" does not exist for the "$!projup" project.')
+      !errorarray.append(' ERROR -- Aborting the creation of the "MDS VPRM MTO" transfer file.')
+      !errorarray.append('')
+      !errorarray.append('_________________________________________________________________________')
+      golabel /errorfile
+
+    else
+      -- Read the VPRM Gateway Config File into a "VPRMCONFIG" OBJECT
+      --!readcfgfile = !projcfg.readfile()
+      !vprmconfig  = object VPRMCONFIG()
+      !vprmconfig.read(!projcfg)
+
+      --Temporary Variable for Information
+      !!vcfg = !vprmconfig
+    endif
+  endif
+
+  -- Clear the ERROR LOG END array !errlogend after getting pass the "ABORTING" MDS VPRM MTO file creation ERRORS
+  !errlogend.clear()
+
+
+  --*****************************************************************
+  -- ??? *** FUTURE *** ??? -- What about from ISODRAFT ISOMETRIC MTO
+  --*****************************************************************
+
+
+  -- Create an ARRAY of already passed SUPPORTS so we do NOT duplicate them if we detail MULTIPLE
+  -- pipe lines in the same transfer with the "SAME MDS support on Multiple Pipe lines"
+  --  !processedsupps = ARRAY()
+  -- <GE> 27-08-06 Replaced above array !processedsupps with !processedsupps[1]
+
+  -- <Valid MDS Supports> with the <"CONTROLLING" PDMS COMPONENT TYPE>
+  -----------------------------------------------------------------------------
+  --<1> -- <Individual MDS FRAMEWORK STRUCTURES> -- <STRU>
+  --<2> -- <Individual MDS HANGERS> -- <ATTA>
+  --<3> -- <Individual MDS ANCILLARIES> -- <ATTA>
+  --<4> -- <MDS GROUPS comprising of a MASTER MDS STRUCTURE plus MDS HANGERS(20/30 maximum)> -- <STRU>
+  -----------------------------------------------------------------------------
+
+  -- Master Variable to Store ALL of the MDS VPRM Support MTO objects to be PROCESSED
+  -- i.e. "!mdssupportmto = object MDSVPRMMTO(!support)"
+  --
+  --<wd>aug2006 -- MDS VPRM Support MTO OBJECTS will NO LONGER be STORED in this ARRAY
+  --               to reduce the impact on the MEMORY used by the PDMS "des.exe"
+  --  !mdssuppobjects = ARRAY()
+  --<wd>aug2006
+  -- <GE> 07-08-06 Set up arrays for disciplines for processing
+  !processedsupps[1] = ARRAY()
+  !processedsupps[2] = ARRAY()
+  !processedsupps[3] = ARRAY()
+
+  !mdsvprmhvacsupp = ARRAY()
+  !mdsvprmtraysupp = ARRAY()
+  !mdsvprmpipesupp = ARRAY()
+  --<GE> 07-08-06
+
+  ----------------------------------------------------------------------------------------------------------------
+  -- MDS VPRM MTO type is either 'BULK MTO' form <PDMS DESIGN> or 'ACTUAL MTO from <PDMS DRAFT/DELELIVERY MANGER>'
+  ----------------------------------------------------------------------------------------------------------------
+  --
+  --------------------------------------------------
+  -- START of MDS VPRM "BULK" MTO from <PDMS DESIGN>
+  --------------------------------------------------
+  if (!module.eq('DESIGN')) then
+
+    -- Loop through " the ARRAY !list" and Find Lines and Get VALID MDS Supports.
+    -------------------------------------------------
+    -- START of Loop for PIPES or HVAC elements in the array "!list"
+    do !pipe values !list
+      -------------------------------------------------
+      -- Check the passed element a "PIPE" or an "HVAC", if not error
+      if ((!pipe.type.neq('PIPE')) and (!pipe.type.neq('HVAC'))) then
+        !errorarray.append('_________________________________________________________________________')
+        !errorarray.append('')
+        !errorarray.append(' ERROR -- The passed element "$!pipe.name" is not a PIPE or HVAC element type')
+        !errorarray.append('  Skipping... element $!pipe.name - NOT PROCESSED')
+        !errorarray.append('')
+        !errorarray.append('_________________________________________________________________________')
+        skip
+      endif
+
+
+
+      -- Collect all the MDS supports on the Lines in the Passed Array "!list"
+
+      -- *************************************************************************************************
+      -- ??? What about "FT22" Bedplates" i.e. NO ATTAS present ???
+      -- per discussion with "ncm" <Early March 2005 -- Ignore FT22 supports at the MOMENT for FANP -- wd>
+      -- *************************************************************************************************
+      --
+      -- Cater for MDS Groups i.e.
+      -- The Master MDS STRU plus a number of MDS HANGERS <upto 20 or 30,
+      -- but probably in practice/reality ONLY 1 or 2 MDS HANGERS will be used>
+
+      -- Collect a list DBREFS representing the MDS Support ATTAS on the PIPE/HVAC = !pipe
+      -- Only collect those attas which belong to the "/MDS" specification in PDMS
+      -- ( but NOT the /MDP or /MDF Specs in the MDS Application )
+      !allattas = !!kcollectallfor('ATTA', '(match (name of spref,|/MDS|) eq (1))', !pipe)
+
+      -- Loop through ATTAS and create a list of MDS supports found in the ATTAs
+      !mdssupports = ARRAY()
+
+      -------------------------------------------------
+      do !atta values !allattas
+        !xce = !!ce
+        !!ce = !atta
+        !!mdssilent = TRUE
+        !suppname   = !!mdsgetsuppname(!atta)
+        -- Invalid MDS Supports are returned as 'ABORT'
+        !!mdssilent.delete()
+        !!ce = !xce
+        --$P *** !suppname *** is ***$!<suppname>***
+        if (!suppname.neq('ABORT')) then
+          -- ATTA belongs to a VALID MDS Support
+
+
+          --<wd>mar2006
+          -- MDS SPECIAL "SREF" ATTAS <Stype = 'SPECIAL'> in the "/MDS" specification can be ignored
+          -- They should be in the "/MDF" spec!
+          skip if !atta.stype.eq('SPECIAL')
+
+          -- Unnamed MDS ATTAS do NOT belong to VALID MDS Supports -- Write to ERROR LOG and SKIP
+          if (!atta.name.match('=').eq(1)) then
+            !errorarray.append('_________________________________________________________________________')
+            !errorarray.append('')
+            !errorarray.append(' ERROR -- the ATTA component "$!atta.name" does NOT belong to a VALID MDS Support')
+            !errorarray.append('  The MDS ATTA is "UNNAMED" and the MDS SUPPORT is NOT COMPLETE and is INVALID')
+            !errorarray.append('   Skipping... INVALID MDS ATTA $!atta.name')
+            !errorarray.append('')
+            !errorarray.append('_________________________________________________________________________')
+            -- SKIP UNNAMED MDS ATTA
+            skip
+          endif
+          --<wd>mar2006
+
+          -- MDS GROUP Support Member ATTAS will have an ARRAY index SUFFIX added to the MDS SUPPORT Name, e.g.
+          -- The Master MDS STRUCTURE name = "<supportname>[1]" and any MDS HANGER ATTAS in the MDS GROUP
+          -- will have the same "<supportname>" but with a different ARRAY SUFFIX index number added, e.g.
+          -- for each MDS HANGER ATTA in the MDS GROUP the ATTA name will be:-
+          -- "<supportname>[2]", "<supportname>[3]", "<supportname>[4]" etc...
+
+          -- ALWAYS PROCESS the MASTER MDS STRUCTURE in the MDS GROUP Support even
+          -- if its' NOT in the supplied PIPE LIST but ANOTHER MDS HANGER ATTA is!
+          if (!suppname.matchwild('*[*]*')) then
+            !ceorig = !!ce
+
+            --<wd>mar2006
+            -- **********************
+            -- *** IMPORTANT NOTE ***
+            -- **********************
+            -- The MAIN MEMBERS of any MDS GROUP Support, e.g. ...[1], ...[2], ...[3] etc,
+            -- are DETERMINED in the PML OBJECT method "mdsvprmmto..mdsmainmem(!support is DBREF)"
+            -- at approx. line 732 of the PML OBJECT "mdsvprmmto.pmlobj"
+            -- The object "MDSVPRMMTO" is called for each MDS SUPPORT being processed at approx.
+            -- line 646 in this PML function for BULK MTO in DESIGN via the VPRM GATEWAY,
+            -- i.e. !mdssupportmto = object MDSVPRMMTO(!support)
+            -- and
+            -- at approx. line 762 for ACTUAL MTO in DRAFT via DELIVERY MANAGER,
+            -- i.e. !mdssupportmto = object MDSVPRMMTO(!draftmdsdbrf)
+            --
+            -- CHECK the MDS GROUP SUPPORT Type before Proceeding ANY FURTHER
+            -- ONLY ONE MDS STRUCTURE, i.e. the MASTER STRUCTURE SUPPORT <suppname>[1], can belong to a MDS GROUP SUPPORT
+            !ritename = !suppname.before('[') & '[1]'
+            !suppdbrf = !suppname.dbref()
+            !supptype = !suppdbrf.type
+            if (!supptype.eq('STRU')) then
+              if (!suppname.matchwild('*[1]').not()) then
+                -- MDS GROUP STRUCTURE is an INVALID MDS GROUP STRUCTURE SUPPORT,
+                -- The ONLY MDS STRUCTURE ALLOWED in a MDS GROUP is the MASTER STRUCTURE, i.e. <suppname>[1]
+                !errorarray.append('_________________________________________________________________________')
+                !errorarray.append('')
+                !errorarray.append(' ERROR -- The MDS GROUP STRUCTURE Support name "$!suppname" ')
+                !errorarray.append('  is NOT a VALID MDS GROUP Support member')
+                !errorarray.append('  ONLY the ONE MASTER MDS GROUP STRUCTURE is allowed in a MDS GROUP Support')
+                !errorarray.append('  i.e. The MDS GROUP STRUCTURE Support name "$!ritename"')
+                !errorarray.append('  Skipping... element named $!suppname')
+                !errorarray.append('')
+                !errorarray.append('_________________________________________________________________________')
+                skip
+              endif
+            endif
+            --<wd>mar2006
+
+            if (!pipe.pspe.purp.upcase().eq('TRAY')) then
+              !errorarray.append('_________________________________________________________________________')
+              !errorarray.append('')
+              !errorarray.append(' ERROR -- The passed element "$!pipe.name" is not a PIPE or HVAC element type')
+              !errorarray.append('  Skipping... element $!pipe.name - NOT PROCESSED')
+              !errorarray.append('')
+              !errorarray.append('_________________________________________________________________________')
+              skip
+            endif
+
+            -- Set the name of the Master MDS Structure for the MDS GROUP
+            !testname = !suppname
+            !suppname = !suppname.before('[') & '[1]'
+            -- SKIP and Write to the ERROR file if the Master MDS Structure for the MDS GROUP does NOT exist
+            !!ce = !suppname.dbref()
+            handle ANY
+              !errorarray.append('_________________________________________________________________________')
+              !errorarray.append('')
+              !errorarray.append(' ERROR -- The MDS Support name "$!testname" is NOT a VALID MDS Support name')
+              !errorarray.append(' ERROR -- Illegal "[" characters exist in the MDS Support name')
+              !errorarray.append('  Skipping... element named $!testname')
+              !errorarray.append('')
+              !errorarray.append('_________________________________________________________________________')
+              skip
+
+            elsehandle NONE
+              -- Append the Master MDS Structure for the MDS GROUP to the "!mdssupports" array
+              !!ce = !ceorig
+              !mdssupports.append(!suppname.dbref())
+            endhandle
+
+          else
+            -- Append the Individual MDS Support <MDS STRUCTURE, MDS HANGER or MDS ANCILLARY ATTA>
+            !mdssupports.append(!suppname.dbref())
+          endif
+
+        else
+          -- MDS SPECIAL "SREF" ATTAS in the "/MDS" specification can be ignored -- They should be in the "/MDF" spec!
+          skip if !atta.stype.eq('SPECIAL')
+          -- ATTA does NOT belong to a Valid MDS Support -- Write to ERROR LOG and SKIP
+          !errorarray.append('_________________________________________________________________________')
+          !errorarray.append('')
+          !errorarray.append(' ERROR -- the ATTA component "$!atta.name" does NOT belong to a VALID MDS Support')
+          !errorarray.append('  The ATTA has an "ILLEGAL" MDS SPREF and/or the MDS SUPPORT is NOT COMPLETE')
+          !errorarray.append('   Skipping... ATTA $!atta.name')
+          !errorarray.append('')
+          !errorarray.append('_________________________________________________________________________')
+          skip
+        endif
+      enddo
+      -------------------------------------------------
+
+      -- Unique the Valid MDS Supports Array
+      !mdssupports.unique()
+
+      -- Check for INVALID MDS FRAMEWORK SUPPORTS, MDS TRUNNIONS etc...and DO NOT PROCESS
+      -- them via this MDS VPRM MTO output.
+      -- MDS TRUNNION BRANCHES and TRUNNION BRANCH MEMBERS with the SAME MDS SUPPORT NAME
+      -- are PROCESSED thro VPRM via ISODRAFT<ACTUAL MTO> and/or BULK PIPING MTO
+
+      do !mdssupp indices !mdssupports
+        if (!!mdsabatype(!mdssupports[!mdssupp]).eq('TRUNNION')) then
+          -- MDS Support is a MDS TRUNNION BRANCH Support -- Write to ERROR LOG etc...
+          !errorarray.append('_________________________________________________________________________')
+          !errorarray.append('')
+          !errorarray.append(' ERROR -- the MDS SUPPORT "$!suppname" is a MDS TRUNNION BRANCH Support')
+          !errorarray.append('  MDS TRUNNION BRANCH Supports are NOT PROCESSED via this MDS VPRM MTO output')
+          !errorarray.append('   Skipping... MDS TRUNNION BRANCH Support $!suppname -- NOT PROCESSED')
+          !errorarray.append('')
+          !errorarray.append('_________________________________________________________________________')
+          -- REMOVE the MDS TRUNNION BRANCH Support from the ARRAY
+          !mdssupports.deletefrom(!mdssupp,1)
+
+        elseif (!!mdsabatype(!mdssupports[!mdssupp]).eq('PRELIM')) then
+          -- This ERROR CODE for "PRELIM" type supports in NEVER used!!!!!!!!
+          -- SEE the ATTA 'COLLECTION' syntax of the "/MDS" spec ATTAS ONLY above at approx. line 412!!!!!!!!
+          -- MDS Support is a MDS PRELIMINARY Support -- Write to ERROR LOG etc...
+          !errorarray.append('_________________________________________________________________________')
+          !errorarray.append('')
+          !errorarray.append(' ERROR -- the MDS SUPPORT "$!suppname" is a MDS PRELIMINARY Support')
+          !errorarray.append('  MDS PRELIMINARY Supports are NOT PROCESSED via this MDS VPRM MTO output')
+          !errorarray.append('   Skipping... MDS PRELIMINARY Support $!suppname -- NOT PROCESSED')
+          !errorarray.append('')
+          !errorarray.append('_________________________________________________________________________')
+          -- REMOVE the MDS Preliminary Support from the ARRAY
+          !mdssupports.deletefrom(!mdssupp,1)
+
+          --<wd>mar2006
+        elseif (!!mdsabatype(!mdssupports[!mdssupp]).eq('FRAME')) then
+          -- This ERROR CODE for "FRAME" type supports -- Write to ERROR LOG etc...
+          -- Check if the MDS FRAMEWORK DATUM ATTA EXISTS
+          !datumname = !mdssupports[!mdssupp].name & '/DATUM'
+          !unuseddatumdbrf = !datumname.dbref()
+          handle ANY
+            !invalidsupp = !mdssupports[!mdssupp].name
+            -- CHECK if the INVALID SUPPORT is ALREADY mentioned in the ERRORS ARRAY !errorarray
+            !findsupp = !errorarray.find(' ERROR -- the MDS SUPPORT "$!invalidsupp" is an INVALID MDS FRAMEWORK Support')
+            if (!findsupp.empty()) then
+              -- ONLY OUTPUT the ERROR ONCE per MDS FRAMEWORK SUPPORT
+              !errorarray.append('_________________________________________________________________________')
+              !errorarray.append('')
+              !errorarray.append(' ERROR -- the MDS SUPPORT "$!invalidsupp" is an INVALID MDS FRAMEWORK Support')
+              !errorarray.append('  The DATUM ATTA DOES NOT EXIST, therefore the support will NOT be PROCESSED via this MDS VPRM MTO output')
+              !errorarray.append('   Skipping... MDS FRAMEWORK Support $!invalidsupp -- NOT PROCESSED')
+              !errorarray.append('')
+              !errorarray.append('_________________________________________________________________________')
+            endif
+            -- Although the ERROR is ONLY OUTPUT ONCE, ALWAYS DELETE EACH ITERATION of the
+            -- !mdssupp indices from the !mdssupports array when an INVALID SUPPORT is found
+            -- REMOVE the MDS Preliminary Support from the ARRAY
+            !mdssupports.deletefrom(!mdssupp,1)
+
+          endhandle
+          --<wd>mar2006
+
+        endif
+      enddo
+
+      -- RE-Index the MDS Supports ARRAY
+      !mdssupports.compress()
+
+      -- Are there any supports?
+      if !mdssupports.size().eq(0) then
+        !errorarray.append('_________________________________________________________________________')
+        !errorarray.append('')
+        !errorarray.append(' MESSAGE -- the passed element "$!pipe.name" did not contain any VALID MDS Supports')
+        !errorarray.append('  Skipping... element $!pipe.name')
+        !errorarray.append('')
+        !errorarray.append('_________________________________________________________________________')
+        skip
+      endif
+
+
+      ------------------------------------------------------------------------
+      -- <"CONTROLLING" PDMS COMPONENT TYPE> for the <Valid MDS Support Types>
+      ------------------------------------------------------------------------
+      -- <STRU>=<!!mdsabatype is FRAME>  -- <Individual MDS FRAMEWORK STRUCTURE>
+      -- <ATTA>=<!!mdsabatype is HANGER> -- <Individual MDS HANGER>
+      -- <ATTA>=<!!mdsabatype is ANCILL> -- <Individual MDS ANCILLARY>
+      -- <STRU>=<!!mdsabatype is FRAME>  -- <MDS GROUP comprising of a MASTER MDS STRUCTURE plus one or more MDS HANGERS>
+      -----------------------------------------------------------------------------
+
+      -- The variable "!mdssupports" contains a list of valid MDS Supports on the Current Line
+      -- Generate the input lines for the "MDS VPRM" transfer file "!outputfile"
+      --      !mdsvprmlines = ARRAY()
+      -- <GE> 07-08-06 populate the discipline arrays
+      do !support values !mdssupports
+        !type = !!mdsabatype($!support)
+        if !type.eq('FRAME') then
+          !mdsdatumname = !support.name & '/DATUM'
+          !mdsdatumdbrf = !mdsdatumname.dbref()
+          if (!mdsdatumdbrf.owner.pspe.purp.upcase().eq('HVAC')) then
+            !mdsvprmhvacsupp.append(!support)
+            --$P HVAC Framework
+          elseif (!mdsdatumdbrf.owner.pspe.purp.upcase().eq('TRAY')) then
+            !mdsvprmtraysupp.append(!support)
+            --$P TRAY Framework
+          elseif (!mdsdatumdbrf.owner.pspe.purp.upcase().eq('PIPE')) then
+            !mdsvprmpipesupp.append(!support)
+            --$P PIPE Framework
+          endif
+        else
+          !mdsvprmpipesupp.append(!support)
+          --$P PIPE
+        endif
+      enddo
+      --<GE> 07-08-06
+
+      --***********************************
+      --      !vprmconfig.vprmmdshvacdisc = 'SP'
+      --      !vprmconfig.vprmmdselecdisc = 'SP'
+      --      !vprmconfig.vprmmdsdisc =     'SP'
+      --***********************************
+      --<GE> 07-08-06 Check arrays have same discipline code set and merge into one array
+
+      if !vprmconfig.vprmmdshvacdisc.eq(!vprmconfig.vprmmdselecdisc) and !vprmconfig.vprmmdshvacdisc.eq(!vprmconfig.vprmmdsdisc) then
+        !mdsvprmpipesupp.appendarray(!mdsvprmtraysupp)
+        !mdsvprmpipesupp.appendarray(!mdsvprmhvacsupp)
+        !mdsvprmtraysupp.clear()
+        !mdsvprmhvacsupp.clear()
+      elseif !vprmconfig.vprmmdshvacdisc.eq(!vprmconfig.vprmmdselecdisc)then
+        !mdsvprmhvacsupp.appendarray(!mdsvprmtraysupp)
+        !mdsvprmtraysupp.clear()
+      elseif !vprmconfig.vprmmdsdisc.eq(!vprmconfig.vprmmdshvacdisc) then
+        !mdsvprmpipesupp.appendarray(!!vprmmdshvacsupp)
+      elseif !vprmconfig.vprmmdsdisc.eq(!vprmconfig.vprmmdselecdisc) then
+        !mdsvprmpipesupp.appendarray(!mdsvprmtraysupp)
+      endif
+
+      -- Process for VPRM the transfer data for the list of VALID MDS Supports in the array "!mdssupports"
+      do !support values !mdsvprmpipesupp
+
+        -- Do NOT Process MDS Supports which have already been PROCESSED
+        if (!processedsupps[1].empty().not()) then
+          !findsupport = !processedsupps[1].findfirst(!support)
+          if (!findsupport.unset().not()) then
+            -- DO NOT Process a MDS Support which has already been processed
+            skip
+          endif
+        endif
+
+        ---------------------------------------------------------------------------------------------------
+        --<wd>aug2006 -- MDS VPRM Support MTO OBJECTS will NO LONGER be STORED in the !mdssuppobjects ARRAY
+        --               to reduce the impact on the MEMORY used by the PDMS "des.exe"
+        --
+        -- Load the Object "MDSVPRMMTO" for the Current MDS Support
+        --<wd>aug2006 -- Commented Out this CODE
+        --!mdssupportmto = object MDSVPRMMTO(!support)
+
+        -- Append Each "MDSVPRMMTO" Object into the Array !mdssuppobjects
+        --<wd>aug2006 -- Commented Out this CODE
+        --!!wd = !mdssupportmto
+        --!mdssuppobjects.append(!mdssupportmto)
+        --
+        --<wd>aug2006
+        ---------------------------------------------------------------------------------------------------
+
+        -- Update the Already PROCESSED MDS support array
+        !processedsupps[1].append(!support)
+
+      enddo
+
+      do !support values !mdsvprmtraysupp
+
+        !errorarray.append('_________________________________________________________________________')
+        !errorarray.append('')
+        !errorarray.append(' ERROR -- the MDS SUPPORT "$!support.name" is a MDS TRAY Support')
+        !errorarray.append(' MDS TRAY Supports are NOT PROCESSED via this MDS VPRM MTO output')
+        !errorarray.append(' Areva have not supplied the data required for the MTO fields')
+        !errorarray.append(' Skipping... MDS TRAY Support $!support.name -- NOT PROCESSED')
+        !errorarray.append('')
+        !errorarray.append('_________________________________________________________________________')
+        skip
+
+$(-- Do NOT Process MDS Supports which have already been PROCESSED
+        if (!processedsupps[2].empty().not()) then
+          !findsupport = !processedsupps[2].findfirst(!support)
+          if (!findsupport.unset().not()) then
+            -- DO NOT Process a MDS Support which has already been processed
+            skip
+          endif
+        endif
+
+        -- Load the Object "MDSVPRMMTO" for the Current MDS Support
+        --        !mdssupportmto = object MDSVPRMMTO(!support)
+        -- Append Each "MDSVPRMMTO" Object into the Array !mdssuppobjects
+        --        !mdssuppobjects[2].append(!mdssupportmto)
+        -- Update the Already PROCESSED MDS support array
+        !processedsupps[2].append(!support)
+$)
+      enddo
+
+      do !support values !mdsvprmhvacsupp
+
+        -- Do NOT Process MDS Supports which have already been PROCESSED
+        if (!processedsupps[3].empty().not()) then
+          !findsupport = !processedsupps[3].findfirst(!support)
+          if (!findsupport.unset().not()) then
+            -- DO NOT Process a MDS Support which has already been processed
+            skip
+          endif
+        endif
+
+        -- Load the Object "MDSVPRMMTO" for the Current MDS Support
+        --        !mdssupportmto = object MDSVPRMMTO(!support)
+        -- Append Each "MDSVPRMMTO" Object into the Array !mdssuppobjects
+        --        !mdssuppobjects[3].append(!mdssupportmto)
+        -- Update the Already PROCESSED MDS support array
+        !processedsupps[3].append(!support)
+
+      enddo
+      --<GE> 07-08-06
+
+      -------------------------------------------------
+    enddo
+    -- END of Loop for PIPES or HVAC elements in the array "!list"
+    -------------------------------------------------
+
+    -- Unique the ARRAY''s of MDS Supports
+    !processedsupps[1].unique()
+    !processedsupps[2].unique()
+    !processedsupps[3].unique()
+
+    --Temporary Variables for INFO Only
+    --    !!pr1 = !processedsupps[1]
+    --    !!pr2 = !processedsupps[2]
+    --    !!pr3 = !processedsupps[3]
+
+    ---------------------------------------------------------------------------------------------------
+
+  elseif (!module.eq('DRAFT')) then
+    ---------------------------------------------------
+    -- START of MDS VPRM "ACTUAL" MTO from <PDMS DRAFT>
+    ---------------------------------------------------
+    -- Process the passed MDS Support Name from MDS ABA or DELIVERY MANAGER
+    -- The array "!list" will contain a SINGLE MDS Support Name e.g. !list[1] = <'PS7278-FANP09'> or !list[1] = <'PS7375-LG'>
+    do !supp indices !list
+
+      -- Check Passed MDS Support Name<STRING>
+      !passedname   = !list[!supp]
+      !draftmdsname = !list[!supp]
+      if (!draftmdsname.match('/').neq(1)) then
+        !draftmdsname = '/' & !draftmdsname
+      endif
+
+      -- Check if it's a VALID MDS Support
+      !draftmdsdbrf = !draftmdsname.dbref()
+      handle  NONE
+        !ceorig = !!ce
+        -- Test PDMS DBREF for ILLEGAL Characters in the MDS Support Name
+        if (!draftmdsname.matchwild('*[*]*')) then
+          -- Construct the name of the MASTER MDS Structure for the MDS GROUP if "matchwild('*[*]*')" is TRUE
+          -- Change any Passed Name containing '[*]' to a MASTER MDS GROUP Support Name
+          !testname     = !draftmdsname
+          !draftmdsname = !draftmdsname.before('[') & '[1]'
+          -- Write to the LOG file if the Master MDS Structure for the MDS GROUP does NOT exist
+          !!ce = !draftmdsname.dbref()
+          handle ANY
+            !errorarray.append(' CRITICAL ERROR')
+            !errorarray.append('  The PDMS element "$!<passedname>" is NOT a MDS Support')
+            !errorarray.append('   MDS VPRM MTO for this element has been ABORTED')
+            !errorarray.append('')
+            golabel /errorfile
+
+          elsehandle NONE
+            !draftmdsdbrf = !draftmdsname.dbref()
+          endhandle
+        endif
+        --q var !draftmdsname
+        -- Return to Original !!ce
+        !!ce = !ceorig
+
+        -- PDMS Element exists, but is it a VALID INDIVIDUAL MDS Support
+        !!mdssilent = TRUE
+        !suppname = !!mdsgetsuppname(!draftmdsdbrf)
+        -- Invalid MDS Supports are returned as 'ABORT'
+        !!mdssilent.delete()
+        if (!suppname.eq('ABORT')) then
+          -- Abort MDS VPRM ACTUAL MTO and ERROR Log
+          !errorarray.append(' CRITICAL ERROR')
+          !errorarray.append('  The PDMS element "$!<passedname>" is NOT a MDS Support')
+          !errorarray.append('   MDS VPRM MTO for this element has been ABORTED')
+          !errorarray.append('')
+          golabel /errorfile
+        else
+          !draftmdsdbrf = !suppname.dbref()
+        endif
+      elsehandle (2,109)
+        -- Undefined Name, so Append the MDS GROUP suffix '[1]' and check again for a MDS GROUP Support
+        -- Check if MDS Support is the MASTER STRUCTURE, number [1], of a MDS GROUP
+        !draftmdsname = !draftmdsname & '[1]'
+        !draftmdsdbrf = !draftmdsname.dbref()
+        handle NONE
+          -- PDMS Element exists, but is it a VALID MDS GROUP Support
+          !!mdssilent = TRUE
+          !suppname = !!mdsgetsuppname(!draftmdsdbrf)
+          -- Invalid MDS Supports are returned as 'ABORT'
+          !!mdssilent.delete()
+          if (!suppname.eq('ABORT')) then
+            -- Abort MDS VPRM ACTUAL MTO and ERROR Log
+            !errorarray.append(' CRITICAL ERROR')
+            !errorarray.append('  The PDMS element "$!<passedname>" is NOT a MDS Support')
+            !errorarray.append('   MDS VPRM MTO for this element has been ABORTED')
+            !errorarray.append('')
+            golabel /errorfile
+
+          else
+            !draftmdsdbrf = !suppname.dbref()
+          endif
+
+        elsehandle ANY
+          -- Passed MDS Name <STRING> is NOT a VALID MDS Support
+          -- Abort MDS VPRM ACTUAL MTO and ERROR Log
+          !errorarray.append(' CRITICAL ERROR')
+          !errorarray.append('  The PDMS element "$!<passedname>" does NOT exist')
+          !errorarray.append('   MDS VPRM MTO for this element has been ABORTED')
+          !errorarray.append('')
+          golabel /errorfile
+
+        endhandle
+      endhandle
+
+      ---------------------------------------------------------------------------------------------------
+      --<wd>aug2006 -- MDS VPRM Support MTO OBJECTS will NO LONGER be STORED in the !mdssuppobjects ARRAY
+      --               to reduce the impact on the MEMORY used by the PDMS "des.exe"
+      --               Use the !processedsupps ARRAy instead to store the SUPPORT DBREF ONLY
+      --
+      -- Passed MDS Name is a VALID MDS Support
+      -- Load the Object "MDSVPRMMTO" for the Current MDS Support
+      --<wd>aug2006 -- Commented Out this CODE
+      --!mdssupportmto = object MDSVPRMMTO(!draftmdsdbrf)
+
+      -- Append the Current MDS Support "MDSVPRMMTO" Object into the Array !mdssuppobjects
+      --<wd>aug2006 -- Commented Out this CODE
+      --!mdssuppobjects.append(!mdssupportmto)
+
+      --<wd>aug2006 -- ADDED this CODE to use the !processedsupps ARRAy
+      -- Update the !processedsupps MDS support array
+      !processedsupps[1].append(!draftmdsdbrf)
+      --
+      --<wd>aug2006
+
+    enddo
+
+    ----<wd>aug2006 -- Unique the ARRAY of MDS Supports
+    !processedsupps[1].unique()
+    --<wd>aug2006
+
+  endif
+  -------------------------------------------------
+
+  -- The variable "!mdssupports" contains a list of valid MDS Supports on the Current Line
+  -- Generate the input lines for the "MDS VPRM" transfer file "!outputfile"
+  !mdsvprmlines = ARRAY()
+
+  --Temporary GLOBAL Variables for INFO Only
+  !!vobj = ARRAY()
+
+  -- Log file EXTRACTING etc... is Only required when generating MDS VPRM MTO files from PDMS DRAFT
+  if (!module.eq('DRAFT')) then
+    !errorarray.append('_________________________________________________________________________')
+    !errorarray.append('')
+    --!errorarray.append('START')
+    !errorarray.append('Extracting MDS Support Material')
+    --!errorarray.append('')
+    !errorarray.append('_________________________________________________________________________')
+  endif
+
+  -- Process the MDS Support Objects
+  -------------------------------------------------
+  --<GE> 07-08-06 Process the MDS Support Objects for the 3 disciplines
+  do !a from 1 to 3
+
+    !mdsvprmlines.clear()
+    if !processedsupps[$!a].empty() then
+      skip
+    endif
+
+    -- Process the MDS Support Objects
+    --<wd>aug2006 -- Now in the !processedsupps ARRAY
+    -------------------------------------------------
+    --
+    ---------------------------------------------------------------------------------------------------
+    --<wd>aug2006 -- MDS VPRM Support MTO OBJECTS will NO LONGER be STORED in the !mdssuppobjects ARRAY
+    --               to reduce the impact on the MEMORY used by the PDMS "des.exe" programme
+    --               Use the !processedsupps ARRAys instead to store the SUPPORT DBREF ONLY
+    --
+    --  q var !processedsupps[$!a]
+    --
+    --<wd>aug2006 -- Modified the DO loop to use the !processedsupps ARRAY
+    --do !mdsobject indices !mdssuppobjects
+    do !psupp indices !processedsupps[$!a]
+
+      --<wd>aug2006
+      -- ADDED this CODE to Generate the MDS VPRM MTO Object for each valid MDS SUPPORT in the !processedsupps ARRAY
+      -- However ONLY ONE "PML" MDSVPRMMTO OBJECT is CREATED and PROCESSED at a time
+      !mdsvprmobj = object MDSVPRMMTO(!processedsupps[$!a][!psupp])
+
+      -- Now Process each MDS Support Object for the MDS VPRM MTO transfer file
+      --<wd>aug2006 -- Commented Out this CODE
+      --!mdsvprmobj = !mdssuppobjects[!mdsobject]
+      --
+      --<wd>aug2006
+      ---------------------------------------------------------------------------------------------------
+
+      -- Add a Processing the MDS Support Message to the ERROR Log File
+      !mdssuppname = !mdsvprmobj.suppname
+      !errorarray.append('_________________________________________________________________________')
+      !errorarray.append('Processing MDS Support: $!<mdssuppname>' )
+
+      -- Determine the "Safety Class<SC>" and the "Quality Class<QC> for the current MDS Support Object
+      -- Call the FANP Specific PML CODE used by MDS ABA DRAFT Drawing Utility e.g. !!mdsfragettext(!mdsvprmobj,'SC')
+      !classarray  = !!mdsfragettext(!mdsvprmobj,'SC')
+      !mdsvprmobj.qualityclass = !classarray[1]
+      !mdsvprmobj.safetyclass  = !classarray[2]
+
+      -- Get an ARRAY of -- "LISEGA-2*****" SERIES -- "SPRINGS" for the current MDS Support Object
+      if (!!mdshangif.eq('LISEGA')) then
+        if (!mdsvprmobj.hangmemb.empty().not()) then
+          !springs = !!mdslisegaspring(!mdsvprmobj.hangmemb[2])
+          !mdsvprmobj.hangspring = !springs
+        endif
+      endif
+
+      --Temporary GLOBAL Variables for INFO Only
+      --  !!vobj[!mdsobject] = !mdsvprmobj
+      !!vobj[!psupp] = !mdsvprmobj
+
+      -------------------------------------------------
+      -- For ACTUAL MTO form PDMS DRAFT or DELIVERY MANAGER -- SINGLE file required for each MDS Support
+      --
+      -- For BULK MTO from PDMS DESIGN -- SINGLE or MULTIPLE files required?
+      -- Single VPRM input file required for ALL MDS Supports being processed
+      -- File name to be as passed in the variable "!outputfile"
+
+      if (!filetype.eq('SINGLE')) then
+
+        if !module.eq('DESIGN') and (!psupp.eq(1)) then
+          !fileobject = !outputfile
+          --<GE> 07-08-06 set up file for each discipline
+          !vprmbatch = !mdsvprmobj.vprmbatch(!mdsvprmobj,!vprmconfig)
+          !batchsplit = !vprmbatch.split(':')
+          -- !outputdir = !outputfile.directory()
+          -- !mdsvprmfile = !outputdir & '\' & 'MDS-$!<daystring>$!<monthstrabb>$!<year>-$!<hourstring>.$!<minutestring>.$!<secondstring>-' & '$!batchsplit[6]' & '.dat'
+          -- !fileobject  = object FILE(!mdsvprmfile)
+
+          !filestringarray  = !outputfile.string().split('.dat')
+          !mdsvprmfile = !filestringarray[1] & '-' & '$!batchsplit[6]' & '.dat'
+          !fileobject  = object FILE(!mdsvprmfile)
+          !mdsvprmlines.append(!vprmbatch)
+        endif
+
+        ---------------------------------------------------------------------------------------------------
+        --<wd>sep2006 -- Modified the DO loop to use the !processedsupps ARRAY and !psupp indices
+        --if (!mdsobject.eq(1)) then
+        if !module.eq('DRAFT') and (!psupp.eq(1)) then
+          --<wd>sep2006
+          ---------------------------------------------------------------------------------------------------
+          -- ONLY Create the Batch Header line ONCE for a SINGLE file i.e. ONE BATCH HEADER for ALL MDS Supports
+          !fileobject = !outputfile
+
+          -- (1) -- "$B" -- Concatenate the BATCH Header <8 fields> now <9 fields>sep2005
+          !vprmbatch = !mdsvprmobj.vprmbatch(!mdsvprmobj,!vprmconfig)
+
+          --<GE> 11-10-06 set up file for each discipline
+          !batchsplit = !vprmbatch.split(':')
+          !filestringarray  = !outputfile.string().split('.dat')
+          --          !mdsvprmfile = !filestringarray[1] & '-' & '$!batchsplit[6]' & '.dat'
+          !mdsvprmfile = !filestringarray[1]  & '.mto'
+          !fileobject  = object FILE(!mdsvprmfile)
+          --<GE> 11-10-06
+
+          --<GE> 10-10-06 Added support name in final MTO comment field
+          if (!module.eq('DRAFT')) then
+            !vprmbatch = !vprmbatch.replace('::A*',':$!mdssuppname:A*')
+          endif
+          !mdsvprmlines.append(!vprmbatch)
+        endif
+
+      elseif (!filetype.eq('MULTIPLE')) then
+        -- Multiple Individual VPRM input files required, i.e. ONE for each MDS Support
+        -- Each File name to include the name of the MDS Support
+        -- Create the Batch Header line ONCE for a EACH individual file and EACH MDS Support
+
+        -- (1) -- "$B" -- Concatenate the BATCH Record <8 fields> now <9 fields> --<wd>oct2005
+        --      !mdsvprmfile = !prodir & '/' & 'MDS-' & !mdsvprmobj.suppname & '-$!<daystring>$!<monthstrabb>$!<year>-$!<hourstring>$!<minutestring>$!<secondstring>.dat'
+        !mdsvprmfile = !outputdir & '/' & 'MDS-' & !mdsvprmobj.suppname & '-$!<daystring>$!<monthstrabb>$!<year>-$!<hourstring>$!<minutestring>$!<secondstring>.dat'
+        !fileobject  = object FILE(!mdsvprmfile)
+
+        !vprmbatch   = !mdsvprmobj.vprmbatch(!mdsvprmobj,!vprmconfig)
+        !mdsvprmlines.append(!vprmbatch)
+
+      endif
+
+      -- (2) -- "$L" -- Concatenate the MDS Support LINE Record <12 fields>
+      !vprmline = !mdsvprmobj.vprmline(!mdsvprmobj,!vprmconfig)
+
+      -- Process Line/MDS Support Header Record
+      if  (!vprmline.eq('ERROR')) then
+        -- DELETE the BATCH Header Record if "!filetype" is 'MULTIPLE' and LINE record is 'ERROR'
+        if (!filetype.eq('MULTIPLE')) then
+          !findlast = !mdsvprmlines.find(!vprmbatch)
+          !mdsvprmlines.deletefrom(!findlast.size(),1)
+        endif
+
+        if (!module.eq('DRAFT')) then
+          -- "REJECT" the COMPLETE MDS Support and Clear the array "!mdsvprmlines"
+          !mdsvprmlines.clear()
+          !errorarray.append(' CRITICAL ERROR -- This MDS Support contains an ERROR, see below')
+          !errorarray.append('  MDS VPRM MTO for this MDS Support has been ABORTED')
+          !errorarray.append('   This MDS Support has NOT been PROCESSED')
+          !errorarray.append('')
+        endif
+
+        -- SKIP and DO NOT Process, this MDS Support has an INVALID Construction Area
+        !errorarray.appendarray(!mdsvprmobj.errorarray)
+        skip
+
+      else
+        -- VALID Line Header record
+        !mdsvprmlines.append(!vprmline)
+        -- "$U" -- Concatenate the MDS Support Line UDA Records <3 fields>
+        !vprmlineuda = !mdsvprmobj.vprmlineuda(!mdsvprmobj,!vprmconfig)
+        !mdsvprmlines.appendarray(!vprmlineuda)
+
+        -- Build LINE Array to Pass to the "VPRMSUBUNIT" method below
+        -- VPRM requires the "$L" LINE record before every "$S" SUB-UNIT record
+        !vprmlinearray    = ARRAY()
+        !vprmlinearray.append(!vprmline)
+
+      endif
+
+      -- The MDS to VPRM MTO Records shown below will be generated via the Object method shown below;
+      -- i.e. !vprmrecords = !mdsvprmobj.vprmsubunit(!mdsvprmobj,!vprmconfig)
+      --
+      -- (3) -- "$S" -- Concatenate the MDS Support SECTION/SUB-UNIT Records
+      -- (4) -- "$U" -- Concatenate the MDS Support Component UDA Record
+      -- (5) -- "$P" -- Concatenate the MDS Support PART Number Record
+      -- (6) -- "$T" -- Concatenate the MDS Support TAG Number Record
+      -- (7) -- "$C" -- Concatenate the MDS Support COMPONENT Record
+      -- (8) -- "$U" -- Concatenate the MDS Support COMPONENT UDA Record
+
+      --<nb>jun2007  HPD0035323/OP48  (Populate the MTO Revision from the DM Revision code)
+      !mdsvprmobj.rev = ''
+      if (!module.eq('DRAFT')) then
+        do !indx indices !revs
+          !revsplit = !revs[!indx].split()
+          !sup = !revsplit[1].trim()
+          !rev = !revsplit[2].trim()
+          if (!mdsvprmobj.support.name.eq(!sup)) then
+            !mdsvprmobj.rev = !rev
+            skip
+          endif
+        enddo
+      endif
+      --
+      !vprmrecords = !mdsvprmobj.vprmsubunit(!mdsvprmobj,!vprmconfig,!vprmlinearray)
+      -------------------------------------------------------------------------------
+      -- ????? Possible MOVE the code "!mdsvprmlines.appendarray(!vprmrecords)" --
+      -- down the file to suit ERROR CODES for DESIGN and DRAFT ?????
+      -- ?????    --!mdsvprmlines.appendarray(!vprmrecords)
+      -------------------------------------------------------------------------------
+
+      -- Check which type of MTO is required
+      -------------------------------------------------
+      if (!module.eq('DESIGN')) then
+        -------------------------------------------------
+        -- MDS VPRM BULK MTO
+        --------------------
+        --Temporary GLOBAL Variables for INFO Only
+        --!!bdesrec = !vprmrecords
+
+        -- Loop thro !vprmrecords and if ANY ERROR exists, MDS VPRM BULK MTO file Generation/VPRM Transfer
+        -- ONLY "REJECT" invalid INDIVIDUAL Components on the Current MDS Support
+        do !record indices !vprmrecords
+          if (!vprmrecords[!record].matchwild('ERROR')) then
+            !vprmrecords[!record].delete()
+          endif
+        enddo
+        -- Re-Index the MODIFIED !vprmrecords array
+        !vprmrecords.compress()
+
+        --Temporary GLOBAL Variables for INFO Only
+        --!!adesrec = !vprmrecords
+        --!!obj = !mdsvprmobj
+        --!!vcs = !vprmrecords
+        -- Check for LISEGA MDS HANGER "WPAD" Plate records in the HANGER SUB UNIT records <$S:03>
+        -- and MOVE them into the STEELWORK SUB UNIT records <$S:02> Component records
+        if (!!mdshangif.eq('LISEGA')) then
+          !movevprmrecords = !mdsreturnobj.hangerwpads(!vprmrecords, !vprmline)
+          !vprmrecords     = !movevprmrecords
+        endif
+
+        -- After deleting the INDIVIDUAL Component 'ERROR' records, CHECK for any EMPTY SUB UNIT records and
+        -- DELETE any "EMPTY" Combined <$L and $S*> SUB UNIT records i.e. SUB UNITS with out any <$P/$T/$C> records etc...
+        !modvprmrecords = !vprmrecords
+        do !indx indices !vprmrecords
+          --<wd>feb2006        if (!modvprmrecords[!indx].trim().match('$S:01').eq(1)) then
+          if (!vprmrecords[!indx].trim().match('$S:01').eq(1)) then
+            -- Check if the NEXT the record is a "SP" record.
+            !nexindx = (!indx + 1)
+            if (defined(!modvprmrecords[!nexindx])) then
+              if (!modvprmrecords[!nexindx].trim().match('$P').eq(1)) then
+                -- Valid <$P> PART Number record so SKIP
+                skip
+
+              elseif (!modvprmrecords[!nexindx].trim().match('L:').eq(2)) then
+                -- Delete the current '$S:01' record and the extra <$L> LINE record, i.e. the NEXT record, which is NOT required any more
+                !modvprmrecords[!indx].delete()
+                !modvprmrecords[!nexindx].delete()
+
+              endif
+
+            else
+              -- VPRM SUB UNIT <$S:01>etc... -- No VALID records exist in the array for this MDS Support
+              -- Empty the !mdsvprmlines array for this MDS Support and append message to !mdsvprmobj.errorarray
+              -- ****** SEE BELOW ******
+              --
+              --<wd>mar2006
+              -- *** IMPORTANT NOTE ***
+              -- ONLY CLEAR the array !vprmrecords and DO NOT CLEAR the array !mdsvprmlines, as originally shown,
+              --  because OTHER VALID MDS SUPPORT RECORDS MAY EXIST before an INVALID MDS SUPPORT is encountered!!!
+              !vprmrecords.clear()
+              --!mdsvprmlines.clear()
+              --<wd>mar2006
+
+              !mdsvprmobj.errorarray.append(' ERROR -- No VALID MDS VPRM records exist for the MDS Support "$!<mdssuppname>" ')
+              !mdsvprmobj.errorarray.append(' ')
+            endif
+
+            --<wd>feb2006        elseif ((!modvprmrecords[!indx].trim().match('$S:02').eq(1)) or (!modvprmrecords[!indx].trim().match('$S:03').eq(1))) then
+          elseif ((!vprmrecords[!indx].trim().match('$S:02').eq(1)) or (!vprmrecords[!indx].trim().match('$S:03').eq(1))) then
+            -- Check if the NEXT record exists and if the record is a "SP" record.
+            !nexindx = (!indx + 1)
+            if (defined(!modvprmrecords[!nexindx])) then
+              if (!modvprmrecords[!nexindx].trim().match('$P').eq(1)) then
+                -- Valid <$P> PART Number record so SKIP
+                skip
+
+              elseif (!modvprmrecords[!nexindx].trim().match('L:').eq(2)) then
+                -- Delete the extra <$L> LINE record, i.e. the NEXT record, which is NOT required any more and the current '$S:02' record
+                !modvprmrecords[!nexindx].delete()
+                !modvprmrecords[!indx].delete()
+
+              endif
+
+            else
+              -- VPRM SUB UNITS <$S:02> or <$S:03> etc... -- No VALID records exist in the array for the current SUB UNIT
+              !prvindx = (!indx - 1)
+              if (defined(!modvprmrecords[!prvindx])) then
+                if (!modvprmrecords[!prvindx].trim().match('L:').eq(2)) then
+                  -- Delete the extra <$L> LINE record, i.e. the PREVIOUS record, which is NOT required any more
+                  !modvprmrecords[!prvindx].delete()
+                endif
+              endif
+              -- Delete the <$S:02> or <$S:03> record
+              !modvprmrecords[!indx].delete()
+            endif
+
+          endif
+        enddo
+
+        --Reset and Re-Index the MODIFIED !vprmrecords array
+        !vprmrecords = !modvprmrecords
+        !vprmrecords.compress()
+        --$P------------------------------------->>>>>>>>>>>>>>>>>>>>>>>
+        --Temporary GLOBAL Variables for INFO Only
+        --!!mdesrec = !vprmrecords
+        --q var !vprmrecords
+        --$R 110
+        -- Clear/Empty the !vprmrecords ARRAY for the Current MDS Support Object when there aren't ANY <$P> records
+        !precords = FALSE
+        do !pindx indices !vprmrecords
+          if (!vprmrecords[!pindx].trim().match('$P').eq(1)) then
+            !precords = TRUE
+            break
+          endif
+        enddo
+
+        -- NO <$P> records found, so Clear/Empty the !vprmrecords ARRAY
+        if (!precords.not()) then
+          !vprmrecords.clear()
+          -- DELETE LINE <$L> and LINE UDA <$U> records from the !mdsvprmlines ARRAY
+          -- When NO <$P> records are present for the current MDS Support Object
+          !linerecords = ARRAY()
+          !linerecords.append(!vprmline)
+
+          -- Clear the unwanted LINE UDA <$U> records found ONLY after the unwanted LINE <$L> record in the !mdsvprmlines ARRAY
+          if (!mdsvprmlines.size().gt(0)) then
+            do
+              if (!mdsvprmlines.last().match('$U').eq(1)) then
+                -- FIRST DELETE the LAST iteration in the ARRAY
+                !mdsvprmlines[!mdsvprmlines.maxindex()].delete()
+              else
+                break
+              endif
+            enddo
+
+            -- SECOND DELETE the unwanted LINE <$L> records
+            do !lrecords indices !linerecords
+              !findlinerecs = !mdsvprmlines.find(!linerecords[!lrecords])
+              do !lineindx values !findlinerecs
+                !mdsvprmlines[!lineindx].delete()
+              enddo
+            enddo
+          endif
+
+          -- Compress to Re-Index the !mdsvprmlines ARRAY
+          !mdsvprmlines.compress()
+
+        endif
+
+        --Temporary GLOBAL Variables for INFO Only
+        --!!cdesrec = !vprmrecords
+        --q var !vprmrecords
+        --$P <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<------------------------
+
+        -- Append !vprmrecords array to the MAIN ARRAY
+        --<wd>mar2006
+        -- DELETE the LAST RECORD of the array !vprmrecords when it is a "$L" record
+        if (!vprmrecords.size().gt(0)) then
+          !vsize = !vprmrecords.size()
+          if (!vprmrecords[!vsize].trim().match('L:').eq(2)) then
+            !vprmrecords[!vsize].delete()
+          endif
+        endif
+        --<wd>mar2006
+
+        !mdsvprmlines.appendarray(!vprmrecords)
+        --$P=================================================================================================
+        --!!wdx = !mdsvprmlines
+        --$P  q var !mdsvprmlines
+        --q var !mdsvprmlines
+        --$P<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+        -- ADD any ERROR messages to the array "!errorarray"
+        !errorarray.appendarray(!mdsvprmobj.errorarray)
+        --$R
+        -------------------------------------------------
+      elseif (!module.eq('DRAFT')) then
+        -------------------------------------------------
+        -- MDS VPRM ACTUAL MTO
+        ----------------------
+
+        -- Check for LISEGA MDS HANGER "WPAD" Plate records in the HANGER SUB UNIT records <$S:03>
+        -- and MOVE them into the STEELWORK SUB UNIT records <$S:02> Component records
+        if (!!mdshangif.eq('LISEGA')) then
+          !movevprmrecords = !mdsreturnobj.hangerwpads(!vprmrecords, !vprmline)
+          !vprmrecords     = !movevprmrecords
+        endif
+
+        -- Append !vprmrecords array to the MAIN ARRAY
+        !mdsvprmlines.appendarray(!vprmrecords)
+
+        -- "REJECT" the COMPLETE MDS Support if ANY 'ERROR' found
+
+        --!!drarec = !vprmrecords
+
+        -- In DRAFT the array "!mdsvprmlines" always represents a COMPLETE MDS Support, either a MDS GROUP Support
+        -- or an INDIVIDUAL MDS STRUCTURE, MDS HANGER or MDS ANCILLARY ATTA Support
+        -- Loop thro !vprmrecords and if ANY ERROR exists, ABORT the MDS VPRM ACTUAL MTO file Generation/VPRM Transfer
+        do !record indices !vprmrecords
+          if (!vprmrecords[!record].matchwild('ERROR')) then
+            -- "REJECT" the COMPLETE MDS Support and Clear the array "!mdsvprmlines"
+            !mdsvprmlines.clear()
+            !errorarray.append(' CRITICAL ERROR -- This MDS Support contains an ERROR, see below')
+            !errorarray.append('  MDS VPRM MTO for this MDS Support has been ABORTED')
+            !errorarray.append('   This MDS Support has NOT been PROCESSED')
+            !errorarray.append('')
+            break
+          endif
+        enddo
+        -- "REJECT" the Current MDS Support
+        -- ADD any ERROR messages to the array "!errorarray" for invalid INDIVIDUAL Components on the Current MDS Support
+        !errorarray.appendarray(!mdsvprmobj.errorarray)
+        -------------------------------------------------
+      endif
+      -------------------------------------------------
+
+      -- Multiple Individual VPRM MTO input files required, i.e. ONE for each MDS Support
+      if (!filetype.eq('MULTIPLE')) then
+        if (!module.eq('DESIGN')) then
+          -- MDS VPRM BULK MTO
+          -- Check if any <$L> LINE Header records exist
+          !linesexist = FALSE
+          do !lines indices !mdsvprmlines
+            if (!mdsvprmlines[!lines].trim().match('L:').eq(2)) then
+              !linesexist = TRUE
+              break
+            endif
+          enddo
+
+          -- Clear/Empty !mdsvprmlines ARRAY if NO <$L> LINE Header records exist
+          if (!linesexist.not()) then
+            !mdsvprmlines.clear()
+          endif
+        endif
+
+        -- Write the file object
+        !fileobject.open('$!action')
+        !fileobject.writefile('APPEND',!mdsvprmlines)
+        !fileobject.close()
+
+        -- Add Message to error array if NO <SL> Line header records exist
+        if (!module.eq('DESIGN')) then
+          if (!linesexist.not()) then
+            !mdsvprmfilename = !fileobject.fullname()
+            !errorarray.append(' ')
+            !errorarray.append(' NOTE: The MDS VPRM MTO file "$!<mdsvprmfilename>
+            is empty and contains NO MDS VPRM records')
+          endif
+        endif
+
+        -- Append the "MULTIPLE"Individual File Objects to the Object member "MDSVPRMOBJECTS.fileobjects"
+        !mdsreturnobj.fileobjects.append(!fileobject)
+
+        -- Reset the !mdsvprmlines array for the NEXT MDS Support when "MULTIPLE" files required
+        !mdsvprmlines = ARRAY()
+      endif
+
+    enddo
+    -- enddo
+    -------------------------------------------------
+
+    -- Insert the LAST Line of the Processing MDS Supports
+    if (!module.eq('DRAFT')) then
+      !errorarray.append('_________________________________________________________________________')
+      --!errorarray.append('')
+    endif
+
+    --***********************************************************************
+    if (!module.eq('DRAFT')) then
+      -- For ACTUAL MTO -- a SINGLE File is ALWAYS Generated for EACH MDS Support
+      -- Write the file object
+      if (!fileobject.isopen().not()) then
+        !fileobject.open('$!action')
+      endif
+      !fileobject.writefile('APPEND',!mdsvprmlines)
+      !fileobject.close()
+
+      -- Append the "MULTIPLE"Individual File Objects to the Object member "MDSVPRMOBJECTS.fileobjects"
+      !mdsreturnobj.fileobjects.append(!fileobject)
+
+      -- When "!mdsvprmlines.size() = 0" then Write this INFORMATION to the LOG File
+      !mdsvprmfilename = !fileobject.fullname()
+      if (!mdsvprmlines.size().eq(0)) then
+        !errorarray.append(' ')
+        !errorarray.append(' NOTE: The MDS VPRM MTO file "$!<mdsvprmfilename>
+        is empty and contains NO MDS VPRM records')
+        !errorarray.append(' ')
+      endif
+
+
+    elseif (!module.eq('DESIGN')) then
+      -- For BULK MTO -- SINGLE or MULTIPLE files required?
+      -- Single VPRM input file required for ALL MDS Supports being processed
+
+      --<wd>mar2006
+      -- When NO MDS SUPPORTS exist on the passed PIPES the
+      -- variable !fileobject will NOT be DEFINED
+      if (defined(!fileobject)) then
+        --<wd>mar2006
+
+        if   (!filetype.eq('SINGLE')) then
+          -- q var !fileobject
+          -- Write the file object
+          if (!fileobject.isopen().not()) then
+            !fileobject.open('$!action')
+          endif
+          !fileobject.writefile('APPEND',!mdsvprmlines)
+          !fileobject.close()
+          -- Append the "SINGLE" Individual File Object to the Object member "MDSVPRMOBJECTS.fileobjects"
+          -- The variable !fileobject(a FILE object) for a SINGLE CONSOLIDATED MDS VPRM MTO output file may
+          -- contain the MDS VPRM MTO output for "MANY"(100's) MDS Supports of differing types (STRUs, HANGs or Stand Alone ATTAs only)
+          !mdsreturnobj.fileobjects.append(!fileobject)
+        endif
+
+      endif
+
+      --<wd>mar2006
+    endif
+    --<wd>mar2006
+
+  enddo
+  -- The ERROR LOG file Label
+  label /errorfile
+
+  -------------------------------------------------
+  -- Determine LOG file "END" Date Time Object variables
+  !xdatetime = object DATETIME()
+  !xday      = !xdatetime.date()
+  if (!xday.lt(10)) then
+    !xdaystring = '0' & !xday
+  else
+    !xdaystring = !xday.string()
+  endif
+
+  !xmonthstring = !xdatetime.monthstring()
+  !xyear        = !xdatetime.year()
+  !xhour        = !xdatetime.hour()
+  if (!xhour.lt(10)) then
+    !xhourstring = '0' & !xhour
+  else
+    !xhourstring = !xhour.string()
+  endif
+  !xminute   = !xdatetime.minute()
+  if (!xminute.lt(10)) then
+    !xminutestring = '0' & !xminute
+  else
+    !xminutestring = !xminute.string()
+  endif
+  !xsecond   = !xdatetime.second()
+  if (!xsecond.lt(10)) then
+    !xsecondstring = '0' & !xsecond
+  else
+    !xsecondstring = !xsecond.string()
+  endif
+
+  -- Set the END Process Complete Date and Time etc...
+  -- Log file END etc... is Only required when generating MDS VPRM MTO files from PDMS DRAFT
+  if (!module.eq('DRAFT')) then
+    --!errlogend.append('_________________________________________________________________________')
+    --!errlogend.append('_________________________________________________________________________')
+    --!errlogend.append('')
+    --!errlogend.append('Extracting MDS Support Material')
+    --!errlogend.append('END')
+    --!errlogend.append('_________________________________________________________________________')
+    --!errlogend.append('_________________________________________________________________________')
+    !errlogend.append('Processing Complete: $!<xhourstring>:$!<xminutestring>:$!<xsecondstring>  $!<xdaystring> $!<xmonthstring> $!<xyear>')
+    !errlogend.append('________________________________________________________________________')
+    !errlogend.append('_________________________________________________________________________')
+
+    -- Set up the END of ERROR LOG Array to append to the ERROR LOG file "!errorlog" on "return" of this function
+    --!errlogend.append('_________________________________________________________________________')
+    --!errlogend.append('')
+    !errlogend.append('END of LOG file for the "MDS VPRM-MTO" transfer file/directory:')
+    !errlogend.append(' $!outputfile')
+    !errlogend.append('_________________________________________________________________________')
+    !errlogend.append('_________________________________________________________________________')
+    --!errlogend.append('')
+  endif
+
+  -- The OBSOLETE ERROR LOG file Label
+  --  label /errorfile
+
+  -- IMPORTANT NOTE:
+  -- *** A Complete MTO LOG FILE Required for MDS ABA DRAWING "ACTUAL" MDS VPRM MTO transfer file ***
+  --
+  if (!module.eq('DRAFT')) then
+    -- Write the LOG file
+    !errorlog.open('APPEND')
+    !errorlog.writefile('APPEND',!errlogstart)
+    !errorlog.writefile('APPEND',!errorarray)
+    !errorlog.writefile('APPEND',!errlogend)
+    !errorlog.close()
+  endif
+
+  -- Set the LOG ARRAY of STRINGS in the OBJECT member !mdsreturnobj.errormessages
+  !errors = ARRAY()
+  !errors.appendarray(!errlogstart)
+  !errors.appendarray(!errorarray)
+  !errors.appendarray(!errlogend)
+
+  --q var !errors
+
+  !mdsreturnobj.errormessages.appendarray(!errors)
+
+  -- Ensure File is Closed
+  !fileobject.close()
+  handle ANY
+  endhandle
+
+  --  enddo
+  --<GE> 07-08-06
+
+  -- Return the "MDSVPRMOBJECT" Object
+  return !mdsreturnobj
+
+
+endfunction

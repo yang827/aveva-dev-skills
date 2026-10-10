@@ -1,0 +1,297 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            isocont.pmlfnc
+--   Type:          Function Definition
+--   Group:         ISOADP
+--     Keyword:     Isometric
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         25 March 2001
+--
+-- Description:
+-- Creates the continuation labels for HVAC
+--
+-- Assumptions:
+-- The current element is the LAYE
+------------------------------------------------------------------------
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     STRING      The type od drawing being processed (HVAC or CWAY)
+--    2    R     REAL        The current sheet number
+--    3    R     ISODRWG     This drawing data object
+--    4    R     ISODEFAULTS The defaults settings
+--
+------------------------------------------------------------------------
+define function !!isoCont(!type is STRING,!dummyShtNumber is REAL, !dllbRefe is DBREF, !spoolObj is ISOSPOOL, !data is ISODEFAULTS)
+
+  -- Initialise variables
+  !gadget     = !type & 'ContTag'
+  !elevLaye   = !!ce
+  !onString   = !data.$!gadget$N.onString
+  !code       = !data.$!gadget$N.code
+  !offset     = !data.$!gadget$N.offset[1].queryString() & ' ' & !data.$!gadget$N.offset[2].queryString()
+  !tColour    = !data.$!gadget$N.tColour
+  !fColour    = !data.$!gadget$N.fColour
+  !fStyle     = !data.$!gadget$N.fStyle & !data.$!gadget$N.fThickness.replace('Thin','')
+  !cHei       = !data.$!gadget$N.cHei.queryString()
+  !allComp    = !spoolObj.components
+  !keep       = ARRAY()
+
+  -- Set the layer colours
+  TXColour $!tColour  LFStyle $!fStyle  LFColour $!fColour  LLStyle $!fStyle  LLColour $!fColour
+
+  -- Clean any bad references
+  DELETE NULL ANNO
+    handle (64,353)
+      -- n elements with null or illegal DDNM attributes have been deleted
+    endhandle
+
+  -- Get all existing labels
+  VAR !existTags COLL ALL (SLAB GLAB) FOR CE
+  VAR !existRefe EVAL REFE OF DDNM FOR ALL FROM !existTags IGNORE ANY
+
+  -- Set count array for first component
+  !count[1] = 1
+
+  -- Set count array for the last component testing if it is a BRCO
+  if (!allComp[!allComp.size()].type.upCase().eq('BRCO')) then
+
+    do !reverse from !allComp.size() - 1 to 1 by -1
+
+      if (!allComp[!reverse].type.upCase().neq('BRCO')) then
+        !count[2] = !reverse
+        break
+      endif
+
+    enddo
+
+  else
+    !count[2] = !allComp.size()
+
+  endif
+
+  -- For the first and last components
+  do !index ind !count
+
+    -- Initialise variables
+    !compRefe = !allComp[!count[!index]]
+
+    if (!index.eq(1)) then
+
+      !pPoint      = 'P' & !compRefe.arrive
+      !template    = !data.$!gadget$N.aTemplate
+      !continuedOn = !spoolObj.contFrom
+      !contString  = !data.$!gadget$N.fromString
+
+    else
+
+      if (!compRefe.type.upCase().eq('TEE')) then
+        !pPoint = 'P2'
+
+      else
+        !pPoint = 'P' & !compRefe.leave
+
+      endif
+
+      !template    = !data.$!gadget$N.lTemplate
+      !continuedOn = !spoolObj.contTo
+      !contString  = !data.$!gadget$N.onString
+
+    endif
+
+    -- Find continuation sheet
+    if (!continuedOn.match('THIS').neq(0)) then
+
+      -- Extract the element name and find which drawlist it belongs to
+      !element = !continuedOn.split()[2]
+      VAR !adde COLL ALL ADDE WI IDNM EQ $!element FOR $!dllbRefe
+
+      if (defined(!adde[1])) then
+        !continuedOn = 'Sheet ' & !adde[1].dbref().owne.func
+
+      else
+        !!isoLog.messages.append('   Cannot get continuation - possible problems with first or last component?')
+        skip
+
+      endif
+
+    endif
+
+    -- Build atex string
+    !atex = !contString & ' ' & !continuedOn & '#/' & !code.replace('P3',!pPoint)
+
+    -- Check is a label already exists for this component
+    if (!allComp.size().eq(1)) then
+
+      !allFind = !existRefe.find(!compRefe.string())
+
+      if (!allFind.unset() or !allFind.empty()) then
+        !find = REAL()
+
+      elseif (!index.eq(1)) then
+        !find = !allFind[1]
+
+      else
+
+        if (!allFind.size().gt(1)) then
+          !find = !allFind[2]
+        endif
+
+      endif
+
+    else
+      !find = !existRefe.findFirst(!compRefe.string())
+
+    endif
+
+    if (!find.unset()) then
+
+      -- Create a coordinate label
+      NEW SLAB ON $!pPoint OF $!compRefe  ATEX |$!atex|
+       TMRF $!template XYPO $!offset OSET TRUE CHEI $!cHei BLNK TRUE
+       Txcolour $!tColour  LFStyle $!fStyle  LFColour $!fColour  LLStyle $!fStyle  LLColour $!fColour
+
+      -- Keep this one
+      !keep.append(!!ce.string())
+
+    else
+
+      -- Modify the existing
+      !keep.append(!existTags[!find])
+      !!ce = !existTags[!find].dbref()
+      ON $!pPoint OF $!compRefe  ATEX |$!atex| TMRF $!template
+
+    endif
+
+  enddo
+
+  -- Initialise variables
+  !gadget = !type & 'ElevTag'
+  !templateRefes = !data.$!gadget$N.tempArray
+  !code = !data.$!gadget$N.code
+
+  -- For any TEE and BRCO components
+  do !index ind !spoolObj.contOn
+
+    -- Initialise variables
+    !compRefe    = !allComp[!index]
+    !continuedOn = !spoolObj.contOn[!index]
+
+    -- Find continuation sheet
+    if (!continuedOn.match('THIS').neq(0)) then
+
+      -- Extract the element name and find which drawlist it belongs to
+      !element = !continuedOn.split()[2]
+      VAR !adde COLL ALL ADDE WI IDNM EQ $!element FOR $!dllbRefe
+
+      if (defined(!adde[1])) then
+        !continuedOn = 'Sheet ' & !adde[1].dbref().owne.func
+
+      else
+        !!isoLog.messages.append('   Cannot get continuation for ' & !compRefe.type & !compRefe.string() & ' - component problems?')
+        skip
+
+      endif
+
+    endif
+
+    -- Test for BRCO
+    if (!compRefe.type.upCase().eq('BRCO')) then
+
+      -- Determine atex string
+      !hashCode = !code.replace('P3',!data.hvacElevTag.brcoConn)
+
+      -- Get previous component
+      if (!index.eq(1)) then
+        !prevRefe = !compRefe.owne
+      else
+        !prevRefe = !allComp[!index - 1]
+      endif
+
+      -- Calculate the angle between the main centreline and the BRCO P3
+      !angle = !!isoAngle(!prevRefe,!compRefe)
+
+      -- Build atex string
+      !atex = !onString & ' ' & !continuedOn & '#/' & !hashCode
+
+      -- Check is a label already exists for this component
+      !find = !existRefe.findFirst(!compRefe.string())
+      if (!find.unset()) then
+
+        -- Create a coordinate label
+        NEW SLAB ON $!<data.hvacElevTag.brcoConn> OF $!compRefe ATEX |$!atex| :IdpBtex |$!angle|
+         TMRF $!templateRefes[2] XYPO $!offset OSET TRUE CHEI $!cHei BLNK TRUE
+         TXColour DEF  LFStyle DEF  LFColour DEF  LLStyle DEF  LLColour DEF
+
+        -- Keep this one
+        !keep.append(!!ce.string())
+
+      else
+
+        -- Modify the existing
+        !keep.append(!existTags[!find])
+        !!ce = !existTags[!find].dbref()
+        ON $!<data.hvacElevTag.brcoConn> OF $!compRefe ATEX |$!atex| :IdpBtex |$!angle| TMRF $!templateRefes[2]
+
+      endif
+
+    -- For TEE or THRE
+    else
+
+      -- Get ppoint for connection
+      !compRefe = !allComp[!index]
+      if (!compRefe.arr.eq(1) and !compRefe.lea.eq(2) or !compRefe.arr.eq(2) and !compRefe.lea.eq(1)) then
+        !pPoint = 'P3'
+
+      elseif (!compRefe.arr.eq(1) and !compRefe.lea.eq(3) or !compRefe.arr.eq(3) and !compRefe.lea.eq(1)) then
+        !pPoint = 'P2'
+
+      elseif (!compRefe.arr.eq(2) and !compRefe.lea.eq(3) or !compRefe.arr.eq(3) and !compRefe.lea.eq(2)) then
+        !pPoint = 'P1'
+
+      endif
+
+      -- Build atex string
+      !atex = !onString & ' ' & !continuedOn & '#/' & !code & '#/Dir:' & !compRefe.pdir[3].string().before(' WRT')
+
+      -- Check is a label already exists for this component
+      !find = !existRefe.findFirst(!compRefe.string())
+      if (!find.unset()) then
+
+        -- Create a coordinate label
+        NEW SLAB ON $!pPoint OF $!compRefe ATEX |$!atex|
+         TMRF $!templateRefes[1] XYPO $!offset OSET TRUE CHEI $!cHei BLNK TRUE
+         TXColour DEF  LFStyle DEF  LFColour DEF  LLStyle DEF  LLColour DEF
+
+         !keep.append(!!ce.string())
+
+      else
+
+        -- Modify the existing
+        !keep.append(!existTags[!find])
+        !!ce = !existTags[!find].dbref()
+        ON $!pPoint OF $!compRefe ATEX |$!atex| TMRF $!templateRefes[1]
+
+      endif
+
+    endif
+
+  enddo
+
+  -- Remove any unwanted existing labels
+  !remove = !existTags.difference(!keep)
+  do !delete val !remove
+    !!ce = !delete.dbref()
+    DELETE $!!<ce.type>
+  enddo
+
+  -- Return to laye
+  !!ce = !elevLaye
+  UPDATE ANNO
+
+endfunction

@@ -1,0 +1,1355 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            glbtransactionmessages.pmlfrm
+--   Type:          Form Definition
+--   Group:         Global Commands Messages
+--     Keyword:     GLOBAL
+--   Module:        all
+--   Replaces:
+--
+-- Author:          stephen.bentley
+-- Created:         Wed Nov  3 13:39:27 "GMT 1999
+--
+--
+-- Description:
+-- Specific Form to display Global Messages
+-- WARNING:- This PML contains an edit of WHITESPACE to remove TAB chars
+--
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  activeButtons()                  -                   Activate the next and previous command buttons accordingly
+--  activePages()                    -                   Activate the forward and back page gadgets appropriately
+--  backPage()                       -                   Display the previous page of transactions
+--  clearMessages()                  -                   Clear all messages (Should never get called, kept just in case)
+--  currentPage()                    -                   Display the current page of transactions
+--  forwardPage()                    -                   Display the next page of transactions
+--  getAttributes()                  -                   Update the display of the transaction attributes form with current data
+--  getCommand(STRING)               -                   Transfer the selected command on the transaction form to display on this form
+--  getMessages()                    -                   Display the transaction messages for the current transaction
+--  getWork()                        -                   Get work from the transaction DB only
+--  glbTransactionMessages()         -                   Constructor
+--  goPage(REAL)                     -                   Display the previous page of transactions
+--  init()                           -                   Initialise Form
+--  loadSettings()                   -                   Load settings
+--  navigate()                       -                   If in admin then this method would allow navigation around the dB
+--  save()                           -                   Save message to the selected location
+--  saveFolder()                     STRING              Return last used folder name for save file
+--  saveOk(STRING)                   -                   To Write the transaction messages.
+--  saveSettings()                   -                   Save settings
+--  setNumberCommands()              -                   Run when the number of lines per page changes
+--  setPageGadgets()                 -                   Set some values for paging of the transactions
+--
+
+import 'PMLFileBrowser'
+handle any
+endhandle
+
+setup form !!glbTransactionMessages
+
+  !this.formTitle     = 'Transaction Messages'
+  !this.iconTitle     = 'Messages'
+  !this.callback      = '!this.init()'
+  !this.formRevision  = ' $Revision: 1.21 $ '
+
+  -- Body of form definition
+
+  rgroup .progressOrResults '' at x0 y0 callback '!this.getMessages()' VERTICAL
+    add tag 'Progress' SELECT 'PROGRESS'
+    add tag 'Results ' SELECT 'RESULTS'
+  exit
+
+  text      .mstext   'Message '  at xmax+1 ymin call '' width 30 is STRING
+  text      .user     'User '     at xmax+1 ymin width 19 is STRING
+  text      .database 'Database ' at xmax+1 ymin width 30 is STRING
+  text      .command  'Command '  at xmin_mstext ymax+0.3 call '' width 94 is STRING
+  button    .backCommand     at xmax+1 ymin  call |!this.getCommand('previous')| pixmap width 7 height 3 tooltip 'Previous Command'
+  button    .forwardCommand  at xmin ymax  call |!this.getCommand('next')| pixmap width 7 height 3 tooltip 'Next Command'
+
+  -- Current List Contents
+  frame .messagesFrame 'Transaction List (00000 lines)' at x0 ymax_progressOrResults
+    list   .messages  ''  at x1 y1 call '!this.navigate()' columns single width 119 length 10
+
+    -- Page Gadgets
+    option    .number  |Lines per page | at xmin_messages  ymax_messages call |!this.setNumberCommands()| width 3
+    option    .reverseDate  || at xmax ymin_number call |!this.setNumberCommands()| width 12
+
+    rgroup .messagesOrResults '' at xmax+1 ymax_messages-0.15 callback '!this.getMessages()' HORIZONTAL
+      add tag 'Messages' SELECT 'MESSAGE'
+      add tag 'Successes' SELECT 'SUCCESS'
+      add tag 'Failures' SELECT 'FAILURE'
+      add tag 'Operations' SELECT 'OPERATION'
+    exit
+
+    path right
+    valign bottom
+    paragraph .pagePage    at xmax+1 ymax_messages  text 'Page'  width 5
+    button    .back        call |!this.backPage()| pixmap width 16 height 16 tooltip 'Back one page'
+    text      .pageGadget  ''  call '!this.goPage(!this.pageGadget.val)' width 4 is REAL
+    button    .forward     call |!this.forwardPage()| pixmap width 16 height 16 tooltip 'Forward one page'
+    paragraph .pageNumber  at xmax ymax_messages   width 9
+
+  exit
+
+  -- Members
+  member .commandReference is STRING
+  member .saveMessageOrResults is STRING
+  member .saveProgressOrResults is STRING
+  member .showAttributes is BOOLEAN
+
+  -- Used for paging the results
+  -- Index into results array of first entry in the current page
+  member  .firstNumber       is REAL
+  -- index into results array of last entry in the current page
+  member  .lastNumber        is REAL
+  -- Current page number
+  member  .currentPageNumber is REAL
+  -- last page number base on the known rtext size
+  member  .lastPageNumber    is REAL
+  -- rtext size of the collected command elements
+  member  .resultSize        is REAL
+  -- Current page size as a String (Could be 'ALL')
+  member  .pageSizeStr       is STRING
+  -- maximum page size - set to stop very large result sets from being processed and displayed
+  member  .maxPageSize       is REAL
+  member  .sizeOKd           is BOOLEAN
+  --Added for DFN 9391. Date:27.07.06
+  -- Heading definition
+  member  .messageHeading    is ARRAY
+  -- Folder for save message file
+  member .saveFolder         is STRING
+-- End of form definition for !!glbTransactionMessages
+exit
+
+------------------------------------------------------------------------
+--
+-- Method:      glbTransactionMessages
+--
+-- Description: Constructor
+--
+------------------------------------------------------------------------
+
+define method .glbTransactionMessages()
+
+  -- Default setting
+  !this.saveMessageOrResults = 'MESSAGE'
+  !this.saveProgressOrResults = 'RESULTS'
+  !this.showAttributes = TRUE
+
+  -- Heading For list gadget
+  !headings = ARRAY()
+  !headings.append('IssueDate')
+  !headings.append('Type')
+  !headings.append('Location')
+  !headings.append('TransactionType')
+  !headings.append('Text')
+  !headings.append('Reference')
+  !headings.append('Name')
+  !this.messages.setHeadings(!headings)
+  !this.messageHeading = !headings
+  -- Pop up menus
+  !menu = !this.newMenu('messageSelect')
+    !menu.clear()
+    !menu.add('callback', 'Update',  '!this.getWork()
+!this.getMessages()')
+      !menu.add('separator')
+      !menu.add('toggle',   'Operations Filter',  '!this.getWork()
+!this.getMessages()')
+      !this.messageSelect.select('Operations Filter', false)
+      !!glbTransactions.object.operationsFilter = false
+      !menu.add('toggle',   'Commands Filter',  '!this.getWork()
+!this.getMessages()')
+      !this.messageSelect.select('Commands Filter', false)
+      !!glbTransactions.object.commandsFilter = false
+  -- Added for DFN 9391. Date:27.07.06
+  -- Added separator to save the transaction messages.
+      !menu.add('separator')
+      !menu.add('callback', 'Save To File..', |!this.save()|)
+
+  !this.messages.setPopup(!this.messageSelect)
+
+  -- Set the command gadget  as not editable
+  !this.command.setEditable(false)
+  !this.mstext.setEditable(false)
+  !this.user.setEditable(false)
+  !this.database.setEditable(false)
+
+  -- Set up the page gadgets
+  !this.setPageGadgets()
+
+  -- Tool tips
+
+  -- Validation Calls
+
+  -- Load last used settings
+  !this.loadSettings()
+  handle any
+    -- Ignore any error from the load
+  endhandle
+
+endmethod
+-- End of method definition for .glbTransactionMessages()
+------------------------------------------------------------------------
+--
+-- Method:      init
+--
+-- Description: Initialise Form
+--
+------------------------------------------------------------------------
+
+define method .init()
+
+  -- Select the recorded option
+  !this.messagesOrResults.select(!this.saveMessageOrResults)
+  !this.progressOrResults.select(!this.saveProgressOrResults)
+
+  -- Get the command from the glbTransactions form
+  !this.getCommand('current')
+
+endmethod
+-- End of method definition for .init()
+------------------------------------------------------------------------
+--
+-- Method:      getCommand
+--
+-- Description: Transfer the selected command on the transaction form to display on this form
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      STRING    Option (previous, next or current)
+--
+------------------------------------------------------------------------
+
+define method .getCommand(!option is STRING)
+
+  -- What is selected at the moment
+  !index = !!glbTransactions.transactions.val.size()
+  if (!index gt 0) then
+    !picked = !!glbTransactions.transactions.val
+    !pickedField = !picked[!index]
+  else
+    -- This case should never occur
+    !this.clearMessages()
+    !this.activeButtons()
+    return
+  endif
+
+  if (!option.lowcase() eq 'previous') then
+    if (!pickedField gt 1) then
+      !!glbTransactions.transactions.clearSelection()
+      !!glbTransactions.transactions.select('rtext', !!glbTransactions.transactions.rtext[!pickedField - 1])
+      !this.command.val = !!glbTransactions.transactions.selection('dtext')[1].replace('	',' ')  $* This line contains an explicit TAB char
+      !this.command.setTooltip(!this.command.val)
+      !this.mstext.val = !!glbTransactions.transactions.selection('rtext')[1].dbref().mstext
+      handle ANY
+        !this.mstext.val = 'unset'
+        !this.mstext.setTooltip('No Final Result Message')
+      elsehandle NONE
+        if (!this.mstext.val.trim() eq '') then
+          !this.mstext.val = 'unset'
+          !this.mstext.setTooltip('No Final Result Message')
+        else
+          !this.mstext.setTooltip(!this.mstext.val)
+        endif
+      endhandle
+      !this.database.val = !!glbTransactions.transactions.selection('rtext')[1].dbref().trdbrf.name.after('*')
+      handle ANY
+        !this.database.val = 'unset'
+        !this.database.setTooltip('Database Not Set')
+      elsehandle NONE
+        !this.database.setTooltip(!this.database.val)
+      endhandle
+      !this.commandReference = !!glbTransactions.transactions.selection('rtext')[1]
+      !this.user.val = !!glbTransactions.transactions.selection('rtext')[1].dbref().owner.namn.part(4, '/') $
+             & '/' & !!glbTransactions.transactions.selection('rtext')[1].dbref().owner.namn.part(5, '/')
+      handle ANY
+        !this.user.val = 'unset'
+        !this.user.setTooltip('No User')
+      elsehandle NONE
+        !this.user.setTooltip(!this.user.val)
+      endhandle
+    endif
+  elseif (!option.lowcase() eq 'next') then
+    if (!pickedField lt (!!glbTransactions.transactions.rtext.size())) then
+      !!glbTransactions.transactions.clearSelection()
+      !!glbTransactions.transactions.select('rtext', !!glbTransactions.transactions.rtext[!pickedField + 1])
+      !this.command.val = !!glbTransactions.transactions.selection('dtext')[1].replace('	',' ')  $* This line contains an explicit TAB char
+      !this.command.setTooltip(!this.command.val)
+      !this.mstext.val = !!glbTransactions.transactions.selection('rtext')[1].dbref().mstext
+      handle ANY
+        !this.mstext.val = 'unset'
+        !this.mstext.setTooltip('No Final Result Message')
+      elsehandle NONE
+        if (!this.mstext.val.trim() eq '') then
+          !this.mstext.val = 'unset'
+          !this.mstext.setTooltip('No Final Result Message')
+        else
+          !this.mstext.setTooltip(!this.mstext.val)
+        endif
+      endhandle
+      !this.database.val = !!glbTransactions.transactions.selection('rtext')[1].dbref().trdbrf.name.after('*')
+      handle ANY
+        !this.database.val = 'unset'
+        !this.database.setTooltip('Database Not Set')
+      elsehandle NONE
+        !this.database.setTooltip(!this.database.val)
+      endhandle
+      !this.commandReference = !!glbTransactions.transactions.selection('rtext')[1]
+      !this.user.val = !!glbTransactions.transactions.selection('rtext')[1].dbref().owner.namn.part(4, '/') $
+             & '/' & !!glbTransactions.transactions.selection('rtext')[1].dbref().owner.namn.part(5, '/')
+      handle ANY
+        !this.user.val = 'unset'
+        !this.user.setTooltip('No User')
+      elsehandle NONE
+        !this.user.setTooltip(!this.user.val)
+      endhandle
+    endif
+  else
+    if (!this.commandReference.set() and !this.commandReference eq $
+      !!glbTransactions.transactions.selection('rtext')[!!glbTransactions.transactions.val.size()] $
+      and !index neq 1) then
+      -- Do not reload this one is already set
+      return
+    else
+      -- option should be 'current'
+      -- What is selected at the moment
+
+      !!glbTransactions.transactions.select('rtext', !!glbTransactions.transactions.rtext[!pickedField])
+      !this.command.val = !!glbTransactions.transactions.selection('dtext')[!!glbTransactions.transactions.val.size()].replace('	',' ')  $* This line contains an explicit TAB char
+      !this.command.setTooltip(!this.command.val)
+      !this.mstext.val = !!glbTransactions.transactions.selection('rtext')[!!glbTransactions.transactions.val.size()].dbref().mstext
+      handle ANY
+        !this.mstext.val = 'unset'
+        !this.mstext.setTooltip('No Final Result Message')
+      elsehandle NONE
+        if (!this.mstext.val.trim() eq '') then
+          !this.mstext.val = 'unset'
+          !this.mstext.setTooltip('No Final Result Message')
+        else
+          !this.mstext.setTooltip(!this.mstext.val)
+        endif
+      endhandle
+      !this.database.val = !!glbTransactions.transactions.selection('rtext')[!!glbTransactions.transactions.val.size()].dbref().trdbrf.name.after('*')
+      handle ANY
+        !this.database.val = 'unset'
+        !this.database.setTooltip('Database Not Set')
+      elsehandle NONE
+        !this.database.setTooltip(!this.database.val)
+      endhandle
+      !this.commandReference = !!glbTransactions.transactions.selection('rtext')[!!glbTransactions.transactions.val.size()]
+      !this.user.val = !!glbTransactions.transactions.selection('rtext')[!!glbTransactions.transactions.val.size()].dbref().owner.namn.part(4, '/') $
+               & '/' & !!glbTransactions.transactions.selection('rtext')[!!glbTransactions.transactions.val.size()].dbref().owner.namn.part(5, '/')
+      handle ANY
+        !this.user.val = 'unset'
+        !this.user.setTooltip('No User')
+      elsehandle NONE
+        !this.user.setTooltip(!this.user.val)
+      endhandle
+    endif
+  endif
+
+  -- Update the Navigation if necessary
+  if (!this.shown()) then
+    !!glbTransactions.navigate()
+  endif
+
+  -- Get the Messages for the selected command
+  !this.getMessages()
+
+  -- Activate the forward and back buttons as required
+  !this.activeButtons()
+
+endmethod
+-- End of method definition for .getCommand()
+------------------------------------------------------------------------
+--
+-- Method:      getMessages
+--
+-- Description: Display the transaction messages for the current transaction
+--
+------------------------------------------------------------------------
+
+define method .getMessages()
+ -- Modified for DFN7300. Date :07.06.06
+ !memory = !!ce
+  -- Record the message or results selection for use if form is closed then shown again
+  !this.saveMessageOrResults = !this.messagesOrResults.selection()
+  !this.saveProgressOrResults = !this.progressOrResults.selection()
+  -- Set the messages or results required to true or false
+  if (!this.progressOrResults.selection() eq 'RESULTS') then
+    !!glbTransactions.object.results = true
+  else
+    !!glbTransactions.object.results = false
+  endif
+  -- Set the operations and command messages filtering required to true or false
+  !!glbTransactions.object.operationsFilter = !this.messageSelect.selected('Operations Filter')
+  !!glbTransactions.object.commandsFilter = !this.messageSelect.selected('Commands Filter')
+
+  -- Pass the collection type to the transaction object
+  !!glbTransactions.object.messages = false
+  !!glbTransactions.object.successes = false
+  !!glbTransactions.object.failures = false
+  !!glbTransactions.object.operations = false
+  if (!this.messagesOrResults.selection() eq 'MESSAGE') then
+    !!glbTransactions.object.messages = true
+  elseif (!this.messagesOrResults.selection() eq 'SUCCESS') then
+    !!glbTransactions.object.successes = true
+  elseif (!this.messagesOrResults.selection() eq 'FAILURE') then
+    !!glbTransactions.object.failures = true
+  elseif (!this.messagesOrResults.selection() eq 'OPERATION') then
+    !!glbTransactions.object.operations = true
+  endif
+
+  -- Get the commands from the transaction object
+  !!glbTransactions.object.collectCommandMessages(!this.commandReference)
+
+  if (!!glbTransactions.object.operations) then
+    -- Heading For list gadget
+    !headings = ARRAY()
+    !headings.append('IssueDate')
+    !headings.append('Type')
+    !headings.append('State')
+    !headings.append('Pass')
+    !headings.append('Location')
+    !headings.append('TransactionType')
+    !headings.append('Text')
+    !this.messages.setHeadings(!headings)
+    !this.messageHeading = !headings
+  else
+    -- Heading For list gadget
+    !headings = ARRAY()
+    !headings.append('IssueDate')
+    !headings.append('Type')
+    !headings.append('Location')
+    !headings.append('TransactionType')
+    !headings.append('Text')
+    !headings.append('Reference')
+    !headings.append('Name')
+    !this.messages.setHeadings(!headings)
+    !this.messageHeading = !headings
+  endif
+
+  !this.messagesFrame.tag = 'Transaction List (' & !!glbTransactions.object.collectedMessages & ' lines)'
+  !this.resultSize = !!glbTransactions.object.collectedMessages
+
+  -- Put the collected in the list
+  !this.setNumberCommands()
+   -- Modified  for DFN7300. Date :07.06.06
+  !!ce = !memory
+endmethod
+-- End of method definition for .getMessages()
+------------------------------------------------------------------------
+--
+-- Method:      clearMessages
+--
+-- Description: Clear all messages (Should never get called, kept just in case)
+--
+------------------------------------------------------------------------
+
+define method .clearMessages()
+
+  -- This method may eventually call a method on the glbTransaction object
+
+  -- Make sure the command gadget is unset
+  !this.command.val = ''
+  !this.command.setTooltip('')
+  !this.mstext.val = ''
+  !this.mstext.setTooltip('')
+  !this.user.val = ''
+  !this.user.setTooltip('')
+  !this.database.val = ''
+  !this.database.setTooltip('')
+
+  -- Example text for messages
+  !example = ARRAY()
+
+  !this.messages.dtext  = !example
+
+endmethod
+-- End of method definition for .clearMessages()
+------------------------------------------------------------------------
+--
+-- Method:      activeButtons
+--
+-- Description: Activate the next and previous command buttons accordingly
+--
+------------------------------------------------------------------------
+
+define method .activeButtons()
+
+   -- What is selected at the moment
+  !index = !!glbTransactions.transactions.val.size()
+  if (!index gt 0) then
+    !picked = !!glbTransactions.transactions.val
+    !pickedField = !picked[!index]
+  else
+    !this.backCommand.active = false
+    !this.forwardCommand.active = false
+    return
+  endif
+
+  -- Activate the back and forward buttons as required
+  -- First command
+  if (!pickedField eq 1) then
+    !this.backCommand.active = false
+  else
+    !this.backCommand.active = true
+  endif
+
+  -- Last command
+  if (!pickedField lt !!glbTransactions.transactions.rtext.size()) then
+    !this.forwardCommand.active = true
+  else
+    !this.forwardCommand.active = false
+  endif
+
+  -- Same for the owning form
+  !!glbTransactions.activeButtons()
+
+endmethod
+-- End of method definition for .activeButtons()
+------------------------------------------------------------------------
+--
+-- Method:      navigate
+--
+-- Description: If in admin then this method would allow navigation around the dB
+-- The actual gadget has been removed but the method is called in other places
+--
+------------------------------------------------------------------------
+
+define method .navigate()
+
+  -- Navigate to the Command if toggled on (Admin Only)
+  if (!!glbTransactions.module.upcase() eq 'ADMIN') then
+    if (!!glbTransactions.messageSelect.selected('Navigate on Selection')) then
+    -- above line inactivated by next line
+    --if (false) then
+      !!ce = !this.messages.selection('rtext').dbref()
+      handle ANY
+        -- unable to navigate to message
+      endhandle
+    endif
+  endif
+
+  -- Get attributes if requested and only if this form is already shown
+  if (!this.shown()) then
+    !this.getAttributes()
+  endif
+
+endmethod
+-- End of method definition for .navigate()
+------------------------------------------------------------------------
+--
+-- Method:      getAttributes
+--
+-- Description: Update the display of the transaction attributes form with current data
+--
+------------------------------------------------------------------------
+
+define method .getAttributes()
+
+  -- Do not show these attributes if transaction attributes have just been shown
+  if (!this.showAttributes.not()) then
+    !this.showAttributes = true
+    return
+  endif
+
+  -- Navigate to the Command if toggled on (Admin Only)
+  if (!!glbTransactions.module.upcase() eq 'ADMIN') then
+    if (defined(!!cadcReq) and !!cadcReq.shown()) then
+     !element = !this.messages.selection('rtext').dbref()
+     handle ANY
+       -- unable to get attributes
+       return
+     elsehandle NONE
+       !text = ARRAY()
+       if (!element.badref()) then
+         -- unable to get attributes (not a valid element)
+         -- Unset the attributes list
+         !text.append(|No Transaction Details|)
+
+       elseif (!element.type eq 'TROUCO') then
+
+         !title = |Outbound Command|
+         !text.append(|Transaction Outward Command   | & !element.ref)
+         !text.append(|============================================|)
+         !text.append(|Transaction command Type        = | & !element.commtype)
+         !text.append(|State                           = | & !element.outsta)
+         !text.append(||)
+         !text.append(|Result Pass/Fail                = | & !element.trpass)
+         !text.append(|Child command reference         = | & !element.cmref)
+         !text.append(|Result Text                     = | & !element.mstext)
+         !text.append(||)
+         !text.append(|Date created                    = | & !element.datecr)
+         !text.append(|Date ready                      = | & !element.daterd)
+         !text.append(|Next target location            = | & !element.nxtarl)
+         !text.append(|Date last sent                  = | & !element.datesn)
+         !text.append(|Number of retries               = | & !element.nretry)
+         !text.append(|Max number of retries           = | & !element.maxtry)
+         !text.append(|End time trying                 = | & !element.endtim)
+         !text.append(|Seconds between retries         = | & !element.waitim)
+         !text.append(|Date acknowledged               = | & !element.dateak)
+         !text.append(|Number of acknowledgements      = | & !element.nackn)
+         !text.append(|Date reply received             = | & !element.daterp)
+         !text.append(|Number of replies sent          = | & !element.nreply)
+         !text.append(|Date reply acknowledgement sent = | & !element.daterk)
+         !text.append(|Number of replies acknowledged  = | & !element.nrepak)
+         !text.append(|Date complete                   = | & !element.datend)
+         !text.append(|Cancelled by                    = | & !element.userst)
+         !text.append(||)
+         !text.append(|Transaction arguments           = | & !element.trcarg)
+         !text.append(|Integer argument count          = | & !element.inarco)
+         !memory = !!ce
+         !!ce = !element
+         var !intarguments intarguments
+         !!ce = !memory
+         !text.append(|Transaction integer arguments   = | & !intarguments)
+         handle(2,442)
+           -- Concatenated text is too long
+           !text.append(|Transaction integer arguments   = |)
+           !text.append(!intarguments)
+           handle(2,442)
+             -- Still Concatenated text is too long
+           endhandle
+         endhandle
+         !text.append(||)
+         !text.append(|Original location               = | & !element.orilocation)
+         !text.append(|Destination location            = | & !element.deslocation)
+         !text.append(|Previous recorded location      = | & !element.prvlocation)
+         !text.append(||)
+         !text.append(|Database                        = | & !element.trdbrf)
+         !text.append(|File number                     = | & !element.trfino)
+         !text.append(|Extract number                  = | & !element.trextno)
+         !text.append(|Area number of dB               = | & !element.trarea)
+         --!text.append(|File type of dB                 = | & !element.trstyp)
+         !text.append(|dB number                       = | & !element.trdbno)
+         !text.append(|Auxiliary loc (Central Admin)   = | & !element.auxlocation)
+         !text.append(|System location (System dB)     = | & !element.syslocation)
+         !text.append(||)
+         !text.append(|Execute time (allows delay)     = | & !element.extime)
+         !text.append(||)
+         !text.append(|Dependency count                = | & !element.depcou)
+         !memory = !!ce
+         !!ce = !element
+         var !depcount depcou
+         !!ce = !memory
+         do !i from 1 to !depcount.real()
+           if (!i eq 1) then
+             !text.append(|Other dependent commands        = | & !element.depend[1].fullname)
+             handle ANY
+             endhandle
+           else
+             !text.append(|                                = | & !element.depend[!i].fullname)
+             handle ANY
+             endhandle
+           endif
+         enddo
+         do !i from 1 to !depcount.real()
+           if (!i eq 1) then
+             !text.append(|Other dependent commands        = | & !element.deptyp[1])
+             handle ANY
+               !!alert.error('Incorrect number of dependents')
+             endhandle
+           else
+             !text.append(|                                = | & !element.deptyp[!i])
+             handle ANY
+               !!alert.error('Incorrect number of dependents')
+             endhandle
+           endif
+         enddo
+         !text.append(|Previous operation reference    = | & !element.preope)
+         !text.append(|Post operation code             = | & !element.popcod)
+
+       elseif (!element.type eq 'TROPER') then
+
+         !title = |Operation|
+         !text.append(|Operation               | & !element.ref)
+         !text.append(|============================================|)
+         !text.append(|Operation Type           = | & !element.optype)
+         !text.append(||)
+         !text.append(|State                    = | & !element.opstat)
+         handle ANY
+           !text.append(|State                    = unset|)
+         endhandle
+         !text.append(|Status                   = | & !element.tstate)
+         !text.append(|Result Pass/Fail         = | & !element.trpass)
+         !text.append(|Result Text              = | & !element.mstext)
+         !text.append(||)
+         !text.append(|Date created             = | & !element.datecr)
+         !text.append(|Date ready               = | & !element.daterd)
+         !text.append(|Date running             = | & !element.datern)
+         !text.append(|Date last stalled        = | & !element.datesl)
+         !text.append(|Number of retries        = | & !element.nretry)
+         !text.append(|Max number of retries    = | & !element.maxtry)
+         !text.append(|Seconds between retries  = | & !element.waitim)
+         !text.append(|Date completed           = | & !element.datecm)
+         !text.append(||)
+         !text.append(|Date stopped             = | & !element.datend)
+         !text.append(|Cancelled by             = | & !element.userst)
+         !text.append(|Time to abort command    = | & !element.endtim)
+         !text.append(||)
+         !text.append(|Dependency count         = | & !element.depcou)
+         !memory = !!ce
+         !!ce = !element
+         var !depcount depcou
+         !!ce = !memory
+         do !i from 1 to !depcount.real()
+           if (!i eq 1) then
+             !text.append(|Other dependent commands = | & !element.depend[1].fullname)
+             handle ANY
+             endhandle
+           else
+             !text.append(|                         = | & !element.depend[!i].fullname)
+             handle ANY
+             endhandle
+           endif
+         enddo
+         do !i from 1 to !depcount.real()
+           if (!i eq 1) then
+             !text.append(|Other dependent commands = | & !element.deptyp[1])
+             handle ANY
+               !!alert.error('Incorrect number of dependents')
+             endhandle
+           else
+             !text.append(|                         = | & !element.deptyp[!i])
+             handle ANY
+               !!alert.error('Incorrect number of dependents')
+             endhandle
+           endif
+         enddo
+         !text.append(|Previous operation       = | & !element.preope)
+         !text.append(|Post operation code      = | & !element.popcod)
+
+       elseif (!element.type eq 'TRMESS') then
+         !title = |Transaction Message|
+         !text.append(|Transaction Message | & !element.ref)
+         !text.append(|============================================|)
+         !memory = !!ce
+         !!ce = !element
+         var !mesnumber mesnumber
+         !!ce = !memory
+         !text.append(|Message Number        = | & !mesnumber)
+         !text.append(|Message Text          = | & !element.mstext)
+         --!text.append(|Message Pass/Fail     = | & !element.trpass)
+         !text.append(|Source Operation Type = | & !element.optype)
+         !text.append(|Source Command Type   = | & !element.commtype)
+         handle ANY
+         endhandle
+         !text.append(|Date Raised           = | & !element.datems)
+         !text.append(|Message Sent          = | & !element.mssent)
+         !text.append(|Message Location      = | & !element.msloca)
+
+       elseif (!element.type eq 'TRSUCC') then
+         !title = |Transaction Success|
+         !text.append(|Transaction Success  | & !element.ref)
+         !text.append(|============================================|)
+         !memory = !!ce
+         !!ce = !element
+         var !mesnumber mesnumber
+         !!ce = !memory
+         !text.append(|Result Number         = | & !mesnumber)
+         !text.append(|Result Text           = | & !element.mstext)
+         !text.append(|Source Operation Type = | & !element.optype)
+         !text.append(|Source Command Type   = | & !element.commtype)
+         handle ANY
+         endhandle
+         !text.append(|Date Raised           = | & !element.datems)
+         !memory = !!ce
+         !!ce = !element
+         var !mesref mesref
+         !!ce = !memory
+         !text.append(|Data Ref              = | & !mesref)
+         !text.append(|Data Qualifier        = | & !element.mesqua)
+         !text.append(|Data Text of Result   = | & !element.msdtxt)
+         !text.append(|Result Location       = | & !element.msloca)
+
+       elseif (!element.type eq 'TRFAIL') then
+         !title = |Transaction Failure|
+         !text.append(|Transaction Failure  | & !element.ref)
+         !text.append(|============================================|)
+         !memory = !!ce
+         !!ce = !element
+         var !mesnumber mesnumber
+         !!ce = !memory
+         !text.append(|Result Number         = | & !mesnumber)
+         !text.append(|Result Text           = | & !element.mstext)
+         !text.append(|Source Operation Type = | & !element.optype)
+         !text.append(|Source Command Type   = | & !element.commtype)
+         handle ANY
+         endhandle
+         !text.append(|Date Raised           = | & !element.datems)
+         !memory = !!ce
+         !!ce = !element
+         var !mesref mesref
+         !!ce = !memory
+         !text.append(|Data Ref              = | & !mesref)
+         !text.append(|Data Qualifier        = | & !element.mesqua)
+         !text.append(|Data Text of Result   = | & !element.msdtxt)
+         !text.append(|Result Location       = | & !element.msloca)
+
+       endif
+
+       -- Populate the attributes form
+       !!cadcReq.cadcReq.clear()
+       !!cadcReq.cadcReq.setFocus()
+       !!cadcReq.cadcReq.channel = 'RQUEST'
+       do !i indices !text
+         write '$!text[$!i]'
+       enddo
+
+     endhandle
+    endif
+  endif
+
+endmethod
+-- End of method definition for .getAttributes()
+------------------------------------------------------------------------
+--
+-- Method:      setPageGadgets
+--
+-- Description: Set some values for paging of the transactions
+--
+------------------------------------------------------------------------
+
+define method .setPageGadgets()
+
+  -- Set the gadget pixmaps
+  !this.forward.addPixmap(!!pml.getPathName('rightarrow16.png'))
+  !this.back.addPixmap(!!pml.getPathName('leftarrow16.png'))
+  !this.forwardCommand.addPixmap(!!pml.getPathName('downarrow7x3.png'))
+  !this.backCommand.addPixmap(!!pml.getPathName('uparrow7x3.png'))
+
+   -- set number of results per page options
+  !choice = ARRAY()
+  !choice.append('  1')
+  !choice.append(' 10')
+  !choice.append(' 50')
+  !choice.append('100')
+  --!choice.append('...')
+  !choice.append('All')
+  !this.number.dtext = !choice
+
+  -- Set the member to the default
+  !this.pageSizeStr  = !choice[2]
+
+   -- date or reverse date
+  !choice = ARRAY()
+  !choice.append('Date Order')
+  !choice.append('Reverse Date')
+  !this.reverseDate.dtext = !choice
+
+  -- Set the gadget to the default
+  !this.number.select('rtext', !this.pageSizeStr )
+
+  -- initialise member setting
+  !this.firstNumber  = 1
+  !this.lastNumber   = 0
+  !this.resultSize   = 0
+  !this.maxPageSize  = 1000
+  !this.sizeOKd      = true
+  !this.currentPageNumber  = 1
+  !this.lastPageNumber = 1
+
+  -- Set the paragraph gadget
+  !this.pageNumber.val = ' of ' + !this.lastPageNumber.string()
+  !this.pageGadget.val = !this.currentPageNumber
+
+endmethod
+-- End of method definition for .setPageGadgets()
+------------------------------------------------------------------------
+--
+-- Method:      setNumberCommands
+--
+-- Description: Run when the number of lines per page changes
+--
+------------------------------------------------------------------------
+
+define method .setNumberCommands()
+
+  -- Initialise member
+  !this.sizeOKd = true
+  !updateRequired = false
+
+  -- Set the number of commands per page to the new gadget selection
+  !this.pageSizeStr  = !this.number.selection('rtext')
+  !this.firstNumber = 1
+  !this.currentPageNumber  = 1
+
+  -- Reverse date or not
+  if (!this.reverseDate.selection() eq 'Reverse Date') then
+    -- Only update if the reverse date option has changed
+    if (!!glbTransactions.object.reverseDateMessages eq false) then
+      !!glbTransactions.object.reverseDateMessages = true
+      !updateRequired = true
+    endif
+  elseif (!this.reverseDate.selection() eq 'Date Order') then
+    -- Only update if the reverse date option has changed
+    if (!!glbTransactions.object.reverseDateMessages eq true) then
+      !!glbTransactions.object.reverseDateMessages = false
+      !updateRequired = true
+    endif
+  endif
+
+  -- Is the update required, if so, do it
+  if (!updateRequired) then
+    !!glbTransactions.object.updateReportMessages()
+  endif
+
+  -- Update the new page 1
+  !this.currentPage()
+
+endmethod
+-- End of method definition for .setNumberCommands()
+------------------------------------------------------------------------
+--
+-- Method:      currentPage
+--
+-- Description: Display the current page of transactions
+--
+------------------------------------------------------------------------
+
+define method .currentPage()
+
+  -- The results of the collection are known a this stage so...
+
+  -- if the number of pages is unknown find out
+  if (!this.resultSize.unset()) then
+    !this.resultSize = !!glbTransactions.object.reportSizeMessages()
+  endif
+
+  -- Result size member will be set
+  if (!this.pageSizeStr eq 'All' and !this.sizeOKd) then
+    !this.lastPageNumber = 1
+    !this.firstNumber  = 1
+    !this.lastNumber   = !this.resultSize
+    if (!this.lastNumber gt !this.maxPageSize) then
+      !answer = !!alert.confirm('The collection size is ' & !this.lastNumber & ' Are you sure you want to display all lines?')
+      if (!answer.boolean()) then
+        !this.sizeOKd = true
+      else
+        !this.sizeOKd = false
+        !this.lastNumber = !this.maxPageSize
+        !!alert.message('The number of lines per page has been limited to ' & !this.maxPageSize)
+        !numberOfPages = !this.resultSize / !this.maxPageSize
+        !this.lastPageNumber = !numberOfPages.int()
+        if ((!numberOfPages - !numberOfPages.int()) gt 0) then
+          !this.lastPageNumber = !numberOfPages.int() + 1
+        endif
+
+        !this.lastNumber   = !this.firstNumber + !this.maxPageSize - 1
+        if (!this.lastNumber gt !this.resultSize) then
+          !this.lastNumber   = !this.resultSize
+        endif
+      endif
+    endif
+  else
+    if (!this.pageSizeStr eq 'All' and !this.sizeOKd.not()) then
+      !numberOfPages = !this.resultSize / !this.maxPageSize
+    else
+      !numberOfPages = !this.resultSize / !this.pageSizeStr.real()
+    endif
+    !this.lastPageNumber = !numberOfPages.int()
+    if ((!numberOfPages - !numberOfPages.int()) gt 0) then
+      !this.lastPageNumber = !numberOfPages.int() + 1
+    endif
+
+    if (!this.pageSizeStr eq 'All' and !this.sizeOKd.not()) then
+      !this.lastNumber   = !this.firstNumber + !this.maxPageSize - 1
+    else
+      !this.lastNumber   = !this.firstNumber + !this.pageSizeStr.real() - 1
+    endif
+    if (!this.lastNumber gt !this.resultSize) then
+      !this.lastNumber   = !this.resultSize
+    endif
+  endif
+
+  if (!this.lastPageNumber lt 1) then
+    !this.lastPageNumber = 1
+  endif
+
+  -- Set the paragraph gadget
+  !this.pageNumber.val = ' of ' + !this.lastPageNumber.string()
+  !this.pageGadget.val = !this.currentPageNumber
+  --!this.messagesFrame.tag = 'Command Transactions (' & !this.resultSize.string() & ' found)'
+
+  -- Activate the back and forward buttons as required
+  !this.activePages()
+
+  -- Populate the gadget
+  !!glbTransactions.object.getCommandMessages(!this.firstNumber, !this.lastNumber - !this.firstNumber + 1)
+  !this.messages.dtext = !!glbTransactions.object.messagedtext
+  !this.messages.rtext = !!glbTransactions.object.messagertext
+
+
+  -- Fix for DFN1668
+  !commandReference = object DBREF()
+  !commandReference = !this.commandReference.dbref()
+  handle ANY
+  endhandle
+
+  -- If this is a local command not messages will be produced, so rewrite the detail text.
+  if (!commandReference.set()) then
+    if (!commandReference.trlocl) then
+      if (!this.messages.rtext.size() eq 1 and !this.messages.rtext[1].trim() eq '=0/0') then
+        !newDtext[1] = '*** This is a local command (Local commands do not record transaction messages...) ***'
+        !sameRtext[1] = '=0/0'
+        !this.messages.dtext = !newDtext
+        !this.messages.rtext = !sameRtext
+      endif
+    endif
+  endif
+
+  -- Select the first
+  if (!this.messages.dtext.size() gt 0) then
+    !this.messages.select('rtext', !this.messages.rtext[1])
+  endif
+
+  -- Navigate to the Command if toggled on (Admin Only)
+  !this.navigate()
+
+  --Update the gadgets
+  !this.activeButtons()
+
+endmethod
+-- End of method definition for .currentPage()
+------------------------------------------------------------------------
+--
+-- Method:      goPage
+--
+-- Description: Display the previous page of transactions
+--
+------------------------------------------------------------------------
+
+define method .goPage(!page is REAL)
+
+  !memory = !this.currentPageNumber
+
+  -- Check that the page number is in the range
+  if (!page ge 1 and !page le !this.lastPageNumber) then
+    -- Set the page number
+    !this.currentPageNumber = !page
+  else
+    !!alert.error('Invalid page number ' & !page.string() & ' (reverted back to ' & !memory.string() & ')')
+    !this.pageGadget.val = !this.currentPageNumber
+    return
+  endif
+
+  -- Set first number of the array index until the start of the array is reached
+  !this.firstNumber = ((!this.currentPageNumber - 1) * !this.pageSizeStr.real()) + 1
+  if (!this.firstNumber lt 1) then
+    !this.firstNumber = 1
+  endif
+
+  -- Update the new current page
+  !this.currentPage()
+
+endmethod
+-- End of method definition for .goPage()
+------------------------------------------------------------------------
+--
+-- Method:      backPage
+--
+-- Description: Display the previous page of transactions
+--
+------------------------------------------------------------------------
+
+define method .backPage()
+
+  -- Subtract 1 from the page number
+  !this.currentPageNumber = !this.currentPageNumber - 1
+
+  -- backtrack the first number of the array index until the start of the array is reached
+  if (!this.pageSizeStr eq 'All' and !this.sizeOKd.not()) then
+    !this.firstNumber = !this.firstNumber - !this.maxPageSize
+  else
+    !this.firstNumber = !this.firstNumber - !this.pageSizeStr.real()
+  endif
+  if (!this.firstNumber lt 1) then
+    !this.firstNumber = 1
+  endif
+
+  -- Update the new current page
+  !this.currentPage()
+
+endmethod
+-- End of method definition for .backPage()
+------------------------------------------------------------------------
+--
+-- Method:      forwardPage
+--
+-- Description: Display the next page of transactions
+--
+------------------------------------------------------------------------
+
+define method .forwardPage()
+
+  -- Add 1 to the page number
+  !this.currentPageNumber = !this.currentPageNumber + 1
+
+  -- Advance the first number of the array index until the end of the array is reached
+  if (!this.lastNumber lt !this.resultSize) then
+    !this.firstNumber = !this.lastNumber + 1
+  endif
+
+  -- Update the new current page
+  !this.currentPage()
+
+endmethod
+-- End of method definition for .forwardPage()
+------------------------------------------------------------------------
+--
+-- Method:      activePages
+--
+-- Description: Activate the forward and back page gadgets appropriately
+--
+------------------------------------------------------------------------
+
+define method .activePages()
+
+  -- First page
+  if (!this.currentPageNumber eq 1) then
+    !this.back.active = false
+  else
+    !this.back.active = true
+  endif
+
+  -- Last Page
+  if (!this.currentPageNumber lt !this.lastPageNumber) then
+    !this.forward.active = true
+  else
+    !this.forward.active = false
+  endif
+
+  if (!this.forward.active or !this.back.active) then
+    !this.pageGadget.active = true
+  else
+    !this.pageGadget.active = false
+  endif
+
+endmethod
+-- End of method definition for .activePages()
+------------------------------------------------------------------------
+--
+-- Method:      getWork
+--
+-- Description: Get work from the transaction DB only
+--
+------------------------------------------------------------------------
+define method .getWork()
+
+   !session = current session
+   !module = !session.module()
+   if (!module.upcase() eq 'ADMIN') then
+     GETWORK
+   else
+     !location = CURLOC
+     !locationId = !location.locId
+     !command = 'GETWORK TRANSACTION/' & !locationId
+     $!command
+     handle ANY
+       !!alert.error('Unable to getwork for TRANSACTION/' & !locationId)
+     endhandle
+   endif
+
+endmethod
+-- End of method definition for .getWork()
+--------------------------------------------------------------------------
+-- Added for DFN 9391. Date:27.07.06
+--
+-- Method:      saveOk
+--
+-- Description: To Write the transaction messages.
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Filename to save messages to
+--
+--------------------------------------------------------------------------
+define method .saveOk(!fileName is STRING)
+
+   !tableHeading                          = !this.messageHeading
+   !tableList                             = ARRAY()
+   if (!this.messages.dtext.empty()) then
+     !!alert.message('File aborted, Since no messages in this list')
+     return
+   else
+     if (!this.messages.dtext[1].match('***').eq(1)) then
+       !!alert.message('File aborted, Since no messages in this list')
+       return
+     endif
+   endif
+   if (!this.messagesOrResults.selection() neq 'OPERATION') then
+     !issueDate                           = !!glbTransactions.object.tableMessages.column(1)
+     !type                                = !!glbTransactions.object.tableMessages.column(2)
+     !locationOrState                     = !!glbTransactions.object.tableMessages.column(3)
+     !transactionTypeOrPass               = !!glbTransactions.object.tableMessages.column(4)
+     !textOrLocation                      = !!glbTransactions.object.tableMessages.column(5)
+     if (!this.messagesOrResults.selection() eq 'SUCCESS' or !this.messagesOrResults.selection() eq 'FAILURE') then
+       !referenceOrTransactionType        = !!glbTransactions.object.tableMessages.column(6)
+       !nameOrText                        = !!glbTransactions.object.tableMessages.column(7)
+     else
+       do !n indices !issueDate
+         !referenceOrTransactionType[!n]  = 'Unset'
+         !nameOrText[!n]                  = 'Unset'
+       enddo
+     endif
+   else
+     !issueDate                           = !!glbTransactions.object.tableOperations.column(1)
+     !type                                = !!glbTransactions.object.tableOperations.column(2)
+     !locationOrState                     = !!glbTransactions.object.tableOperations.column(3)
+     do !n indices !issueDate
+       if (!!glbTransactions.object.tableOperations.column(4)[!n]) then
+         !transactionTypeOrPass[!n]       = '1'
+       else
+         !transactionTypeOrPass[!n]       = '0'
+       endif
+       !textOrLocation[!n]                = !!glbTransactions.object.tableOperations.cell(5,!n)
+       handle (2,201)
+         !textOrLocation[!n]              = ''
+       endhandle
+     enddo
+     !referenceOrTransactionType          = !!glbTransactions.object.tableOperations.column(6)
+     !nameOrText                          = !!glbTransactions.object.tableOperations.column(7)
+   endif
+
+   !issueDate.insert(1,!tableHeading[1])
+   !type.insert(1,!tableHeading[2])
+   !locationOrState.insert(1,!tableHeading[3])
+   !transactionTypeOrPass.insert(1,!tableHeading[4])
+   !textOrLocation.insert(1,!tableHeading[5])
+   !referenceOrTransactionType.insert(1,!tableHeading[6])
+   !nameOrText.insert(1,!tableHeading[7])
+
+   !issueLength                           = !issueDate.width()
+   !typeLength                            = !type.width()
+   !locOrStateLength                      = !locationOrState.width()
+   !transTypeLength                       = !transactionTypeOrPass.width()
+   !textOrLocLength                       = !textOrLocation.width()
+   !refOrTransLength                      = !referenceOrTransactionType.width() + 5
+
+   do !n indices !issueDate
+     var !results COMPOSE |$!issueDate[$!n]| width $!issueLength L spaces 3 |$!type[$!n]| width $!typeLength L spaces 3 |$!locationOrState[$!n]| width $!locOrStateLength L spaces 3 |$!transactionTypeOrPass[$!n]| width $!transTypeLength L spaces 3 |$!textOrLocation[$!n]| width $!textOrLocLength L spaces 3 |$!referenceOrTransactionType[$!n]| width $!refOrTransLength L spaces 3 |$!nameOrText[$!n]|
+     !tableList.appendarray(!results)
+   enddo
+   !file = object FILE(!fileName)
+   !file.writeFile('overwrite',!tableList)
+
+   -- Update settings
+   !this.saveFolder = !file.directory().string()
+   !this.saveSettings()
+
+endmethod
+-- End of method definition for .saveOk()
+
+------------------------------------------------------------------------
+-- Method:      save
+--
+-- Description:
+--   Save message to the selected location
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .save()
+
+  using namespace 'Aveva.Pdms.Presentation'
+
+  -- Display file browser to select save file
+  !browser = object PMLFILEBROWSER(|SAVE|)
+  !seedFile = |*.txt|
+  !docType = 'Text files (*.txt)|*.txt|Log files (*.log)|*.log|All files (*.*)|*.*'
+  !browser.show(!this.saveFolder(), !seedFile, |Save Message|, false, !docType, 1)
+  if (!browser.file() ne ||) then
+    !this.saveOk(!browser.file())
+  endif
+
+endmethod
+
+------------------------------------------------------------------------
+-- Method:      saveSettings
+--
+-- Description:
+--   Save settings
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .saveSettings()
+
+  -- Save settings
+  !file = object FILE(|%pdmsuser%/adm-transactionMessagesSettings.pmldat|)
+  !data = ARRAY()
+  !data.append(|saveFolder | & !this.saveFolder)
+  !file.writeFile(|Overwrite|, !data)
+
+endmethod
+
+------------------------------------------------------------------------
+-- Method:      loadSettings
+--
+-- Description:
+--   Load settings
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .loadSettings()
+
+  -- Load settings
+  !file = object FILE(|%pdmsuser%/adm-transactionMessagesSettings.pmldat|)
+  if (!file.exists()) then
+    do !line values !file.readFile()
+      if (!line.substring(1, 11) eq |saveFolder |) then
+        !this.saveFolder = !line.after(|saveFolder |)
+      endif
+    enddo
+  endif
+
+endmethod
+
+------------------------------------------------------------------------
+-- Method:      saveFolder
+--
+-- Description:
+--   Return last used folder name for save file
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    STRING      Folder name
+------------------------------------------------------------------------
+define method .saveFolder() is STRING
+
+  -- Return last used folder if available else pdms defaults
+  !folder = |%pdmsuser%|
+  if (!this.saveFolder.set()) then
+    if (!this.saveFolder.trim() ne ||) then
+      !testFolder = object FILE(!this.saveFolder)
+      !testExists = !testFolder.exists()
+      handle any
+      elsehandle none
+        if (!testExists) then
+          !folder = !this.saveFolder
+        endif
+      endhandle
+    endif
+  endif
+  return !folder
+
+endmethod

@@ -1,0 +1,593 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:  mdscreateft47.pmlfnc
+--   Type:  Function Definition
+--   Group:  Multi Discipline Supports Application
+--     Keyword:  MDS
+--   Module:  design
+--   Replaces:
+--
+-- Author:  Wayne Dodwell
+-- Created:  Monday 10th may 2004
+--
+--
+-- Description:
+-- function to Create MDS Support Frame Template type FT47
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         STRING       Method of creating support
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdscreateft47(!method is STRING)
+
+  -- Find current units and set the distance unit to metric
+  !currentUnits = !!kgetsetunits()
+
+  -- Initialise variables
+  !!mdsresetpins(1,9)
+
+  --<wd>may2007<mds12>
+  --    !idtype    = 'GENSEC SCTN PANE FLOOR WALL GWALL STWALL SCREED CFLOOR CSCREED CWALL BOX SBFI'
+  !session   = current session
+  if !session.module().upcase().match('DESIGN').gt(0) then
+    !idtype    = 'GENSEC SCTN PANE FLOOR WALL GWALL STWALL SCREED CFLOOR CSCREED CWALL BOX SBFI'
+  elseif  !session.module().upcase().match('OUTFITTING').gt(0) then
+    !idtype    = 'GENSEC SCTN PANE FLOOR WALL GWALL STWALL SCREED CFLOOR CSCREED CWALL BOX SBFI HSTIFF HPLATE'
+  endif
+  --<wd>may2007<mds12>
+
+  !support   = !!mdsft47.support
+  !selection = !!mdssetsteel.size.selection('rtext')
+  !datum     = !support.datum
+  !stru      = !support.stru
+  !name      = !stru.name
+
+  var !pjoiColl coll all pjoi with gtyp eq 'APAD' for $!stru
+  if !pjoiColl.size().neq(0) then
+    !padsExist = TRUE
+  else
+    !padsExist = FALSE
+  endif
+
+  -- Does the support have attached/Associated supports
+
+  if !!mdsgetconnectedsupp(!stru) then
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+  -- Check that Datum atta has been created
+  if (!datum.set().not())then
+    !!alert.message('Datum support atta has not been created')
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+  ----------------------------- **** connexions **** -----------------------------
+  --$(
+  !refe = !!ce
+  !form = !!mdsft47
+
+  --<wd>jun2007<mds12>
+  -- Initialise the MDS Associations Data Creation Object MDSASSOC
+  !mdsassoc = object MDSASSOC()
+  !mdsassoc.mode = !method
+  --<wd>jun2007<mds12>
+
+  -- Can we write to the SPREF attribute of the MDS SREF atta and the MDS STRU
+  if !support.datum.badref().not() then
+    !srefname = !support.datum.name.before('/DATUM') + '/SREF'
+    if !!mdscomclaimdac(!support.stru,'DACMOD','POS').not() or !!mdscomclaimdac(!srefname.dbref(),'DACMOD','SPREF').not() then
+      !despars = !srefname.dbref().despar
+      !!mdsresetdims(!form,!despars)
+      !!kRestoreUnits(!currentUnits)
+      !!alert.error('Unable to change the support as write access to the SREF atta is not available')
+      return
+    endif
+  endif
+
+  !havejoints = FALSE
+
+  if(!form.support.joints.unset().not()) then
+    !joints     = !support.joints
+    !attributes = ARRAY()
+    !havejoints = !!krestorejoints(!joints,!attributes,'SAVE','')
+    handle any
+      !havejoints = FALSE
+      !support.joints.clear()
+      -- in case they have been deleted and cancel is used
+    endhandle
+  endif
+  --$)
+  ---------------------------------------------------------------------------------
+
+  -- Check the Datum atta has been positioned
+  if (!support.position.not())then
+    !!alert.message('Position atta before identifying supporting steelwork')
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+  -- First check atta pleave orientation is not pointing vertically
+  --    if (!support.pLDir eq U or !support.pADir eq U) then
+  --      !!alert.error('Atta orientation is incorrect. cannot create horizontal posts.')
+  --      !!kRestoreUnits(!currentUnits)
+  --      return
+  --    endif
+
+
+  -- Set initial orientation
+  !ddir = D
+  !udir = U
+
+  -- Store section name and matref for each member for resetting later
+  !storemat = ARRAY()
+  !storemat = !!mdsstoremat(!name)
+
+  -- Check the MDS Template Structure according to the ALLOWABLE Min/Max bore sizes
+  !bore = !datum.abore
+  var !strucoll collect all stru for /MDS/FRAMES/FT47
+  handle any
+    !!alert.message('The MDS Framework Templates for the MDS support standard ''FT47'' do not exist - Aborting Creation')
+    !!kRestoreUnits(!currentUnits)
+    return
+  endhandle
+
+  -- Check MDS Template Selection is valid for DATUM Atta Bore
+  -- NOTE: - ONLY a DATUM Atta is ALLOWED on a FT47 type MDS Framework
+  if !bore.leq(!strucoll[$!selection].dbref().:mdsmaxbore.bore() ) and !bore.geq(!strucoll[$!selection].dbref().:mdsminbore.bore() ) then
+  else
+    -- DATUM Atta bore size is NOT within the MIN/MAX Bore Sizes for selected framework
+    !!alert.error('The supported pipe bore size is NOT within the allowable MIN/MAX bore sizes for the SELECTED template.')
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+  -- Determine creation type
+  -- Create Support via CURSOR MODE
+  ----------------------------------------------------------------
+  if (!method eq |CURSOR|)then
+
+    ------------ *** Connexion Warnings *** -------------
+    --$(
+    !errormessage = STRING()
+    !dummys       = ''
+    if(!!kerrorsforconns(!form, !errormessage, !dummys).eq('UNJOINTED')) then
+      --Nothing to do --
+    elseif (!!kerrorsforconns(!form, !errormessage, !dummys).eq('WARNING')) then
+      !continue = !!alert.confirm(!errormessage)
+      if(!continue.eq('NO')) then
+        !!kRestoreUnits(!currentUnits)
+        return
+      endif
+    elseif (!!kerrorsforconns(!form, !errormessage, !dummys).eq('ERROR')) then
+      !!alert.error(!errormessage)
+      !!kRestoreUnits(!currentUnits)
+      return
+    endif
+    --$)
+    ---------------------------------------------
+
+    label /element1
+    prompt off
+    prompt load escape |Identify element to support off|
+    id $!idtype @
+    handle (61,528)
+      prompt on
+      !!ce = !stru
+      !!kRestoreUnits(!currentUnits)
+      return
+    endhandle
+    prompt dismiss
+    prompt on
+    !pick = !!ce
+    !testCe = !!mdsreltodatum(!datum, !pick, !ddir, 0)
+    if (!testCe[1].upcase() eq 'UNSET')then
+      !!alert.error('Identified element is unsuitable to support from.')
+      golabel /element1
+    elseif (!testCe[1].upcase() eq '')then
+      golabel /element1
+    elseif (!testCe[1].upcase() eq 'EQUAL')then
+      !!alert.error('Identified element is at the same elevation as the datum atta')
+      golabel /element1
+    elseif (!testCe[1].upcase() eq 'ABOVE')then
+      !!alert.error('Identified element is above the datum atta')
+      golabel /element1
+    endif
+
+    --<wd>may2007<mds12>
+    --      if (!pick.hardType eq 'PANE' or !pick.type eq 'BOX')then
+    if (!pick.hardType eq 'PANE' or !pick.type eq 'BOX' or !pick.type eq 'HPLATE')then
+      --<wd>may2007<mds12>
+
+      !plane = !testCe[2]
+      Var !pdir const dir $!plane
+    endif
+
+    !!mdscreatemess(TRUE)
+
+    -- Check Identified Elements' suitability to Support Flanges
+    !!ce = !pick
+
+    --<wd>may2007<mds12>
+    --      if (!!ce.type eq 'SCTN') or (!!ce.type eq 'GENSEC') then
+    if (!!ce.type eq 'SCTN') or (!!ce.type eq 'GENSEC') or (!!ce.type eq 'HSTIFF') then
+      --<wd>may2007<mds12>
+
+      -- ************************ Connexions ***********************
+      --$(
+      !support.connections[1] = !pick
+      --$)
+      !start = plstart na wrt world
+      !end   = plend na wrt world
+      var !linea cons line join $!start to $!end
+      var !lineb cons line $!ddir thro p0 of $!datum
+      var !tempinter cons pos int $!linea $!lineb
+      !inter = !tempinter.position()
+
+      if (!inter.unset())then
+        !!mdscreatemess(false)
+        !!alert.error('Unable to create support from identified section using this method. Use Dimensions')
+        !!kRestoreUnits(!currentUnits)
+        return
+      endif
+      !inter = !!kflangeorweb(!pick, !datum.pos, !ddir)
+    else
+      pin 1 at $!pick
+      pin 1 dir $!pdir wrt world
+      var !tempinter const pos inter pin 1 $!plane
+      !inter = !tempinter.position()
+    endif
+
+    --<wd>jun2007<mds12>
+    -- Save !pick and for Associations
+    !mdsassoc.pick1 = !pick
+    --<wd>jun2007<mds12>
+
+    -- Position PINS - CURSOR Mode
+    pin 9 at $!inter
+    pin 9 dir $!ddir
+
+    pin 7 at $!datum
+    pin 7 dir $!udir
+    pin 7 plane pin 7 thro pin 9
+    pin 8 at $!datum
+    pin 8 dir $!ddir
+
+  elseif (!method eq |DIMENSION|)then
+    ----------------------------------------------------------------
+    -- Create Support via DIMENSIONS
+
+    -- Initialise variables for dimension check
+    !d1 = !!mdsft47.dim1.val
+    if (!d1.eq(0))then
+      !!alert.error('Dimension 1 MUST be set.')
+      !!kRestoreUnits(!currentUnits)
+      return
+    endif
+    !!mdscreatemess(true)
+
+    -- Position pins for DIMENSION Mode
+    pin 7 at $!datum
+    pin 7 dir $!ddir
+    pin 7 dist $!d1
+    pin 8 at $!datum
+    pin 8 dir $!ddir
+    ----------------------------------------------------------------
+  endif
+
+
+  -- PINS now in position CREATE framework in CURSOR and DIMENSION Mode
+  --------------------------------------------------------------------
+  !!ce = !stru
+  --<RM> 30/06/11 P-38756 add function call to remove pnod and pjoi rules that are causing errors when delete stru mem is run - start
+  !!mdsRemoveAutoPadRules(!stru)
+  --<RM> 30/06/11 P-38756 add function call to remove pnod and pjoi rules that are causing errors when delete stru mem is run - end
+  delete stru mem
+  handle (41,66) (2,113) (2,113)
+  endhandle
+  !mdstemp = /MDS/FT47/$!selection
+  :mdscheck $!mdstemp.:mdscheck
+  :mdsframirror $!mdstemp.:mdsframirror
+
+
+  -- Position STRU at P0 of the DATUM Atta
+  at $!datum
+
+  new frmw $!name/MAIN
+  !frmwsupport = !!ce
+
+  -- Copy the required MDS Framework Template
+  !!ce = /MDS/FT47/$!selection
+  !frmw = !!kcollectallfor('FRMW', '', !!ce)
+  !frameformat = before(!frmw[1].name, '-FRMW')
+  !desc = desc
+  !mdsbars = :mdsbars
+
+  -- Navigate back to the Support and CREATE the MDS Template elements
+  !!ce = !frmwsupport
+  copy attrib of $!frmw[1]
+  copy mem of $!frmw[1] rename $!frameformat $!name
+
+  -- Navigate to the STRU
+  !!ce = !stru
+
+  -- Set SJOI and SREF Atta variables
+  --    !sjoi = /MDS/FT47/$!selection-V1/S1/IJOINT1
+  !sjoi = $!<name>-V1/S1/IJOINT1
+  !sref = !srefname.dbref()
+  -- Position PIN 7 for DIMENSION Mode Only
+  if (!method eq |DIMENSION|)then
+    pin 7 at $!datum
+    pin 7 dir $!ddir
+    -- Pin 7 MUST be placed on the OUTSIDE Diameter of the RADIAL Support Pad
+    --!sjoi = /MDS/FT47/$!selection-V1/S1/IJOINT1
+    !sjoi = $!<name>-V1/S1/IJOINT1
+    !sref = !srefname.dbref()
+    -- Distance is (Dimension 1 + Half of the Flange OD from DESPAR num 2 of the SREF Atta + Pad Thickness )
+    -- stored in the MDS  Template SCTN - SJOI - Despar Number 2
+    !pin7dist = (!d1 + !sref.despar[2] / 2 + !sjoi.despar[2])
+    pin 7 dist $!pin7dist
+    pin 7 dir $!udir
+  endif
+
+
+  -- Set STRU description for template recognition
+  desc '$!desc'
+  :mdsbars $!mdsbars
+
+  -- Move STRU thro P0 of DATUM ATTA
+
+  -- Orientate the STRU
+  !orix = !support.p11dir
+  !oriz = !udir
+  ori x is $!orix and z is $!oriz
+
+  --Store the STRU direction in a UDA for later use if a TRUNNION Branch is addedto the Support
+  var !oriframe dir y wrt /*
+  :mdsframedir $!oriframe
+
+  -- Set Form Dimension Gadgets for CURSOR Mode
+  if (!method eq |CURSOR|)then
+    ------------ *** Connexion Warnings *** -------------
+    --$(
+    !errormessage = STRING()
+    !dummys       = ''
+
+    if(!!kerrorsforconns(!form, !errormessage,!dummys).eq('UNJOINTED')) then
+      -- nothing to do
+    elseif(!!kerrorsforconns(!form, !errormessage,!dummys).eq('WARNING')) then
+      !continue = !!alert.confirm(!errormessage)
+      if(!continue.eq('NO')) then
+        !!kRestoreUnits(!currentUnits)
+        return
+      endif
+    elseif(!!kerrorsforconns(!form, !errormessage, !dummys).eq('ERROR')) then
+      !!alert.error(!errormessage)
+      !!kRestoreUnits(!currentUnits)
+      return
+    else
+      -- leave in case required?
+    endif
+    --$)
+    ---------------------------------------------
+
+    -- Set Form Dimension 1
+    -- Distance is ( Half of the Flange OD from DESPAR num 2 of the SREF Atta plus
+    -- Pad Thickness stored in the MDS Template SCTN - SJOI  Despar Num 2)
+    !dime = (!sref.despar[2] / 2 + !sjoi.despar[2])
+    !dimx = !!kstrreal('const dist pin 8 to pin 7')
+    !dim1 = ( !dimx - !dime )
+    !!mdsft47.dim1.val = !dim1
+  endif
+  -- Modify the MDS Structure Elements
+  -----------------------------------------------------------------
+  -- Extend Vertical leg
+  !!ce  = $!<name>-V1
+  !sctn = !!ce
+  extend start thro pin 7
+  extend end thro pin 8
+  -- Position SNOD at the P0 of the DATUM Atta
+  !snod = $!<name>-V1/S1
+  !snod.zdist = !sctn.derlen
+
+  ------------------****** connexions *******----------------------
+  --$(
+  if(!support.connections.unset()) then
+    -- MUST be Creating the Support via DIMENSIONS
+    :mdsconn default
+  else
+    !vertical1 = !!ce
+    !connected = !!mdsgetbeamconn(!support,!vertical1)
+    --<wd>may2007<mds12>
+    :mdsconn $!connected
+    handle (41,52)
+      -- Identified element $!connected is an AVEVA MARINE "HSTIFF" element raising the
+      -- ERROR (41,52) Trying to put a reference of illegal type.
+    endhandle
+    --<wd>may2007<mds12>
+  endif
+  --$)
+  --------------------*******************--------------------------
+
+  -- Select correct spref for the SREF ATTA
+  !!ce = $!<name>/SREF
+  !!mdsdaccontrol(TRUE)
+
+  sel spref with styp 'FT47-$!selection' spec /MDF
+
+  !!mdssetsuppcode('MODIFY',!name,'FT47','FT47-$!selection')
+  !!mdssetispe()
+  !!mdssellstu(!!ce)
+  !!mdsdaccontrol(TRUE)
+  !!ce = !stru
+
+  -- Set the Largest Bore Size on the Support in the SREF Atta DESPAR Number 3
+  !srefname    = !!mdsft47.support.stru.name + '/SREF'
+  !!ce         = !srefname.dbref()
+  !srefatta    = !!ce
+  !flangeod    = !!ce.despar[2]
+  !largestbore = object BORE()
+  !largestbore = !form.support.datum.abore
+  do !loop values !!mdsft47.support.atta
+    !largestbore = !loop.abore
+    if !loop.abore.gt(!largestbore) then
+      !largestbore = !loop.abore
+    endif
+  enddo
+  -- Only set the LARGEST bore if it is GREATER than the bore ALREADY stored
+  !isnow = despara 3
+  if !largestbore.real().lt(!isnow[1]) then
+    !largestbore = !isnow[1].bore()
+  endif
+
+  -- Store dimensions etc... in the SREF Atta design parameters and Set the SJOI Despar Number 1<Flange O/Dia.>
+  despar $!!mdsft47.dim1.val  $!flangeod  $!largestbore
+  !sjoi.despar[1] = !flangeod
+
+  -- Check the :MDSRANGE for the Selected MDS Template
+  ------------------------------------------------------------------------------------------------------
+  !!mdsdaccontrol(true)
+  -- Check if ATTAS Created on The Support are Within the Allowable Bores for the STRUCTURE SCTN SIZES.
+  !cecomp = !!ce
+  !error  = STRING()
+  if (!!mdscheckbores(!form,!selection,!error,!currentUnits)) then
+    !!alert.error(!error)
+    !!ce = !stru
+    --<RM> 30/06/11 P-38756 add function call to remove pnod and pjoi rules that are causing errors when delete stru mem is run - start
+    !!mdsRemoveAutoPadRules(!stru)
+    --<RM> 30/06/11 P-38756 add function call to remove pnod and pjoi rules that are causing errors when delete stru mem is run - end
+    delete STRU MEM
+    handle (41,66) (2,113) (2,113)
+    endhandle
+    -- Reset SREF Despars to ZERO as the STRU MEM have been DELETED
+    !!ce = !srefatta
+    handle none
+      -- Only RESET the DESPAR number 1 to ZERO for DIMENSION-1 on the form -
+      -- DESPAR number 2 stores the FLANGE OUTSIDE DIAMETER on the SUPPORT and is still VALID
+      -- DESPAR number 3 stores the LARGEST PIPE BORE SIZE  on the SUPPORT and is still VALID
+      !srefatta.despar[1]  = 0
+      !!mdsft47.dim1.val = 0
+    elsehandle any
+    endhandle
+    -- Reset all pins associated with this support
+    !!mdsresetpins(1,9)
+    !!ce = !cecomp
+    handle any
+    endhandle
+    !!mdscreatemess(false)
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+  -- Set atta references at SCTN
+  !!ce = $!<name>-V1
+  :mdsattaref $!<name>/DATUM
+  !support.barlen[1] = deri length of ce
+  !!ce = !stru
+
+  -- Reset materials of sections
+  !!mdsresetmat(!storemat)
+  !!ce = !stru
+
+  ----------------------***** connexions *****--------------------------
+  --$(
+  if(!havejoints) then
+    do !index indices !joints
+      if(!joints[!index].badref().not() and !attributes[!index][8].dbref().:mdsconn.eq(!joints[!index].owner.owner)) then
+        !mainstl = !attributes[!index][8].dbref().:mdsconn
+        !support.joints[!index] =  !!mdscreatejoint(!mainstl, !attributes[!index][8].dbref(),!joints[!index],!attributes[!index])
+      else
+        !dummy = object DBREF()
+        !dummya = ARRAY()
+        !mainstl = !support.connections[!index]
+        !support.joints[!index] =  !!mdscreatejoint(!mainstl, !attributes[!index][8].dbref(),!dummy,!dummya)
+      endif
+    enddo
+  endif
+  --$)
+  ----------------------------------------------------------------------
+
+  -- Enhance elements using colour set for highlight
+  !colourlist = ARRAY()
+  !colourlist.append(!!ce)
+  !colourlist.appendarray(!support.atta)
+  !colourlist.appendarray(!support.joints)
+
+  -- Colour Support
+  !!kenhancelist(!colourlist)
+
+  -- Reset all pins associated with this support
+  !!mdsresetpins(1,9)
+
+  -- Update support data held in form
+  !!mdsft47.support = !support
+  !!mdscreatemess(FALSE)
+
+  -- Show dimensions on graphics if required
+  if !!mdsft47.graphicaldim then
+    !!mdsshowdim(!!mdsft47)
+  endif
+
+  ---------------------------------------------------------------------------------------------------
+  ---------------------------------------------------------------------------------------------------
+  --<wd>jun2007<mds12>
+  -- Create the Cross Reference ASSOCIATIONS between the MDS SUPPORT SCTN members $!name-V1
+  -- and the Main Structure supporting elements for:
+  -- <a> CURSOR mode !pick
+  --
+  -- Store the Original Current Element
+  !xce = !!ce
+
+  -- Store the Array of MDS Support Members in the MDSASSOC Object
+  !mdsassoc.mdsmember[1] = $!name-V1
+
+  -- Initialising the MDSASSOWL object always DELETES ALL of the EXISTING Cross Reference Associations
+  -- (ASSOC) elements for the Current MDS Support, irrespective of the Creation MODE (!method)
+  !mdsassowl = object MDSASSOWL(!form)
+  !mdsassowl.mdsform  = !form
+  !mdsassowl.mdsassoc = !mdsassoc
+
+  -- Create the Association (ASSOCs) for the Current Support
+  !mdsassowl.mdsassoc(!mdsassoc)
+
+  -- Update the FORM SUPPORT object to reference the current MDSASSOWL Associations object
+  !form.support.associations[1] = !mdsassowl
+  !support = !form.support
+
+  -- Navigate back to the Original Current Element
+  !!ce = !xce
+
+  --<wd>jun2007<mds12>
+  ---------------------------------------------------------------------------------------------------
+  ---------------------------------------------------------------------------------------------------
+
+  -- Add pads if automatic pads option is on and a PANE or HPLATE has been picked
+  if !!mdsOptions.autopads.selection().eq('ON') then
+    !whichVerticals = 'ALL'
+    if !method.eq('CURSOR') or !method.eq('CLEARANCE') then
+      if !pick.hardType.eq('PANE') or !pick.hardType.eq('HPLATE') then
+        !!mdsaddpad(!support,!whichVerticals)
+      endif
+    elseif !method.eq('DIMENSION') and !padsExist then
+      !!mdsaddpad(!support,!whichVerticals)
+    endif
+  endif
+
+  -- Reset Units
+  !!kRestoreUnits(!currentUnits)
+
+  -- End function
+endfunction

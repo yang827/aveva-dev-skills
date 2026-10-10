@@ -1,0 +1,321 @@
+-----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            assyview.pmlobj
+--   Type:          Object Definition
+--   Group:         Assembly
+--     Keyword:     Drawing
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         Tue 03 Aug 2006
+--
+--
+-- Description:
+-- Assembly View Data
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  assyView(DBREF,DBREF,STRING)     -                   Construct
+--  create(DBREF,REAL,STRING)        -                   Create a view
+--  recreateHsv(DBREF)               -                   Recreate the passed HSV
+--  runTasks(DBREF)                  -                   Run all tasks
+--  update(DBREF)                    -                   Update the passed view
+--
+------------------------------------------------------------------------
+define object ASSYVIEW
+
+  member .asmblyRefe  is DBREF
+
+  member .reference is DBREF
+
+  member .idliRefe  is DBREF
+
+  member .rootName  is STRING
+
+  member .tasks     is ARRAY
+
+endobject
+-- End of object definition for ASSYVIEW
+
+------------------------------------------------------------------------
+--
+-- Method:        .assyView(DBREF,STRING)
+--
+-- Description:   Construct
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       The assembly being detailed
+--    2   R      DBREF       The idlist reference
+--    3   R      STRING      The root name
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .assyView(!asmblyRefe is DBREF, !idliRefe is DBREF, !rootName is STRING)
+
+  !this.asmblyRefe = !asmblyRefe
+  !this.idliRefe   = !idliRefe
+  !this.rootName   = !rootName
+
+endmethod
+-- End of method definition for .assyView(DBREF,STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      .create(DBREF,REAL)
+--
+-- Description: Create a view
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]   [Description]
+--    1   R      DBREF         View Template reference
+--    2   R      REAL          View number
+--    3   R      ASSYNAMERULE  Naming rules
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+-- Define method
+define method .create(!viewTemplateRefe is DBREF, !viewNum is REAL, !viewNameRule is STRING)
+
+  -- Get the current coordinate system
+  !coordinates = object COORDSTRANSFER()
+
+  -- Build names
+  !viewName  = !this.rootName & '/' & !viewNameRule & !viewNum.string()
+  !viewTemplateName = !viewTemplateRefe.flnm
+
+  -- Create the view
+  NEW VIEW $!viewName
+    handle (41,52)
+      -- Trying to put a reference of illegal type
+    endhandle
+
+  !this.reference = !!ce
+
+  -- Copy the template view
+  COPY $!viewTemplateRefe RENAME $!viewTemplateName $!viewName
+
+  -- Store the current view direction
+  !viewDir = !!ce.dir.string().before(' WRT')
+  TITLE |$!viewDir|
+
+  -- Set the drawlist
+  -- We set this directly to the assembly since the core code requires this for the orientation
+  -- We may later be able to work via a drawlist SW Friday 13/07/07
+  -- IDLN $!<this.idliRefe>
+  IDLN $!<this.asmblyRefe>
+
+  -- Set the positions format
+  if (!coordinates.isXYZ()) then
+    POSFORMAT XYZ
+  else
+    POSFORMAT ENU
+  endif
+
+  -- Set the special purpose to allow pipe & hvac spools to ve drawn with other model elements
+  SPPURP PASSMB
+
+  -- Scale
+  AUTO
+    handle any
+    endhandle
+
+  -- Find all view tasks
+  VAR !allTasks COLL ALL TASK WI SPPURPOSE EQ 'VTASK' OR SPPURPOSE EQ 'VTASKX' FOR $!<this.reference>
+  do !task val !allTasks
+
+    -- Initialise variables
+    !taskRefe = !task.dbref()
+
+    -- Build task object
+    !this.tasks.append(object ASSYTASK(!taskRefe))
+
+  enddo
+
+  -- Return to the view
+  !!ce = !this.reference
+
+  -- Send message
+  !!assyPrompt('Executing View Tasks',2)
+
+  -- Run view tasks
+  !this.runTasks(!this.reference)
+
+endmethod
+-- End of method definition for .create(DBREF,REAL)
+
+-----------------------------------------------------------------------
+--
+-- Method:      .runTasks(DBREF)
+--
+-- Description: Run all tasks
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       The VIEW element for which to gather tasks
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .runTasks(!viewRefe is DBREF)
+
+  -- Execute each task function
+  do !task val !this.tasks
+    !!assyLog.add('   Executing View Task: ' & !task.description)
+    !task.execute()
+  enddo
+
+endmethod
+-- End of method definition for .runTasks()
+
+------------------------------------------------------------------------
+--
+-- Method:      .update(DBREF)
+--
+-- Description: Update the passed view
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       The View reference
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+-- Define method
+define method .update(!viewRefe is DBREF)
+
+  -- Get the database element naming rules
+  !nameRules = object ASSYNAMERULE()
+
+  -- Access the view
+  !!ce = !viewRefe
+
+  -- Get all view tasks that must be executed ignoring those that should not be i.e. those with SPPURP set to VTASKX
+  VAR !allTasks COLL ALL TASK WI SPPURPOSE EQ 'VTASK' FOR $!viewRefe
+  do !task val !allTasks
+    !this.tasks.append(object ASSYTASK(!task.dbref()))
+  enddo
+
+  -- Scale
+  AUTO
+    handle any
+    endhandle
+
+  -- Send message
+  !!assyPrompt('Updating Design Graphics',2)
+
+  -- Update the design graphics
+  if (!viewRefe.sppurp.eq('HULSYM')) then
+    !this.recreateHsv(!viewRefe)
+
+  else
+
+    UPDATE DESI
+      handle any
+      endhandle
+
+  endif
+
+  -- Send message
+  !!assyPrompt('Executing View Tasks',2)
+
+  -- Run tasks
+  !this.runTasks(!viewRefe)
+
+endmethod
+-- End of method definition for .update(DBREF)
+
+------------------------------------------------------------------------
+--
+-- Method:      .recreateHsv(DBREF)
+--
+-- Description: Recreate the passed HSV
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       The View reference
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+-- Define method
+define method .recreateHsv(!viewRefe is DBREF)
+
+  -- Initialise variables
+  !sheeRefe   = !viewRefe.owne
+
+  -- Load the marine api
+  import 'marapi'
+    handle( 1000, 0 )
+      -- Already imported, ignore
+    endhandle
+
+  using namespace 'AVEVA.Marine.Drafting'
+  !mDrafting  = object MARDRAFTING()
+  if(!mDrafting.dwgCurrent().not()) then
+    !mDrafting.dwgOpen(!sheeRefe.string(),4)
+
+  endif
+
+  -- Ensure that the view is the current element
+  !!ce = !viewRefe
+
+  -- Look for corresponding view in marine drawing
+  do !count from 1 to 999
+
+    -- Get the first view
+    if (!count.eq(1)) then
+
+      !viewObject = !mDrafting.elementChildFirstGet()
+        handle (1000,0)
+          -- No child, i.e. not found the view
+          break
+        endhandle
+
+    else
+
+      !viewObject = !mDrafting.elementSiblingNextGet(!viewObject)
+        handle (1000,0)
+          -- No siblings, i.e. not found the view
+          break
+        endhandle
+
+    endif
+
+    -- Found, ensure its a view
+    skip if (!mDrafting.elementIsView(!viewObject).not())
+
+    -- Get the dbref
+    !foundViewRefeStr = !mDrafting.elementPADDDbrefGet(!viewObject)
+
+    -- Check that it is the view of interest, if so recreate it
+    if (!foundViewRefeStr.eq(!viewRefe.string())) then
+
+      !mDrafting.viewRecreate(!viewObject)
+
+      -- Break, not more than one HSV assumed
+      break
+
+    endif
+
+  enddo
+
+endmethod

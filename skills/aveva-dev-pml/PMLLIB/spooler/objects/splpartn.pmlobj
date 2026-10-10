@@ -1,0 +1,803 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            splpartn.pmlobj
+--   Type:          Object Definition
+--   Group:         General Application
+--     Keyword:     GEN
+--   Module:        spooler
+--   Replaces:
+--
+-- Author:          C.Brown
+-- Created:         Thu Oct 30 08:05:46 GMT 1997
+--
+--
+-- Description:
+-- object to handle all part numbering functionality
+--
+-- *** OLD STYLE PML ***
+-- *** COMMAND LINE SYNTAX ***
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  alignTidy()                      -                   remove spltmp after align
+--  ce(DBREF)                        -                   sets the !this.common.ce object member
+--  check()                          ARRAY               check part numbers
+--  erase()                          -                   erases part numbers from part elements
+--  getAttributes(DBREF)             SPLATTRIBUTES       Gets designated attributes from an element for asbuilt
+--  highlight(DBREF)                 -                   Highlight the selected element
+--  listMembers()                    ARRAY               Returns a list of elements to be updated, used in asbuilt mode only
+--  renumber()                       -                   renumbers part elements
+--  setAttribute(DBREF,STRING,BOOLEAN) -                   boolean attribute setting from user input
+--  setAttribute(DBREF,STRING,REAL)  -                   real attribute setting from user input
+--  setAttribute(DBREF,STRING,STRING) -                   string attribute setting from user input
+--  splPartN()                       -                   Constructor
+--  start()                          -                   Initialise the object for update
+--  trackSelect()                    DBREF               Get list member derived from CE for modify
+--  unhighlight()                    -                   unhighlight the selected element
+--  update()                         -                   update part numbering
+--  updateReqd()                     BOOLEAN             Check if update of numbering is required
+--  updatingText()                   STRING              Return prompt text for updating
+--  validate(DBREF,STRING,BOOLEAN)   BOOLEAN             validate boolean attribute from user input
+--  validate(DBREF,STRING,REAL)      BOOLEAN             validate real attribute from user input
+--  validate(DBREF,STRING,STRING)    BOOLEAN             validate string attribute from user input
+--
+------------------------------------------------------------------------
+
+-- Define object
+define object SPLPARTN
+
+  -- common numbering functionality
+  member .common is SPLCOMMONN
+
+  -- stores element marked
+  member .markedElement is DBREF
+
+  -- interactive form title text
+  member .formTitleText is STRING
+
+  -- element list title text
+  member .elementListText is STRING
+
+endobject
+-- End of object definition for SPLPARTN
+
+------------------------------------------------------------------------
+--
+-- Method:      !splPartN()
+--
+-- Description: Constructor
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .splPartN()
+
+  -- numbering attributes: cross ref, number, max, prefix
+  !this.common.setAtts(STRING(), 'PartNumber', 'Pmaximum', STRING())
+
+  -- initialise strings for the !!splInteractive form
+  !this.formTitleText   = 'Part Numbers'
+  !this.elementListText = 'Part numbers'
+
+endmethod
+-- End of method definition for .splPartN()
+
+------------------------------------------------------------------------
+--
+-- Method:      !ce()
+--
+-- Description: sets the !this.common.ce object member
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [DBREF] [Element to link object to]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .ce(!element is DBREF)
+
+  !this.common.ce(!element)
+
+endmethod
+-- End of method definition for .ce(DBREF)
+
+------------------------------------------------------------------------
+--
+-- Method:      !erase()
+--
+-- Description: erases part numbers from part elements
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .erase()
+
+  -- check if splDrg has been issued
+  if (!this.common.ce.issued) then
+    -- 'Spool drawing has been issued - renumbering is not allowed'
+    !!messageFile.error(154, 63)
+  endif
+
+  -- unset all part numbers
+  PARTNO ERASE $!<this.common.ce>
+
+endmethod
+-- End of method definition for .erase()
+
+------------------------------------------------------------------------
+--
+-- Method:      !check()
+--
+-- Description: check part numbers
+--
+-- Method Type: Function
+-- Return:
+--   [ARRAY] [Array of messages resulting from check]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .check() is ARRAY
+
+  -- initialise return data
+  !returnData = ARRAY()
+
+  -- check perSpool flag from global numbers option
+    !qualifier = ''
+  if (defined(!!splNumOpt)) then
+    if (!!splNumOpt.perSpool eq 'per SPOOL') then
+       !qualifier = 'PERSPOOL'
+    endif
+  endif
+
+  -- get check results for part numbers
+  PARTNO $!qualifier CHECK $!<this.common.ce>
+  handle (61,299)
+    var !count PARTNO ERROR COUNT
+    do !i to !count.real()
+      var !text PARTNO ERROR $!i
+
+      -- Test for duplicate numbers message. This is NOT required if the PBEND option is on
+      if (!!splNumOpt.pulledBends) then
+        skip if (!text.match('Duplicate').neq(0))
+      endif
+
+      !returnData.append(!text)
+    enddo
+  endhandle
+
+  -- Get check results for pulled bends and corresponding tubes
+  if (!!splNumOpt.pulledBends) then
+
+-- This is required after a fix for Defect 6908 to replace the PML check below
+--    PARTNO $!qualifier CHECK $!<this.common.ce> PBEND
+--    handle (61,299)
+--      var !count PARTNO ERROR COUNT
+--      do !i to !count.real()
+--        var !text PARTNO ERROR $!i
+--        !returnData.append(!text)
+--      enddo
+--    endhandle
+
+  -- Make a PML check of part numbers for pulled bends
+    if(!!splPBendCheck()) then
+      !returnData.append('Part numbers for tubi with pulled bends require renumbering')
+    endif
+
+  endif
+
+  -- for no errors
+  if (!returnData.empty()) then
+    -- 'No errors in part numbering'
+    !returnData.append(!!messageFile.messageString(154, 79))
+  endif
+
+  return !returnData
+
+endmethod
+-- End of method definition for .check() ARRAY
+
+------------------------------------------------------------------------
+--
+-- Method:      !renumber()
+--
+-- Description: renumbers part elements
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .renumber()
+
+  -- check if splDrg has been issued
+  if (!this.common.ce.issued) then
+    -- 'Spool drawing has been issued - renumbering is not allowed'
+    !!messageFile.error(154, 63)
+  endif
+
+  -- check perSpool flag from global numbers option
+    !qualifier = ''
+  if (defined(!!splNumOpt)) then
+    if (!!splNumOpt.perSpool eq 'per SPOOL') then
+       !qualifier = 'PERSPOOL'
+    endif
+  endif
+
+  -- check pulled bend flag from global numbers option
+    !argument = ''
+  if (defined(!!splNumOpt)) then
+    if (!!splNumOpt.pulledBends) then
+       !argument = 'PBEND'
+    endif
+  endif
+
+  -- renumber all part numbers
+  PARTNO $!qualifier CREATE $!<this.common.ce> $!argument
+
+endmethod
+-- End of method definition for .renumber()
+
+------------------------------------------------------------------------
+--
+-- Method:      !update()
+--
+-- Description: update part numbering
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .update()
+
+  -- check perSpool flag from global numbers option
+    !qualifier = ''
+  if (defined(!!splNumOpt)) then
+    if (!!splNumOpt.perSpool eq 'per SPOOL') then
+       !qualifier = 'PERSPOOL'
+    endif
+  endif
+
+  -- check pulled bend flag from global numbers option
+    !argument = ''
+  if (defined(!!splNumOpt)) then
+    if (!!splNumOpt.pulledBends) then
+       !argument = 'PBEND'
+    endif
+  endif
+
+  -- update all part numbers
+  PARTNO $!qualifier UPDATE $!<this.common.ce> $!argument
+
+endmethod
+-- End of method definition for .update()
+
+------------------------------------------------------------------------
+--
+-- Method:      !updateReqd()
+--
+-- Description: Check if update of numbering is required
+--
+-- Method Type: Function
+-- Return value:
+--  [BOOLEAN]  [True if update is required]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .updateReqd() is BOOLEAN
+
+  -- initialise variables
+  !errors     = false
+  !bendErrors = false
+
+  -- check if partnumbers need updating
+  PARTNO CHECK $!<this.common.ce>
+  handle (61,299)
+    !errors = true
+  elsehandle none
+    !errors = false
+  endhandle
+
+  -- Get check results for pulled bends and corresponding tubes
+  if (!!splNumOpt.pulledBends) then
+
+    -- This is required after a fix for Defect 6908 to replace the PML check below
+    -- check if pulled bend part numbers need updating
+    -- PARTNO CHECK $!<this.common.ce> PBEND
+    -- handle (61,299)
+    --   !errors = true
+    -- elsehandle none
+    --   !errors = false
+    -- endhandle
+
+    -- Make a PML check of part numbers for pulled bends
+    !bendErrors = !!splPBendCheck()
+
+    -- Test for any standard errors
+    if (!errors.not() and !bendErrors) then
+      !errors = true
+    endif
+
+  endif
+
+  return !errors
+
+endmethod
+-- End of method definition for .updateReqd() BOOLEAN
+
+------------------------------------------------------------------------
+--
+-- Method:      !updatingText()
+--
+-- Description: Return prompt text for updating
+--
+-- Method Type: Function
+-- Return value:
+--  [STRING]  [Prompt text]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .updatingText() is STRING
+
+  -- 'Updating part numbers for #name'
+  return !!messageFile.messageString(154, 148, !this.common.ce.fullName)
+
+endmethod
+-- End of method definition for .updatingText() STRING
+
+------------------------------------------------------------------------
+--
+-- Method:      !alignTidy()
+--
+-- Description: remove spltmp after align
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .alignTidy()
+
+  !this.common.alignTidy()
+
+endmethod
+-- End of method definition for .alignTidy()
+
+------------------------------------------------------------------------
+--
+-- Method:      !start()
+--
+-- Description: Initialise the object for update
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .start()
+
+  -- common numbering initialisation
+  !this.common.start()
+
+  -- add all members with part numbers to the element list
+  !this.common.elementList = !!splMem(!this.common.ce)
+
+endmethod
+-- End of method definition for .start()
+
+------------------------------------------------------------------------
+--
+-- Method:      !getAttributes()
+--
+-- Description: Gets designated attributes from an element for asbuilt
+--
+-- Method Type: Function
+-- Arguments:
+--   [1] [R] [DBREF] [Element to retrieve attributes from]
+-- Return:
+--   [ARRAY] [Array of attribute names]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .getAttributes(!element is DBREF) is SPLATTRIBUTES
+
+  -- Special version for partnumbers, attributes PartNumber, BoltPartNumber,
+  -- MtoPartNumber, what is returned depends on what is set, based on
+  -- the assumption that updating part numbers will have set whatever
+  -- should be set. Thus this method depends on a prior check that
+  -- part numbers are up to date.
+  !returnData = object SPLATTRIBUTES()
+
+  -- component or tube part number
+  if (!element.type ne 'BRAN') then
+    if (!element.partNumber gt 0) then
+      !returnData.attributes.append('PartNumber')
+      !returnData.values.append(!element.partNumber)
+    endif
+  endif
+
+  if (!element.type ne 'TUBI') then
+
+    -- bolt partnumbers
+    if (!element.boltPartnumbers.set()) then
+      do !i indices !element.boltPartnumbers
+        !returnData.attributes.append('BoltPartNumbers[' & !i & ']')
+        !returnData.values.append(!element.boltPartnumbers[!i])
+      enddo
+    endif
+
+    -- additional MTO partnumbers
+    if (!element.type ne 'BRAN') then
+      if (!element.mtoPartNumbers.set()) then
+        do !i indices !element.mtoPartNumbers
+          !returnData.attributes.append('MtoPartNumbers[' & !i & ']')
+          !returnData.values.append(!element.mtoPartNumbers[!i])
+        enddo
+      endif
+    endif
+
+  endif
+
+  return !returnData
+
+endmethod
+-- End of method definition for .getAttributes(DBREF) SPLATTRIBUTES
+
+------------------------------------------------------------------------
+--
+-- Method:      !listMembers()
+--
+-- Description: Returns a list of elements to be updated, used in asbuilt mode only
+--
+-- Method Type: Function
+-- Return:
+--   [ARRAY] [2 dimensional array holding Dtext & Rtext values]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .listMembers() is ARRAY
+
+  !members = !this.common.listMembers()
+
+  -- get width of numbering part
+  if (!members[1].empty().not()) then
+    !width = !members[1][1].match(!this.common.elementList[1].fullName) - 1
+  endif
+
+  -- add branches with bolt partnumber if first member is in splDrg
+  do !member values !this.common.elementList
+    skip if (!member.type eq 'TUBI')
+    if (!member.sequence eq 1) then
+      if (!member.owner.boltPartNumber.set()) then
+        !paddedNumber = 'unset                                '
+        !members[1].append(!paddedNumber.subString(1, !width) & !member.owner.fullName)
+        !members[2].append(!member.owner.string())
+      endif
+    endif
+  enddo
+
+  -- Sort arrays into part number order
+  !sorted = !members[1].sortedIndices()
+  !members[1].reIndex(!sorted)
+  !members[2].reIndex(!sorted)
+
+  return !members
+
+endmethod
+-- End of method definition for .listMembers() ARRAY
+
+------------------------------------------------------------------------
+--
+-- Method:      !highlight()
+--
+-- Description: Highlight the selected element
+--
+-- Method Type: Procedure
+-- Arguments:
+-- [1]  [R]  [DBREF]    [Element selected for highlighting]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .highlight(!element is DBREF)
+
+  -- reset display
+  !this.unhighlight()
+
+  -- highlight the selected element
+  !highlightCol = !!gphColOpt.highlight()
+  ENHANCE $!element COLOUR $!<highlightCol.code>
+
+  -- mark the selected element
+  !this.markedElement = !element
+  MARK $!<this.markedElement>
+
+endmethod
+-- End of method definition for .highlight(DBREF)
+
+------------------------------------------------------------------------
+--
+-- Method:      !unhighlight()
+--
+-- Description: unhighlight the selected element
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .unhighlight()
+
+  -- reset display
+  UNENHANCE $!<this.common.ce>
+  REPRESENTATION UPDATE
+
+  -- unmark the previously marked element
+  if (!this.markedElement.set()) then
+    if (!this.markedElement.badRef().not()) then
+      UNMARK $!<this.markedElement>
+    endif
+    !this.markedElement = object DBREF()
+  endif
+
+endmethod
+-- End of method definition for .unhighlight()
+
+------------------------------------------------------------------------
+--
+-- Method:      !trackSelect()
+--
+-- Description: Get list member derived from CE for modify
+--
+-- Method Type: Function
+-- Return:
+--   [DBREF] [List member to select]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .trackSelect() is DBREF
+
+  !returnData = object DBREF()
+
+  -- Select CE if present in element list
+  if (!this.common.elementList.findFirst(!!ce).set()) then
+    !returnData = !!ce
+  endif
+
+  return !returnData
+
+endmethod
+-- End of method definition for .trackSelect() DBREF
+
+------------------------------------------------------------------------
+--
+-- Method:      !validate()
+--
+-- Description: validate string attribute from user input
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [DBREF]  [Element to set attribute on]
+--   [2] [R] [STRING] [Attribute]
+--   [3] [R] [STRING] [Value]
+-- Return value:
+--   [BOOLEAN]  [True if validated]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .validate(!element is DBREF, !attribute is STRING, !value is STRING) is BOOLEAN
+
+  return !this.common.validate(!element, !attribute, !value)
+
+endmethod
+-- End of method definition for .validate(DBREF, STRING, STRING) BOOLEAN
+
+------------------------------------------------------------------------
+--
+-- Method:      !validate()
+--
+-- Description: validate real attribute from user input
+--
+-- Method Type: Function
+-- Arguments:
+--   [1] [R] [DBREF]  [Element to set attribute on]
+--   [2] [R] [STRING] [Attribute]
+--   [3] [R] [REAL]   [Value]
+-- Return value:
+--   [BOOLEAN]  [True if validated]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .validate(!element is DBREF, !attribute is STRING, !value is REAL) is BOOLEAN
+
+  -- part number as built setting (special version, not common)
+  if (!attribute.upcase() eq 'PARTNUMBER' or !attribute.upcase().before('[') eq 'BOLTPARTNUMBERS' or $
+      !attribute.upcase().before('[') eq 'MTOPARTNUMBERS') then
+
+    -- Collect partnumber data
+    !partNumbers = !this.common.elementList.evaluate(OBJECT BLOCK('!this.common.elementList[!evalIndex].partNumber'))
+
+    -- Append bolt and additional MTO partnumbers
+    do !member values !this.common.elementList
+      skip if (!member.type eq 'TUBI')
+      !partNumbers.appendArray(!member.boltPartnumbers)
+      !partNumbers.appendArray(!member.mtoPartNumbers)
+      -- catch bolt partnumbers at branch level
+      if (!member.sequence eq 1) then
+        !partNumbers.appendArray(!member.owner.boltPartnumbers)
+      endif
+    enddo
+
+    -- check if new value is illegal
+    if (!value.unset() or !value le 0) then
+      -- 'Illegal value for #attribute'
+      !!alert.error(!!messageFile.messageString(154, 94, !attribute))
+      return false
+    elseif (!partNumbers.findFirst(!value).set()) then
+      -- '#attribute #value has already been used'
+      !!alert.error(!!messageFile.messageString(154, 95, 'PartNumber', !value))
+      return false
+    else
+      return true
+    endif
+
+  else
+
+    -- 'Attribute not recognised for validation'
+    !!alert.error(!!messageFile.messageString(154, 92))
+    return false
+
+  endif
+
+endmethod
+-- End of method definition for .validate(DBREF, STRING, REAL) BOOLEAN
+
+------------------------------------------------------------------------
+--
+-- Method:      !validate()
+--
+-- Description: validate boolean attribute from user input
+--
+-- Method Type: Function
+-- Arguments:
+--   [1] [R] [DBREF]   [Element to set attribute on]
+--   [2] [R] [STRING]  [Attribute]
+--   [3] [R] [BOOLEAN] [Value]
+-- Return value:
+--   [BOOLEAN]  [True if validated]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .validate(!element is DBREF, !attribute is STRING, !value is BOOLEAN) is BOOLEAN
+
+  return !this.common.validate(!element, !attribute, !value)
+
+endmethod
+-- End of method definition for .validate(DBREF, STRING, BOOLEAN) BOOLEAN
+
+------------------------------------------------------------------------
+--
+-- Method:      !setAttribute()
+--
+-- Description: string attribute setting from user input
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [DBREF]  [Element to set attribute on]
+--   [2] [R] [STRING] [Attribute]
+--   [3] [R] [STRING] [Value]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .setAttribute(!element is DBREF, !attribute is STRING, !value is STRING)
+
+  !this.common.setAttribute(!element, !attribute, !value)
+
+endmethod
+-- End of method definition for .setAttribute(DBREF, STRING, STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      !setAttribute()
+--
+-- Description: real attribute setting from user input
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [DBREF]  [Element to set attribute on]
+--   [2] [R] [STRING] [Attribute]
+--   [3] [R] [REAL]   [Value]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .setAttribute(!element is DBREF, !attribute is STRING, !value is REAL)
+
+  -- part number as built setting (special version, not common)
+  if (!attribute.upcase() eq 'PARTNUMBER' or !attribute.upcase().before('[') eq 'BOLTPARTNUMBERS' or $
+      !attribute.upcase().before('[') eq 'MTOPARTNUMBERS') then
+
+    -- New value exceeds pmax for splDrg
+    if (!value gt !this.common.ce.pmaximum) then
+      !!ce = !this.common.ce
+      PMAXIMUM $!value
+    endif
+
+    -- for tube, change all matching partnumbers
+    if (!element.type eq 'TUBI') then
+      !oldPartNumber = !element.partNumber
+      do !i indices !this.elementList
+        !member = !this.elementList[!i]
+        if (!member.type eq 'TUBI' and !member.partNumber eq !oldPartNumber) then
+          !!ce = !member
+          $!attribute $!value
+        endif
+      enddo
+      !!ce = !element
+
+    -- for component, just set partnumber
+    else
+      !!ce = !element
+
+      -- check for array element
+      if (!attribute.match('[') gt 0) then
+        !attName = !attribute.before('[')
+        !attNumb = !attribute.after('[').before(']')
+        $!attName NUMBER $!attNumb $!value
+      else
+        $!attribute $!value
+      endif
+    endif
+
+  else
+
+    -- 'Attribute not recognised for setting'
+    !!messageFile.error(154, 93)
+
+  endif
+
+endmethod
+-- End of method definition for .setAttribute(DBREF, STRING, REAL)
+
+------------------------------------------------------------------------
+--
+-- Method:      !setAttribute()
+--
+-- Description: boolean attribute setting from user input
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [DBREF]   [Element to set attribute on]
+--   [2] [R] [STRING]  [Attribute]
+--   [3] [R] [BOOLEAN] [Value]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .setAttribute(!element is DBREF, !attribute is STRING, !value is BOOLEAN)
+
+  !this.common.setAttribute(!element, !attribute, !value)
+
+endmethod
+-- End of method definition for .setAttribute(DBREF, STRING, BOOLEAN)

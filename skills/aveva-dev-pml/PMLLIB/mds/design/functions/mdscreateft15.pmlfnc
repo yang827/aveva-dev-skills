@@ -1,0 +1,1877 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-------------------------------------------------------------------------------- --
+--
+-- File:                mdscreateft15.pmlfnc
+--   Type:              Function Definition
+--   Group:             Multi Discipline Supports Application
+--     Keyword:         MDS
+--   Module:            design
+--   Replaces:          MPS139W/TW
+--
+-- Author:              Wayne Dodwell
+-- Created:             Wednesday 1st October 1997
+--
+--
+-- Description:
+-- function to create support Framework type 'FT15'
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         STRING       Method of creating support
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsCreateft15(!method is STRING)
+
+  -- Find current units and set the distance unit to metric
+
+  !currentUnits = !!kGetSetUnits()
+
+  ------------------------------------------------------------------------------------------------
+  ------------------------------------------------------------------------------------------------
+
+  -- Initialise variables
+  call !!mdsResetPins(1,10)
+
+  --<wd>may2007<mds12>
+  --    !iDType    = 'GENSEC SCTN'
+  !session  = current session
+  if !session.module().upcase().match('DESIGN').gt(0) then
+    !iDType = 'GENSEC SCTN'
+  elseif  !session.module().upcase().match('OUTFITTING').gt(0) then
+    !iDType = 'GENSEC SCTN HSTIFF'
+  endif
+  --<wd>may2007<mds12>
+
+  !support   = !!mdsFt15.support
+  --!clearance = !!mdsOptions.clear.val
+  !overlap   = !!mdsOptions.overlap.val
+  -- !selection = !!mdsFt15.size.selection('Rtext')
+  !selection = !!mdsSetSteel.size.selection('Rtext')
+  !datum     = !support.datum
+  !stru      = !support.stru
+  !name      = !stru.name
+  !p10Dir    = !support.p10Dir
+  !p11Dir    = !support.p11Dir
+  !plDir     = !support.plDir
+  !paDir     = !support.paDir
+  --<k.pleschner>May06
+  !datumDflts = object MDSANCGEOMDFLTS(!datum)
+  !clearance = !datumDflts.cend
+  --<k.pleschner>May06
+
+  -- Does the support have attached/Associated supports
+
+  if !!mdsgetconnectedsupp(!stru) then
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+  ------------------------------------------------------------------------------------------------
+  ------------------------------------------------------------------------------------------------
+
+  -- Get configuration support is to be built to.
+  !config = !!mdsFt15.slide.val.real()
+
+  -- Set Description for Beams to Identify for each type of Support Configuration
+  if (!config.eq(1) or !config.eq(3)) then
+    !first  = 'First'
+    !second = 'Second'
+  elseif (!config.eq(2)) then
+    !first  = 'Web Connection'
+    !second = 'Bottom Flange Connection'
+  elseif (!config.eq(4)) then
+    !first  = 'Lowest'
+    !second = 'Highest'
+  endif
+
+  ------------------------------------------------------------------------------------------------
+  ------------------------------------------------------------------------------------------------
+
+  ----------------------------- **** connexions **** -----------------------------
+  !form = !!mdsFt15
+
+
+  -- Can we write to the spref attribute of the SREF atta
+  -- and the stru
+
+  if !support.datum.badref().not() then
+    !srefName = !support.datum.name.before('/DATUM') + '/SREF'
+    if !!mdsComClaimDac(!support.stru,'DACMOD','POS').not() or !!mdsComClaimDac(!srefName.dbref(),'DACMOD','SPREF').not() then
+      !despars = !srefName.dbref().despar
+      !!mdsResetDims(!form,!despars)
+      !!kRestoreUnits(!currentUnits)
+      !!alert.error('Unable to change the support as write access to the SREF atta is not available')
+      return
+    endif
+  endif
+
+  -- Check that Datum atta has been created
+  if (!datum.set().not())then
+    !!alert.message('Datum support atta has not been created')
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+  -- Check that Datum atta has been positioned
+  if (!support.position.not())then
+    !!alert.message('Position atta before identifying supporting steelwork')
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+  -- store compensations
+  !complates = !!mdsCompplateDflts.compensatingPlates(!form)
+
+  -- Check which attas to work from
+  !atta = !support.atta
+
+  -- Set initial orientation
+  !ddir = D wrt world
+  !udir = U wrt world
+
+  -- Store section name and matref for each member
+  -- for resetting later
+
+  !storeMat = ARRAY()
+  !storeMat = !!mdsStoreMat(!name)
+
+
+  -- Get general direction of pleave of datum atta
+  -- Plane direction is nearest value to 1
+  !up    = (abs(!plDir.up))
+  !east  = (abs(!plDir.east))
+  !north = (abs(!plDir.north))
+  !max   = max((abs(!up)), (abs(!east)), (abs(!north)))
+  if (!max.eq(!up))then
+    !planeDir = U wrt world
+  elseif (!max.eq(!east))then
+    !planeDir = E wrt world
+  else
+    !planeDir = N wrt world
+  endif
+
+  -- Determine the general Pleave direction of the datum atta
+  PIN 1 COPY PL OF $!datum
+  PIN 1 plane PIN 1 CLEAR 0 BEH $!datum
+  PIN 1 DIR $!planeDir
+  PIN 2 COPY PIN 1
+  PIN 2 plane PIN 2 THRO $!datum
+
+  ------------------------------------------------------------------------------------------------
+  ------------------------------------------------------------------------------------------------
+
+  -- Generate pin positions for each creation type
+
+  ------------------------------------------------------------------------------------------------
+  ------------------------------------------------------------------------------------------------
+
+  if (!method eq |CURSOR|)then
+    ---------------------------------------------
+    --$(
+    !errorMessage = STRING()
+    if(!!mdsCheckConns(!form, !errorMessage).eq('UNJOINTED')) then
+      -- nothing to do
+    elseif(!!mdsCheckConns(!form, !errorMessage).eq('WARNING')) then
+      !continue = !!alert.confirm(!errorMessage)
+      if(!continue.eq('NO')) then
+        -- Reset the SREF atta SPREF attribute originally set in the function MdsCONFIGFT15
+        if (defined(!!mdsFt15xsref)) then
+          !ceref = !!ce
+          !!ce = $!<name>/SREF
+          spref $!!mdsFt15xsref
+          !!mdsFt15.slide.val = !!mdsFt15xconf
+          !!ce = !ceref
+        endif
+        return
+      else
+        !!mdsSelectJoints(!form,'DISCONNECT','')
+        !support.joints.clear()
+      endif
+    elseif(!!mdsCheckConns(!form, !errorMessage).eq('ERROR')) then
+      !!alert.error(!errorMessage)
+      !!kRestoreUnits(!currentUnits)
+      return
+    else
+      -- continue
+      !!mdsSelectJoints(!form,'DISCONNECT','')
+      !support.joints.clear()
+    endif
+
+    -- Delete SREF ref variables if they exist
+    !!mdsFt15xsref.delete()
+    handle any
+    endhandle
+    !!mdsFt15xconf.delete()
+    handle any
+    endhandle
+    --$)
+    ---------------------------------------------
+
+
+    label /Element1
+
+    !pick1 = !support.singlePick(!iDType,'Identify $!first Beam to support from')
+    if !pick1.unset() then
+      !!kRestoreUnits(!currentUnits)
+      return
+    endif
+
+    -- Check Location of  the First Beam to the Datum Atta
+    !testCe1 = !!mdsRelToDatum(!datum, !pick1, !p10Dir, !clearance.real())
+    if (!testCe1[1].upcase() eq 'UNSET')then
+      !!alert.error('Identified element is unsuitable to support from.')
+      golabel /Element1
+    elseif (!testCe1[1].upcase() eq '')then
+      golabel /Element1
+    elseif (!testCe1[1].upcase() eq 'EQUAL')then
+      !!alert.error('Identified element is in line with the datum atta')
+      golabel /Element1
+    elseif (!testCe1[1].upcase() eq 'ABOVE')then
+      -- Beam is to the Right of the datum atta (p11 side)
+      !firstdir  = !p11Dir
+      !support.rotateCur = true
+    elseif (!testCe1[1].upcase() eq 'BELOW')then
+      -- Beam is to the Left of the datum atta (p10 side)
+      !firstdir  = !p10Dir
+      !support.rotateCur = false
+    endif
+
+    label /Element2
+
+    !pick2 = !support.singlePick(!iDType,'Identify $!second Beam to support from')
+    if !pick2.unset() then
+      !!kRestoreUnits(!currentUnits)
+      return
+    endif
+
+    if (!pick1 eq !pick2) then
+      !!alert.message('Cannot Identify the same Section. Select another Section.')
+      !!kRestoreUnits(!currentUnits)
+      return
+    endif
+
+    -- Check Location of the Second Beam to the Datum Atta
+    !testCe2 = !!mdsRelToDatum(!datum, !pick2, !p11Dir, !clearance.real())
+    if (!testCe2[1].upcase() eq 'UNSET')then
+      !!alert.error('Identified element is unsuitable to support from.')
+      golabel /Element2
+    elseif (!testCe2[1].upcase() eq '')then
+      golabel /Element2
+    elseif (!testCe2[1].upcase() eq 'EQUAL')then
+      !!alert.error('Identified element is in line with the datum atta')
+      golabel /Element2
+    elseif (!testCe2[1].upcase() eq 'ABOVE')then
+      -- Beam is to the Left of the datum atta (p10 side)
+      !seconddir = !p10Dir
+    elseif (!testCe2[1].upcase() eq 'BELOW')then
+      -- Beam is to the Right of the datum atta (p11 side)
+      !seconddir  = !p11Dir
+    endif
+
+    ------------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
+
+    -- Check if Location of Beams are suitable for the Selected Configuration
+    if (!config.eq(1)) then
+      if (!testCe1[1].upcase() neq !testCe2[1].upcase()) then
+        !!alert.error ('The identified Beams are unsuitable for supporting the Datum atta with the selected Build Configuration. Please Re-Identify the Beams')
+        golabel /Element1
+      endif
+    endif
+
+    ------------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
+
+    !!mdsCreateMess(true)
+
+    -- Check to see if First picked section is a beam or a column
+    !!ce = !pick1
+    !posstart = Posstart
+    !posend   = posend
+    VAR !dir CONS DIR $!posstart to $!posend
+
+    -- Set object definition if Posstart is Lower than Posend
+    !direction = object KEQUALDIR()
+    !direction.directionA = !dir.direction()
+    !direction.directionB = !udir
+    !direction.tolerance  = 0.05
+
+    if (!!kDirEqualDir(!direction)) then
+      !pickedType1 = 'COLUMN'
+    endif
+
+    -- Set object definition if Posstart is Higher than Posend
+    !direction = object KEQUALDIR()
+    !direction.directionA = !dir.direction()
+    !direction.directionB = !ddir
+    !direction.tolerance  = 0.05
+
+    if (!!kDirEqualDir(!direction)) then
+      !pickedType1 = 'COLUMN'
+    endif
+
+    -- Set variable if undefined
+    if (undefined(!pickedType1)) then
+      !pickedType1 = 'BEAM'
+    endif
+
+    ------------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
+
+    -- Check to see if Second picked section is a beam or a column
+    !!ce = !pick2
+    !posstart = Posstart
+    !posend   = posend
+    VAR !dir CONS DIR $!posstart to $!posend
+
+    -- Set object definition if Posstart is Lower than Posend
+    !direction = object KEQUALDIR()
+    !direction.directionA = !dir.direction()
+    !direction.directionB = !udir
+    !direction.tolerance  = 0.05
+
+    if (!!kDirEqualDir(!direction)) then
+      !pickedType2 = 'COLUMN'
+    endif
+
+    -- Set object definition if Posstart is Higher than Posend
+    !direction = object KEQUALDIR()
+    !direction.directionA = !dir.direction()
+    !direction.directionB = !ddir
+    !direction.tolerance  = 0.05
+
+    if (!!kDirEqualDir(!direction)) then
+      !pickedType2 = 'COLUMN'
+    endif
+
+    -- Set variable if undefined
+    if (undefined(!pickedType2)) then
+      !pickedType2 = 'BEAM'
+    endif
+
+    ------------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
+
+    -- Check if Location of Beams are suitable for the Selected Configuration
+    if (!config.eq(1)) then
+      if (!testCe1[1].upcase() neq !testCe2[1].upcase()) then
+
+        !!mdsCreateMess(false)
+        !!alert.error ('The identified Beams are unsuitable for supporting the Datum atta with the selected Build Configuration. Please Re-Identify the Beams')
+        golabel /Element1
+      endif
+
+    else
+      -- Configs '2' , '3' or '4'
+      -- Check if Sections are of Differing Sizes if both are BEAMS
+      -- Also Check if Beams are the Same size and TOS of FIRST Beam is Higher than BOS of SECOND Beam
+
+      if (!pickedType2 eq 'COLUMN') then
+        !!mdsCreateMess(false)
+        !!alert.error ('Second Identified Section must be an Horizontal Beam')
+        golabel /Element2
+      endif
+
+      if (!pickedType1 eq !pickedType2) then
+        !!mdsResetPins(1,10)
+
+        !!ce = !pick1
+        pin 1 at ppline NA start
+        pin 1 dir u wrt /*
+        pin 2 copy pin 1
+        pin 1 plane pin 1 clear 0 beh $!pick1
+        pin 2 plane pin 2 clear 0 inf $!pick1
+        var !pin1 pin 1 pos wrt world
+        !pin1Pos = !pin1.position()
+        var !pin2 pin 2 pos wrt world
+        !pin2Pos = !pin2.position()
+        !pick1size = !!kStrReal('const dist pin 1 to plane pin 2 ')
+
+        !!ce = !pick2
+        pin 3 at ppline NA start
+        pin 3 dir u wrt /*
+        pin 4 copy pin 3
+        pin 3 plane pin 3 clear 0 beh $!pick2
+        pin 4 plane pin 4 clear 0 inf $!pick2
+        var !pin3 pin 3 pos wrt world
+        !pin3pos = !pin3.position()
+        var !pin4 pin 4 pos wrt world
+        !pin4pos = !pin4.position()
+        !pick2size = !!kStrReal('const dist pin 3 to plane pin 4 ')
+      endif
+
+      ------------------------------------------------------------------------------------------------
+      ------------------------------------------------------------------------------------------------
+
+      if (!config.eq(2)) then
+
+        -- Check if beams are of the same size and BOS are not level or BOS of beam1 is not Higher than BOS of beam 2
+        if (!pick1size.eq(!pick2size)) then
+          if (!pin2Pos.up.geq(!pin4pos.up)) then
+            !!mdsCreateMess(false)
+            !!alert.error('The identified beams are unsuitable for the selected Build Configuration. Please Re-Identify the Beams')
+            golabel /Element1
+          endif
+
+          -- Check if beam 1 is smaller than beam 2 and that BOS of beam 1 is lower than BOS of beam 2
+        elseif (!pick1size.lt(!pick2size)) then
+          if (!pin2Pos.up.geq(!pin4pos.up)) then
+            !!mdsCreateMess(false)
+            !!alert.error('The identified beams are unsuitable for the selected Build Configuration. Please Re-Identify the Beams')
+            golabel /Element1
+
+
+            -- Check if beam 1 is smaller than beam 2 and that TOS of beam 1 is Higher than BOS of beam 2
+          elseif (!pin1Pos.up.leq(!pin4pos.up)) then
+            !!mdsCreateMess(false)
+            !!alert.error('The identified beams are unsuitable for the selected Build Configuration. Please Re-Identify the Beams')
+            golabel /Element1
+          endif
+        endif
+
+        ------------------------------------------------------------------------------------------------
+        ------------------------------------------------------------------------------------------------
+
+      elseif (!config.eq(3)) then
+
+        -- Check beams are level at Bottom flange ie. BOS of beam1 at same elevation as BOS of beam 2
+        if (!pick1size.eq(!pick2size)) then
+          if (!pin2Pos.up ne !pin4pos.up) then
+            !!mdsCreateMess(false)
+            !!alert.error('The identified beams are unsuitable for the selected Build Configuration. Please Re-Identify the Beams')
+            golabel /Element1
+          endif
+        else
+          if (!pin2Pos.up ne !pin4pos.up) then
+            !!mdsCreateMess(false)
+            !!alert.error('The identified beams are unsuitable for the selected Build Configuration. Please Re-Identify the Beams')
+            golabel /Element1
+          endif
+        endif
+
+        ------------------------------------------------------------------------------------------------
+        ------------------------------------------------------------------------------------------------
+
+      elseif (!config.eq(4)) then
+
+        -- Check beams are NOT level at Bottom flange ie. BOS of beam1 to be LOWER than the BOS of beam 2
+        if (!pick1size.eq(!pick2size)) then
+          if (!pin2Pos.up.geq(!pin4pos.up)) then
+            !!mdsCreateMess(false)
+            !!alert.error('The identified beams are unsuitable for the selected Build Configuration. The Bottom of the Second Beam MUST be Higher than the Bottom of the First Beam. Please Re-Identify the Beams')
+            golabel /Element1
+          endif
+        else
+          if (!pin2Pos.up.geq(!pin4pos.up)) then
+            !!mdsCreateMess(false)
+            !!alert.error('The identified beams are unsuitable for the selected Build Configuration. The Bottom of the Second Beam MUST be Higher than the Bottom of the First Beam. Please Re-Identify the Beams')
+            golabel /Element1
+          endif
+        endif
+
+      endif
+    endif
+
+    ------------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
+
+    -- Check configuration of support against picked type
+    if (!config.eq(3) or !config.eq(4))then
+      if (!pickedType1 eq 'COLUMN' or !pickedType2 eq 'COLUMN') then
+        !!mdsCreateMess(false)
+        !!alert.error('Identified section must be a BEAM for this Build Configuration.')
+        !!ce = !stru
+        !!kRestoreUnits(!currentUnits)
+        return
+      endif
+    endif
+
+    ------------------- ***** Connexions *****-------------------
+    --$(
+    !support.connections[1] = !pick1
+    !support.connections[2] = !pick2
+    -- !!mdsFt15.lineUp.active = False
+    --$)
+    -------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
+
+    -- Connection to First Section Picked
+    PIN 8 AT P9 of $!datum
+    PIN 8 DIR $!firstdir
+    VAR !pin8Pos PIN 8 POS WRT WORLD
+
+    -- See if we are connecting to the web or flange of the section
+    -- Set object definition
+
+    !inter = !!kFlangeOrWeb(!pick1, !pin8Pos.position(), !firstdir)
+
+    PIN 9 AT $!inter
+    PIN 9 DIR $!firstdir
+
+    ------------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
+
+    -- Connection to Second Section Picked
+    PIN 8 AT P9 of $!datum
+    PIN 8 DIR $!seconddir
+    VAR !pin8Pos PIN 8 POS WRT WORLD
+
+    -- See if we are connecting to the web or flange of the section
+    -- Set object definition
+
+    !inter = !!kFlangeOrWeb(!pick2, !pin8Pos.position(), !seconddir)
+
+    PIN 10 AT $!inter
+    PIN 10 DIR $!seconddir
+
+    ------------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
+
+    if (!config.eq(1)) then
+      pin 4 copy pin 10
+      pin 3 copy pin 9
+      pin 3 at p9 of $!datum
+    endif
+
+    ------------------------------------------------------------------------------------------------
+    --xxx If not --vvv-- Config '1' --vvv--  generate Pin Positions for Poss of '<$!name>-BAR-1'
+    ------------------------------------------------------------------------------------------------
+
+    if (!config.neq(1)) then
+
+      -- SECOND Beam End Pin Position
+      -- pin 8 is at p9 of DATUM atta
+      -- Position Pin 4 at the SECOND Beam if the Distance from the Datum Atta to Pin 4 is
+      -- less than  Distance from the Datum Atta to the SECOND Beam
+
+      pin 8 copy pin 9
+      pin 8 dir to pin 10
+      pin 8 at p9 of $!datum
+      var !pin8dir pin 8 dire
+      !num2dir = !pin8dir.direction()
+
+      PIN 8 DIR $!num2dir
+
+      PIN 4 copy PIN 8
+
+      !dim = 0
+      --<k.pleschner>May06
+      --do !i values !atta
+      do !iref values !atta
+        -- avoid SREF atta
+        skip if !iref.name.substring(-1,-5).eq('/SREF')
+        !i = object MDSANCGEOMDFLTS(!iref)
+        --PIN 4 plane PIN 4 CLEAR $!clearance BEH $!i
+        if !i.clge.eq('GEOM') then
+          -- use clearance from geometry
+          PIN 4 plane PIN 4 CLEAR $!i.oend BEH $!i
+        else
+          -- use distance from centreline
+          PIN 4 plane PIN 4 THR $!i
+          PIN 4 plane PIN 4 DIST $!i.oend
+        endif
+        handle (2,109)
+          break
+        endhandle
+        VAR !cDIR CONST DIR PIN 8 TO PIN 4
+        !cDim = !!kStrReal('CONST DIST PIN 8 TO PIN 4')
+
+        -- Set object definition
+        !direction = object KEQUALDIR()
+        !direction.directionA = !cDIR.direction()
+        !direction.directionB = !num2dir
+        !direction.tolerance  = 0.05
+
+        if (!cDim.gt(!dim) and !!kDirEqualDir(!direction)) then
+          PIN 4 AT PIN 8
+          PIN 4 DIST $!cDim
+          !dim = !cDim
+        else
+          PIN 4 AT PIN 8
+          PIN 4 DIST $!dim
+        endif
+      enddo
+
+      ------------------------------------------------------------------------------------------------
+      ------------------------------------------------------------------------------------------------
+
+      -- pin 8 is at p9 of DATUM atta
+      -- Position Pin 9 for the Cross Bar
+      -- Only required on Configs '3' and '4' where Pipes may be supported on the outside
+      -- of ONE or BOTH of the Identified Beams
+
+      if (!config.eq(3) or !config.eq(4)) then
+
+        pin 3 copy pin 8
+        pin 3 dist 100
+        pin 3 dir to pin 8
+        pin 3 at p9 of $!datum
+        var !pin3dir pin 3 dire
+        !num2dir = !pin3dir.direction()
+
+        PIN 3 DIR $!num2dir
+
+        PIN 9 copy PIN 3
+
+        !dim = 0
+        --<k.pleschner>May06
+        --do !i values !atta
+        do !iref values !atta
+          -- avoid SREF atta
+          skip if !iref.name.substring(-1,-5).eq('/SREF')
+          !i = object MDSANCGEOMDFLTS(!iref)
+          --PIN 9 plane PIN 9 CLEAR $!clearance BEH $!i
+          if !i.clge.eq('GEOM') then
+            -- use clearance from geometry
+            PIN 9 plane PIN 9 CLEAR $!i.oend BEH $!i
+          else
+            -- use distance from centreline
+            PIN 9 plane PIN 9 THR $!i
+            PIN 9 plane PIN 9 DIST $!i.oend
+          endif
+          handle (2,109)
+            break
+          endhandle
+          VAR !cDIR CONST DIR PIN 3 TO PIN 9
+          !cDim = !!kStrReal('CONST DIST PIN 3 TO PIN 9')
+
+          -- Set object definition
+          !direction = object KEQUALDIR()
+          !direction.directionA = !cDIR.direction()
+          !direction.directionB = !num2dir
+          !direction.tolerance  = 0.05
+
+          if (!cDim.gt(!dim) and !!kDirEqualDir(!direction)) then
+            PIN 9 AT PIN 3
+            PIN 9 DIST $!cDim
+            !dim = !cDim
+          else
+            PIN 9 AT PIN 3
+            PIN 9 DIST $!dim
+          endif
+        enddo
+
+      endif
+
+      -------------------------------------------------------------------------------------
+      -------------------------------------------------------------------------------------
+
+      -- For Configurations '2', '3' and '4'
+      -- Position Pins 6 and 10 at CL of FIRST and SECOND Beams respectively
+      pin 10 copy pin 8
+      pin 10 plane pin 10 thro $!pick2
+      pin 6 copy pin3
+      pin 6 plane pin 6 thro $!pick1
+      !pin6pin10dist = !!kStrReal('const dist pin 6 to plane pin 10')
+
+      -- Position Pin 4 at SECOND Beam if Pin 4 located inside FIRST and SECOND Beams
+      !pin6pin4dist = !!kStrReal(' const dist pin 6 to plane pin 4')
+      !pin10pin4dist = !!kStrReal('const dist pin 10 to plane pin 4')
+      !pin9pin4dist = !!kStrReal(' const dist pin 9 to plane pin 4')
+      !pin9pin10dist = !!kStrReal('const dist pin 9 to plane pin 10')
+
+      !pin8pin6dist = !!kStrReal(' const dist pin 6 to plane pin 8')
+      !pin8pin10dist = !!kStrReal('const dist pin 10 to plane pin 8')
+
+      ------------------------------------------------------------------------------------------------
+      ------------------------------------------------------------------------------------------------
+
+      if (!config.eq(2)) then
+        if (!pin9pin4dist.lt(!pin9pin10dist)) then
+          pin 4 plane pin 4 thro pin 10
+        endif
+      else
+
+        ------------------------------------------------------------------------------------------------
+        ------------------------------------------------------------------------------------------------
+
+        -- Configs '3' or '4'
+        -- When Only a Datum atta and the SREF atta exist on the Support
+        if (!atta.size().eq(2)) then
+          if (!testCe1[1].upcase() eq 'ABOVE' and !testCe2[1].upcase() eq 'BELOW') then
+
+            -- Both Beams are to the Right of the Datum Atta
+            -- Determine Which Beam is Closest to the Datum Atta - !pick1 or !pick2
+            if (!pin8pin6dist.gt(!pin8pin10dist)) then
+              -- !pick2 is closest to the Datum Atta
+              pin 9 plane pin 9 thro $!pick1
+            else
+              -- !pick1 is closest to the Datum Atta
+              pin 4 plane pin 4 thro $!pick2
+            endif
+
+            ------------------------------------------------------------------------------------------------
+            ------------------------------------------------------------------------------------------------
+
+          elseif (!testCe1[1].upcase() eq 'BELOW' and !testCe2[1].upcase() eq 'ABOVE') then
+            -- Both Beams are to the Left of the Datum Atta
+            -- Determine Which Beam is Closest to the Datum Atta - !pick1 or !pick2
+            if (!pin8pin6dist.nint().gt(!pin8pin10dist.nint())) then
+              -- !pick2 is closest to the Datum Atta
+              pin 9 plane pin 9 thro $!pick1
+            else
+              -- !pick1 is closest to the Datum Atta
+              pin 4 plane pin 4 thro $!pick2
+            endif
+
+          else
+            -- Datum Atta is Located In Between Beams !pick1 and !pick2
+            !testDim = !pin6pin4dist + !pin10pin4dist
+            if (!pin6pin10dist.nint().geq(!testDim.nint())) then
+              pin 4 plane pin 4 thro pin 10
+            endif
+          endif
+        else
+          -- Datum Atta is Located In Between Beams !pick1 and !pick2
+          !testDim  = !pin6pin4dist + !pin10pin4dist
+          if (!pin6pin10dist.nint().geq(!testDim.nint())) then
+            pin 4 plane pin 4 thro pin 10
+          endif
+
+        endif
+      endif
+      -- When Only a Datum atta and the SREF atta exist on the Support --^^^-
+
+      ------------------------------------------------------------------------------------------------
+      ------------------------------------------------------------------------------------------------
+
+      -- Position Pin 9 at FIRST Beam if Pin 9 located inside FIRST and SECOND Beams
+      !pin6pin9dist = !!kStrReal(' const dist pin 6 to plane pin 9')
+      !pin10pin9dist = !!kStrReal('const dist pin 10 to plane pin 9')
+      !testDim = !pin6pin9dist + !pin10pin9dist
+      if (!pin6pin10dist.nint().geq(!testDim.nint())) then
+        pin 9 plane pin 9 thro pin 6
+      endif
+
+    endif
+
+    ------------------------------------------------------------------------------------------------
+    --xxx  -- ^^^ --If not Config '1' generate Pin Positions for Poss and Pose of '<$!name>-BAR-1'
+    ------------------------------------------------------------------------------------------------
+
+    -- Position pins for configurations '2', '3' and '4'
+
+    if (!config.neq(1))then
+
+      -- Check that the datum atta is above the bottom flange of the SECOND Identified beam
+      !array = !!kFarPline(!pick2, !pin8Pos.position(), !udir)
+      PIN 1 AT $!array[2]
+      !pin1Pos.delete()
+      VAR !pin1Pos PIN 1 POS WRT WORLD
+
+      !array = !!kFarPline(!pick2, !pin1Pos.position(), !udir)
+      PIN 2 AT $!array[2]
+      !pin2Pos.delete()
+      VAR !pin2Pos PIN 2 POS WRT WORLD
+
+      -- Test that the datum atta is above bottom of the Identified beam(s)
+      -- Second Picked Beam for config '2' (Bottom of SECOND Beam to be Higher than Bottom of First Beam) and
+      -- Any Beam for config '3' ( Bottom of Beams to be at the SAME Elevation)
+
+      !lowest = min(!pin1Pos.position().up, !pin2Pos.position().up)
+      if (!config.eq(2) or !config.eq(3)) then
+
+        --> Modified -<wd>- 16sep1998
+        --           if (!lowest.gt(!pin8Pos.position().up))then
+        if (!lowest.abs().gt(!pin8Pos.position().up.abs()))then
+          --< Modified -<wd>- 16sep1998
+
+          if (!paDir neq !udir and !plDir neq !udir)then
+            -- Reset all pins used so far
+            --xxx              Call !!mdsResetPins(1,10)
+            if (!config.eq(2)) then
+              !!mdsCreateMess(false)
+              !!alert.error(' 1 -- Datum atta must be above lowest point of the Second Identified beam')
+            elseif  (!config.eq(3)) then
+              !!mdsCreateMess(false)
+              !!alert.error(' 2 -- Datum atta must be above lowest point of the Identified beam(s)')
+            endif
+            !!kRestoreUnits(!currentUnits)
+            !!mdsResetPins(1,10)
+            return
+          endif
+        endif
+      endif
+
+      ------------------------------------------------------------------------------------------------
+      ------------------------------------------------------------------------------------------------
+      -- Position pin 7 at lowest point of SECOND beam or FIRST BEAM if config is '4'  -- on Centreline of Datum Atta
+      -- Position pin 9 at mid point of SECOND beam -- on  Connection WEB of FIRST Beam
+
+      PIN 7 COPY PIN 1
+      PIN 7 DIR $!ddir
+
+      if (!config.eq(4) ) then
+        pin7 plane pin 7 clear 0 beh $!pick1
+      else
+        if (!lowest.eq(!pin2Pos.position().up))then
+          PIN 7 plane PIN 7 THRO PIN 2
+        endif
+      endif
+
+      !d21 = !!kStrReal('CONSt DIST PIN 2 TO PIN 1')
+      PIN 9 DIR $!ddir
+      PIN 9 plane PIN 9 THRO PIN 7
+      PIN 9 DIR $!udir
+      PIN 9 DIST ($!d21 / 2)
+      PIN 9 DIR $!firstdir
+
+      ------------------------------------------------------------------------------------------------
+      ------------------------------------------------------------------------------------------------
+
+      -- Check that the datum atta is above the bottom flange of the FIRST beam
+      VAR !pin8Pos PIN 8 POS WRT WORLD
+      !array = !!kFarPline(!pick1, !pin8Pos.position(), !udir)
+      PIN 1 AT $!array[2]
+      !pin1Pos.delete()
+      VAR !pin1Pos PIN 1 POS WRT WORLD
+
+      !array = !!kFarPline(!pick1, !pin1Pos.position(), !udir)
+      PIN 2 AT $!array[2]
+      !pin2Pos.delete()
+      VAR !pin2Pos PIN 2 POS WRT WORLD
+
+      -- Test that the datum atta is above the bottom of the FIRST Identified beam
+      -- First Picked Beam for config '4'
+
+      !lowest = min(!pin1Pos.position().up, !pin2Pos.position().up)
+
+      if (!lowest.gt(!pin8Pos.position().up))then
+        if (!paDir neq !udir and !plDir neq !udir)then
+          -- Reset all pins used so far
+          call !!mdsResetPins(1,10)
+          !!mdsCreateMess(false)
+          !!alert.error(' 3 -- Datum atta must be above the Bottom of the FIRST beam')
+          !!kRestoreUnits(!currentUnits)
+          return
+        endif
+      endif
+      ------------------------------------------------------------------------------------------------
+      ------------------------------------------------------------------------------------------------
+
+      -- Position Pins 1, 2 and 3 to Check cross bar will locate in WEB of FIRST Beam
+      !array = !!kClosestPline(!pick1, !pin1Pos.position(), !udir)
+      PIN 1 AT $!array[4]
+      !array = !!kClosestPline(!pick1, !pin2Pos.position(), !udir)
+      PIN 2 AT $!array[4]
+
+      PIN 1 DIR TO PIN 2
+      PIN 2 DIR TO PIN 1
+      PIN 3 COPY PIN 2
+      PIN 3 plane PIN 3 THRO PIN 9
+      !d23 = !!kStrReal('CONSt DIST PIN 2 TO PIN 3')
+      !d31 = !!kStrReal('CONSt DIST PIN 3 TO PIN 1')
+      !d21 = !!kStrReal('CONSt DIST PIN 2 TO PIN 1')
+      !diff = ((!d21 - (!d23 * 2)) / 2)
+
+      ------------------------------------------------------------------------------------------------
+      ------------------------------------------------------------------------------------------------
+
+      PIN 3 plane PIN 3 DIST $!diff
+      PIN 5 COPY PIN 9
+      PIN 5 plane PIN 5 THRO $!pick1
+      PIN 5 DIR FROM PIN 5 TO PIN 9
+      handle (2,357)
+        pin 5 dist -10
+        PIN 5 DIR FROM PIN 5 TO PIN 9
+        pin 5 dist 10
+      endhandle
+
+      -- Get position on web
+      VAR !pin5Pos PIN 5 POS WRT WORLD
+      !array = !!kOrderPlinePos(!pick1, !pin5Pos.position(), !firstdir)
+
+      do !i from 2 to !array.size() by 2
+
+        PIN 6 AT $!array[$!i]
+        !tempDist = !!kStrReal('CONSt DIST PIN 5 TO PIN 6')
+        skip if (!tempDist.leq(1))
+        VAR !testDir CONS DIR $!array[$!i] to $!pin5Pos
+
+        -- Test to see if constructed direction equals the direction from the datum
+        -- to the FIRST Beam.
+        -- If they are equal then PIN 6 is on the correct side of the web
+
+        -- Set object definition
+        !direction = object KEQUALDIR()
+        !direction.directionA = !testDir.direction()
+        !direction.directionB = !firstdir
+        !direction.tolerance  = 0.05
+        if (!!kDirEqualDir(!direction)) then
+          break
+        endif
+
+      enddo
+
+      PIN 5 plane PIN 5 THRO PIN 6
+      !dist = !!kStrReal('CONSt DIST PIN 5 TO PIN 9')
+      PIN 5 DIST ($!dist / 2)
+
+      -- Reposition PIN 9 to correct position
+      if (!config.eq(2))then
+        PIN 9 plane PIN 9 THRO PIN 6
+      elseif (!config.eq(1)) then
+        PIN 9 plane PIN 9 THRO $!pick1
+      endif
+
+    endif
+
+    ------------------------------------------------------------------------------------------------
+    --xxx End of  'CURSOR' method
+    ------------------------------------------------------------------------------------------------
+
+  elseif (!method eq |DIMENSION|)then
+
+    -- Initialise variables for dimension check
+    !d1 = !!mdsFt15.dim1.val
+    !d2 = !!mdsFt15.dim2.val
+    !d3 = !!mdsFt15.dim3.val
+    -- Dimension '4' is ONLY used by Configs '3' and '4'
+    if (!config.eq(3) or !config.eq(4)) then
+      !d4 = !!mdsFt15.dim4.val
+    else
+      !d4 = 0
+    endif
+    -- Dimension '5' is ONLY used by Config '4'
+    if (!config.eq(4)) then
+      !d5 = !!mdsFt15.dim5.val
+    else
+      !d5 = 0
+    endif
+
+    if (!config.eq(4)) then
+      if (!d1.eq(0) or !d2.eq(0) or !d5.eq(0)) then
+        !!alert.error('For this Build Configuration Dimensions:- ''1'', ''2'' and ''5'' may NOT be set to ''0''(zero).')
+        -- !!mdsShowDim(!!mdsFt15)
+        !!kRestoreUnits(!currentUnits)
+        return
+      endif
+    else
+      -- All Other Configs
+      if (!d1.eq(0) or !d2.eq(0)) then
+        !!alert.error('For this Build Configuration Dimensions:- ''1'' and ''2'' may NOT be set to ''0''(zero).')
+        -- !!mdsShowDim(!!mdsFt15)
+        !!kRestoreUnits(!currentUnits)
+        return
+      endif
+    endif
+
+    if (!config.eq(1)) then
+      if (!d1.gt(!d2)) then
+        !!alert.error('Cannot create from given dimensions. Dim 1 must be less that Dim 2 for the Selected Build Configuration.')
+        -- !!mdsShowDim(!!mdsFt15)
+        !!kRestoreUnits(!currentUnits)
+        return
+      endif
+    endif
+
+    ------------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
+
+    !!mdsCreateMess(true)
+
+    -- Get correct orientation
+    if (!support.rotateCur)then
+      !firstdir  = !p11Dir
+      !seconddir = !p10Dir
+    else
+      !firstdir  = !p10Dir
+      !seconddir = !p11Dir
+    endif
+
+    -- Position pins
+    !!ce = !datum
+    PIN 9 COPY P9
+    PIN 9 DIR $!firstdir
+
+    PIN 8 COPY PIN9
+    PIN 8 DIR $!seconddir
+
+    PIN 9 DIST $!d1
+    PIN 4 COPY PIN 8
+    PIN 4 DIST ($!d2 - $!d1 )
+    -- Position Pin 10 at where 'SECOND Beam' Location would be
+    pin 10 copy pin 4
+
+    -- Position Pin 4 at 'SECOND Beam' LOCATION if Pin 4 located in between
+    -- where FIRST and SECOND Beams would be -- and Dimension '3' is zero ('0')
+    if (!d3.eq(0)) then
+      !pin9pin10dist = !!kStrReal('const dist pin 9 to plane pin 10')
+      !pin9pin4dist  = !!kStrReal('const dist pin 9 to plane pin 4')
+      if (!pin9pin4dist.lt(!pin9pin10dist)) then
+        pin 4 plane pin 4 thro pin 10
+      endif
+    else
+      pin 4 copy pin 9
+      pin 4 dir to pin 8
+      if (!config.eq(1) ) then
+        pin 4 dist $!d2
+      else
+        pin 4 dist ($!d2 + $!d3)
+      endif
+    endif
+
+
+    ------------------------------------------------------------------------
+    ------------------------------------------------------------------------
+    -- Only required on Configs '3' and '4' where Pipes may be supported on the outside
+    -- of ONE or BOTH of the Beams
+    -- pin 8 is at p9 of DATUM atta
+    -- Position Pin 9 for the Cross Bar Length
+    -- Dimension 'Dim 4
+
+    if (!config.eq(3) or !config.eq(4)) then
+
+      --xxx        pin 3 copy pin 8
+      --xxx        pin 3 dist 100
+      --xxx        pin 3 dir to pin 8
+      --xxx        pin 3 at p9 of $!datum
+      --xxx        var !pin3dir pin 3 dire
+      --xxx        !num2dir = !pin3dir.direction()
+      --xxx
+      --xxx        PIN 3 DIR $!num2dir
+
+      --xxx        PIN 9 copy PIN 3
+      pin 9 at p9 of $!datum
+      pin 9 dist ($!d1 + $!d4)
+
+      -------------------------------------------------------------------------------------
+      -------------------------------------------------------------------------------------
+
+    endif
+  endif
+  ------------------------------------------------------------------------
+  --xxx End of  'DIMENSION' method
+  ------------------------------------------------------------------------
+
+
+  ----------------------------------------------------------------------
+  ----------------------------------------------------------------------
+
+  -- Create and ARRAY of Attas with Packing Pieces (PDMS Names ONLY)
+  -- and the Type and Size of the Packing Pieces to Recreate
+  !attapp = !!mdspackers(!support)
+
+  ----------------------------------------------------------------------
+  ----------------------------------------------------------------------
+
+  -- Navigate to Structure
+  !!ce = !stru
+
+  -- Pins now in position create framework
+  delete STRU MEM
+  handle (41,66) (2,113) (2,113)
+  endhandle
+
+  --<wd>oct2000
+  if (!paDir eq !udir or !plDir eq !udir)then
+    !mdstemp = /MDS/FT15V/$!selection
+  else
+    !mdstemp = /MDS/FT15H/$!selection
+  endif
+  :mdscheck $!mdstemp.:mdscheck
+  :mdsframirror $!mdstemp.:mdsframirror
+
+  --<wd>oct2000
+
+  --<wd>feb2004
+  -- Position the MDS STRU
+  --AT $!datum
+  if (!datum.styp inset ('AT60')) then
+    at p9 of $!datum
+  else
+    at $!datum
+  endif
+  --<wd>feb2004
+
+  NEW FRMW $!name/MAIN
+  !frmwSupport = !!ce
+
+  -- Copy required template/s
+  if (!paDir eq !udir or !plDir eq !udir)then
+    !!ce = /MDS/FT15V/$!selection
+  else
+    !!ce = /MDS/FT15H/$!selection
+  endif
+  !desc = desc
+  !mdsbars = :Mdsbars
+
+  !frmw = !!kCollectAllFor('FRMW', '', !!ce)
+  !frameFormat = before(!frmw[1].name, '-FRMW')
+
+  -- Navigate back to support and create template elements
+  !!ce = !frmwSupport
+  COPY ATTRIB OF $!frmw[1]
+  COPY MEM OF $!frmw[1] RENAME $!frameFormat $!name
+
+  if (!config.neq(4)) then
+    !!ce = $!<name>-V1
+    delete sctn
+  endif
+
+  ------------------------------------------------------------------------
+  ------------------------------------------------------------------------
+
+  -- Get direction of P9 of datum atta and dist between p9 and p0
+  -- Navigate to Structure
+  !!ce = !stru
+
+  -- Set stru description for template recognition
+
+  desc '$!desc'
+  :Mdsbars $!mdsbars
+
+  if (!paDir eq !udir or !plDir eq !udir)then
+    !moveDir = !support.p9Dir
+    !oriz    = !support.p9Dir
+    !oriz.up    = !support.p9Dir.up * -1
+    !oriz.east  = !support.p9Dir.east * -1
+    !oriz.north = !support.p9Dir.north * -1
+  else
+    !moveDir = !ddir
+    !oriz    = !udir
+  endif
+  !orix    = !seconddir
+
+  MOVE $!moveDir THRO P9 OF $!datum
+
+  ORI X IS $!orix AND Z IS $!oriz
+
+  ------------------------------------------------------------------------
+  ------------------------------------------------------------------------
+
+  -- Navigate to Cross Bar
+  !!ce = $!<name>-BAR-1
+
+  -- Determine if Datum Atta beyond Pin10 ie. SECOND Beam CentreLine Location
+  var !pin10dir pin 10 dire wrt /*
+  pin 5 copy pin 10
+  pin 5 plane pin 5 thro $!datum
+  var !p10p5dir cons dir pin 10 to pin 5
+
+  -- Extend and move cross bar
+  if (!pin10dir eq !p10p5dir) then
+    extend start thro pin 4
+    extend end thro pin 9
+  else
+    EXTEND END THRO PIN 4
+    EXTEND START THRO PIN 9
+  endif
+
+  ----------------------- ****** connexions ******* --------------------
+  if(!support.connections.unset()) then
+    -- Dimensions are being used first
+    :MDSConn default
+    :MDSXConn default
+  else
+    !bar1 = !!ce
+    :MDSConn $!pick1
+    handle any
+      !connected = !support.connections[1]
+      :MDSConn $!connected
+      handle ANY
+      endhandle
+    endhandle
+
+    if (!config.neq(4)) then
+      -- Ensure that Configs 1, 2 and 3 are at the Cross Bar Sctn
+      !!ce = !bar1
+      :MDSXConn $!pick2
+      handle any
+        !xconnected = !support.connections[2]
+        :MDSXConn $!xconnected
+        handle ANY
+        endhandle
+      endhandle
+    endif
+  endif
+  ---------------------------********************-----------------------
+
+  ------------------------------------------------------------------------
+  ------------------------------------------------------------------------
+
+  if (!paDir eq !udir or !plDir eq !udir)then
+    if (!support.rotateCur)then
+      -- Reorientate cross bar
+      !midp = MIDP OF CE
+      PIN 1 AT $!datum
+      PIN 1 DIR $!moveDir
+      PIN 2 AT $!midp
+      PIN 2 DIR $!moveDir
+      PIN 1 plane PIN 1 THRO PIN 2
+      PIN 1 DIR $!seconddir
+      PIN 1 plane PIN 1 THRO PIN 2
+      PIN 1 DIR $!moveDir
+      ROTATE THRO PIN 1 ABOUT PIN 1 BY 180
+    endif
+  endif
+
+  ------------------------------------------------------------------------
+  ------------------------------------------------------------------------
+
+  -- Check to see if support is mirrored
+  if (!support.mirror)then
+    call !!mdsMirrorft15(false)
+
+    -- Update form directly and not the variable !support as the slide function
+    -- may need to use this information.
+    !!mdsFt15.support.mirror = true
+  endif
+
+  ------------------------------------------------------------------------
+  ------------------------------------------------------------------------
+
+  -- Position CL of Attas and STRU on Backmark of 'BAR-1' Cross Bar
+  -- to suit BOS of Selected Beam(s) - Vertical Pipes Only
+
+  if (!config.eq(1) and !method eq 'CURSOR')then
+
+    if (!paDir eq !udir or !plDir eq !udir)then
+      !!ce = !datum
+      plane $!udir THRO PIN 3
+
+      !!ce = $!<name>/SREF
+
+      !!mdsMConn('ORI','ORI')
+      POS PA AT $!datum
+      SAME
+
+      !pos = !!ce.pos.wrt(world)
+
+      $M/%PDMSUI%/DES/CLIB/GAIDTEXT 210 Datum $<$!pos$>
+
+      do !count from 1
+        $!<name>.$!count
+        handle any
+          break
+        endhandle
+
+        THRO PIN 3
+        !pos = !!ce.pos.wrt(world)
+        !num = 210 + !count
+
+        $M/%PDMSUI%/DES/CLIB/GAIDTEXT $!num $!count $<$!pos$>
+
+      enddo
+
+      -- Move support to new position
+      !!ce = !stru
+      MOVE $!udir THRO $!datum
+
+    endif
+
+    ------------------------------------------------------------------------
+    ------------------------------------------------------------------------
+
+    -- Configs '2', '3' and '4'
+  elseif (!config.neq(1) and !method eq 'CURSOR') then
+
+    if (!paDir eq !udir or !plDir eq !udir)then
+
+      PIN 6 COPY PIN 7
+      PIN 6 plane PIN 6 CLEAR 0 INF CE
+      !drop = !!kStrReal('CONSt DIST PIN 6 TO PIN 7')
+      if (!drop.gt(0))then
+
+        -- Move to correct position
+        VAR !dir CONS DIR PIN 6 TO PIN 7
+        !dropDir = !dir.direction().wrt(world)
+        !!ce = !datum
+        MOVE $!dropDir DIST $!drop
+        PIN 6 plane PIN 6 THRO CE
+
+        !!ce = $!<name>/SREF
+
+        !!mdsMConn('ORI','ORI')
+        POS PA AT $!datum
+        SAME
+
+        !pos = !!ce.pos.wrt(world)
+
+        $M/%PDMSUI%/DES/CLIB/GAIDTEXT 210 Datum $<$!pos$>
+
+        do !count from 1
+          $!<name>.$!count
+          handle any
+            break
+          endhandle
+
+          THRO PIN 6
+          !pos = !!ce.pos.wrt(world)
+          !num = 210 + !count
+
+          $M/%PDMSUI%/DES/CLIB/GAIDTEXT $!num $!count $<$!pos$>
+
+        enddo
+
+        -- Move support to new position
+        !!ce = !stru
+
+        MOVE $!dropDir THRO $!datum
+
+      endif
+      ------------------------------------------------------------------------
+      ------------------------------------------------------------------------
+
+    else
+
+      MOVE $!ddir CLEAR 0 BEH PIN 7
+
+    endif
+
+  endif
+
+  ------------------------------------------------------------------------
+  ------------------------------------------------------------------------
+
+  -- If Config is '4' then Navigate to Vertical Section of the Framework Structure -
+  -- Move and Extend Vertical Section to the Centre and from Bottom of the SECOND Beam
+
+  if (!config.eq(4) ) then
+    !!ce = $!<name>-V1
+
+    -- Move to the CL of the SECOND Beam - Pin 10 is on the CL of SECOND Beam
+    var !pin10dir pin 10 dire wrt /*
+    move $!pin10dir wrt /* thro pin 10
+
+    -- Position Pins '1', '2', '3' and '5'
+    pin 1 copy pin 10
+    pin 1 plane pin 1 clear 0 beh $!<name>-V1
+    pin 2 copy pin 10
+    pin 2 plane pin 2 clear 0 inf $!<name>-V1
+    pin 3 copy pin 10
+    pin 3 dir u wrt /*
+    pin 3 plane pin 3 clear $!overlap inf $!<name>-BAR-1
+    pin 5 copy pin 3
+    pin 5 plane pin 5 clear 0 beh $!<name>-BAR-1
+
+    !hsize = !!kStrReal('const dist pin 1 to plane pin 2')
+    !p10p1dist = !!kStrReal('const dist pin 10 to plane pin 1')
+    !p10p2dist = !!kStrReal('const dist pin 10 to plane pin 2')
+    var !p10p2dire cons dire pin 10 to pin 2
+    -------------------------------------------------
+    -- Temporarily move pin 2 if direction blank
+    if (|$!p10p2dire| eq ||) then
+      pin 2 dist 10
+      var !p10p2dire cons dire pin 10 to pin 2
+      pin 2 dist -10
+    endif
+    -------------------------------------------------
+
+    -- Position Pin '5' at BOS of SECOND Beam Location
+    -- For 'CURSOR' mode
+    if (!method eq 'CURSOR') then
+      pin 5 plane pin 5 clear 0 inf $!pick2
+    else
+      -- For 'DIMENSION' mode
+      pin 5 dist $!d5
+    endif
+
+    pin 2 dire $!p10p2dire wrt /*
+    !half = !hsize / 2
+    !move = !half - !p10p2dist
+    pin 2 at pin 10
+    pin 2 dist $!move
+
+    -- Move CL of Vertical Section to the CL of the SECOND Beam
+    move $!p10p2dire wrt /* thro pin 2
+
+    -- Extend Vertical Section Clear by 'Overlap' of the bottom of *-BAR-1 'Cross Bar'
+    -- and to the Bottom of the SECOND Picked Beam
+    --xxx--xxx      if (!support.rotateCur) then
+    --xxx--xxx        extend start thro pin 5
+    --xxx--xxx        extend end thro pin 3
+    --xxx--xxx      else
+    extend end thro pin 5
+    extend start thro pin 3
+    --xxx--xxx      endif
+
+    -- Set Dimension '5' value - BOS of Pick2 to TOS of Cross Bar '*-BAR-1'
+    pin 3 plane pin 3 clear 0 beh $!<name>-BAR-1
+    !dimv = !!kStrReal('const dist pin 3 to plane pin 5')
+    !d5 = !dimv
+
+    ------------------****** connexions *******----------------------
+    if(!support.connections.unset()) then
+      -- Dimensions are being used first
+      :MDSConn default
+      :MDSXConn default
+    else
+      :MDSConn $!pick2
+      handle any
+        !connected = !support.connections[2]
+        :MDSConn $!connected
+      endhandle
+      -- Unset for Config 4 ONLY
+      :MDSXConn default
+    endif
+    --------------------*******************--------------------------
+
+  endif
+
+  -- --^^^-- END of Config '4' only --^^^--
+  ------------------------------------------------------------------------
+  ------------------------------------------------------------------------
+
+  -- Set DIMENSIONS on Form
+
+  if (!method eq |CURSOR|)then
+    pin 9 plane pin 9 thro ppline na of $!pick1 start
+    pin 4 plane pin 4 thro ppline na of $!pick2 start
+
+    ------------------------------------------------------------------------
+    ------------------------------------------------------------------------
+
+    -- Dimension 1
+    -- Distance from FIRST Beam to CL of Datum Atta
+    !dmn1 = !!kStrReal('CONST DIST PIN 9 TO PLANE PIN 8')
+    !dim1 = !dmn1.nint()
+    !!mdsFt15.dim1.val = !dim1
+
+    ------------------------------------------------------------------------
+    ------------------------------------------------------------------------
+
+    -- Dimension 2
+    -- Distance from CL of FIRST Beam to CL of SECOND Beam
+    !dmn2 = !!kStrReal('CONST DIST PIN 9 TO PLANE PIN 4')
+    !dim2 = !dmn2.nint()
+    !!mdsFt15.dim2.val = !dim2
+
+    ------------------------------------------------------------------------
+    ------------------------------------------------------------------------
+
+    -- Dimension 3
+    if (!config.eq(1)) then
+      -- Minimum Distance from TOP of FIRST or TOP of SECOND Beam to TOP of Cross Bar $!<name>-BAR-1
+      pin 1 at $!datum
+      pin 1 dir $!udir
+      pin 2 copy pin 1
+      pin 3 copy pin 1
+      pin 1 plane pin 1 clear 0 beh $!<name>-BAR-1
+      pin 2 plane pin 2 clear 0 beh $!pick1
+      pin 3 plane pin 3 clear 0 beh $!pick2
+      !pin1pin2dist = !!kStrReal('const dist pin 1 to pin 2')
+      !pin1pin3dist = !!kStrReal('const dist pin 1 to pin 3 ')
+      !min = min ((abs(!pin1pin2dist)) , (abs(!pin1pin3dist)))
+      !dim3 = !min.nint()
+      !!mdsFt15.dim3.val = !dim3
+
+      -- Dimensions 4 and 5 - Do Not Exist for Config '1' - Set to '0'
+      !!mdsFt15.dim4.val = 0
+      !!mdsFt15.dim5.val = 0
+
+    else
+
+      ------------------------------------------------------------------------
+      -- configs '2' , '3' and '4'
+      ------------------------------------------------------------------------
+
+      -- Distance from CL of SECOND BEAM to the 'nearest end' of Cross Bar $!<name>-BAR-1
+
+      !!ce = $!<name>-BAR-1
+      pin 1 at ppline NA start
+      pin 2 at ppline NA end
+      pin 1 dir to pin 2
+      pin 2 dir to pin 1
+      pin 4 copy pin 1
+      pin 3 copy pin 2
+      pin 4 plane pin 4 thro $!pick1
+      pin 3 plane pin 3 thro $!pick2
+
+
+      !pin1pin3dist = !!kStrReal('const dist pin 1 to plane pin 3')
+      !pin1pin4dist = !!kStrReal('const dist pin 1 to plane pin 4')
+      !pin2pin4dist = !!kStrReal('const dist pin 2 to plane pin 4')
+      !pin2pin3dist = !!kStrReal('const dist pin 2 to plane pin 3')
+      !pin3pin4dist = !!kStrReal('const dist pin 3 to plane pin 4')
+
+      -- Dimension 3
+      -- Establish if START or END of Cross Bar $!<name>-BAR-1 is nearer to the FIRST BEAM
+
+      -- If config 4 is being created dim 3 may be smaller than using the standard
+      -- overlap. Check and if so modify beam end
+
+      if (!config.eq(4)) then
+        if (!pin1pin4dist.geq(!pin3pin4dist)) then
+          -- END is nearer to FIRST Beam Identified
+          var !dirbeam drne wrt /*
+          !poss = poss wrt /*
+          !pose = pose wrt /*
+          pin 5 at $!poss
+          pin 6 at $!pose
+          pin 5 dir $!dirbeam wrt /*
+          pin 6 dir $!dirbeam wrt /*
+          pin 7 copy pin 5
+          pin 7 plane pin 7 clear $!overlap beh $!<name>-V1
+          !check65 = !!kStrReal('const dist pin 6 to pin 5')
+          !check67 = !!kStrReal('const dist pin 6 to pin 7')
+          if !check65 lt !check67 then
+            extend start thro pin 7
+          endif
+          if (!pin1pin4dist.geq(!pin3pin4dist)) then
+            -- END is nearer to FIRST Beam Identified
+            !pin1pin3dist = !!kStrReal('const dist pin 1 to pin 7')
+            !dim3 = !pin1pin3dist.nint()
+          else
+            -- START is nearer to FIRST Beam Identified
+            !pin2pin3dist = !!kStrReal('const dist pin 2 to pin 7')
+            !dim3 = !pin2pin3dist.nint()
+          endif
+        else
+          -- START is nearer to FIRST Beam Identified
+          var !dirbeam drns wrt /*
+          !poss = poss wrt /*
+          !pose = pose wrt /*
+          pin 5 at $!poss
+          pin 6 at $!pose
+          pin 5 dir $!dirbeam wrt /*
+          pin 6 dir $!dirbeam wrt /*
+          pin 7 copy pin 5
+          pin 7 plane pin 7 clear $!overlap beh $!<name>-V1
+          !check56 = !!kStrReal('const dist pin 5 to pin 6')
+          !check57 = !!kStrReal('const dist pin 5 to pin 7')
+          if !check56 lt !check57 then
+            extend end thro pin 7
+          endif
+        endif
+        if (!pin1pin4dist.geq(!pin3pin4dist)) then
+          -- END is nearer to FIRST Beam Identified
+          !pin1pin3dist = !!kStrReal('const dist pin 1 to pin 7')
+          !dim3 = !pin1pin3dist.nint()
+        else
+          -- START is nearer to FIRST Beam Identified
+          !pin2pin3dist = !!kStrReal('const dist pin 2 to pin 7')
+          !dim3 = !pin2pin3dist.nint()
+        endif
+      else
+        if (!pin1pin4dist.geq(!pin3pin4dist)) then
+          -- END is nearer to FIRST Beam Identified
+          !pin1pin3dist = !!kStrReal('const dist pin 1 to pin 3')
+          !dim3 = !pin1pin3dist.nint()
+        else
+          -- START is nearer to FIRST Beam Identified
+          !pin2pin3dist = !!kStrReal('const dist pin 2 to pin 3')
+          !dim3 = !pin2pin3dist.nint()
+        endif
+      endif
+
+      !!mdsFt15.dim3.val = !dim3
+
+      ------------------------------------------------------------------------
+      ------------------------------------------------------------------------
+      -- Dimension 4
+      if (!config.eq(3)) then
+        !dim4 = !pin1pin4dist
+        !!mdsFt15.dim4.val = !dim4
+
+      elseif (!config.eq(4)) then
+
+        -- Distance from CL of FIRST BEAM to the START of Cross Bar $!<name>-BAR-1
+        -- Establish if START or END of Cross Bar $!<name>-BAR-1 is nearer to the FIRST BEAM
+
+        if (!pin1pin4dist.geq(!pin3pin4dist)) then
+          -- END is nearer to FIRST Beam Identified
+          !pin6pin4dist = !!kStrReal('const dist pin 6 to pin 4')
+          !dim4 = !pin6pin4dist.nint()
+        else
+          -- START is nearer to FIRST Beam Identified
+          !pin5pin4dist = !!kStrReal('const dist pin 5 to pin 4')
+          !dim4 = !pin5pin4dist.nint()
+        endif
+        !!mdsFt15.dim4.val = !dim4
+
+      elseif (!config.eq(2)) then
+
+        !!mdsFt15.dim4.val = 0
+
+      endif
+      ------------------------------------------------------------------------
+      ------------------------------------------------------------------------
+
+      -- Dimension 5
+      if (!config.eq(4)) then
+        !dx5  = !d5
+        !dim5 = !dx5.nint()
+        !!mdsFt15.dim5.val = !dim5
+      else
+        -- Configs '2' and '3' - Do Not Use - Set to '0'
+        !!mdsFt15.dim5.val = 0
+      endif
+
+      ------------------------------------------------------------------------
+      ------------------------------------------------------------------------
+
+    endif
+  endif
+
+  ------------------------------------------------------------------------
+  ------------------------------------------------------------------------
+
+  -- Select correct spref for SREF atta Structural Configuration
+  !!ce = $!<name>/SREF
+  !sref = !!ce
+
+  if (!config.eq(1))then
+    !styp = 'N'
+  elseif (!config.eq(2))then
+    !styp = 'P'
+  elseif (!config.eq(3))then
+    !styp = 'R'
+  elseif (!config.eq(4))then
+    !styp = 'S'
+  endif
+
+  !!mdsDacControl(true)
+
+  SEL SPREF WITH STYP 'FT15-$!styp-$!selection' SPEC /MDF
+  !!mdsSetSuppCode('MODIFY',!name,'FT15','FT15-N-1')
+
+
+  !!mdsSetIspe()
+
+  !!mdsSelLstu(!!ce)
+
+  !!mdsDacControl(true)
+
+  -- Navigate back to Structure
+  !!ce = !stru
+
+  -- Associate attas to bar '1'
+  !batta  = !support.atta
+  !index  = !atta.findfirst(!sref)
+  !batta.remove(!index)
+  !support.bars[1] = !batta
+
+  !list = !support.bars[1]
+  !references = ''
+  do !i indices !list
+    !references = !references & ' ' & !list[!i].string()
+  enddo
+
+  -- Set atta references to datum cross bar
+  !!ce = $!<name>-BAR-1
+  :MDSAttaRef $!references
+  !support.barLen[1] = deri length of CE
+
+  ------------------------------------------------------------------------
+  ------------------------------------------------------------------------
+
+  -- Adjust for slope on horizontal lines only in CURSOR MODE Only
+  if (!method eq 'CURSOR') then
+    if (!paDir neq !udir and !plDir neq !udir)then
+
+      -- Check to see if the line is sloping
+      !adjust = 0
+      do !v values !atta
+        !!ce = !v
+        skip if !!ce.:mdsrotdir.east.set()
+        !grad = pl grad
+        if (!grad.neq(0))then
+          !strucElement = ARRAY()
+          !ref = $!name-BAR-1
+          !strucElement.append(!ref)
+          !vHeight = !!mdsAdjustSlope(!strucElement, !v)
+        else
+          !vHeight = 0
+        endif
+        if (!vHeight.gt(!adjust))then
+          !adjust = !vHeight
+        endif
+      enddo
+
+      if (!config.eq(1)) then
+        -- Configs '2', '3' and '4' are forced to the BOS of FIRST and/or SECOND beam
+        -- Therefore NO ADJUSTMENT is required
+        if (!adjust.neq(0))then
+          -- Adjust required elements
+          !!ce = $!<name>-BAR-1
+          MOVE $!ddir DIST $!adjust
+          -- Adjust Dimension 3 on Form if Necessary
+          -- Minimum Distance from TOP of FIRST or TOP of SECOND Beam to TOP of Cross Bar $!<name>-BAR-1
+          pin 1 at $!datum
+          pin 1 dir $!udir
+          pin 2 copy pin 1
+          pin 3 copy pin 1
+          pin 1 plane pin 1 clear 0 beh $!<name>-BAR-1
+          pin 2 plane pin 2 clear 0 beh $!pick1
+          pin 3 plane pin 3 clear 0 beh $!pick2
+          !pin1pin2dist = !!kStrReal('const dist pin 1 to pin 2')
+          !pin1pin3dist = !!kStrReal('const dist pin 1 to pin 3 ')
+          !min = min ((abs(!pin1pin2dist)) , (abs(!pin1pin3dist)))
+          !dim3 = !min.nint()
+          !!mdsFt15.dim3.val = !dim3
+        endif
+      endif
+    endif
+  endif
+
+  ------------------------------------------------------------------------
+  ------------------------------------------------------------------------
+
+  !!ce = $!<name>/SREF
+  !!mdsDacControl(true)
+  DESPAR $!!mdsFt15.dim1.val $!!mdsFt15.dim2.val $!!mdsFt15.dim3.val $!!mdsFt15.dim4.val $!!mdsFt15.dim5.val
+  !!mdsDacControl(false)
+  -- Reset materials of sections
+
+  !!mdsResetMat(!storeMat)
+
+
+  ------------------------------------------------------------------------
+  ------------------------------------------------------------------------
+
+  -- Navigate to Structure
+  !!ce = !stru
+
+  ----------------------------------------------------------------------
+  ----------------------------------------------------------------------
+
+  -- Set 'FT25' form Support Object to be the same as 'FT15' form Support Object
+  !!mdsFt25.support = !support
+
+  -- Clear packs from 'BOTH forms' Support Objects as the SCTNs have already been deleted
+  -- During the Framework Creation above
+  !!mdsFt25.support.packs.clear()
+  !support.packs.clear()
+
+  -- Create Required Packing Pieces(SCTNs) at the Necessary Attas
+  call !!mdscrpacksft25(!attapp, !!mdsFt15)
+
+  -- Update 'FT15' support.packs data to that held in form 'FT25'
+  !support.packs = !!mdsFt25.support.packs
+
+  -- Navigate to Main Structure of Framework
+  !!ce = !stru
+
+  ----------------------------------------------------------------------
+  ----------------------***** connexions *****--------------------------
+$(
+  if(!haveJoints) then
+    do !index indices !joints
+      if(!joints[!index].badref().not() and !attributes[!index][8].dbref().:MDSConn.eq(!joints[!index].owner.owner)) then
+        !mainStl = !attributes[!index][8].dbref().:MDSConn
+        !support.joints[!index] =  !!mdsCreateJoint(!mainStl, !attributes[!index][8].dbref(),!joints[!index],!attributes[!index])
+      elseif(!joints[!index].badref().not() and !attributes[!index][8].dbref().:MDSXConn.eq(!joints[!index].owner.owner)) then
+        !mainStl = !attributes[!index][8].dbref().:MDSXConn
+        !support.joints[!index] =  !!mdsCreateJoint(!mainStl, !attributes[!index][8].dbref(),!joints[!index],!attributes[!index])
+      else
+        !dummy = object DBREF()
+        !dummyA = ARRAY()
+        !mainStl = !support.connections[!index]
+        !support.joints[!index] =  !!mdsCreateJoint(!mainStl, !attributes[!index][8].dbref(),!dummy,!dummyA)
+      endif
+    enddo
+  endif
+$)
+  ----------------------------------------------------------------------
+
+  ----------------------------------------------------------------------
+  ----------------------------------------------------------------------
+
+  -- Reset all pins associated with this support
+  call !!mdsResetPins(1,10)
+
+  -- Now that support has been generated.
+  -- Store new configuration into support object
+  !support.config = !config
+
+  -- Update support data held in form
+  !!mdsFt15.support = !support
+
+  -- Reset distance gadget
+  !!ce = !datum
+  call !!mdsDistance(!!mdsFt15)
+
+  -- If a joint is being used and it is handed then their will be a alternative spref of the
+  -- opposite hand joint and the bang to set separated by a ,
+
+  !!mdsSwapIntJoi(!support.stru,!support.mirror,!support.alias)
+
+  !!ce = !stru
+
+
+  !!mdsCreateMess(false)
+
+  ------------------------------------------------------------------------
+
+  -- Show dimensions on graphics if required
+
+  if !!mdsFt15.graphicalDim then
+    !!mdsShowDim(!!mdsFt15)
+  endif
+
+  -- Does the item require bearing plates (Framatome Only)
+
+  !!ce = !support.stru
+  !!mdsAddBearing(!support.datum)
+  !!ce = !support.stru
+
+
+  -- Copy weld locally
+  --!copyWelds = object MDSWELDLIST(!!ce,!form)
+  !!ce = !support.stru
+
+  -- reset :mdsancref attributes if set
+  !support.plateconns.restoreconns()
+
+  -- adjust ancillary welds to suit the beams they sit on
+  !!mdsWeldAdjust(!!mdsFt15)
+  -- restore compensation
+  -- We only need to restore the compensations if were re creating the framework by e.g. cursor, and not when were cancelling the form.
+  -- The global variable !!cancellingForm is set in !!mdsRestoreForm as this was the only way to do the check
+  if defined(!!cancellingForm) then
+    if !!cancellingForm.not() then
+      !!mdsCompplateDflts.compensatingPlates(!complates)
+    endif
+  else
+    !!mdsCompplateDflts.compensatingPlates(!complates)
+  endif
+
+  if defined(!pick1) then
+    !mdsassociation = !support.associations
+    if !mdsassociation[2].item().unset() then
+      !mdsassociation[1].associate(!pick1,!pick2)
+      handle ANY
+        !!alert.error(!!error.text)
+      endhandle
+    else
+      !mdsassociation[1].associate(!pick1)
+      handle ANY
+        !!alert.error(!!error.text)
+      endhandle
+      !mdsassociation[2].associate(!pick2)
+      handle ANY
+        !!alert.error(!!error.text)
+      endhandle
+    endif
+    !form.support.associations = !mdsassociation
+  else
+    !form.support.associations()
+  endif
+
+  !support = !form.support
+
+  -- Navigate back to the Original Current Element
+  !!ce = !support.stru
+
+  --<kp>jan2012
+  -- Enhance elements
+  !support.enhance(on)
+
+  -- Reset Units
+  !!kRestoreUnits(!currentUnits)
+
+  -- End function
+endfunction

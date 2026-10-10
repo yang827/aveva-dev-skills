@@ -1,0 +1,870 @@
+--
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+------------------------------------------------------------------------
+--
+-- File:            cableloader.pmlobj
+--   Type:          object Definition
+--   Group:         Utilities
+--     Keyword:     GENERAL
+--   Module:        design
+--   Replaces:
+--
+-- Author:          derek.flannery
+-- Created:         Wed Nov 1 00:00:00 BST 2006
+--
+--
+-- Description:
+--   Data handler for !!spreadsheetImport form to load and
+--   process cable items
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  aidClear()                       -                   clear aids
+--  analyseRows(ARRAY)               -                   Check each row to determine the validity of data
+--  cableLoader()                    -                   Constructor
+--  close()                          -                   Callback from form to allow this object to tidy up
+--  feedback(ARRAY)                  -                   Callback to provide feedback given selection of items
+--  getHeadings()                    ARRAY               Return data source headings as an array of strings
+--  getMessages()                    ARRAY               Return message for each row
+--  getRowState()                    ARRAY
+--  getRows()                        ARRAY               Return Rows as arrays of row where row is array of string
+--  nameCheck(STRING)                STRING              Normalise the name to valid string preceded by '/'
+--  processData(BOOLEAN,BOOLEAN)     -                   Load new elements
+--  processData(REAL)                -                   Load new element
+--  setAttribute(STRING,STRING,STRING,BOOLEAN) STRING              Set attribute values and catch errors
+--  validateSpreadSheetHeadings(ARRAY) STRING              Validate SpreadSheet headings
+--
+
+define object CABLELOADER
+
+  -- Column Heading
+  member .headings            is ARRAY
+  member .altHeadings         is ARRAY
+  -- Rows
+  member .rows                is ARRAY
+  -- Name column index
+  member .nameColumnIndex     is REAL
+  -- Type column index
+  member .typeColumnIndex     is REAL
+  -- Start and end column index
+  member .startColumnIndex    is REAL
+  member .endColumnIndex      is REAL
+  -- Owner column index
+  member .ownerColumnIndex    is REAL
+  -- Array of error state - one per row
+  member .errors              is ARRAY
+  -- status indicator - one per row
+  member .state               is ARRAY
+  -- true if mandatory headings ar OK
+  member .validHeadings       is BOOLEAN
+  -- Name per row - with leading / - Array of STRING
+  member .normalisedName      is ARRAY
+  -- dbref of element for each row (unset dbref if element does not exist) - Array of DBREF
+  member .element             is ARRAY
+  member .startAidNum         is REAL
+  member .endAidNum           is REAL
+
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:     cableLoader
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .cableLoader()
+
+  -- Initialise Variables
+  -- initialise valid headings to false until they are input and validated
+  !this.validHeadings   = false
+    -- set aid numbers
+        --Register Aid numbers
+    !this.startAidNum     = !!aidNumbers.add('CableStart')
+    !this.endAidNum       = !!aidNumbers.add('CableEnd')
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      validateSpreadSheetHeadings
+--
+-- Description: Validate SpreadSheet headings
+--              INTERFACE METHOD - used by spreadsheetimport form
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       Array of headings from the import file
+-- Return:
+--   [Data Type] [Description]
+--    STRING     Empty string if SpreadSheet is OK, otherwise string is
+--               used as an error message
+--
+------------------------------------------------------------------------
+
+define method .validateSpreadSheetHeadings(!headings is ARRAY) is STRING
+
+  -- Initialise Variables
+  !this.headings         = !headings
+  !this.nameColumnIndex  = object REAL()
+  !this.typeColumnIndex  = object REAL()
+  !this.startColumnIndex = object REAL()
+  !this.endColumnIndex   = object REAL()
+  !this.validHeadings    = false
+  !badHeading            = false
+  -- empty return indicates that headings are OK
+  !return                = ''
+
+  !this.altHeadings.clear()
+  !altHeadings = !!cableHeaderDflts('IMPORT')
+
+  -- loop through headings to find key columns
+  do !index indices !this.headings
+
+    !heading = !this.headings[!index].trim().upcase()
+
+    if !heading.match(' (METRE)').neq(0) then
+      !heading = !heading.before(' (METRE)')
+    elseif !heading.match(' (FT)').neq(0) then
+      !heading = !heading.before(' (FT)')
+    endif
+		
+    -- find matching header from dflts file first
+    -- get alternative heading from dflts file if it exists
+    do !i indices !altHeadings
+
+      if !altHeadings[!i][2].trim().upcase().eq(!heading) then
+      	!this.altHeadings[!index] = !altHeadings[!i][1].trim().upcase()
+      	!heading = !altHeadings[!i][1].trim().upcase()
+      	break
+      else
+      	!this.altHeadings[!index]= !heading
+      endif
+    enddo
+
+    -- find special columns and note the column index
+    if( !heading eq 'NAME' or !heading eq 'FLNN' or !heading eq 'NAMN') then
+      !this.nameColumnIndex = !index
+    elseif( !heading eq 'TYPE' ) then
+      !this.typeColumnIndex = !index
+    elseif( !heading eq 'STAREF' ) then
+      !this.startColumnIndex  = !index
+    elseif( !heading eq 'ENDREF' ) then
+      !this.endColumnIndex  = !index
+    elseif( !heading.empty() ) then
+      !badHeading = true
+      break
+    endif
+
+  enddo
+
+  if( !badHeading ) then
+    !return = 'Headings invalid: The table must not contain empty heading'
+  elseif( !this.nameColumnIndex.unset() ) then
+    !return = 'Headings invalid: The table must contain a NAME column'
+  elseif( !this.typeColumnIndex.unset() ) then
+    !return = 'Headings invalid: The table must contain a TYPE column'
+  elseif( !this.startColumnIndex.unset() ) then
+    !return = 'Headings invalid: The table must contain a STARTREF column'
+  elseif( !this.endColumnIndex.unset() ) then
+    !return = 'Headings invalid: The table must contain a ENDREF column'
+  endif
+
+  -- record locally if headings are OK
+ !this.validHeadings = !return.empty()
+
+  return !return
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      analyseRows
+--
+-- Description: Check each row to determine the validity of data
+--              and the operation requested - stores derived data for each row
+--              INTERFACE METHOD - used by spreadsheetimport form
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       Array of rows. Each row is an array
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .analyseRows(!rows is ARRAY)
+
+  -- Initialise Variables
+  if( !this.validHeadings.not() ) then
+    return object ARRAY()
+  endif
+
+  !this.rows = !rows
+
+  -- loop through rows - validate each row
+  do !index indices !this.rows
+
+    !this.errors[!index]     = ''
+    !this.state[!index]      = 'VALID'
+    !this.element[!index]    = object DBREF()
+    -- get the row
+    !row = !this.rows[!index]
+    -- Get element type
+    !type = !row[!this.typeColumnIndex].trim()
+    -- Get normalised element name
+    !this.normalisedName[!index] = !this.nameCheck(!row[!this.nameColumnIndex])
+    if(!this.normalisedName[!index].empty()) then
+      !this.errors[!index] = 'Invalid name'
+      !this.state[!index]  = 'ERROR'
+      skip
+    endif
+
+    -- check to see if an element of this name exists
+   !elementRef = object DBREF(!this.normalisedName[!index])
+    handle any
+      -- element does not exist
+      !elementRef = object DBREF()
+    endhandle
+    !this.element[!index] = !elementRef
+
+    if(not badref(!elementRef) ) then
+      -- check that named element agrees with the type
+      if(!elementRef.type.upcase() neq !type.upcase()) then
+        !this.errors[!index] = 'Element type does not match existing element'
+        !this.state[!index]  = 'ERROR'
+        skip
+      endif
+      -- check that existing element can be written
+      if(!!dbrefUpdatable(!elementRef).not()) then
+        !this.errors[!index] = !!error.text
+        !this.state[!index]  = 'ERROR'
+        skip
+      endif
+      !this.state[!index]  = 'EXISTS'
+    endif
+
+    -- check connection start & end connections
+    -- !this.connection(!row[!this.startColumnIndex]), !row[!this.endColumnIndex] )
+
+  enddo
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      processData
+--
+-- Description: Load new elements
+--              INTERFACE METHOD - used by spreadsheetimport form
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      BOOLEAN     Load new elements if true
+--    2   R      BOOLEAN     Update existing elements if true
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .processData(!new is BOOLEAN, !update is BOOLEAN)
+
+   if(!!ce.type.neq('ZONE'))then
+    !!alert.message('Be at a proper element to load data')
+    return
+   endif
+  -- Loop through new elements and create
+  do !index indices !this.rows
+
+    -- skip if error already found
+    skip if(!this.errors[!index].empty().not())
+    !createNewElement = badref(!this.element[!index])
+    -- skip if not a new element and no update
+    skip if(!update.not() and !createNewElement.not())
+    -- skip if new element but no new elements to be created
+    skip if(!new.not() and !createNewElement)
+
+    -- process this row
+    !this.processData(!index)
+
+  enddo
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      processData
+--
+-- Description: Load new element
+--              INTERFACE METHOD - used by spreadsheetimport form
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      REAL        Index identifying the row
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .processData(!index is REAL)
+
+  -- create a !currentValue variable so that it can be deleted below
+  !currentValue = ''
+
+  -- get row from table
+  !row = !this.rows[!index]
+  -- get the full name of the element
+  !name = !this.normalisedName[!index]
+  if( badref(!this.element[!index]) ) then
+    -- create element
+--    !!ce  = !this.owner[!index]
+    !type = !row[!this.typeColumnIndex].trim().upcase()
+    !cableObj = object CABLE()
+
+    if( !type.empty().not() and !type ne 'CABLE' ) then
+      !this.errors[!index] = !name + ': Error in element creation. ' + !type + ' is of Invalid type '
+      !this.state[!index]  = 'FAIL'
+      return
+    endif
+
+    !cableObj.name = !name
+
+    !test = !cableObj.create()
+--$P  NEW $!<type> $!<name>
+--    NEW $!<type> $!<name>
+    if !test.not() then
+      !error  = !name + ': ' + !cableObj.errors[1]
+      !this.errors[!index] = !name + ': ' + !!error.text
+      !this.state[!index]  = 'FAIL'
+      return
+    endif
+    --!element = !!ce
+    CABLE
+    !element = !!ce
+  else
+    -- update existing element
+    !element = !this.element[!index]
+  endif
+
+  !!ce = !element
+
+  -- Set attributes on this element
+  do !columnIndex indices !this.headings
+
+    -- skip standard columns
+    skip if(!columnIndex eq !this.typeColumnIndex or !columnIndex eq !this.nameColumnIndex)
+    if(!this.ownerColumnIndex.set() ) then
+      skip if(!columnIndex eq !this.ownerColumnIndex)
+    endif
+
+    -- Use alternate headings if they exist
+    if !this.altHeadings.set() then
+      !attribute = !this.altHeadings[!columnIndex].trim().upcase()
+    else
+      !attribute = !this.headings[!columnIndex].trim().upcase()
+    endif
+
+ -- Special cases for cable entry and exit, these create the rpath and extgeo elements if they do not exist
+    if !attribute.eq('STARTNODE') then
+      if(!row[!columnIndex].neq(''))then
+      !!ce = !element
+      cable
+      handle NONE
+      rpath 1
+      handle ANY
+        new rpath
+      endhandle
+      extgeo 1
+      handle ANY
+        new extgeo
+      endhandle
+      if !row[!columnIndex].substring(1,1).neq('/') then
+        !entryNode = '/' + !row[!columnIndex].trim()
+      else
+        !entryNode = !row[!columnIndex].trim()
+      endif
+      !!ce.staref = !entryNode.dbref()
+      handle ANY
+        !!ce.staref = !entryNode.after('/').dbref()
+        handle ANY
+        endhandle
+      endhandle
+      cable
+      elsehandle ANY
+      endhandle
+      skip
+      endif
+    endif
+
+    if !attribute.eq('ENDNODE') then
+      if(!row[!columnIndex].neq(''))then
+        !!ce = !element
+        cable
+        handle NONE
+          rpath 1
+          handle ANY
+            new rpath
+          endhandle
+          extgeo 1
+          handle ANY
+            new extgeo
+          endhandle
+          if !row[!columnIndex].substring(1,1).neq('/') then
+            !exitNode = '/' + !row[!columnIndex].trim()
+          else
+            !exitNode = !row[!columnIndex].trim()
+          endif
+          !!ce.endref = !exitNode.dbref()
+          handle ANY
+            !!ce.endref = !exitNode.after('/').dbref()
+            handle ANY
+            endhandle
+          endhandle
+          cable
+        elsehandle ANY
+        endhandle
+        skip
+      endif
+    endif
+
+    --sets the selection rule(RLSE) attrib for cable
+    if !attribute.eq('RLSE') then
+      if(!row[!columnIndex].neq(''))then
+        !!ce = !element
+        cable
+        !rlse = !row[!columnIndex]
+        rlse $!rlse
+        handle ANY
+        endhandle
+        skip
+      endif
+    endif
+
+    --sets routnd attrib for cable
+    if !attribute.eq('ROUTND') then
+      if(!row[!columnIndex].neq(''))then
+        !!ce = !element
+        cable
+        !routNode = !row[!columnIndex].split(';')
+        do !i from 1 to !routNode.size()
+          if !routNode[!i].substring(1,1).neq('/') then
+            !routeNode = '/' + !routNode[!i].trim()
+          else
+            !routeNode = !routNode[!i].trim()
+          endif
+          !!ce.routnd[!i] = !routeNode.dbref()
+          handle ANY
+            !!ce.routnd[!i] = !routeNode.after('/').dbref()
+            handle ANY
+            --  !!alert.message('Routing Node does not exist.')
+            --  return
+            endhandle
+          endhandle
+        enddo
+        skip
+      endif
+    endif
+
+    if(!attribute.matchwild('*PROXIM*'))then
+    	!attribute = 'RANEQUIP'
+    endif
+
+    -- delete variable because variable type will change each time
+    !currentValue.delete()
+    handle ANY
+    endhandle
+
+    -- set all other attributes
+    !currentValue   = !element.attribute(!attribute)
+    handle any
+      !this.errors[!index] = !name + '~' + !attribute + ': ' + !!error.text + '.  '
+      !this.state[!index]  = 'FAIL'
+      skip
+    endhandle
+
+    !attributeValue = !row[!columnIndex]
+
+    -- nothing to do if no value
+    skip if(!attributeValue.trim().empty())
+    !attributeType  = !currentValue.objecttype()
+    if( !attributeType eq 'STRING' ) then
+      -- Check for attribute types pretending to be strings
+      !attDef = object ATTDEFINITION()
+      !attDef.attlibGet(!attribute)
+      !stringAttribute = (!attDef.type.upcase() eq 'TEXT')
+    elseif( !attributeType eq 'DBREF' ) then
+      -- References
+      !attributeValue = !attributeValue.trim()
+      !leadChar = !attributeValue.trim().substring(1,1)
+      if(!leadChar neq '/' and !leadChar neq '=') then
+        -- may be name without preceding / - try adding a /
+        !attributeValue = '/' + !attributeValue
+      elseif(!leadChar neq '/' ) then
+        !attributeValue = !attributeValue
+      endif
+      !stringAttribute = false
+    else
+      !stringAttribute = false
+    endif
+    -- set the attribute
+    !!ce = !element
+    !error = !this.setAttribute(!name, !attribute, !attributeValue, !stringAttribute)
+
+    !this.errors[!index] =  !this.errors[!index] & !error
+    if(!this.errors[!index].empty()) then
+      !this.state[!index] = 'SUCCESS'
+    else
+      !this.state[!index] = 'ERROR'
+    endif
+
+  enddo
+
+  -- Check Outside Diameter property of cable spec and warn user if not valid
+  !cableObj = object CABLE(!element)
+  !warning = ''
+  if (!!ce.type.eq('CABLE')) then
+    !warning = !cableObj.checkOutsideDiameter()
+    if !warning.length().neq(0) then
+      !warning = !name & ' ( SPREF ) : ' & !warning
+      !this.errors[!index] =  !this.errors[!index] & !warning
+      !this.state[!index] = 'ERROR'
+    endif
+  endif
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      feedback
+--
+-- Description: Callback to provide feedback given selection of items
+--              INTERFACE METHOD - used by spreadsheetimport form
+--              DO NOT REMOVE THIS METHOD
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       Array of selected items
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .feedback(!selectedItems is ARRAY)
+
+   --!colour = !!gphsettings.colourdata.highlight.code
+   --handle ANY
+   -- show !!gphsettings
+   -- hide !!gphsettings
+   -- !colour = !!gphsettings.colourdata.highlight.code
+   --endhandle
+   !this.aidClear()
+   !colour =!!gphcolopt.highlight
+
+   --do !index values !selectedItems
+   if !selectedItems.size().eq(1) then
+     -- Cable specific information
+     !row = !this.rows[!selectedItems[1]]
+     if(!row[!this.typeColumnIndex].eq('CABLE')) then
+       -- Call back on row selection
+       !tempName  = !row[!this.startColumnIndex]
+       !startTxt  = !this.nameCheck(!tempName)
+       !tempName  = !row[!this.endColumnIndex]
+       !endTxt    = !this.nameCheck(!tempName)
+
+       !startRef = !startTxt.dbref()
+       handle ANY
+       elsehandle NONE
+         !startPos = !startRef.position.wrt( /* )
+         !aidNum = !this.startAidNum
+         AID TEXT NUMBER $!aidNum 'Start' AT $!startPos
+         enhance $!startRef col $!colour
+       endhandle
+
+       !endref = !endTxt.dbref()
+       handle ANY
+       elsehandle NONE
+         !endPos = !endref.position.wrt( /* )
+         !aidnum = !this.endAidNum
+         AID TEXT NUMBER $!aidNum 'End' AT $!endPos
+         enhance $!endref col $!colour
+       endhandle
+     endif
+
+     -- navigate to Cable if exists
+     !!ce = !this.element[!selectedItems[1]]
+     handle ANY
+     endhandle
+  endif
+  --enddo
+
+endmethod
+-- End of method
+-------------------------------------------------------------------
+--
+-- Method:      close
+--
+-- Description: Callback from form to allow this object to tidy up
+--              INTERFACE METHOD - used by spreadsheetimport form
+--              DO NOT REMOVE THIS METHOD
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .close()
+
+  -- DO NOT REMOVE THIS METHOD
+  -- no clear up necessary
+  !this.aidClear()
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      getHeadings
+--
+-- Description: Return data source headings as an array of strings
+--              INTERFACE METHOD - used by spreadsheetimport form
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Array of rows (ARRAY)
+--
+------------------------------------------------------------------------
+
+define method .getHeadings() is ARRAY
+
+  return !this.headings
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      getRows
+--
+-- Description: Return Rows as arrays of row where row is array of string
+--              INTERFACE METHOD - used by spreadsheetimport form
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Array of rows (ARRAY)
+--
+------------------------------------------------------------------------
+
+define method .getRows() is ARRAY
+
+  return !this.rows
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      getMessages
+--
+-- Description: Return message for each row
+--              INTERFACE METHOD - used by spreadsheetimport form
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Array (STRING) of row messages
+--
+------------------------------------------------------------------------
+
+define method .getMessages() is ARRAY
+
+  return !this.errors
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      getRowImages
+--
+-- Description: Return array of status words, one per row
+-- Status words are as follows.
+-- Before data processed:
+--     VALID     New element - no errors found in input data
+--     EXISTS    Existing element - no errors found in input data
+--     ERROR     Error found in input data
+-- After data processed:
+--     SUCCESS   Row processed successfully
+--     FAIL      Error occurred during processing
+--              INTERFACE METHOD - used by spreadsheetimport form
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Array (STRING) of row status
+--
+------------------------------------------------------------------------
+
+define method .getRowState() is ARRAY
+
+  return !this.state
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      setAttribute
+--
+-- Description: Set attribute values and catch errors
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Item name - used for error string
+--    2   R      STRING      Attribute name
+--    3   R      STRING      Attribute value
+--    4   R      BOOLEAN     True if this is a string type attribute
+-- Return:
+--   [Data Type] [Description]
+--    STRING      Empty if no errors. Error message if error found
+--
+------------------------------------------------------------------------
+
+define method .setAttribute(!name is STRING, !attribute is STRING, !attributeValue is STRING, !stringAttribute is BOOLEAN) is STRING
+
+  !errorReturn = ''
+
+  -- If attribute value is empty - use existing or default value
+  if(!attributeValue.empty()) then
+    return ''
+  endif
+
+  -- If attribute value is 'unset' - use existing or default value
+  if(!attributeValue eq 'unset' or !attributeValue eq 'unset') then
+    return ''
+  endif
+
+  -- if attribute is Lock - ignore it - all new data is loaded unlocked - existing locked records will not be modified
+  if(!attribute eq 'LOCK') then
+    return ''
+  endif
+
+  if(!stringAttribute) then
+--$P    $!<attribute> '$!<attributeValue>'
+    $!<attribute> '$!<attributeValue>'
+    handle (47,15)
+      -- handle syntax error
+      !errorReturn = !name + ' ( ' + !attribute + ' ) : Invalid attribute value: ' + !attributeValue + '.  '
+    elsehandle any
+      !errorReturn = !name + ' ( ' + !attribute + ' ) : ' + !!error.text + '.  '
+    endhandle
+  else
+--$P    $!<attribute> $!<attributeValue>
+    $!<attribute> $!<attributeValue>
+    handle (47,15)
+      -- handle syntax error
+      !errorReturn = !name + ' ( ' + !attribute + ' ) : Invalid attribute value: ' + !attributeValue + '.  '
+    elsehandle any
+      !errorReturn = !name + ' ( ' + !attribute + ' ) : ' + !!error.text + '.  '
+    endhandle
+  endif
+
+  return !errorReturn
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      nameCheck
+--
+-- Description: Normalise the name to valid string preceded by '/'
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Element name with or without preceding /
+-- Return:
+--   [Data Type] [Description]
+--    STRING      Normalise name or empty if name is invalid
+--
+------------------------------------------------------------------------
+
+define method .nameCheck(!name is STRING) is STRING
+
+  if(!name.trim().empty()) then
+    return ''
+  endif
+
+  if( !name.substring(1,1) ne '/' ) then
+    -- add a / for PDMS name
+    !name     =  '/' + !name
+  endif
+  -- Check to see if name converts to a dbref
+  !unusedDbRef      = !name.dbref()
+  handle(2,813)
+    -- bad name
+    return ''
+  elsehandle any
+    -- continue with new name
+  endhandle
+
+  return !name
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method: aidClear
+--
+-- Description: clear aids
+--
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .aidClear()
+
+  unenhance all
+  !startAidNum =!this.startAidNum
+  !endAidNum =!this.endAidNum
+  aid clear text $!startAidNum
+  handle ANY
+  endhandle
+  aid clear text $!endAidNum
+  handle ANY
+  endhandle
+
+endmethod
+
+--End of method definition

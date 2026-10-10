@@ -1,0 +1,3848 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:           hmcontrol.pmlobj
+--  Type:           Object Definition
+--  Group:          General Application
+--  Keyword:        Hole Management
+--  Module:         All
+--  Author:         R.Thompson
+--  Created:        <date/time>
+--
+--
+-- Description:
+--   Controlling object for the Hole Management system
+--   (Only provides functionality, will not directly modify 3D objects or update any forms)
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  addMemberToHole(HMHOLE,DBREF,STRING) -
+--  addNewItemsToHole(HMHOLE,ARRAY)  BOOLEAN
+--  addToHole(HMHOLE,ARRAY)          BOOLEAN
+--  approveRequest(HMHOLE)           BOOLEAN             Approve the specified hole request - updated version
+--  autoRequest(DBREF)               -
+--  cancelRequest(HMHOLE)            BOOLEAN             Cancel unwanted hole - updated version
+--  ceilingHole(DBREF,PROFILE)       DBREF               Ceiling hole as additional hole definition
+--  convertToDBUnits(ARRAY)          ARRAY               convert the given array of real numbers to undimensioned values in DB units
+--  createCWayHole(ARRAY,POSITION,STRING) BOOLEAN
+--  createEquiPenHole(ARRAY,STRING)  BOOLEAN
+--  createExtraHole(HMHOLE,DBREF)    BOOLEAN             Create the extra hole in marine only
+--  createFittHole(HOLEELEMCOLL,POSITION,STRING,STRING,STRING) BOOLEAN             Deal with a request for a new managed hole
+--  createGenHole(HOLEELEMCOLL,POSITION,STRING,STRING,STRING) BOOLEAN             Deal with a request for a new managed hole
+--  createHole(HMHOLE)               BOOLEAN             Create the negative extrusion based on the Owning Fixing
+--  createHoleNegativeExtrusion(DBREF,PROFILE,REAL,POSITION) -
+--  createNewHole(ARRAY,POSITION,STRING) BOOLEAN
+--  createOwningHierarchy()          BOOLEAN             Create the owning hierarchy above the ASSOC element
+--  createVirtualHole(ARRAY)         BOOLEAN
+--  deleteHole(HMHOLE)               BOOLEAN             Delete all elements of hole on REJECT
+--  deleteInvalidRefs(HMHOLE)        -                   delete any association members within invalid references
+--  findHoleAssociationStorageArea() DBREF               Create the owning hierarchy above the ASSOC element
+--  fixingParameters(DBREF)          ARRAY               find the relevant parameters for a typical fixing
+--  getOrientationPointNumber(DBREF) REAL                Get number of the hole orientation P-point
+--  mergeHoles(ARRAY)                BOOLEAN             Combine two (or more) holes into a single ASSOC element
+--  modifyFittHole(HOLEELEMCOLL,HMHOLE,POSITION) BOOLEAN             Deal with a request for a modified managed hole
+--  modifyGenHole(HOLEELEMCOLL,HMHOLE,POSITION,STRING,STRING,STRING) BOOLEAN             Deal with a request for a modified managed hole
+--  modifyHole(HMHOLE)               -                   modify hole data for a penetration
+--  readConfigurationFile()          -                   Read system configuration file (if it exists) and store settings
+--  redundantRequest(HMHOLE)         BOOLEAN             Update status to REDUNDANT for the specified hole
+--  rejectRequest(HMHOLE)            BOOLEAN             Reject the specified hole request - updated version
+--  remFromHole(HMHOLE,ARRAY)        BOOLEAN
+--  removeManagedHole(HMHOLE)        BOOLEAN             Remove (Delete) a Managed Hole (and virtual hole if there?)
+--  removeMemberFromHole(HMHOLE,STRING) -
+--  rotationPoint(DBREF)             ARRAY               find the rotation point of a typical fixing
+--  splitHole(HMHOLE)                BOOLEAN             Completely split a hole into separate holes
+--  submitRequest(HMHOLE)            BOOLEAN             Submit the hole request specified - updated version
+--  unsetStatusRequest (HMHOLE)      BOOLEAN
+--  updateAssmbrRef(HMHOLE,DBREF,REAL) BOOLEAN             Update the association member with a new reference
+--  validateNewStatus(STRING,HMHOLE) BOOLEAN             Check new status value supplied is suitable for specified HMHOLE
+--  withdrawRequest(HMHOLE)          BOOLEAN             Update status to WITHDRAWN for the specified hole request
+--
+
+--
+------------------------------------------------------------------------
+--
+------------------------------------------------------------------------
+
+define object HMCONTROL
+
+  member .error          is STRING
+
+endobject
+-- End of object definition for HMCONTROL
+
+
+------------------------------------------------------------------------
+--
+-- Method:      createVirtualHole
+--
+-- Description: Deal with creation of a new managed hole (internal use only)
+--                Typically used to create a new instance for existing modelled items
+--                following manual selection by user
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .createVirtualHole(!elements is ARRAY) is BOOLEAN
+
+-- To be resolved:
+--     prevent mixing of discipline appware components?
+--     identification of hole owner/primary element?
+
+  if (NOT !this.createNewHole(!elements, object POSITION(), 'VISUAL') ) then
+     return false
+  endif
+
+  return true
+endmethod
+-- End of method definition for .createVirtualHole()
+
+
+------------------------------------------------------------------------
+--
+-- Method:      createNewHole
+--
+-- Description: Deal with a request for a new managed hole
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .createNewHole(!elements is ARRAY, !origin is POSITION, !type is STRING) is BOOLEAN
+
+
+-- Check the default ASSDEF is configured before continuing
+  !this.readConfigurationFile()
+  if (!!holeManagementConfiguration.assdef.unset() ) then
+    !!hmDefinition.cleanup()
+    !!error.text = |Hole Management association definition not set. Please contact your system administrator: Check Hole Management configuration file & Project data|
+    return false
+  endif
+
+  !safeCE = !!ce
+
+  -- validate hole association storage area
+  !store  = !this.findHoleAssociationStorageArea()
+
+-- Could not create the hierarchy, ERROR.TEXT defined by createOwningHierarchy()
+  if( !store.unset() ) then
+    return false
+  endif
+
+-- Identified writeable location so move to correct point and build elements
+  !!ce = !store
+  TAIL
+  NEW ASSOC
+  handle any
+    !!ce = !safeCE
+    return FALSE
+  endhandle
+
+-- Run autonaming if defined and copy default ASSDEF element
+  CALL !!autoNameCe(FALSE)
+  handle any
+  endhandle
+
+  !tempRef = !!holeManagementConfiguration.assdef
+  COPY DEF $!<tempRef>
+
+-- Fix to get DESCRIPTION from RESDEF onto newly created RESTRI
+-- This will be replaced once further code changes for ASSOC are completed
+  RESTRI 1
+  !!ce.desc = !!ce.owner.adefrf.members[1].description
+  NEX RESTRI
+  !!ce.desc = !!ce.owner.adefrf.members[2].description
+  NEX RESTRI
+  !!ce.desc = !!ce.owner.adefrf.members[3].description
+  NEX RESTRI
+  !!ce.desc = !!ce.owner.adefrf.members[4].description
+  END
+-- Add first element as HOLE OWNER
+  !hOwner = !elements.removeFirst()
+  NEW ASSMBR
+  -- Store at HPANEL or CPANEL level rather than PLATE level
+  if (!hOwner.type eq 'HPLATE') then
+    !plate  = !hOwner
+    !hOwner = !hOwner.owner
+  elseif (!hOwner.type eq 'CPLATE') then
+    !plate  = !hOwner
+    !hOwner = !hOwner.hrdprx[1]
+  endif
+  !!ce.amemrf = !hOwner
+  if (defined(!plate)) then
+    !!ce.asstar = !plate
+  endif
+  LNAME /HoleOwner
+  PRIMEM FALSE
+
+-- Add next element as PRIMARY ELEMENT
+  !primary = !elements.removeFirst()
+  NEW ASSMBR
+  AMEMRF $!primary
+  LNAME /primaryElement
+  PRIMEM TRUE
+
+
+-- Grab rating of spec if possible
+  !rating = !primary.owner.pspe.rating.string()
+  handle any
+-- Not found so other elements will be checked later
+    !rating = object STRING()
+  endhandle
+
+-- Grab NOMINAL BORE if possible
+  !nombore = !primary.lbore.string()
+  handle any
+-- Not found so other elements will be checked later
+    !nombore = object STRING()
+  endhandle
+
+-- Add remaining supplied elements to the ASSMBR list
+  !virtualHoleFixing = object DBREF()
+  do !item values !elements
+-- Need to identify owner, primary element - resolve this later!!!
+    NEW ASSMBR
+    AMEMRF $!item
+    -- local name is the DB reference number. It is important that the
+    -- local name begins with '='
+    !itemLocalName = !item.string()
+    if (!item.hardType eq 'FIXING' ) then
+      if(!item.purp eq 'COAM') then
+        LNAME /coaming
+      else
+        LNAME /$!itemLocalName
+        -- capture the virtual fixing reference
+        if( !item.owner.owner.hardType eq 'STRU' ) then
+          if( !item.owner.owner.purpose eq 'HOLE' ) then
+            !virtualHoleFixing = !item
+          endif
+        endif
+      endif
+    else
+      -- pipe/HVAC marker
+      LNAME /$!itemLocalName
+    endif
+
+-- If rating has not already been found, try using this element
+    if (NOT set(!rating) ) then
+      !rating = !item.owner.pspe.rating.string()
+      handle any
+      endhandle
+    endif
+
+-- If nombore has not already been found, try using this element
+    if (NOT set(!nombore) ) then
+      !nombore = !item.lbore.string()
+      handle any
+      endhandle
+    endif
+
+    -- get virtual hole
+  enddo
+
+-- Build "standard" hierarchy element for STATUS data
+  new ASTATU
+  LNAME /Status
+
+-- Build "standard" hierarchy element for STATUS HISTORY data
+  new ASREQU
+  LNAME /StatusHistory
+
+-- Build "standard" hierarchy element for DESIGN data
+  new ASREQU
+  LNAME /DesignData
+
+  new DDSE
+
+  new DDAT
+  DKEY ORIG
+  !oriData = !origin.string()
+  DDPROP |$!oriData|
+
+  if (NOT set(!rating) ) then
+    !rating = ''
+  endif
+  new DDAT
+  DKEY RATI
+  DDPROP |$!rating|
+
+  if (NOT set(!nombore) ) then
+    !nombore = ''
+  endif
+  new DDAT
+  DKEY NOMB
+  DDPROP |$!nombore|
+
+  !strFixingType = 'Free'
+  if( not badref(!virtualHoleFixing) ) then
+    !vSpecRef      = !virtualHoleFixing.spref
+    if( !vSpecRef.unset() ) then
+      !strFixingType = 'Free'
+    elseif( !vSpecRef.badref().not() ) then
+      if( !vSpecRef.hardType eq 'GPART' ) then
+        !strFixingType = !vSpecRef.sectyp
+      elseif(!vSpecRef.hardType eq 'TABITE' ) then
+        if( not badref( !vSpecRef.prtRef ) ) then
+          !strFixingType = !vSpecRef.prtRef.sectyp
+        endif
+      endif
+    endif
+  endif
+
+  new DDAT
+  DKEY DESP
+  !strParameters     = ''
+  if( !strFixingType neq 'Free' ) then
+    !fParameters     = !this.fixingParameters(!virtualHoleFixing)
+    do !dParameter values !fParameters
+      !strParameters = !strParameters + !dParameter.string() + ' '
+    enddo
+  endif
+  DDPROP |$!<strParameters>|
+
+  new DDAT
+  DKEY FTYP
+  DDPROP |$!<strFixingType>|
+
+-- Return to owning ASSOC element and load member variable with data
+  ASSOC
+  descr '$!type'
+
+  !this.autoRequest(!!ce)
+
+  !!ce = !safeCE
+  return true
+
+endmethod
+-- End of method definition for .createNewHole()
+
+------------------------------------------------------------------------
+--
+-- Method:      findHoleAssociationStorageArea
+--
+-- Description: Create the owning hierarchy above the ASSOC element
+--              Looks for the first writeable ASSOWL element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       Unset if no storage found. Set to ASSOGP if OK
+--
+------------------------------------------------------------------------
+
+define method .findHoleAssociationStorageArea() is DBREF
+
+  !safeCE = !!ce
+
+-- Locate the correct hierarchy point for creation
+  !assogpList = object COLLECTION()
+  !assogpList.addtype(|ASSOGP|)
+  !assogpList.filter(object EXPRESSION(|PURP eq 'HOLE' and dbwrite and not lock|))
+  !elemList = !assogpList.results()
+
+-- If no existing and writeable ASSOGP item was found then create new hierarchy (if possible)
+  if ( !elemList.empty() ) then
+    if ( !this.createOwningHierarchy() ) then
+      -- rerun collection to find new ASSOGP
+      !elemList = !assogpList.results()
+    else
+-- Could not create the hierarchy, ERROR.TEXT defined by createOwningHierarchy()
+      !!ce = !safeCE
+      return object DBREF()
+    endif
+  endif
+
+  if ( !elemList.empty() ) then
+    !!ce   = !safeCE
+    !store = object DBREF()
+  else
+    !store = !elemList[1]
+  endif
+
+  return !store
+
+endmethod
+-- End of method definition for .findHoleAssociationStorageArea()
+
+------------------------------------------------------------------------
+--
+-- Method:      createOwningHierarchy
+--
+-- Description: Create the owning hierarchy above the ASSOC element
+--              Looks for the first writeable ASSOWL element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .createOwningHierarchy() is BOOLEAN
+
+  !safeCE = !!ce
+
+-- One time exercise - Create the owning hierarchy for all future ASSOC entries
+  !assogpList = object COLLECTION()
+  !assogpList.addtype(|ASSOWL|)
+  !assogpList.filter(object EXPRESSION(|dbwrite and not lock and PURP neq 'MDS'|))
+  !elemList = !assogpList.results()
+
+  if ( undefined(!elemList[1]) ) then
+    !!error.text = |Unable to find an accessible Hole Management Association Storage element (ASSOWL)|
+    !!ce = !safeCE
+    return false
+  endif
+
+  !!ce = !elemList[1]
+
+-- By this point we have moved to a writeable ASSOWL so create the ASSOGP
+  NEW ASSOGP
+  handle any
+    !!error.text = |Error creating Hole Management Association Storage element (ASSOGP) - | + !!error.text
+    !!ce = !safeCE
+    return false
+  endhandle
+  PURP HOLE
+
+  !!ce = !safeCE
+  return true
+
+endmethod
+-- End of method definition for .createOwningHierarchy()
+
+
+------------------------------------------------------------------------
+--
+-- Method:      submitRequest
+--
+-- Description: Submit the hole request specified - updated version
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .submitRequest(!selected is HMHOLE) is BOOLEAN
+
+  -- Check for WRITE access to ASSOCs area
+  if (NOT !selected.element.dbwrite ) then
+    !!alert.error('No WRITE access to the ASSOC elements!')
+    return false
+  endif
+
+ !ableToModify = !selected.claimHole()
+  if (!ableToModify.not()) then
+    return FALSE
+  endif
+
+  -- Check that current status allows this activity
+  if ( NOT !this.validateNewStatus('REQUESTED', !selected) ) then
+    -- NOTE alert already displayed by validateNewStatus method
+    --    !!alert.error('Cannot submit request for managed hole with status of ' + !selected.FullStatus)
+    return FALSE
+  endif
+
+  -- Update the supplied HOLE and return the result
+  return !selected.setStatus('REQUESTED')
+
+endmethod
+-- End of method definition for .submitRequest()
+
+
+------------------------------------------------------------------------
+--
+-- Method:      redundantRequest
+--
+-- Description: Update status to REDUNDANT for the specified hole
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .redundantRequest(!selected is HMHOLE) is BOOLEAN
+
+  -- Check for WRITE access to ASSOCs area
+  if (NOT !selected.element.dbwrite ) then
+    !!alert.error('No WRITE access to the ASSOC elements!')
+    return false
+  endif
+
+  !ableToModify = !selected.claimHole()
+  if (!ableToModify.not()) then
+    return FALSE
+  endif
+
+  -- Check that current status allows this activity
+  if ( NOT !this.validateNewStatus('REDUNDANT', !selected) ) then
+  -- NOTE alert already displayed by validateNewStatus method
+  --    !!alert.error('Cannot make redundant a managed hole with status of ' + !selected.FullStatus)
+    return FALSE
+  endif
+
+  -- Update the supplied HOLE and return the result
+  return !selected.setStatus('REDUNDANT')
+
+endmethod
+-- End of method definition for .redundantRequest()
+
+------------------------------------------------------------------------
+--
+-- Method:      cancelRequest()
+--
+-- Description: Cancel unwanted hole - updated version
+--              Unset status value only on REQUESTED items
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      HMHOLE      HMHOLE object to be removed
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .cancelRequest(!selected is HMHOLE) is BOOLEAN
+
+  -- Check for WRITE access to ASSOCs area
+  if (NOT !selected.element.dbwrite ) then
+    !!alert.error('No WRITE access to the ASSOC elements!')
+    return false
+  endif
+
+  !ableToModify = !selected.claimHole()
+  if (!ableToModify.not()) then
+    return FALSE
+  endif
+
+  -- Check that current status allows this activity
+  if ( NOT !this.validateNewStatus('CANCEL', !selected) ) then
+  -- NOTE alert already displayed by validateNewStatus method
+  --    !!alert.error('Cannot cancel managed hole with status of ' + !selected.FullStatus)
+    return FALSE
+  endif
+
+   -- Update the supplied HOLE and return the result
+  return !selected.setStatus('')
+
+endmethod
+-- End of method definition for .cancelRequest()
+
+------------------------------------------------------------------------
+--
+-- Method:      .unsetStatusRequest()
+--
+-- Description: Unset status value only if the hole has not been approved
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      HMHOLE      HMHOLE object to be modified
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .unsetStatusRequest (!selected is HMHOLE) is BOOLEAN
+
+  -- Check for WRITE access to ASSOCs area
+  if (NOT !selected.element.dbwrite ) then
+    !!alert.error('No WRITE access to the ASSOC elements!')
+    return FALSE
+  endif
+
+  !ableToModify = !selected.claimHole()
+  if (!ableToModify.not()) then
+    return FALSE
+  endif
+
+  -- Check that hole has not been approved
+  if (!selected.getStatus('APPR')) then
+    return FALSE
+  endif
+
+  -- Unset the status of the supplied HOLE and return the result
+  return !selected.setStatus('')
+
+endmethod
+-- End of method definition for . unsetStatusRequest ()
+
+
+------------------------------------------------------------------------
+--
+-- Method:      removeManagedHole()
+--
+-- Description: Remove (Delete) a Managed Hole (and virtual hole if there?)
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .removeManagedHole(!selected is HMHOLE) is BOOLEAN
+
+-- Check that current status allows this activity
+  if ( NOT !this.validateNewStatus('DELETE', !selected)) then
+    return FALSE
+  endif
+
+  !ableToModify = !selected.claimHole()
+  if (!ableToModify.not()) then
+    return FALSE
+  endif
+
+  -- Save current element and delete hole data
+  !safeCE = !!ce
+  !deleteList    = ARRAY()
+  !deleteMessage = ''
+  !okToDelete    = true
+
+  -- For general holes the FRMW owning the fixing is the only item to be deleted
+  if (!selected.holeType eq 'GEN') then
+    if (NOT BADREF(!selected.virtualHole) ) then
+      -- DELETE FRMW
+      -- check the element
+      if( !!dbrefDelete(!selected.virtualHole.owner, !deleteMessage)) then
+        !deleteList.append(!selected.virtualHole.owner)
+      else
+        !okToDelete = false
+      endif
+    endif
+    -- Delete the coaming if set
+    if(!selected.coaming.set()) then
+      if (NOT BADREF(!selected.coaming.amemrf)) then
+        !coamingElement = !selected.coaming.amemrf.owner
+        -- DELETE FRMW
+        -- check the element
+        if( !!dbrefDelete(!coamingElement, !deleteMessage)) then
+          !deleteList.append(!coamingElement)
+        else
+          !okToDelete = false
+        endif
+      endif
+    endif
+  -- For fitting holes delete the FRMW owning the fixing
+  elseif (!selected.holeType eq 'FITT') then
+    if (NOT BADREF(!selected.virtualHole) ) then
+      -- DELETE FRMW
+      if( !!dbrefDelete(!selected.virtualHole.owner, !deleteMessage)) then
+        !deleteList.append(!selected.virtualHole.owner)
+      else
+        !okToDelete = false
+      endif
+    endif
+    -- Delete Fixing
+    if (NOT BADREF(!selected.primaryElement.amemrf)) then
+      -- DELETE FIXING
+      if( !!dbrefDelete(!selected.primaryElement.amemrf, !deleteMessage)) then
+        !deleteList.append(!selected.primaryElement.amemrf)
+      else
+        !okToDelete = false
+      endif
+    endif
+
+  else
+    -- Loop through each of the secondaryElements and remove the owning fixing, atta's and fitt's
+    -- first check all items can be deleted
+    do !secondaryElement values !selected.secondaryElements
+      !secondaryRef = !secondaryElement.amemrf
+      skip if (BADREF(!secondaryRef) )
+        !secondaryRefType = !secondaryRef.type
+        --Delete the owning fixing
+        if (!secondaryRefType.eq('FIXING') AND !secondaryRef.owner.type.neq('FIXING')) then
+          -- DELETE FRMW
+          if( !!dbrefDelete(!secondaryRef.owner, !deleteMessage)) then
+            !deleteList.append(!secondaryRef.owner)
+          else
+            !okToDelete = false
+            break
+          endif
+        elseif ((!secondaryRefType.eq('FIXING')) AND (!secondaryRef.owner.type.eq('FIXING')) AND $
+               (!secondaryRef.owner.owner.type.eq('PLDATU')) AND (!secondaryRef.owner.owner.owner.type.eq('JLDATU'))) then
+          handle any
+          elsehandle none
+            !jlDatumRef = !secondaryRef.owner.owner.owner
+            -- DELETE JLDATU
+            if( !!dbrefDelete(!jlDatumRef, !deleteMessage)) then
+              !deleteList.append(!jlDatumRef)
+            else
+              !okToDelete = false
+              break
+            endif
+          endhandle
+        elseif (!secondaryRef.owner.type.eq('BRAN')) then
+          if(!secondaryRef.type.eq('ATTA')) then
+            -- DELETE ATTA
+            if( !!dbrefDelete(!secondaryRef, !deleteMessage)) then
+              !deleteList.append(!secondaryRef)
+            else
+              !okToDelete = false
+              break
+            endif
+          else
+            -- Pipe component - not a penetration ATTA
+            -- if LNAME begins /A= then the component existed before the hole was created, so do not delete it
+            if( !secondaryElement.lName.subString(1,3) neq '/A=' )then
+              -- DELETE $!type
+              if( !!dbrefDelete(!secondaryRef, !deleteMessage)) then
+                !deleteList.append(!secondaryRef)
+              else
+                !okToDelete = false
+                break
+              endif
+            endif
+          endif
+        elseif(!secondaryRefType inset('FITT','RNODE','WLOPEN','CMFI','JLDATU','BPOPEN')) then
+          -- DELETE FITT
+          if( !!dbrefDelete(!secondaryRef, !deleteMessage)) then
+            !deleteList.append(!secondaryRef)
+          else
+            !okToDelete = false
+            break
+          endif
+        elseif(!secondaryRefType.eq('DPCA')) then
+          -- DELETE DPSE
+          if( !!dbrefDelete(!secondaryRef.owner, !deleteMessage)) then
+            !deleteList.append(!secondaryRef.owner)
+          else
+            !okToDelete = false
+            break
+          endif
+        endif
+    enddo
+  endif
+
+  -- check the association element
+  if( !!dbrefDelete(!selected.element, !deleteMessage)) then
+    !deleteList.append(!selected.element)
+  else
+    !okToDelete = false
+  endif
+
+  if( !okToDelete.not() ) then
+    return FALSE
+  endif
+
+  -- delete elements
+  do !elementToDelete values !deleteList
+    !!ce  = !elementToDelete
+    handle any
+      skip
+    endhandle
+    !type = !elementToDelete.type
+    DELETE $!type
+    handle any
+      -- should not fail, but not every failure case has be checked
+    endhandle
+  enddo
+
+  !!ce = !safeCE
+  handle any
+  endhandle
+
+  return TRUE
+
+endmethod
+-- End of method definition for .removeManagedHole()
+
+------------------------------------------------------------------------
+--
+-- Method:      approveRequest
+--
+-- Description: Approve the specified hole request - updated version
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      HMHOLE      A HMHOLE object representing the hole request
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .approveRequest(!selected is HMHOLE) is BOOLEAN
+
+  -- Check for WRITE access to ASSOCs area
+  if (NOT !selected.element.dbwrite ) then
+    !!alert.error('No WRITE access to the ASSOC elements!')
+    return false
+  endif
+
+  !ableToModify = !selected.claimHole()
+  if (!ableToModify.not()) then
+    return FALSE
+  endif
+
+  -- Check that current status allows this activity
+  if ( NOT !this.validateNewStatus('APPROVED', !selected)) then
+    return FALSE
+  endif
+
+  !holeCreated = !this.createHole(!selected)
+  if (!holeCreated) then
+    -- Update the supplied HOLE and return the result
+    return !selected.setStatus('APPROVED')
+  else
+   !!alert.error('Unable to Create the hole. The hole has not been Approved')
+    return FALSE
+  endif
+
+endmethod
+-- End of method definition for .approveRequest()
+
+
+------------------------------------------------------------------------
+--
+-- Method:      rejectRequest
+--
+-- Description: Reject the specified hole request - updated version
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      HMHOLE      A HMHOLE object representing the hole request
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .rejectRequest(!selected is HMHOLE) is BOOLEAN
+
+  -- Check for WRITE access to ASSOCs area
+  if (NOT !selected.element.dbwrite ) then
+    !!alert.error('No WRITE access to the ASSOC elements!')
+    return false
+  endif
+
+ !ableToModify = !selected.claimHole()
+  if (!ableToModify.not()) then
+    return FALSE
+  endif
+
+  -- Check that current status allows this activity
+  if ( NOT !this.validateNewStatus('REJECTED', !selected)) then
+    return FALSE
+  endif
+
+  !virtualHole = !selected.virtualHole
+  -- Check if the hole is approved because if it is we need to delete the NXTR or HHOLE
+  if (!selected.getStatus() eq 'APPR') then
+    !ce = !!ce
+
+    if( !this.deleteHole(!selected) ) then
+      -- delete OK
+      -- Add the virtual hole to the draw lists
+      do !drawList values !!gphDrawLists.drawLists
+        !drawList.add(!virtualHole)
+        !drawList.colour(!virtualHole,5)
+      enddo
+      !status = 'REJECTED'
+    else
+      -- delete failed - reset status to Approved
+      !status = 'APPROVED'
+    endif
+     -- Clean up the primary hole association member if it has a bad reference
+    !find = object COLLECTION()
+    !find.type('ASSMBR')
+    !find.scope(!selected.element)
+    !find.filter(object EXPRESSION(|lname eq '/PrimaryHole' and badref(amemrf)|))
+    if (!find.results().size() neq 0 ) then
+      !!ce = !find.results()[1]
+      DELETE ASSMBR
+    endif
+
+    !!ce = !ce
+    handle any
+    endhandle
+  else
+    !status = 'REJECTED'
+  endif
+
+  -- Update the supplied HOLE and return the result
+  return !selected.setStatus(!status)
+
+endmethod
+-- End of method definition for .rejectRequest()
+
+
+------------------------------------------------------------------------
+--
+-- Method:      withdrawRequest
+--
+-- Description: Update status to WITHDRAWN for the specified hole request
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      HMHOLE      A HMHOLE object representing the hole request
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .withdrawRequest(!selected is HMHOLE) is BOOLEAN
+
+  -- Check for WRITE access to ASSOCs area
+  if (NOT !selected.element.dbwrite ) then
+    !!alert.error('No WRITE access to the ASSOC elements!')
+    return false
+  endif
+
+ !ableToModify = !selected.claimHole()
+  if (!ableToModify.not()) then
+    return FALSE
+  endif
+
+  -- Check that current status allows this activity
+  if ( NOT !this.validateNewStatus('WITHDRAWN', !selected)) then
+    return FALSE
+  endif
+
+  !virtualHole = !selected.virtualHole
+
+  -- Loop through each of the secondaryElements and find the NXTR or HHOLE delete it and it's ASSMBR
+  do !secondaryElement values !selected.secondaryElements
+    if (NOT BADREF(!secondaryElement.amemrf) ) then
+       --Delete the owning fixing
+       if (!secondaryElement.amemrf.type.eq('NXTR')) then
+         !!ce = !secondaryElement.amemrf
+         DELETE NXTR
+         handle ANY
+           !!alert.error('Unable to delete the Negative Extrusion - status not changed')
+           !!ce = !ce
+           return !selected.setStatus('APPROVED')
+         endhandle
+         !!ce = !secondaryElement
+         delete ASSMBR
+         !!ce = !ce
+         handle ANY $* Just in case the user was at the item just deleted
+         endhandle
+         do !i values !!gphDrawLists.drawLists
+           !i.add(!virtualHole)
+           !i.colour(!virtualHole,5)
+         enddo
+       elseif (!secondaryElement.amemrf.type.eq('PFIT')) then
+         !!ce = !secondaryElement.amemrf
+         DELETE PFIT
+         handle ANY
+           !!alert.error('Unable to delete the Panel Fitting - status not changed')
+           !!ce = !ce
+           return !selected.setStatus('APPROVED')
+         endhandle
+         !!ce = !secondaryElement
+         delete ASSMBR
+         !!ce = !ce
+         handle ANY $* Just in case the user was at the item just deleted
+         endhandle
+         -- Add the virtual hole to the draw lists
+         do !i values !!gphDrawLists.drawLists
+           !i.add(!virtualHole)
+           !i.colour(!virtualHole,5)
+         enddo
+      elseif (!secondaryElement.amemrf.type.eq('WLOPEN')) then
+         !!ce = !secondaryElement.amemrf
+         DELETE WLOPEN
+         handle ANY
+           !!alert.error('Unable to delete the Wall Opening - status not changed')
+           !!ce = !ce
+           return !selected.setStatus('APPROVED')
+         endhandle
+         !!ce = !secondaryElement
+         delete ASSMBR
+         !!ce = !ce
+         handle ANY $* Just in case the user was at the item just deleted
+         endhandle
+         -- Add the virtual hole to the draw lists
+         do !i values !!gphDrawLists.drawLists
+           !i.add(!virtualHole)
+           !i.colour(!virtualHole,5)
+         enddo
+       elseif (!secondaryElement.amemrf.type inset('HHOLE','CHOLE')) then
+         !mm = object AVEVAMODULEMANAGER()
+         if (!mm.currentProductName().upcase().eq('HULL & OUTFITTING')) then
+           import 'marAPI'
+           handle any
+           endhandle
+         endif
+         using namespace 'Aveva.Marine.Design'
+         !holeManager = object MARHOLEMANAGER()
+         !holeRef = !secondaryElement.amemrf.string()
+         !res = !holeManager.deleteHole(!holeRef)
+         if (!res[1] neq 0 ) then
+           !!alert.error('Unable to delete the Hull Hole - status not changed')
+           !!ce = !ce
+           return !selected.setStatus('APPROVED')
+         endif
+         !!ce = !secondaryElement
+         delete ASSMBR
+         !!ce = !ce
+         handle ANY $* Just in case the user was at the item just deleted
+         endhandle
+         do !i values !!gphDrawLists.drawLists
+           !i.add(!virtualHole)
+           !i.colour(!virtualHole,5)
+         enddo
+      elseif (!secondaryElement.amemrf.type.eq('BPOPEN')) then
+         !!ce = !secondaryElement.amemrf
+         DELETE BPOPEN
+         handle ANY
+           !!alert.error('Unable to delete the Bent Panel Opening - status not changed')
+           !!ce = !ce
+           return !selected.setStatus('APPROVED')
+         endhandle
+         !!ce = !secondaryElement
+         delete ASSMBR
+         !!ce = !ce
+         handle ANY $* Just in case the user was at the item just deleted
+         endhandle
+         -- Add the virtual hole to the draw lists
+         do !i values !!gphDrawLists.drawLists
+           !i.add(!virtualHole)
+           !i.colour(!virtualHole,5)
+         enddo
+      endif
+    endif
+  enddo
+
+  -- Update the supplied HOLE and return the result
+  return !selected.setStatus('WITHDRAWN')
+
+endmethod
+-- End of method definition for .withdrawRequest()
+
+
+------------------------------------------------------------------------
+--
+-- Method:      .validateNewStatus()
+--
+-- Description: Check new status value supplied is suitable for specified HMHOLE
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      New status value (FullStatus member of HMHOLE)
+--    2   R      HMHOLE      Instance of HMHOLE object that will be updated
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .validateNewStatus(!newStatus is STRING, !myHole is HMHOLE) is BOOLEAN
+
+  !booReturn = FALSE
+  !currStatus = !myHole.getFullStatus()
+  !currStatusText = !currStatus
+  if (!currStatus.unset() ) then
+    !currStatus = ''
+    !currStatusText = '<unset>'
+  endif
+
+
+  --Only need to validate if Requesting or Approving
+  if (!newStatus eq 'REQUESTED' or !newStatus eq 'APPROVED')then
+     -- Validation check for RESTRI checks
+     if ( NOT !myHole.element.testev ) then
+       !!alert.warning(|Validation checks failed on | + !myHole.element.name + | status cannot be modified|)
+       return FALSE
+     endif
+  endif
+
+-- validation check for valid STATUS
+  if ( !newStatus.eq('REQUESTED') ) then
+    if ( !currStatus INSET('', 'REJECTED') ) then
+      !booReturn = TRUE
+    endif
+  elseif ( !newStatus.eq('APPROVED') ) then
+    if ( !currStatus INSET('REQUESTED', 'REJECTED') ) then
+      !booReturn = TRUE
+    endif
+  elseif ( !newStatus.eq('REJECTED') ) then
+    if ( !currStatus INSET('REQUESTED', 'APPROVED') ) then
+      !booReturn = TRUE
+    endif
+  elseif ( !newStatus.eq('REDUNDANT') ) then
+    if ( !currStatus INSET ('APPROVED') ) then
+      !booReturn = TRUE
+    endif
+  elseif ( !newStatus.eq('WITHDRAWN') ) then
+    if ( !currStatus INSET ('REDUNDANT') ) then
+      !booReturn = TRUE
+    endif
+  elseif ( !newStatus.eq('REMOVEVH') ) then
+    if ( !currStatus INSET('', 'REJECTED') ) then
+      !booReturn = TRUE
+    endif
+  elseif ( !newStatus.eq('CANCEL') ) then
+    if ( !currStatus INSET ('REQUESTED', 'REJECTED') ) then
+      !booReturn = TRUE
+    endif
+  elseif ( !newStatus.eq('REMOVERH')) then
+    if ( !currStatus INSET ('APPROVED', 'WITHDRAWN') ) then
+      !booReturn = TRUE
+    endif
+  elseif ( !newStatus.eq('DELETE') ) then
+    if (!myHole.valid.not()) then
+      !booReturn = TRUE
+    else
+      if ( !currStatus INSET ('WITHDRAWN','REQUESTED','REJECTED', '') ) then
+        !booReturn = TRUE
+      endif
+    endif
+  endif
+
+  if (NOT !booReturn) then
+    !message = 'Status of $!newStatus cannot be applied to ' + !myHole.element.name + ' - Current status is $!currStatusText'
+    !!alert.error(!message)
+  endif
+
+  return !booReturn
+
+endmethod
+-- End of method definition for .validateNewStatus()
+
+------------------------------------------------------------------------
+--
+-- Method:      mergeHoles()
+--
+-- Description: Combine two (or more) holes into a single ASSOC element
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      ARRAY       An array of HMHOLE objects for the holes to be merged
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .mergeHoles(!holes is ARRAY) is BOOLEAN
+
+  !safeCE = !!ce
+  !holeList = !holes
+
+-- First hole passed becomes the master hole
+  !master = !holeList.removeFirst()
+
+-- Gather data for items on MASTER hole to ensure only matching holes are merged
+  var !masAMEMRF evaluate REFNO OF AMEMRF for ALL ASSMBR for $!master.element
+
+-- Carry out validation checks first...
+  do !checkPurp values !holeList
+-- Check other holes passed for PURP values
+    if ( !checkPurp.holeType.neq(!master.holeType) ) then
+      !!alert.error(|Only managed holes with the same PURP value can be merged|)
+      return false
+    endif
+
+-- Check that each hole contains at least one matching element
+    var !chkAMEMRF evaluate REFNO OF AMEMRF for ALL ASSMBR for $!checkPurp.element
+    if ( !masAMEMRF.intersect(!chkAMEMRF).size().lt(1) ) then
+      !!alert.error(|Error locating matching elements for | + !checkPurp.element.name + | and | + !master.element.name)
+      return false
+    endif
+  enddo
+
+-- Process each of the holes passed against the master hole
+  do !data values !holeList
+
+-- Locate all ASSMBR elements for current hole
+    !elements = ARRAY()
+    !elements.append(!data.primaryElement)
+    !elements.appendarray(!data.secondaryElements)
+
+    do !memb values !elements
+
+-- Include ASSMBR elements from other holes (INCL will unset the LNAME attribute)
+      if (!masAMEMRF.findFirst(!memb.amemrf.string()).unset() ) then
+        LAST ASSMBR OF $!master.element
+        END
+        INCL $!memb
+        !memb.primem = FALSE
+      endif
+    enddo
+
+-- Remove unwanted ASSOC element
+    $!data.element
+    delete ASSOC
+
+-- End of loop for holes passed
+  enddo
+
+-- Move back to original point in hierarchy
+  !!ce = !safeCE
+  handle (2,822)
+    !!alert.warning('Previous current element has been deleted - check hierarchy')
+  endhandle
+
+-- reset status value on master hole
+  if ( !master.setStatusOnMerge() ) then
+    return true
+  endif
+
+  return false
+
+endmethod
+-- End of method definition for .mergeHoles()
+
+------------------------------------------------------------------------
+--
+-- Method:      .splitHole()
+--
+-- Description: Completely split a hole into separate holes
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      ARRAY      HMHOLE object representing the hole to be split
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .splitHole(!current is HMHOLE) is BOOLEAN
+
+  !safeCE = !!ce
+
+-- Gather AMEMRF data for hole
+  var !allASSMBR collect all ASSMBR for $!current.element
+
+  if (!allASSMBR.size().lt(3) ) then
+    !!alert.error(|Not enough elements to split this hole|)
+    return false
+  endif
+  var !priASSMBR collect all ASSMBR with PRIMEM eq TRUE for $!current.element
+  !nonPrimary = !allASSMBR.difference(!priASSMBR)
+  !priAMEMRF = !priASSMBR[1].dbref().amemrf
+
+-- Must leave one ASSMBR in the original ASSOC so remove first entry
+  !nonPrimary.removeFirst()
+
+  do !item values !nonPrimary
+    !list = ARRAY()
+    !list.append(!priAMEMRF)
+    !list.append(!item.dbref().amemrf)
+    !result = !this.createNewHole(!list, object POSITION(),'SPLIT')
+    if ( !result ) then
+      $!item
+      DELETE ASSMBR
+    else
+      !!error.text = |Error creating new hole for $!item - | + !!error.text
+      return false
+    endif
+  enddo
+
+-- Move back to original point in hierarchy
+  !!ce = !safeCE
+  handle (2,822)
+    !!alert.warning('Previous current element has been deleted - check hierarchy')
+  endhandle
+
+-- reset status value on master hole
+  if ( !current.setStatusOnSplit() ) then
+    return true
+  endif
+
+  return false
+
+endmethod
+-- End of method definition for .splitHoles()
+
+------------------------------------------------------------------------
+--
+-- Method:      .modifyHole()
+--
+-- Description: modify hole data for a penetration
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      ARRAY      HMHOLE object representing the hole to be modified
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .modifyHole(!current is HMHOLE)
+
+  -- Find out if any of the data has changed and modify the DDAT properties accordingly
+
+  -- Find out the new data
+  !position = !current.virtualHole.position.wrt(world).string()
+  -- Check that the spre is set. If not it is a described be a template
+  if (!current.virtualHole.spre.set()) then
+    if( !current.virtualHole.spre.hardType eq 'GPART' ) then
+      !holeType = !current.virtualHole.spre.secType
+    else
+      !holeType = !current.virtualHole.spre.prtRef.secType
+    endif
+  else
+    !holeType = 'Free'
+  endif
+  if (!holeType neq 'Free') then
+    !parameters = !this.fixingParameters(!current.virtualHole)
+    !desp     = ''
+    do !i values !parameters
+      !desp = !desp & !i.string() & ' '
+    enddo
+  else
+    !desp = ''
+  endif
+
+  !ableToModify = !current.claimHole()
+  if (!ableToModify.not()) then
+    return FALSE
+  endif
+
+  -- Set the new data
+  !current.setPosition(!position)
+  !current.setHoleType(!holeType)
+  !current.setDespars(!desp)
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      .addNewItemsToHole()
+--
+-- Description: add to a hole only those items not already in that hole
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      object      HMHOLE object representing the hole to be modified
+--    1    R      ARRAY       array of DBREF to be added to the hole
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .addNewItemsToHole(!current is HMHOLE, !objects is ARRAY ) is BOOLEAN
+
+  !currentAssMembers = ARRAY()
+  -- get list of ASSMBR references already in the hole
+  do !member values !current.element.members
+    skip if( !member.hardType neq 'ASSMBR')
+    skip if( badref(!member.amemrf) )
+    !currentAssMembers.append(!member.amemrf)
+  enddo
+
+  !newObjects = ARRAY()
+  do !object values !objects
+    skip if( !currentAssMembers.findFirst(!object).set() )
+    !newObjects.append(!object)
+  enddo
+
+  if( !newObjects.empty() ) then
+    -- no new object so nothing to do
+    !result = true
+  else
+    !result = !this.addToHole(!current, !newObjects)
+  endif
+
+  return !result
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      .addToHole()
+--
+-- Description: add items to a hole
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      object      HMHOLE object representing the hole to be modified
+--    1    R      ARRAY       array of DBREF to be added to the hole
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .addToHole(!current is HMHOLE, !objects is ARRAY ) is BOOLEAN
+
+  -- Is the hole approved
+  if (!current.status eq 'APPR') then
+    !this.error = 'You can not modify an APPROVED hole'
+    return FALSE
+  endif
+
+  !ableToModify = !current.claimHole()
+  if (!ableToModify.not()) then
+    return FALSE
+  endif
+
+  -- Are the items to be added in of the same discipline as the hole being added to?
+  -- Check the fixing assos
+  -- Add the DPCA for Cable Way holes
+  !fixingFound = FALSE
+  do !i values !objects
+    if (!i.type eq 'FIXING' or !i.type eq 'DPCA') then
+      !assos = assos
+      !holeAssociation = object DBREF()
+      do !association values !assos
+        -- avoid MDS and other associations
+        skip if( !association.type neq 'ASSOC' )
+        skip if( !association.owner.purpose neq 'HOLE' )
+        !holeAssociation = !association
+        break
+      enddo
+
+      if (badref(!holeAssociation) ) then $* new hole
+        !fixingFound = TRUE
+        break
+      else
+        !fromHole = object HMHOLE(!holeAssociation)
+        if (!fromHole.holeType neq !current.holeType) then
+          !this.error = 'You can not add items from a different hole type'
+          return FALSE
+        else
+          !fixingFound = TRUE
+          break
+        endif
+      endif
+    endif
+  enddo
+  if (!fixingFound.not()) then
+    !this.error = 'There must be a fixing in the list of objects to be added to the association'
+    return FALSE
+  endif
+
+  -- Create new ASSMBR elements in the association
+  !ce = !!ce
+  !!ce = !current.element
+  LAST ASSMBR
+  do !item values !objects
+    NEW ASSMBR
+    AMEMRF $!item
+    if (!item.hardType eq 'FIXING' and !item.purp eq 'COAM') then
+      LNAME /coaming
+    else
+      LNAME /$!item
+    endif
+  enddo
+
+  !!ce = !ce
+
+  return TRUE
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      .remFromHole()
+--
+-- Description: remove items from a hole
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      object      HMHOLE object representing the hole to be modified
+--    1    R      ARRAY       array of DBREF to be removed from the hole
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .remFromHole(!current is HMHOLE, !objects is ARRAY ) is BOOLEAN
+
+  -- Is the hole approved
+  if (!current.status eq 'APPR') then
+    !this.error = 'You can not modify an APPROVED hole'
+    return FALSE
+  endif
+
+  !ableToModify = !current.claimHole()
+  if (!ableToModify.not()) then
+    return FALSE
+  endif
+
+  -- The only way that the primary element can be removed from an association
+  -- is if in the end it will leave no penetrating objects in the hole and therefore
+  -- the association at the end will be deleted
+  !numObjLeft = (!current.secondaryElements.size() - !objects.size() + 1 )
+  do !i values !objects
+    if (!i eq !current.primaryElement.amemrf ) then
+      if (!numObjLeft leq 2 ) then
+            -- This means that the assoc can just be deleted because the hole is
+            -- effectively redundant
+            !ce = !!ce
+            !!ce = !current.element
+            DELETE ASSOC
+            !!ce = !ce
+            handle (2,822) $* Positioned at the assoc just deleted
+        endhandle
+            return TRUE
+      else
+        !this.error = 'The primary element can not be removed from the association'
+        return FALSE
+      endif
+    endif
+  enddo
+
+  !assmbr = ARRAY()
+  !amemrf = ARRAY()
+  do !i values !current.secondaryElements
+    !assmbr.append(!i)
+    !amemrf.append(!i.amemrf)
+  enddo
+  -- Ensure that all the objects supplied are in the hole
+  do !i values !objects
+    if (!amemrf.findFirst(!i).unset()) then
+      !this.error = 'Supplied object is not part of the association'
+      return FALSE
+    endif
+  enddo
+
+  !ce = !!ce
+  -- Find the assmbr which has the amemrf of the object to be removed and delete it
+  do !i values !objects
+    !index = !amemrf.findFirst(!i)
+    if (!index.set()) then
+      !!ce = !assmbr[!index]
+      DELETE ASSMBR
+    endif
+  enddo
+
+  !!ce = !ce
+  handle any
+  endhandle
+
+  return TRUE
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .createHole()
+--
+-- Description: Create the negative extrusion based on the Owning Fixing
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createHole(!hmHole is HMHOLE) is BOOLEAN
+
+  -- flag to indicate that a secondary ceiling hole is required
+  !ceilingHoleRequired = false
+
+ -- Check whether it's a typical or Free Hole
+ !fixing = !hmHole.virtualHole
+ if (!hmHole.fixiType.upcase() eq 'FREE') then
+   var !freeProfile coll all loop for $!fixing
+   if( !freeProfile.empty() ) then
+     !!alert.error('Free hole without boundary curve. Please delete the hole and recreate it')
+     return false
+    endif
+   !tempProfile         = object PROFILE(!freeProfile[1].dbref())
+   !fixingProfile       = !tempProfile.mergePoints().mergeLines()
+   !fixingProfileOffset = !fixingProfile.plane().xyOffset(!fixing.position)
+   !freeHole = TRUE
+ else
+   !fixingProfile = !!hmFindHoleProfile(!fixing)
+   !fixingDesp = !fixing.desp
+   !fixingProfileOffset = !fixingProfile.plane().xyOffset(!fixing.position)
+   !freeHole = FALSE
+ endif
+
+ !penetrated = !hmHole.holeOwner
+  if (!penetrated.type inset('PANE','FLOOR','SCREED')) then
+    !panel = !penetrated
+    !hull = FALSE
+    !panelType = 'PANE'
+  elseif (!penetrated.type eq 'HPLATE') then
+    !panel     = !penetrated.owner
+    !panelName = !panel.namn
+    !hull = TRUE
+    !panelType = 'HPANEL'
+  elseif (!penetrated.type eq 'CPLATE') then
+    !panel     = !penetrated.hrdprx[1]
+    !panelName = !panel.namn
+    !hull = TRUE
+    !panelType = 'CPANEL'
+  elseif (!penetrated.type eq 'HPANEL') then
+    !panel     = !penetrated
+    !panelName = !panel.namn
+    !hull = TRUE
+    !panelType = 'HPANEL'
+  elseif (!penetrated.type eq 'CPANEL') then
+    !panel     = !penetrated
+    !panelName = !panel.namn
+    !hull = TRUE
+    !panelType = 'CPANEL'
+  elseif (!penetrated.type eq 'CTWALL') then
+    !panel     = !penetrated
+    !panelName = !panel.namn
+    !hull = FALSE
+    !panelType = 'CTWALL'
+  elseif (!penetrated.type eq 'BPANEL') then
+  	!panel     = !penetrated
+    !panelName = !panel.namn
+    !hull = FALSE
+    !panelType = 'BPANEL'
+  elseif (!penetrated.type inset ('SCTN','STWALL')) then
+    !panel     = !penetrated
+    !panelName = !panel.namn
+    !hull = FALSE
+    !panelType = 'SCTN'
+  elseif (!penetrated.type inset ('GENSEC','WALL')) then
+    !panel     = !penetrated
+    !panelName = !panel.namn
+    !hull = FALSE
+    !panelType = 'GENSEC'
+  endif
+
+!ce = !!ce
+
+
+if (!hull) then
+  ------------------------------- HULL PENETRATION -------------------------------
+  using namespace 'Aveva.Marine.Design'
+  !tmpl = !fixing.mcount('tmpl')
+  if (!tmpl eq 1 ) then
+    !parameters = ARRAY()
+  else
+    !parameters = !this.fixingParameters(!fixing)
+  endif
+  -- initialise create hole parameters for free holes
+  -- Hull core calculates the hole in curved panel from the given profile so these parameters are not set
+  -- For standard holes and free holes in planar panel these parameters must be set
+  !pos         = ARRAY()
+  !pos[1]      = 0mm
+  !pos[2]      = 0mm
+  !pos[3]      = 0mm
+  !penVec      = ARRAY()
+  !penVec[1]   = 0
+  !penVec[2]   = 0
+  !penVec[3]   = 0
+  !rotation    = ARRAY()
+  !rotation[1] = 0
+  !rotation[2] = 0
+  !rotation[3] = 0
+  !fixingPos = !fixing.pos.wrt(worl)
+  if (!freeHole) then
+
+    if( !panelType eq 'HPANEL') then
+      !pos[1] = !fixingPos.east
+      !pos[2] = !fixingPos.north
+      !pos[3] = !fixingPos.up
+    -- Find the extrusion direction
+      !fixingDir = !freeProfile[1].dbref().owner.ori.zDir().wrt(worl)
+      !lineStart = !fixingPos.offset(!fixingDir.opposite(), 1000mm)
+      !lineEnd   = !fixingPos.offset(!fixingDir, 1000mm)
+      !penVec[1] = (!lineStart.east.dbUnits().value() - !lineEnd.east.dbUnits().value())
+      !penVec[2] = (!lineStart.north.dbUnits().value() - !lineEnd.north.dbUnits().value())
+      !penVec[3] = (!lineStart.up.dbUnits().value() - !lineEnd.up.dbUnits().value())
+    endif
+--    !lineStart = !fixingPos.offset(!fixingDir, 1000mm)
+--    !lineEnd   = !fixingPos.offset(!fixingDir.opposite(), 1000mm)
+--    !rotation.append( 0 )
+--    !rotation.append( 0 )
+--    !rotation.append( 0 )
+  else
+    -- standard hole parameters
+    !pos[1] = !fixingPos.east
+    !pos[2] = !fixingPos.north
+    !pos[3] = !fixingPos.up
+    !rotation = !this.rotationPoint(!fixing)
+    if( !panelType eq 'HPANEL') then
+    -- Find the extrusion direction
+      !fixingDir = !fixing.pdir[1].wrt(worl)
+      handle any
+        !fixingDir = !fixing.ori.zDir().wrt(worl)
+      endhandle
+      !lineStart = !fixingPos.offset(!fixingDir, 1000mm)
+      !lineEnd   = !fixingPos.offset(!fixingDir.opposite(), 1000mm)
+      !penVec[1] = (!lineStart.east.dbUnits().value() - !lineEnd.east.dbUnits().value())
+      !penVec[2] = (!lineStart.north.dbUnits().value() - !lineEnd.north.dbUnits().value())
+      !penVec[3] = (!lineStart.up.dbUnits().value() - !lineEnd.up.dbUnits().value())
+    else
+      !p1Pos = !fixing.ppos[1].wrt(worl)
+      !penVec[1] = (!p1Pos.east.dbUnits().value()  - !pos[1].dbUnits().value())
+      !penVec[2] = (!p1Pos.north.dbUnits().value() - !pos[2].dbUnits().value())
+      !penVec[3] = (!p1Pos.up.dbUnits().value()    - !pos[3].dbUnits().value())
+    endif
+  endif
+  !penVecAlt[1] = -1 * !penVec[1]
+  !penVecAlt[2] = -1 * !penVec[2]
+  !penVecAlt[3] = -1 * !penVec[3]
+  !holeDesRef = !fixing.string()
+  !holeManager = object MARHOLEMANAGER()
+  if (!panelType eq 'HPANEL' or !panelType eq 'CPANEL') then
+    -- Latest MarHoleManager
+    if (!rotation.size() eq 0 ) then
+      return FALSE
+    endif
+    !res = !holeManager.createHole(!panelName, !this.convertToDBUnits(!pos), !penVec, !this.convertToDBUnits(!rotation), !holeDesRef, !this.convertToDBUnits(!parameters) )
+    handle (1000,0)
+      !!ce = !ce
+      return FALSE
+    endhandle
+    if (!res[1] eq 0 or !res[1] eq 1 ) then
+      !holeRef = !res[2]
+      if (!holeRef eq '') then
+        !res = !holeManager.createHole(!panelName, !this.convertToDBUnits(!pos), !penVecAlt, !this.convertToDBUnits(!rotation), !holeDesRef, !this.convertToDBUnits(!parameters) )
+        if (!res[1] eq 0 or !res[1] eq 1 ) then
+          !holeRef = !res[2]
+          if (!holeRef eq '') then
+            !!alert.error('MARHOLEMANAGER has not returned a result')
+            !!ce = !ce
+            return FALSE
+          endif
+        else
+          !!ce = !ce
+          if( defined(!res[3]) ) then
+            !this.error = !res[3]
+          else
+            !this.error = 'Error number: ' + !res[1].string()
+          endif
+          !!alert.error(!this.error)
+          return FALSE
+        endif
+      endif
+    else
+      !res = !holeManager.createHole(!panelName, !this.convertToDBUnits(!pos), !penVecAlt, !this.convertToDBUnits(!rotation), !holeDesRef, !this.convertToDBUnits(!parameters) )
+      if (!res[1] eq 0 or !res[1] eq 1 ) then
+        !holeRef = !res[2]
+        if (!holeRef eq '') then
+          !!alert.error('MARHOLEMANAGER has not returned a result')
+          !!ce = !ce
+          return FALSE
+        endif
+      else
+        !!ce = !ce
+        if( defined(!res[3]) ) then
+          !this.error = !res[3]
+        else
+          !this.error = 'Error number: ' + !res[1].string()
+        endif
+        !!alert.error(!this.error)
+        return FALSE
+      endif
+    endif
+
+  endif
+  if (!hmHole.holeOwners.empty().not()) then
+    !extraHoles = object ARRAY()
+    do !p values !hmHole.holeOwners
+      !panelName = !p.namn
+      !res = !holeManager.createHole(!panelName, !this.convertToDBUnits(!pos), !penVec, !this.convertToDBUnits(!rotation), !holeDesRef, !this.convertToDBUnits(!parameters) )
+      handle (1000,0)
+        !!ce = !ce
+        !!alert.error('Unable to create the secondary hole in panel $!panelName')
+        skip
+      endhandle
+      if (!res[1] eq 0 or !res[1] eq 1 ) then
+        !extraHoleRef = !res[2]
+        if (!extraHoleRef eq '') then
+          !res = !holeManager.createHole(!panelName, !this.convertToDBUnits(!pos), !penVecAlt, !this.convertToDBUnits(!rotation), !holeDesRef, !this.convertToDBUnits(!parameters) )
+          if (!res[1] eq 0 or !res[1] eq 1 ) then
+            !extraHoleRef = !res[2]
+            if (!extraHoleRef eq '') then
+              !!alert.error('MARHOLEMANAGER has not returned a result for $!panelName')
+              !!ce = !ce
+              skip
+            else
+              !extraHoles.append(!extraHoleRef)
+            endif
+          else
+            !!ce = !ce
+            if( defined(!res[3]) ) then
+              !this.error = !res[3]
+            else
+              !this.error = 'Error number: ' + !res[1].string()
+            endif
+            !this.error = !this.error & ' for ' & !panelName
+            !!alert.error(!this.error)
+            skip
+          endif
+        else
+          !extraHoles.append(!extraHoleRef)
+        endif
+      else
+        !res = !holeManager.createHole(!panelName, !this.convertToDBUnits(!pos), !penVecAlt, !this.convertToDBUnits(!rotation), !holeDesRef, !this.convertToDBUnits(!parameters) )
+       if (!res[1] eq 0 or !res[1] eq 1 ) then
+          !extraHoleRef = !res[2]
+          if (!extraHoleRef eq '') then
+            !!alert.error('MARHOLEMANAGER has not returned a result for $!panelName')
+            !!ce = !ce
+            skip
+          else
+            !extraHoles.append(!extraHoleRef)
+          endif
+        else
+          !!ce = !ce
+          !this.error = !res[3] & 'for ' & !panelName
+          !!alert.error(!this.error)
+          skip
+        endif
+      endif
+    enddo
+  else
+    !extraHoles = object ARRAY()
+  endif
+
+-- Not hull
+else
+
+  ------------------------------- OUTFITTING PENETRATION -------------------------------
+
+  if( !panelType eq 'PANE' ) then
+  !!ce = !panel
+  if (!panel.dbwrite.not()) then
+    !!alert.error('Unable to create panel hole')
+    !!ce = !ce
+    return FALSE
+  endif
+  if (!freeHole) then
+    NEW NXTR PURP PENH
+    !holeRef = !!ce
+    !!ce.height = (!hmHole.plateThickness * 4 )
+    NEW LOOP
+    !loop = !!ce
+    !fixingProfile.dbwrite(!loop)
+  else
+    NEW PFIT PURP PENH
+    !!ce.spre = !fixing.spre
+    !holeRef = !!ce
+
+    -- Orientate the PFIT based on whether it's on the front or back face of the panel
+    SJUS UCEN
+    !fixingDirection = !fixing.pdir[1].wrt(worl)
+    !pFitDirection   = !!ce.pdir[1].wrt(worl)
+    if (!fixingDirection eq !pFitDirection.opposite()) then
+      SJUS DCEN
+    endif
+
+    GTYPE PENH
+    !!ce.pos = !fixing.pos.wrt(worl)
+    -- Find out the default settings and using the property list set the HTHK to 0.
+
+    !comP = object COMPROP(!fixing)
+    !desTable = !comP.getPropertyTable(true)
+    !hthkDesp = !desTable.getDesParamNumber('HTHK')
+    --copy existing design parameters
+    !newDesp = !fixingDesp
+    --set hole thickness to 0
+    !newDesp[$!hthkDesp] = 0
+    handle any
+    endhandle
+    !!ce.desp = !newDesp
+
+    -- Ensure the PFIT is orientated the same way as the FIXING
+    -- Find the orientation PPOINT
+    !pNumber         = !this.getOrientationPointNumber(!fixing)
+    if (!pNumber.unset() ) then
+      !!alert.error('Unable to orientate the hole as the catalogue needs updating. Please contact the Systems Administrator')
+      return FALSE
+    endif
+    !fixingDirection = !fixing.pdir[!pNumber].wrt(worl)
+    !pFitDirection   = !!ce.pdir[!pNumber].wrt(worl)
+    !angle = !fixingDirection.angle(!pFitDirection)
+    !!ce.bang = !angle
+    !pFitDirection   = !!ce.pdir[!pNumber].wrt(worl)
+    -- calculate angle again to apply a tolerance to fitting alignment check
+    if (!fixingDirection.angle(!pFitDirection) gt 0.1) then
+      !angle = (!angle * -1)
+      !!ce.bang = !angle
+    endif
+
+  endif
+  -- handle ceiling panel case
+  if( !panel.owner.hardType eq 'CEILIN' ) then
+    -- make an inner loop in the ceiling for the tiles to surround
+    !innerCeilingLoop = !this.ceilingHole( !panel.owner, !fixingProfile)
+    if( !innerCeilingLoop.unset() ) then
+      !!alert.warning('Unable to define hole in ceiling boundary. Managed hole is in ceiling panel only.')
+    endif
+    !ceilingHoleRequired = !innerCeilingLoop.set()
+
+  endif
+
+  -- CTWALL penetration
+  elseif( !panelType eq 'CTWALL' ) then
+    !!ce = !panel
+    if (!panel.dbwrite.not()) then
+      !!alert.error('Unable to create panel hole')
+      !!ce = !ce
+      return FALSE
+    endif
+    -- create wall opening
+
+    -- find position of wall opening on RPATH
+    -- NOTE: COMPATH to be replaced by pmlPolygon
+    !rPath   = object COMPATH(!!ce)
+    !edgeRef = !rPath.edgerefposition(!fixing.pos.wrt(world))
+    !vDist   = !fixing.pos.wrt(world).up - !rPath.near(!fixing.pos.wrt(world)).wrt(world).up
+    VAR !holeFeature COLLECT ALL WLFEAT WITH ( function eq 'HOLE' ) FOR CE
+    -- wall feature is an administrative level. Try to group managed holes together
+    if( !holeFeature.empty() ) then
+      NEW WLFEAT
+      FUNCTION 'HOLE'
+    else
+      !!ce = !holeFeature[1].dbref()
+    endif
+    -- Create new wall opening for this penetration
+    NEW WLOPEN
+    WJUSL LEFT
+    !holeRef = !!ce
+    !wallOpening           = !!ce
+    !wallOpening.posRef    = !edgeRef[1]
+    !wallOpening.zDistance = !edgeRef[2]
+    !wallOpening.vDistance = !vDist
+    -- get profile of penetration from catalogue
+    !profile               = !fixingProfile
+
+    NEW RPATH
+    !profile.dbwrite(!!ce)
+
+-- BPANEL penetration
+  elseif( !panelType eq 'BPANEL' ) then
+    !!ce = !panel
+    if (!panel.dbwrite.not()) then
+      !!alert.error('Unable to create panel hole')
+      !!ce = !ce
+      return FALSE
+    endif
+    -- create bent panel opening
+
+    -- find position of bent plate opening on RPATH
+    -- NOTE: COMPATH to be replaced by pmlPolygon
+    !rPath   = object COMPATH(!!ce)
+    !edgeRef = !rPath.edgerefposition(!fixing.pos.wrt(world))
+    !vDist   = !fixing.pos.wrt(world).up - !rPath.near(!fixing.pos.wrt(world)).wrt(world).up
+    VAR !holeFeature COLLECT ALL BPFEAT WITH ( function eq 'HOLE' ) FOR CE
+    -- wall feature is an administrative level. Try to group managed holes together
+    if( !holeFeature.empty() ) then
+      NEW BPFEAT
+      FUNCTION 'HOLE'
+    else
+      !!ce = !holeFeature[1].dbref()
+    endif
+    -- Create new bent plate opening for this penetration
+    NEW BPOPEN
+    WJUSL LEFT
+    !holeRef = !!ce
+    !wallOpening           = !!ce
+    !wallOpening.posRef    = !edgeRef[1]
+    !wallOpening.zDistance = !edgeRef[2]
+    !wallOpening.vDistance = !vDist
+    -- get profile of penetration from catalogue
+    !profile               = !fixingProfile
+
+    -- Make sure profile has correct direction
+    !zDir = !profile.orientation.wrt( !wallOpening).zDir()
+    if( !profile.sense() ) then
+    	if(  !zDir.up gt 0 ) then
+    		!profile.reverse()
+    	endif
+    else
+    	if( !zDir.up lt 0 ) then
+    		!profile.reverse()
+    	endif
+    endif
+
+    NEW RPATH
+    !profile.dbwrite(!!ce)
+    --------------------------------------------------------------
+
+  ----------------------------------- SCTN HOLES----------------
+  elseif( !panelType eq 'SCTN' ) then
+    !!ce = !panel
+    if (!panel.dbwrite.not()) then
+      !!alert.error('Unable to create panel hole')
+      !!ce = !ce
+      return FALSE
+    endif
+    NEW CMFI PURP PENH POSLINE NA
+    !holeRef = !!ce
+    ZDIST THROUGH $!<fixing.pos>
+    if (!freeHole) then
+      -- free hole
+      !negativeExtrusionOwner = !!ce
+      !this.createHoleNegativeExtrusion(!negativeExtrusionOwner, !fixingProfile, !hmHole.plateThickness, !fixing.pos)
+    else
+      -- catalogue hole
+      NEW SBFI
+
+      !!ce.spre = !fixing.spre
+
+      -- Orientate the PFIT based on whether it's on the front or back face of the panel
+      !zDir = !fixing.ori.zDir()
+      !fixingDirection = !fixing.pdir[1].wrt(worl)
+      !pFitDirection   = !!ce.pdir[1].wrt(worl)
+      if (!fixingDirection eq !pFitDirection.opposite()) then
+        !zDir = !zDir.opposite()
+      endif
+      ZDIRECTION $!<zDir>
+
+      GTYPE PENH
+      -- get delta position from CMFI to FIXING
+      !!ce.delp = !fixing.pos.wrt(worl)
+      -- Find out the default settings and using the property list set the HTHK to 0.
+      do !index index !fixingDesp
+        if (!fixing.prls[!index] eq 'HTHK') then
+          DDESP N$!index 0
+        else
+          DDESP n$!index $!fixingDesp[$!index]
+        endif
+      enddo
+      -- Ensure the PFIT is orientated the same way as the FIXING
+      -- Find the orientation PPOINT
+      !pNumber         = !this.getOrientationPointNumber(!fixing)
+      if (!pNumber.unset() ) then
+        !!alert.error('Unable to orientate the hole as the catalogue needs updating. Please contact the Systems Administrator')
+        return FALSE
+     endif
+      !fixingDirection = !fixing.pdir[!pNumber].wrt(worl)
+      !pFitDirection   = !!ce.pdir[!pNumber].wrt(worl)
+      !angle = !fixingDirection.angle(!pFitDirection)
+      !!ce.bang = !angle
+      !pFitDirection   = !!ce.pdir[!pNumber].wrt(worl)
+      if (!pFitDirection neq !fixingDirection) then
+        !angle = (!angle * -1)
+        !!ce.bang = !angle
+      endif
+
+      -- Add a second sub fitting with a negative extrusion to cut the section
+      CMFI
+      NEW SBFI
+      GTYP PENH
+      !negativeExtrusionOwner = !!ce
+      !this.createHoleNegativeExtrusion(!negativeExtrusionOwner, !fixingProfile, !hmHole.plateThickness, !fixing.pos)
+
+    endif
+
+  elseif( !panelType eq 'GENSEC' ) then
+    !!ce = !panel
+    if (!panel.dbwrite.not()) then
+      !!alert.error('Unable to create panel hole')
+      !!ce = !ce
+      return FALSE
+    endif
+    -- create the shared hierarchy elements for single or merged hole
+    NEW JLDATUM PURP PENH
+    !holeRef = !!ce
+    var !segment   (SEGMENT PPLINE NA OF GENSEC THROUGH $!<fixing.pos> VIA SPINE BOUNDED)
+    handle any
+      var !segment   (SEGMENT PPLINE NA OF WALL THROUGH $!<fixing.pos> VIA SPINE BOUNDED)
+    endhandle
+
+    var !zDistance (PLDIST  PPLINE NA OF GENSEC THROUGH $!<fixing.pos> VIA SPINE BOUNDED)
+    handle any
+      var !zDistance (PLDIST  PPLINE NA OF WALL THROUGH $!<fixing.pos> VIA SPINE BOUNDED)
+    endhandle
+    !hpref = !segment.dbref()
+    !!ce.zdist = !zDistance.real()
+    !!ce.hpref = !hpref
+    handle ANY
+    endhandle
+    NEW PLDATUM POSLINE NA
+    NEW FIXING
+    -- create hierarchy for a merged hole
+    if (!freeHole) then
+      !negativeExtrusionOwner = !!ce
+      !this.createHoleNegativeExtrusion(!negativeExtrusionOwner, !fixingProfile, !hmHole.plateThickness, !fixing.pos)
+    else
+      -- create the hierarchy for a merged hole
+      !!ce.spre = !fixing.spre
+      -- Orientate the PFIT based on whether it's on the front or back face of the panel
+      !zDir = !fixing.ori.zDir()
+      !fixingDirection = !fixing.pdir[1].wrt(worl)
+      !pFitDirection   = !!ce.pdir[1].wrt(worl)
+      if (!fixingDirection eq !pFitDirection.opposite()) then
+        !zDir = !zDir.opposite()
+      endif
+      ORI Z IS $!<zDir>
+
+      GTYPE PENH
+      !!ce.position = !fixing.pos.wrt(worl)
+      -- Find out the default settings and using the property list set the HTHK to 0.
+      do !index index !fixingDesp
+        if (!fixing.prls[!index] eq 'HTHK') then
+          DDESP N$!index 0
+        else
+          DDESP n$!index $!fixingDesp[$!index]
+        endif
+      enddo
+      -- Ensure the PFIT is orientated the same way as the FIXING
+      -- Find the orientation PPOINT
+      !pNumber         = !this.getOrientationPointNumber(!fixing)
+      if (!pNumber.unset() ) then
+        !!alert.error('Unable to orientate the hole as the catalogue needs updating. Please contact the Systems Administrator')
+        return FALSE
+      endif
+      !fixingDirection = !fixing.pdir[!pNumber].wrt(worl)
+      !pFitDirection   = !!ce.pdir[!pNumber].wrt(worl)
+      !angle = !fixingDirection.angle(!pFitDirection)
+--      !!ce.bang = !angle
+      !pFitDirection   = !!ce.pdir[!pNumber].wrt(worl)
+      if (!pFitDirection neq !fixingDirection) then
+        !angle = (!angle * -1)
+--        !!ce.bang = !angle
+      endif
+
+      -- create a second fixing holding a negative extrusion to cut the sctn
+      OWNER
+      NEW FIXING
+      GTYP PENH
+      !negativeExtrusionOwner = !!ce
+      !this.createHoleNegativeExtrusion(!negativeExtrusionOwner, !fixingProfile, !hmHole.plateThickness, !fixing.pos)
+
+    endif
+  ----------------------------------- SCTN HOLES----------------
+  endif
+
+endif
+
+-- Create a new assmbr in the assoc
+!!ce = !hmHole.element
+-- Remove the Fixing from the draw lists
+--and add any coaming if necessary
+!addCoaming = not badref(!hmHole) and not badref(!hmHole.coaming) and not badref(!hmHole.coaming.amemrf)
+handle any
+  !addCoaming = false
+endhandle
+do !i values !!gphDrawLists.drawLists
+  if (!addCoaming) then
+    !i.add(!hmHole.coaming.amemrf)
+  endif
+  !i.remove(!hmHole.virtualHole)
+enddo
+
+LAST ASSMBR
+NEW ASSMBR
+LNAME /PrimaryHole
+AMEMRF $!<holeRef>
+
+  -- add any extra holes that are required
+  if (defined(!extraHoles)) then
+    do !count index !extraHoles
+      NEW ASSMBR
+      !holeNumber = (!count + 1 )
+      LNAME /ExtraHole$!<holeNumber>
+      !hole = !extraHoles[!count]
+      AMEMRF $!<hole>
+    enddo
+  endif
+  -- add secondary hole in ceiling if defined
+  if( !ceilingHoleRequired ) then
+    if( not badref(!innerCeilingLoop) ) then
+      NEW ASSMBR
+      LNAME /CeilingHole
+      AMEMRF $!<innerCeilingLoop>
+    endif
+  endif
+
+  !!ce = !ce
+
+  return TRUE
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      .updateAssmbrRef()
+--
+-- Description: Update the association member with a new reference
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .updateAssmbrRef(!hmHole is HMHOLE, !ref is DBREF, !number is REAL) is BOOLEAN
+
+  !ce = !!ce
+  !!ce = !hmHole.element
+  ASSMBR $!number
+  handle (2,113)
+    !this.error('Association Member does not exist')
+    !!ce = !ce
+    return FALSE
+  endhandle
+  !!ce.amemrf = !ref
+  handle (2,113)
+    !this.error('Reference does not exist')
+    !!ce = !ce
+    return FALSE
+  endhandle
+
+  !!ce = !ce
+  return TRUE
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      .deleteInvalidRefs()
+--
+-- Description: delete any association members within invalid references
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .deleteInvalidRefs(!hmHole is HMHOLE)
+
+  !ce = !!ce
+  !!ce = !hmHole.element
+  var !members coll all ASSMBR for ce
+  do !assMem values !members
+    !!ce = !assMem.dbref()
+    if (badref(!!ce.amemrf)) then
+      DELETE ASSMBR
+    elseif (!!ce.amemrf.unset()) then
+      DELETE ASSMBR
+    endif
+  enddo
+  !!ce = !ce
+  handle any
+  endhandle
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      .fixingParameters()
+--
+-- Description: find the relevant parameters for a typical fixing
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  ARRAY of REAL
+--
+------------------------------------------------------------------------
+define method .fixingParameters(!fixing is DBREF) is ARRAY
+
+ !parameters = ARRAY()
+ !type = !fixing.catref.desc
+ if (!type.matchWild('Type D Fixing*')) then
+   !para = !fixing.rpro.fdia
+   !parameters.append(!para)
+ elseif (!type.matchWild('Type HO Fixing*')) then
+   !para = !fixing.rpro.fwid
+   !parameters.append(!para)
+   !para = !fixing.rpro.fhei
+   !parameters.append(!para)
+ elseif (!type.matchWild('Type HE Fixing*')) then
+   !para = !fixing.rpro.fwid
+   !parameters.append(!para)
+   !para = !fixing.rpro.fhei
+   !parameters.append(!para)
+ elseif (!type.matchWild('Type HOR Fixing*')) then
+   !para = !fixing.rpro.fwid
+   !parameters.append(!para)
+   !para = !fixing.rpro.frao
+   !parameters.append(!para)
+   !para = !fixing.rpro.frat
+   !parameters.append(!para)
+ elseif (!type.matchWild('Type HR Fixing*') or !type.matchWild('Type HT Fixing*')) then
+   !para = !fixing.rpro.fwid
+   !parameters.append(!para)
+   !para = !fixing.rpro.fhei
+   !parameters.append(!para)
+   !para = !fixing.rpro.frad
+   handle any
+     !para = 0
+   endhandle
+   !parameters.append(!para)
+ elseif (!type.matchWild('Type HRM Fixing*')) then
+   !para = !fixing.rpro.fwid
+   !parameters.append(!para)
+   !para = !fixing.rpro.fhei
+   !parameters.append(!para)
+   !para = !fixing.rpro.frad
+   !parameters.append(!para)
+   !para = !fixing.rpro.foff
+   !parameters.append(!para)
+ endif
+
+ return !parameters
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      .convertToDBUnits()
+--
+-- Description: convert the given array of real numbers to undimensioned values in DB units
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  ARRAY of REAL
+--
+------------------------------------------------------------------------
+define method .convertToDBUnits(!parameters is ARRAY) is ARRAY
+
+  !result= ARRAY()
+  do !index indices !parameters
+    !result[!index] = !parameters[!index].dbUnits().value()
+    handle any
+      -- handle WORD parameters or other unexpected values. Copy them to the result array.
+      !result[!index] = !parameters[!index]
+    endhandle
+  enddo
+  return !result
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      createEquiPenHole
+--
+-- Description: Deal with a request for a new managed hole
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .createEquiPenHole(!data is ARRAY, !type is STRING) is BOOLEAN
+
+
+-- Check the default ASSDEF is configured before continuing
+  !this.readConfigurationFile()
+  if (!!holeManagementConfiguration.equiPenAssdef.unset() ) then
+    !!error.text = |Hole Management association definition not set. Please contact your system administrator: Check Hole Management configuration file & Project data|
+    if (defined(!!equiPenCreate)) then
+      !!equiPenCreate.tidy()
+    endif
+    return false
+  endif
+
+  !safeCE = !!ce
+
+  -- validate hole association storage area
+  !store  = !this.findHoleAssociationStorageArea()
+
+-- Could not create the hierarchy, ERROR.TEXT defined by createOwningHierarchy()
+  if( !store.unset() ) then
+    if (defined(!!equiPenCreate)) then
+      !!equiPenCreate.tidy()
+    endif
+    !!ce = !safeCE
+    return FALSE
+  endif
+
+-- Identified writeable location so move to correct point and build elements
+  !!ce = !store
+  TAIL
+  NEW ASSOC
+
+-- Run autonaming if defined and copy default ASSDEF element
+  CALL !!autoNameCe(FALSE)
+  handle any
+  endhandle
+
+  !tempRef = !!holeManagementConfiguration.equiPenAssdef
+  COPY DEF $!<tempRef>
+
+-- Fix to get DESCRIPTION from RESDEF onto newly created RESTRI
+-- This will be replaced once further code changes for ASSOC are completed
+  RESTRI 1
+  !!ce.desc = !!ce.owner.adefrf.members[1].description
+  NEX RESTRI
+  !!ce.desc = !!ce.owner.adefrf.members[2].description
+  NEX RESTRI
+  !!ce.desc = !!ce.owner.adefrf.members[3].description
+  END
+-- Add first element as HOLE OWNER
+  !hOwner = !data[1]
+  NEW ASSMBR
+  -- Store at HPANEL or CPANEL level rather than PLATE level
+  if (!hOwner.type eq 'HPLATE') then
+    !plate  = !hOwner
+    !hOwner = !hOwner.owner
+  elseif (!hOwner.type eq 'CPLATE') then
+    !plate  = !hOwner
+    !hOwner = !hOwner.hrdprx[1]
+  endif
+  !!ce.amemrf = !hOwner
+  if (defined(!plate)) then
+    !!ce.asstar = !plate
+  endif
+  LNAME /HoleOwner
+  PRIMEM FALSE
+
+-- Add next element as PRIMARY ELEMENT
+  !primary = !data[2]
+  NEW ASSMBR
+  AMEMRF $!primary
+  LNAME /primaryElement
+  PRIMEM TRUE
+
+-- Add remaining supplied elements to the ASSMBR list
+    NEW ASSMBR
+    AMEMRF $!data[4]
+    LNAME /$!data[4]
+    NEW ASSMBR
+    AMEMRF $!data[5]
+    LNAME /$!data[5]
+
+-- Build "standard" hierarchy element for STATUS data
+  new ASTATU
+  LNAME /Status
+
+-- Build "standard" hierarchy element for STATUS HISTORY data
+  new ASREQU
+  LNAME /StatusHistory
+
+-- Build "standard" hierarchy element for DESIGN data
+  new ASREQU
+  LNAME /DesignData
+
+  new DDSE
+
+  new DDAT
+  DKEY ORIG
+  !oriData = !data[3].string()
+  DDPROP |$!oriData|
+
+  new DDAT
+  DKEY RATI
+  DDPROP ||
+
+  new DDAT
+  DKEY NOMB
+  DDPROP ||
+
+  new DDAT
+  DKEY DESP
+  DDPROP ||
+
+  new DDAT
+  DKEY FTYP
+  DDPROP |Free|
+
+-- Return to owning ASSOC element and load member variable with data
+  ASSOC
+  descr '$!type'
+
+  !this.autoRequest(!!ce)
+
+  !!ce = !safeCE
+  return true
+
+endmethod
+-- End of method definition for .createEquiPenHole()
+------------------------------------------------------------------------
+--
+-- Method:      createGenHole
+--
+-- Description: Deal with a request for a new managed hole
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .createGenHole(!genHoleData is HOLEELEMCOLL, !origin is POSITION, !holeType is STRING, !desp is STRING, !type is STRING) is BOOLEAN
+
+
+-- Check the default ASSDEF is configured before continuing
+  !this.readConfigurationFile()
+  if (!!holeManagementConfiguration.genAssdef.unset() ) then
+    !!hmFreeHole.cleanup()
+    !!error.text = |Hole Management association definition not set. Please contact your system administrator: Check Hole Management configuration file & Project data|
+    return false
+  endif
+
+  !safeCE = !!ce
+
+  -- validate hole association storage area
+  !store  = !this.findHoleAssociationStorageArea()
+
+  if( !store.unset() ) then
+-- Could not create the hierarchy, ERROR.TEXT defined by createOwningHierarchy()
+    !!hmFreeHole.cleanup()
+    !!ce = !safeCE
+    handle any
+    endhandle
+    return FALSE
+  endif
+
+-- Identified writeable location so move to correct point and build elements
+  !!ce = !store
+  TAIL
+  NEW ASSOC
+
+-- Run autonaming if defined and copy default ASSDEF element
+  CALL !!autoNameCe(FALSE)
+  handle any
+  endhandle
+
+  !tempRef = !!holeManagementConfiguration.genAssdef
+  COPY DEF $!<tempRef>
+
+-- Fix to get DESCRIPTION from RESDEF onto newly created RESTRI
+-- This will be replaced once further code changes for ASSOC are completed
+  RESTRI 1
+  !!ce.desc = !!ce.owner.adefrf.members[1].description
+  NEX RESTRI
+  !!ce.desc = !!ce.owner.adefrf.members[2].description
+  END
+-- Add first element as HOLE OWNER
+  !hOwner = !genHoleData.panel
+  NEW ASSMBR
+  -- Store at HPANEL or CPANEL level rather than PLATE level
+  if (!hOwner.type eq 'HPLATE') then
+    !plate  = !hOwner
+    !hOwner = !hOwner.owner
+  elseif (!hOwner.type eq 'CPLATE') then
+    !plate  = !hOwner
+    !hOwner = !hOwner.hrdprx[1]
+  endif
+  !!ce.amemrf = !hOwner
+  if (defined(!plate)) then
+    !!ce.asstar = !plate
+  endif
+  LNAME /HoleOwner
+  PRIMEM FALSE
+
+-- Add the fixing as PRIMARY ELEMENT
+  !primary = !genHoleData.holeFixing
+  NEW ASSMBR
+  AMEMRF $!primary
+  LNAME /primaryElement
+  PRIMEM TRUE
+-- Add the coaming if defined
+  if (!genHoleData.coamingFixing.set()) then
+    !coaming = !genHoleData.coamingFixing
+    NEW ASSMBR
+    AMEMRF $!coaming
+    LNAME /coaming
+  endif
+
+
+-- Add remaining supplied elements to the ASSMBR list
+  do !secondary values !genHoleData.associated
+    NEW ASSMBR
+    AMEMRF $!secondary
+    LNAME /$!secondary
+  enddo
+
+-- Build "standard" hierarchy element for STATUS data
+  new ASTATU
+  LNAME /Status
+
+-- Build "standard" hierarchy element for STATUS HISTORY data
+  new ASREQU
+  LNAME /StatusHistory
+
+-- Build "standard" hierarchy element for DESIGN data
+  new ASREQU
+  LNAME /DesignData
+
+  new DDSE
+
+  new DDAT
+  DKEY ORIG
+  !oriData = !origin.string()
+  DDPROP |$!oriData|
+
+  new DDAT
+  DKEY RATI
+  DDPROP ||
+
+  new DDAT
+  DKEY NOMB
+  DDPROP ||
+
+  new DDAT
+  DKEY DESP
+  DDPROP |$!desp|
+
+  new DDAT
+  DKEY FTYP
+  DDPROP |$!holeType|
+
+-- Return to owning ASSOC element and load member variable with data
+  ASSOC
+  descr '$!type'
+
+  !this.autoRequest(!!ce)
+
+  !!ce = !safeCE
+  return true
+
+endmethod
+-- End of method definition for .createGenHole()
+------------------------------------------------------------------------
+--
+-- Method:      createCWayHole
+--
+-- Description: Deal with a request for a new managed hole
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .createCWayHole(!elements is ARRAY, !origin is POSITION, !type is STRING) is BOOLEAN
+
+
+-- Check the default ASSDEF is configured before continuing
+  !this.readConfigurationFile()
+  if (!!holeManagementConfiguration.cWayAssdef.unset() ) then
+    !!hmCWayDefinition.cleanup()
+    !!error.text = |Hole Management association definition not set. Please contact your system administrator: Check Hole Management configuration file & Project data|
+    return false
+  endif
+
+  !safeCE = !!ce
+
+  -- validate hole association storage area
+  !store  = !this.findHoleAssociationStorageArea()
+
+-- Could not create the hierarchy, ERROR.TEXT defined by createOwningHierarchy()
+  if( !store.unset() ) then
+    !!hmCWayDefinition.cleanup()
+    !!ce = !safeCE
+    return FALSE
+  endif
+
+-- Identified writeable location so move to correct point and build elements
+  !!ce = !store
+  TAIL
+  NEW ASSOC
+
+-- Run autonaming if defined and copy default ASSDEF element
+  CALL !!autoNameCe(FALSE)
+  handle any
+  endhandle
+
+  !tempRef = !!holeManagementConfiguration.cWayAssdef
+  COPY DEF $!<tempRef>
+
+-- Fix to get DESCRIPTION from RESDEF onto newly created RESTRI
+-- This will be replaced once further code changes for ASSOC are completed
+  RESTRI 1
+  !!ce.desc = !!ce.owner.adefrf.members[1].description
+  NEX RESTRI
+  !!ce.desc = !!ce.owner.adefrf.members[2].description
+  NEX RESTRI
+  !!ce.desc = !!ce.owner.adefrf.members[3].description
+  END
+-- Add first element as HOLE OWNER
+  !hOwner = !elements.removeFirst()
+  NEW ASSMBR
+  -- Store at HPANEL or CPANEL level rather than PLATE level
+  if (!hOwner.type eq 'HPLATE') then
+    !plate  = !hOwner
+    !hOwner = !hOwner.owner
+  elseif (!hOwner.type eq 'CPLATE') then
+    !plate  = !hOwner
+    !hOwner = !hOwner.hrdprx[1]
+  endif
+  !!ce.amemrf = !hOwner
+  if (defined(!plate)) then
+    !!ce.asstar = !plate
+  endif
+  LNAME /HoleOwner
+  PRIMEM FALSE
+
+-- Add next element as PRIMARY ELEMENT
+  !primary = !elements.removeFirst()
+  NEW ASSMBR
+  AMEMRF $!primary
+  LNAME /primaryElement
+  PRIMEM TRUE
+
+  !rating = object STRING()
+
+  !nombore = object STRING()
+
+-- Add remaining supplied elements to the ASSMBR list
+  !virtualHoleFixing = object DBREF()
+  do !item values !elements
+-- Need to identify owner, primary element - resolve this later!!!
+    NEW ASSMBR
+    AMEMRF $!item
+    if (!item.hardType eq 'FIXING' ) then
+      if(!item.purp eq 'COAM') then
+        LNAME /coaming
+      else
+        LNAME /$!item
+        -- capture the virtual fixing reference
+        if( !item.owner.owner.hardType eq 'STRU' ) then
+          if( !item.owner.owner.purpose eq 'HOLE' ) then
+            !virtualHoleFixing = !item
+          endif
+        endif
+      endif
+    else
+      LNAME /$!item
+    endif
+  enddo
+
+-- Build "standard" hierarchy element for STATUS data
+  new ASTATU
+  LNAME /Status
+
+-- Build "standard" hierarchy element for STATUS HISTORY data
+  new ASREQU
+  LNAME /StatusHistory
+
+-- Build "standard" hierarchy element for DESIGN data
+  new ASREQU
+  LNAME /DesignData
+
+  new DDSE
+
+  new DDAT
+  DKEY ORIG
+  !oriData = !origin.string()
+  DDPROP |$!oriData|
+
+  if (NOT set(!rating) ) then
+    !rating = ''
+  endif
+  new DDAT
+  DKEY RATI
+  DDPROP |$!rating|
+
+  if (NOT set(!nombore) ) then
+    !nombore = ''
+  endif
+  new DDAT
+  DKEY NOMB
+  DDPROP |$!nombore|
+
+  !strFixingType = 'Free'
+  if( not badref(!virtualHoleFixing) ) then
+    !vSpecRef      = !virtualHoleFixing.spref
+    if( !vSpecRef.unset() ) then
+      !strFixingType = 'Free'
+    elseif( !vSpecRef.badref().not() ) then
+      if( !vSpecRef.hardType eq 'GPART' ) then
+        !strFixingType = !vSpecRef.sectyp
+      elseif(!vSpecRef.hardType eq 'TABITE' ) then
+        if( not badref( !vSpecRef.prtRef ) ) then
+          !strFixingType = !vSpecRef.prtRef.sectyp
+        endif
+      endif
+    endif
+  endif
+
+  new DDAT
+  DKEY DESP
+  !strParameters     = ''
+  if( !strFixingType neq 'Free' ) then
+    !fParameters     = !this.fixingParameters(!virtualHoleFixing)
+    do !dParameter values !fParameters
+      !strParameters = !strParameters + !dParameter.string() + ' '
+    enddo
+  endif
+  DDPROP |$!<strParameters>|
+
+  new DDAT
+  DKEY FTYP
+  DDPROP |$!<strFixingType>|
+
+-- Return to owning ASSOC element and load member variable with data
+  ASSOC
+  descr '$!type'
+
+  !this.autoRequest(!!ce)
+
+  !!ce = !safeCE
+  return true
+
+endmethod
+-- End of method definition for .createCWayHole()
+
+------------------------------------------------------------------------
+--
+-- Method:      modifyGenHole
+--
+-- Description: Deal with a request for a modified managed hole
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .modifyGenHole(!genHoleData is HOLEELEMCOLL, !holeData is HMHOLE, !origin is POSITION, !holeType is STRING, !desp is STRING, !type is STRING) is BOOLEAN
+
+
+-- Check the default ASSDEF is configured before continuing
+  !this.readConfigurationFile()
+  if (!!holeManagementConfiguration.genAssdef.unset() ) then
+    !!hmFreeHole.cleanup()
+    !!error.text = |Hole Management association definition not set. Please contact your system administrator: Check Hole Management configuration file & Project data|
+    return false
+  endif
+
+  !safeCE = !!ce
+
+  !assoc = !holeData.element
+  -- Find out the primary member and reset the references
+  !find = object COLLECTION()
+  !find.type('ASSMBR')
+  !find.scope(!assoc)
+  !find.filter(object EXPRESSION(|lname eq '/HoleOwner'|))
+  !holeOwnerAssMbr = !find.results()[1]
+
+  !hOwner = !genHoleData.panel
+  -- Store at HPANEL or CPANEL level rather than PLATE level
+  if (!hOwner.type eq 'HPLATE') then
+    !plate  = !hOwner
+    !hOwner = !hOwner.owner
+  elseif (!hOwner.type eq 'CPLATE') then
+    !plate  = !hOwner
+    !hOwner = !hOwner.hrdprx[1]
+  endif
+  !holeOwnerAssMbr.amemrf = !hOwner
+  if (defined(!plate)) then
+    !holeOwnerAssMbr.asstar = !plate
+  endif
+
+  -- reset the primary element reference
+  !primaryAssMbr        = !holeData.primaryElement
+  !primaryAssMbr.amemrf = !genHoleData.holeFixing
+
+  -- Find out the coaming data
+  if (!holeData.coaming.set() ) then
+    !oldCoam = TRUE
+  else
+    !oldCoam = FALSE
+  endif
+
+  if (!genHoleData.coamingFixing.set()) then
+    !newCoam = TRUE
+  else
+    !newCoam = FALSE
+  endif
+
+  -- Delete the coaming association member if coaming removed
+  if (!oldCoam and !newCoam.not()) then
+    !!ce = !holeData.coaming
+    DELETE ASSMBR
+  elseif (!oldCoam.not() and !newCoam) then
+    -- Create a new association member if coaming added
+    !!ce = !primaryAssMbr
+    !coaming = !genHoleData.coamingFixing
+    NEW ASSMBR
+    AMEMRF $!coaming
+    LNAME /coaming
+  elseif (!oldCoam and !newCoam) then
+    -- Reset the coaming reference
+    !coamingAssMbr = !holeData.coaming
+    !coamingAssMbr.amemrf = !genHoleData.coamingFixing
+  endif
+
+  -- Set up the modified hole data
+  -- Set the new data
+  !position = !holeData.virtualHole.position.wrt(world).string()
+
+  !holeData.setPosition(!position)
+  !holeData.setHoleType(!holeType)
+  !holeData.setDespars(!desp)
+
+  -- Create any new associated elements and delete any removed ones
+  !holeAssociations = !genHoleData.associated
+  !find.clearFilter()
+  !associations = !find.results()
+  !existingAssociations = ARRAY()
+  !existingElements = ARRAY()
+  do !element values !associations
+    skip if (!element.lName eq '/HoleOwner' or !element.lName eq '/primaryElement' or !element.lName eq '/coaming')
+    !existingElements.append(!element.amemrf)
+    !existingAssociations.append(!element)
+  enddo
+
+  !same = (!holeAssociations eq !existingAssociations)
+  if (!same) then
+    !!ce = !safeCE
+    return TRUE
+  else
+    !noNewAssociations = !holeAssociations.size()
+    !noOldAssociations = !existingAssociations.size()
+    if (!noNewAssociations eq !noOldAssociations) then
+      -- reset the references
+      do !index index !existingAssociations
+        !existingAssociations[!index].amemrf = !holeAssociations[!index]
+      enddo
+    elseif (!noNewAssociations gt !noOldAssociations) then
+      -- reset the references
+      do !index index !holeAssociations
+        if (undefined(!existingAssociations[!index])) then
+          !!ce = !assoc
+          LAST ASSMBR
+          NEW ASSMBR
+          !!ce.amemrf = !holeAssociations[!index]
+        else
+          !existingAssociations[!index].amemrf = !holeAssociations[!index]
+        endif
+      enddo
+    elseif (!noNewAssociations lt !noOldAssociations) then
+      -- reset the references
+      do !index index !existingAssociations
+        if (undefined(!holeAssociations[!index])) then
+          !!ce = !existingAssociations[!index]
+          DELETE ASSMBR
+        else
+          !existingAssociations[!index].amemrf = !holeAssociations[!index]
+        endif
+      enddo
+    endif
+  endif
+  !!ce = !safeCE
+  return TRUE
+
+endmethod
+-- End of method definition for .modifyGenHole()
+
+------------------------------------------------------------------------
+--
+-- Method:      .rotationPoint()
+--
+-- Description: find the rotation point of a typical fixing
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  ARRAY of REAL
+--
+------------------------------------------------------------------------
+define method .rotationPoint(!fixing is DBREF) is ARRAY
+
+  !rotation = ARRAY()
+  !ppointTypes = ARRAY()
+  !ppointTypes.append('PTCA')
+  !ppointTypes.append('PTAX')
+  !ppointTypes.append('PTMI')
+  !ppointTypes.append('PTPOS')
+  !find = object COLLECTION()
+  !find.types(!ppointTypes)
+  !find.filter(object EXPRESSION('PURP eq |HMOR|'))
+  -- Find out the fixing ppoint ori number
+  !pointSet = !fixing.catref.ptre
+
+  !find.scope(!pointSet)
+  if (!find.results().size() eq 0 ) then
+    -- try P9
+    !find.filter(object EXPRESSION('NUMBER eq 9 '))
+    if (!find.results().size() eq 0 ) then
+      !!alert.error('Unable to find the orientation point')
+      return !rotation
+    endif
+  endif
+  !pNumber = !find.results()[1].number
+  !pOriPos = !fixing.ppos[!pNumber].wrt(worl)
+
+  !rotation.append(!pOriPos.east)
+  !rotation.append(!pOriPos.north)
+  !rotation.append(!pOriPos.up)
+
+  return !rotation
+
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      createFittHole
+--
+-- Description: Deal with a request for a new managed hole
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .createFittHole(!fittHoleData is HOLEELEMCOLL, !origin is POSITION, !holeType is STRING, !desp is STRING, !type is STRING) is BOOLEAN
+
+
+-- Check the default ASSDEF is configured before continuing
+  !this.readConfigurationFile()
+  if (!!holeManagementConfiguration.fittAssdef.unset() ) then
+    !!hmFittHole.cleanup()
+    !!error.text = |Hole Management association definition not set. Please contact your system administrator: Check Hole Management configuration file & Project data|
+    return false
+  endif
+
+  !safeCE = !!ce
+
+  -- validate hole association storage area
+  !store  = !this.findHoleAssociationStorageArea()
+
+  if( !store.unset() ) then
+-- Could not create the hierarchy, ERROR.TEXT defined by createOwningHierarchy()
+    !!hmFittHole.cleanup()
+    !!ce = !safeCE
+    return FALSE
+  endif
+
+-- Identified writeable location so move to correct point and build elements
+  !!ce = !store
+  TAIL
+  NEW ASSOC
+
+-- Run autonaming if defined and copy default ASSDEF element
+  CALL !!autoNameCe(FALSE)
+  handle any
+  endhandle
+
+  !tempRef = !!holeManagementConfiguration.fittAssdef
+  COPY DEF $!<tempRef>
+
+-- Fix to get DESCRIPTION from RESDEF onto newly created RESTRI
+-- This will be replaced once further code changes for ASSOC are completed
+  RESTRI 1
+  !!ce.desc = !!ce.owner.adefrf.members[1].description
+  NEX RESTRI
+  !!ce.desc = !!ce.owner.adefrf.members[2].description
+  NEX RESTRI
+  !!ce.desc = !!ce.owner.adefrf.members[3].description
+  END
+-- Add first element as HOLE OWNER
+  !hOwner = !fittHoleData.panel
+  NEW ASSMBR
+  -- Store at HPANEL or CPANEL level rather than PLATE level
+  if (!hOwner.type eq 'HPLATE') then
+    !plate  = !hOwner
+    !hOwner = !hOwner.owner
+  elseif (!hOwner.type eq 'CPLATE') then
+    !plate  = !hOwner
+    !hOwner = !hOwner.hrdprx[1]
+  endif
+  !!ce.amemrf = !hOwner
+  if (defined(!plate)) then
+    !!ce.asstar = !plate
+  endif
+  LNAME /HoleOwner
+  PRIMEM FALSE
+
+-- Add the fitting as PRIMARY ELEMENT
+  !primary = !fittHoleData.fitting
+  NEW ASSMBR
+  AMEMRF $!primary
+  LNAME /primaryElement
+  PRIMEM TRUE
+
+-- Add the virtual hole
+  !fixing = !fittHoleData.holeFixing
+  NEW ASSMBR
+  AMEMRF $!fixing
+  LNAME /virtualHole
+  PRIMEM FALSE
+
+
+
+-- Add remaining supplied elements to the ASSMBR list
+  do !secondary values !fittHoleData.associated
+    NEW ASSMBR
+    AMEMRF $!secondary
+    LNAME /$!secondary
+  enddo
+
+-- Build "standard" hierarchy element for STATUS data
+  new ASTATU
+  LNAME /Status
+
+-- Build "standard" hierarchy element for STATUS HISTORY data
+  new ASREQU
+  LNAME /StatusHistory
+
+-- Build "standard" hierarchy element for DESIGN data
+  new ASREQU
+  LNAME /DesignData
+
+  new DDSE
+
+  new DDAT
+  DKEY ORIG
+  !oriData = !origin.string()
+  DDPROP |$!oriData|
+
+  new DDAT
+  DKEY RATI
+  DDPROP ||
+
+  new DDAT
+  DKEY NOMB
+  DDPROP ||
+
+  new DDAT
+  DKEY DESP
+  DDPROP |$!desp|
+
+  new DDAT
+  DKEY FTYP
+  DDPROP |$!holeType|
+
+-- Return to owning ASSOC element and load member variable with data
+  ASSOC
+  descr '$!type'
+
+  !this.autoRequest(!!ce)
+
+  !!ce = !safeCE
+  return true
+
+endmethod
+-- End of method definition for .createFittHole()
+
+------------------------------------------------------------------------
+--
+-- Method:      modifyFittHole
+--
+-- Description: Deal with a request for a modified managed hole
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .modifyFittHole(!fittHoleData is HOLEELEMCOLL, !holeData is HMHOLE, !origin is POSITION) is BOOLEAN
+
+
+-- Check the default ASSDEF is configured before continuing
+  !this.readConfigurationFile()
+  if (!!holeManagementConfiguration.fittAssdef.unset() ) then
+    !!hmFittHole.cleanup()
+    !!error.text = |Hole Management association definition not set. Please contact your system administrator: Check Hole Management configuration file & Project data|
+    return false
+  endif
+
+  !safeCE = !!ce
+
+  !assoc = !holeData.element
+
+  -- Set up the modified hole data
+  -- Set the new data
+  !position = !origin.string()
+  !holeData.setPosition(!position)
+
+  -- Create any new associated elements and delete any removed ones
+  !holeAssociations = !fittHoleData.associated
+  !find = object COLLECTION()
+  !find.type('ASSMBR')
+  !find.scope(!assoc)
+  !associations = !find.results()
+  !existingAssociations = ARRAY()
+  !existingElements = ARRAY()
+  do !element values !associations
+    skip if (!element.lName eq '/HoleOwner' or !element.lName eq '/primaryElement' or !element.lName eq '/virtualHole')
+    !existingElements.append(!element.amemrf)
+    !existingAssociations.append(!element)
+  enddo
+
+  !same = (!holeAssociations eq !existingAssociations)
+  if (!same) then
+    !!ce = !safeCE
+    return TRUE
+  else
+    !noNewAssociations = !holeAssociations.size()
+    !noOldAssociations = !existingAssociations.size()
+    if (!noNewAssociations eq !noOldAssociations) then
+      -- reset the references
+      do !index index !existingAssociations
+        !existingAssociations[!index].amemrf = !holeAssociations[!index]
+      enddo
+    elseif (!noNewAssociations gt !noOldAssociations) then
+      -- reset the references
+      do !index index !holeAssociations
+        if (undefined(!existingAssociations[!index])) then
+          !!ce = !assoc
+          LAST ASSMBR
+          NEW ASSMBR
+          !!ce.amemrf = !holeAssociations[!index]
+        else
+          !existingAssociations[!index].amemrf = !holeAssociations[!index]
+        endif
+      enddo
+    elseif (!noNewAssociations lt !noOldAssociations) then
+      -- reset the references
+      do !index index !existingAssociations
+        if (undefined(!holeAssociations[!index])) then
+          !!ce = !existingAssociations[!index]
+          DELETE ASSMBR
+        else
+          !existingAssociations[!index].amemrf = !holeAssociations[!index]
+        endif
+      enddo
+    endif
+  endif
+  !!ce = !safeCE
+  return TRUE
+
+endmethod
+-- End of method definition for .modifyFittHole()
+
+------------------------------------------------------------------------
+--
+-- Method:      ceilingHole
+--
+-- Description: Ceiling hole as additional hole definition
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Ceiling element
+--    2   R      DBREF       Profile of hole required in ceiling
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       DBREF or ceiling LOOP or unset if none created
+--
+------------------------------------------------------------------------
+
+define method .ceilingHole( !ceiling is DBREF, !fixingProfile is PROFILE) is DBREF
+
+  -- Validate hole profile
+  if( !fixingProfile.unset() ) then
+    return object DBREF()
+  endif
+  if( !fixingProfile.isValidClosed().not() ) then
+    return object DBREF()
+  endif
+  if( badref(!ceiling) ) then
+    return object DBREF()
+  endif
+
+  -- Boundary Line Information
+  -- Get first BNDLIN of the CEILING
+  !boundary         = !!dtbMemberOfType(!ceiling,'BNDLIN',1)
+  if(!boundary.unset()) then
+    return object DBREF()
+  endif
+
+  !ceilingBoundary  = object DBEBNDLIN(!boundary)
+
+  -- Validate ceiling profile
+  !ceilingBoundaryProfile = !ceilingBoundary.outerBoundary()
+  handle any
+    return object DBREF()
+  endhandle
+  if( !ceilingBoundaryProfile.unset() ) then
+    return object DBREF()
+  endif
+  if( !ceilingBoundaryProfile.isValidClosed().not() ) then
+    return object DBREF()
+  endif
+
+  !inside = !ceilingBoundaryProfile.isWithin(!fixingProfile)
+  handle any
+    -- probably not parallel profiles
+    !inside = false
+  endhandle
+
+  if( !inside.not() ) then
+    return object DBREF()
+  endif
+
+  -- cannot write the inner loop directly otherwise the BDNLIN
+  -- position and orientation are changed.
+  -- transform the profile into the correct frame or reference
+  -- before writing
+  !newProfile = object PROFILE(!boundary.position,!boundary.orientation, !fixingProfile.edges())
+
+  -- create a new inner loop
+  !safeCE = !!ce
+  !!ce = !boundary
+  -- go to first loop which is the outer loop
+  LOOP 1
+  -- create inner loop after the outer loop
+  NEW LOOP
+  handle any
+    !!ce = !safeCE
+    return object DBREF()
+  endhandle
+  !innerLoop = !!ce
+  -- write the loop geometry
+  !newProfile.dbwrite(!innerLoop)
+
+  !!ce = !safeCE
+  return !innerLoop
+
+endmethod
+-- End of method definition for .ceilingHole()
+
+------------------------------------------------------------------------
+--
+-- Method:      deleteHole
+--
+-- Description: Delete all elements of hole on REJECT
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      HMHOLE      Hole to be rejected
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True for delete OK, false otherwise
+--
+------------------------------------------------------------------------
+
+define method .deleteHole( !selected is HMHOLE) is BOOLEAN
+
+  !deleteOK   = true
+  !deleteMessage = ''
+  !deleteList    = ARRAY()
+
+  -- loop through hole related elements and check that each one can be deleted
+  do !secondaryElement values !selected.secondaryElements
+    !secondaryReference = !secondaryElement.amemrf
+    skip if( badref( !secondaryReference ) )
+    !secondaryType      = !secondaryReference.hardType
+    if (!secondaryType inset('NXTR','PFIT','WLOPEN','HHOLE','CHOLE','LOOP','CMFI','JLDATU','BPOPEN')) then
+      -- check that ASSMBR can be deleted
+      if( !!dbrefDelete(!secondaryElement,!deleteMessage).not() ) then
+        !deleteOK   = false
+        break
+      else
+        !deleteList.append(!secondaryElement)
+      endif
+      -- check that element can be deleted (not for hull elements)
+      skip if(!secondaryType inset('HHOLE','CHOLE'))
+      -- special case for ceiling loops
+      if(!secondaryType eq 'LOOP') then
+        -- LOOP element - check that it is a ceiling loop
+        if( !secondaryReference.owner.hardType.eq('BNDLIN') ) then
+          if( !secondaryReference.owner.owner.hardType inset('CEILIN','CLNPNG') ) then
+            if( !!dbrefDelete(!secondaryElement,!deleteMessage).not() ) then
+              !deleteOK   = false
+              break
+            endif
+          endif
+        endif
+      else
+        -- not a ceiling loop - check it
+        if( !!dbrefDelete(!secondaryReference,!deleteMessage).not() ) then
+          !deleteOK   = false
+          break
+        endif
+      endif
+    endif
+  enddo
+
+  -- give up if anything is cannot be deleted
+  if( !deleteOK.not() ) then
+    return false
+  endif
+
+  !safeCE       = !!ce
+  !failedDelete = false
+
+  -- Now delete the required elements
+  do !holeAssociationMember values !deleteList
+    !secondaryReference = !holeAssociationMember.amemrf
+    !secondaryType      = !secondaryReference.hardType
+
+    if( !secondaryType eq 'NXTR' ) then
+      !!ce = !secondaryReference
+      -- delete with extra failure check
+      DELETE NXTR
+      handle any
+        !!alert.error('Unable to delete hole extrusion - status not changed')
+        !failedDelete = true
+        break
+      endhandle
+
+    elseif( !secondaryType eq 'PFIT' ) then
+      !!ce = !secondaryReference
+      -- delete with extra failure check
+      DELETE PFIT
+      handle any
+        !!alert.error('Unable to delete Panel Fitting - status not changed')
+        !failedDelete = true
+        break
+      endhandle
+
+    elseif( !secondaryType eq 'WLOPEN' ) then
+      !!ce = !secondaryReference
+      -- delete with extra failure check
+      DELETE WLOPEN
+      handle any
+        !!alert.error('Unable to delete wall opening - status not changed')
+        !failedDelete = true
+        break
+      endhandle
+
+    elseif( !secondaryType eq 'CMFI' ) then
+      !!ce = !secondaryReference
+      -- delete with extra failure check
+      DELETE CMFI
+      handle any
+        !!alert.error('Unable to delete compound fitting - status not changed')
+        !failedDelete = true
+        break
+      endhandle
+
+    elseif( !secondaryType eq 'JLDATU' ) then
+      !!ce = !secondaryReference
+      -- delete with extra failure check
+      DELETE JLDATU
+      handle any
+        !!alert.error('Unable to delete justification line datum - status not changed')
+        !failedDelete = true
+        break
+      endhandle
+
+    elseif( !secondaryType eq 'LOOP' ) then
+      !!ce = !secondaryReference
+      -- delete with extra failure check
+      DELETE LOOP
+      handle any
+        !!alert.error('Unable to delete ceiling opening - status not changed')
+        !failedDelete = true
+        break
+      endhandle
+
+    elseif (!secondaryType inset('HHOLE', 'CHOLE') ) then
+      !mm = object AVEVAMODULEMANAGER()
+      if (!mm.currentProductName().upcase().eq('HULL & OUTFITTING')) then
+        import 'marAPI'
+        handle any
+        endhandle
+      endif
+      using namespace 'Aveva.Marine.Design'
+      !holeManager = object MARHOLEMANAGER()
+      !holeRef     = !secondaryReference.string()
+      !res = !holeManager.deleteHole(!holeRef)
+      if (!res[1] neq 0 ) then
+        !!alert.error('Unable to delete Hull Hole - status not changed')
+        !failedDelete = true
+        break
+      endif
+
+    elseif ( !secondaryType eq 'BPOPEN' ) then
+    	 !!ce = !secondaryReference
+      -- delete with extra failure check
+      DELETE BPOPEN
+      handle any
+        !!alert.error('Unable to delete bent plate opening - status not changed')
+        !failedDelete = true
+        break
+      endhandle
+
+    endif
+
+    -- Now delete the association member
+    !!ce = !holeAssociationMember
+    delete ASSMBR
+    handle any
+    endhandle
+
+  enddo
+
+  !!ce = !safeCE
+  handle any
+  endhandle
+
+  return !failedDelete.not()
+
+endmethod
+-- End of method definition for .deleteHole()
+------------------------------------------------------------------------
+--
+-- Method:      .createExtraHole()
+--
+-- Description: Create the extra hole in marine only
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createExtraHole(!hmHole is HMHOLE, !panel is DBREF) is BOOLEAN
+
+  -- Check whether it's a typical or Free Hole
+  !fixing = !hmHole.virtualHole
+  if (!hmHole.fixiType.upcase() eq 'FREE') then
+    var !freeProfile coll all loop for $!fixing
+    !tempProfile         = object PROFILE(!freeProfile[1].dbref())
+    !fixingProfile       = !tempProfile.mergePoints().mergeLines()
+    !fixingProfileOffset = !fixingProfile.plane().xyOffset(!fixing.position)
+    !freeHole = TRUE
+  else
+    !fixingProfile = !!hmFindHoleProfile(!fixing)
+    !fixingDesp = !fixing.desp
+    !fixingProfileOffset = !fixingProfile.plane().xyOffset(!fixing.position)
+    !freeHole = FALSE
+  endif
+
+  !panelName = !panel.namn
+
+  !ce = !!ce
+
+  using namespace 'Aveva.Marine.Design'
+  !tmpl = !fixing.mcount('tmpl')
+  if (!tmpl eq 1 ) then
+    !parameters = ARRAY()
+  else
+    !parameters = !this.fixingParameters(!fixing)
+  endif
+
+  !pos         = ARRAY()
+  !pos[1]      = 0mm
+  !pos[2]      = 0mm
+  !pos[3]      = 0mm
+  !penVec      = ARRAY()
+  !penVec[1]   = 0
+  !penVec[2]   = 0
+  !penVec[3]   = 0
+  !penVecAlt   = !penVec
+  !rotation    = ARRAY()
+  !rotation[1] = 0
+  !rotation[2] = 0
+  !rotation[3] = 0
+  if (!freeHole) then
+    -- Find the extrusion direction
+--    !fixingDir = !freeProfile[1].dbref().owner.ori.zDir().wrt(worl)
+--    !lineStart = !fixingPos.offset(!fixingDir.opposite(), 1000mm)
+--    !lineEnd   = !fixingPos.offset(!fixingDir, 1000mm)
+--    !penVec.append(!lineStart.east - !lineEnd.east)
+--    !penVec.append(!lineStart.north - !lineEnd.north)
+--    !penVec.append(!lineStart.up - !lineEnd.up)
+--    !lineStart = !fixingPos.offset(!fixingDir, 1000mm)
+--    !lineEnd   = !fixingPos.offset(!fixingDir.opposite(), 1000mm)
+--    !rotation.append( 0 )
+--    !rotation.append( 0 )
+--    !rotation.append( 0 )
+  else
+    -- standard hole parameters
+    !fixingPos = !fixing.pos.wrt(worl)
+    !pos.append(!fixingPos.east)
+    !pos.append(!fixingPos.north)
+    !pos.append(!fixingPos.up)
+    !rotation = !this.rotationPoint(!fixing)
+    !p1Pos = !fixing.ppos[1].wrt(worl)
+    !penVec.append(!p1Pos.east.dbUnits().value()  - !pos[1].dbUnits().value())
+    !penVec.append(!p1Pos.north.dbUnits().value() - !pos[2].dbUnits().value())
+    !penVec.append(!p1Pos.up.dbUnits().value()    - !pos[3].dbUnits().value())
+    !penVecAlt[1] = -1 * !penVec[1]
+    !penVecAlt[2] = -1 * !penVec[2]
+    !penVecAlt[3] = -1 * !penVec[3]
+  endif
+  !holeDesRef = !fixing.string()
+  !holeManager = object MARHOLEMANAGER()
+  -- Latest MarHoleManager
+  if (!rotation.size() eq 0 ) then
+    return FALSE
+  endif
+  !res = !holeManager.createHole(!panelName, !this.convertToDBUnits(!pos), !penVec, !this.convertToDBUnits(!rotation), !holeDesRef, !this.convertToDBUnits(!parameters) )
+  handle (1000,0)
+    !!ce = !ce
+    return FALSE
+  endhandle
+  if (!res[1] eq 0 or !res[1] eq 1 ) then
+    !holeRef = !res[2]
+    if (!holeRef eq '') then
+      !res = !holeManager.createHole(!panelName, !this.convertToDBUnits(!pos), !penVecAlt, !this.convertToDBUnits(!rotation), !holeDesRef, !this.convertToDBUnits(!parameters) )
+      if (!res[1] eq 0 or !res[1] eq 1 ) then
+        !holeRef = !res[2]
+        if (!holeRef eq '') then
+          !!alert.error('MARHOLEMANAGER has not returned a result')
+          !!ce = !ce
+          return FALSE
+        endif
+      else
+        !!ce = !ce
+        !this.error = !res[3]
+        !!alert.error(!this.error)
+        return FALSE
+      endif
+    endif
+  else
+    !res = !holeManager.createHole(!panelName, !this.convertToDBUnits(!pos), !penVecAlt, !this.convertToDBUnits(!rotation), !holeDesRef, !this.convertToDBUnits(!parameters) )
+    if (!res[1] eq 0 or !res[1] eq 1 ) then
+      !holeRef = !res[2]
+      if (!holeRef eq '') then
+        !!alert.error('MARHOLEMANAGER has not returned a result')
+        !!ce = !ce
+        return FALSE
+      endif
+    else
+      !!ce = !ce
+      !this.error = !res[3]
+      !!alert.error(!this.error)
+      return FALSE
+    endif
+  endif
+
+  -- Create a new assmbr in the assoc
+  !!ce = !hmHole.element
+
+  !findExtra = object COLLECTION()
+  !findExtra.type('ASSMBR')
+  !findExtra.scope(!!ce)
+  !findExtra.filter(object EXPRESSION(|matchwild(lname,'/ExtraHole?') and not badref(amemrf)|))
+  !extraHoles = !findExtra.results().size()
+  if (!extraHoles eq 0 ) then
+    !holeNumber = (!extraHoles + 2 )
+  else
+    !holeNumber = (!extraHoles + 1 )
+  endif
+  LAST ASSMBR
+  NEW ASSMBR
+  LNAME /ExtraHole$!holeNumber
+  AMEMRF $!<holeRef>
+
+  !!ce = !ce
+
+  return TRUE
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .addMemberToHole()
+--
+-- Description: add a new association member to a hole
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      object      HMHOLE object representing the hole to be modified
+--    2    R      DBREF       DBREF to be added to the hole
+--    3    R      STRING      local name
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .addMemberToHole(!current is HMHOLE, !item is DBREF, !lName is STRING )
+
+  -- Does the association already contain a member with the supplied local name
+  -- Create new association member in the association
+  !ce = !!ce
+  !!ce = !current.element
+  !find = object COLLECTION()
+  !find.type('ASSMBR')
+  !find.scope(!!ce)
+  !find.filter(object EXPRESSION(|lname eq '/$!lName'|))
+  !assMem = !find.results()
+  if (!assMem.size() eq 0) then
+    LAST ASSMBR
+    NEW ASSMBR
+  else
+    !!ce = !assMem[1]
+  endif
+  AMEMRF $!item
+  LNAME /$!lName
+
+  !!ce = !ce
+
+  return
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      .removeMemberFromHole()
+--
+-- Description: Remove an association member from a hole
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      object      HMHOLE object representing the hole to be modified
+--    2    R      STRING      local name
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .removeMemberFromHole(!current is HMHOLE, !lName is STRING )
+
+  -- Does the association already contain a member with the supplied local name
+  -- Delete the association member
+  !ce = !!ce
+  !!ce = !current.element
+  !find = object COLLECTION()
+  !find.type('ASSMBR')
+  !find.scope(!!ce)
+  !find.filter(object EXPRESSION(|lname eq '/$!lName'|))
+  !assMem = !find.results()
+  if (!assMem.size() neq 0) then
+    !!ce = !assMem[1]
+    DELETE ASSMBR
+  endif
+
+  !!ce = !ce
+
+  return
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .createHoleNegativeExtrusion()
+--
+-- Description: Create negative extrusion for holes in SCTN, GENSEC
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      object      HMHOLE object representing the hole to be modified
+--    2    R      STRING      local name
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createHoleNegativeExtrusion(!extrusionOwner is DBREF, !fixingProfile is PROFILE, !plateThickness is REAL, !position is POSITION )
+
+  !ce = !!ce
+  -- create negative extrusion to make a hole through the penetrated item
+  !!ce = !extrusionOwner
+  NEW TMPL
+  NEW NXTR
+  !!ce.nappflag = 2
+  !!ce.height   = (!plateThickness * 4 )
+  handle any
+    !!ce.height = 15mm
+  endhandle
+  NEW LOOP
+  !loop = !!ce
+  !fixingProfile.dbwrite(!loop)
+  -- centre extrusion on hole
+  NXTR
+  !negativeExtrusionDir = !!ce.orientation.zDir()
+  MOVE P2 OF VERTEX 1 OF LOOP 1 ALONG $!negativeExtrusionDir THROUGH $!<position>
+  handle any
+  endhandle
+
+  !!ce = !ce
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .getOrientationPointNumber()
+--
+-- Description: Get number of the hole orientation P-point
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      DBREF      Hole fixing
+-- Return:
+--   [Data Type] [Description]
+--    REAL        P-point number or unset REAL is not found
+--
+------------------------------------------------------------------------
+define method .getOrientationPointNumber(!fixing is DBREF) is REAL
+
+  -- Find the orientation PPOINT
+  !ppointTypes = ARRAY()
+  !ppointTypes.append('PTCA')
+  !ppointTypes.append('PTAX')
+  !ppointTypes.append('PTMI')
+  !ppointTypes.append('PTPOS')
+  !find = object COLLECTION()
+  !find.types(!ppointTypes)
+  !find.filter(object EXPRESSION('PURP eq |HMOR|'))
+  -- Find out the fixing p-point orientation number
+  !pointSet = !fixing.catref.ptre
+  !find.scope(!pointSet)
+  if (!find.results().size() eq 0 ) then
+    -- try P9
+    !pNumber = 9
+    !unusedPoint   = !fixing.ppos[!pNumber]
+    handle any
+      return object REAL()
+    endhandle
+  else
+    !pNumber = !find.results()[1].number
+  endif
+  return !pNumber
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .autoRequest()
+--
+-- Description: Automatically request a hole if required
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      DBREF      Hole Association element
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .autoRequest(!current is DBREF )
+
+  if (!!holeManagementConfiguration.autoRequest) then
+    !hmHole = object HMHOLE(!current)
+    if (!this.submitRequest(!hmHole)) then
+      -- the hole has been automatically requested
+    else
+      !!alert.warning('The hole could not be automatically requested')
+    endif
+  endif
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      readConfigurationFile
+--
+-- Description: Read system configuration file (if it exists) and store settings
+--              (%PDMSDFLTS%\des-holemgt-config)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .readConfigurationFile()
+
+  if(not defined(!!holeManagementConfiguration)) then
+    !tempConfig = object HMCONFIG()
+    if(!tempConfig.loadConfigurationFile().not()) then
+      return error 1 'Error in configuration file. Please Contact your systems administrator'
+    endif
+  endif
+
+endmethod
+-- End of method definition for .readConfigurationFile()

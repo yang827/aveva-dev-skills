@@ -1,0 +1,1391 @@
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--------------------------------------------------------------------------
+--
+-- File:            hvacControl.pmlobj
+--   Type:          Object Definition
+--   Group:         HVAC Application
+--   Keyword:       HVAC
+--   Module:        HVAC
+--
+-- Author:          Steve Bentley
+-- Created:         Wed Oct 15 15:08:45 2008
+--
+-- Description: Main Control object for HVAC application
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  alignTail()                      -                   Align tail with head
+--  checkConnectOK(DBREF,STRING,STRING,STRING,STRING) BOOLEAN
+--  checkPositionOK(STRING,STRING)   BOOLEAN
+--  getFitDuctSizes(STRING)          ARRAY               HVAC Fit functions - get arrive and leave duct sizes
+--  getFitDuctSizes(STRING,BOOLEAN)  ARRAY               HVAC Fit functions - get arrive and leave duct sizes
+--  getFitDuctSizes(STRING,BOOLEAN,BOOLEAN) ARRAY               HVAC Fit functions - get arrive and leave duct sizes
+--  getFitDuctSizes(STRING,BOOLEAN,BOOLEAN,STRING) ARRAY               HVAC Fit functions - get arrive and leave duct sizes
+--  globalInstance()                 -                   create a global instance of the main object
+--  hvacControl()                    -                   Constructor
+--  pickElement()                    -                   invoke EDG session to pick element
+--  pickPosition()                   -                   EDG pick position.
+--  pickPpoint()                     -                   Define edg event that picks a P-point
+--  pickedElement(EDGPICKDATA)       -                   EDG picked post or term to be made current
+--  pickedPosition(POSITION)         -                   Return the passed position
+--  pickedPpoint(EDGPICKDATA)        -                   Derive point nearest to point vector
+--  postConnect(REAL)                -                   Commands run after connecting branch to Ppoint
+--  readSavedSpec()                  STRING              Reads the saved File.
+--  setGadgetUndo(STRING)            -                   Set a gadget to be undoable using undoable member standardUndoable
+--  setHeadSize(DBREF,STRING)        -                   Commands run after connecting to set HXYSIZE
+--  showAxes()                       -                   Show Axes on HVAC
+--  transposeHeadTube()              -                   Change the Head tube if wrong by 90 degrees
+--  writeSavedSpec(STRING)           -                   Save File for.
+--
+------------------------------------------------------------------------
+define object HVACCONTROL
+
+  -- Members
+  member .standardUndoable is UNDOABLE
+  member .detailSpec       is HVACDETAILSPEC
+  member .pickType         is STRING
+  member .targetEnd        is STRING
+  member .pickedElement    is DBREF
+  member .currentRef       is DBREF
+  member .sameConnection   is BOOLEAN
+  member .pickedPosition   is POSITION
+  member .pickedPoint      is STRING
+  member .nextAction       is STRING
+
+endobject
+-- End of object definition for HVACCONTROL
+------------------------------------------------------------------------
+--
+-- Method:      hvacControl()
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .hvacControl()
+
+  -- Set a standard undoable object
+  !this.standardUndoable = object UNDOABLE()
+  !this.standardUndoable.description('Undo HVAC')
+  !this.standardUndoable.undoAction('')
+  !this.standardUndoable.redoAction('')
+
+  !this.sameConnection = false
+
+endmethod
+-- End of method definition for constructor
+------------------------------------------------------------------------
+--
+-- Method:      globalInstance()
+--
+-- Description: create a global instance of the main object
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .globalInstance()
+
+  -- create the global instance of this object
+  !!hvacControl = !this
+
+endmethod
+-- End of method definition for .globalInstance()
+------------------------------------------------------------------------
+--
+-- Method:      setGadgetUndo
+--
+-- Description: Set a gadget to be undoable using undoable member standardUndoable
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     STRING     example '!!myForm.apply.setUndoable(!!hvacControl.standardUndoable)'
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setGadgetUndo(!command is STRING)
+
+  $!command
+  handle ANY
+    -- In HVAC application when 'no forms' option is used the gadget will error
+  endhandle
+
+endmethod
+-- End of method definition for .setGadgetUndo()
+------------------------------------------------------------------------
+--
+-- Method:      readSavedSpec
+--
+-- Description: Reads the saved File.
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    STRING      String of the current specs name
+--
+------------------------------------------------------------------------
+define method .readSavedSpec() is STRING
+
+  !result  = STRING()
+  !project = CURRENT PROJECT
+
+  -- Capture current units
+  !style = 'Met'
+  if (!!isImperialLength('DIST')) then
+    !style = 'Imp'
+  endif
+
+  !location = 'PDMSUSER'
+  !fileString = '%' & !location & '%/' & !project.code() & '-save-current-hvac-' & !style & '.pmldat'
+
+  -- Make a file object
+  !file = object FILE(!fileString)
+
+  if (!file.exists()) then
+    !!runMacro(!fileString, '')
+    handle ANY
+      -- !!alert.error('There is a problem with User Saved HVAC Detailing Specs file ' & !fileString)
+    elsehandle NONE
+      !result = !!cdhReadSpecResult
+      handle ANY
+      endhandle
+      !!cdhReadSpecResult.delete()
+      handle ANY
+      endhandle
+    endhandle
+  else
+    return error 1
+  endif
+
+  return !result
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      writeSavedSpec
+--
+-- Description: Save File for.
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     STRING      The detailing specification name (Example TUTORIAL)
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .writeSavedSpec(!currentSpec is STRING)
+
+  -- save the current spec to file
+  !saveCommands =  ARRAY()
+  !saveCommands.append('-- HVAC Detailing Spec - Serialisation File')
+  !saveCommands.append('')
+  !saveCommands.append('!!cdhReadSpecResult = |' & !currentSpec & '|' )
+  !saveCommands.append('')
+  !saveCommands.append('return')
+  !project      = CURRENT PROJECT
+  -- Capture current units
+  var !units SPLIT UNITS
+  if (!units[3] eq 'MM') then
+    !file = object FILE('%PDMSUSER%/' + !project.code() + '-save-current-hvac-Met.pmldat')
+  else
+    !file = object FILE('%PDMSUSER%/' + !project.code() + '-save-current-hvac-Imp.pmldat')
+  endif
+
+  -- write commands to file
+  !file.writefile('OVERWRITE',!saveCommands)
+  !file.close()
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      CheckConnectOK
+--
+-- Description: Checks for whether we can connect a branch OK
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF      Element to connect
+--    2    R     STRING     HREF, TREF, CREF, CRFA
+--    3    R     STRING     Type of element to connect to
+--    4    R     STRING     HREF, TREF, CREF, CRFA
+--    5    R     STRING     Indication of command line required
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     Yes we can or No we can not proceed
+--
+------------------------------------------------------------------------
+define method .checkConnectOK(!element is DBREF, !elementEnd is STRING, !targetElementType is STRING, !targetElementEnd is STRING, !nextAction is STRING) is BOOLEAN
+
+  !answer = 'true'
+  !answered = false
+  !this.pickType   = !targetElementType
+  !this.targetEnd  = !targetElementEnd
+  !this.nextAction = !nextAction
+
+  !testAlreadyConnected = false
+  !currentConnection = object DBREF('nulref')
+  if (!elementEnd eq 'HREF') then
+    !currentConnection = !element.href
+  elseif (!elementEnd eq 'TREF') then
+    !currentConnection = !element.tref
+  elseif (!elementEnd eq 'CREF') then
+    !currentConnection = !element.cref
+    handle ANY
+      if (!element.crfa.size().gt(0)) then
+        do !i indices !element.crfa
+          if (!element.crfa[!i].set() and !element.crfa[!i].badref().not()) then
+            !currentConnection = !element.crfa[!i]
+            handle ANY
+              !currentConnection = object DBREF('nulref')
+            endhandle
+            break
+          endif
+        enddo
+      endif
+    endhandle
+  elseif (!elementEnd eq 'CRFA') then
+    if (!element.crfa.size().gt(0)) then
+      do !i indices !element.crfa
+        if (!element.crfa[!i].set() and !element.crfa[!i].badref().not()) then
+          !currentConnection = !element.crfa[!i]
+          handle ANY
+            !currentConnection = object DBREF('nulref')
+          endhandle
+        endif
+        break
+      enddo
+    endif
+  endif
+  !this.currentRef = !currentConnection
+  !testAlreadyConnected = (!currentConnection.badref().not() or (!currentConnection.badref() and !currentConnection.unset().not()))
+  if (!testAlreadyConnected and !this.sameConnection.not()) then
+    !answer = !!alert.confirm(!element.fullname & ' is already connected to ' & !currentConnection.fullname & ' Do you want to attempt new connection?')
+    handle ANY
+      -- Two Full names may be too long
+      !answer = !!alert.confirm(!element.name & ' is already connected to ' & !currentConnection.name & ' Do you want to attempt new connection?')
+      handle ANY
+        -- This catches the case when connected is a badref
+        !answer = !!alert.confirm(!element.name & ' is already connected to an unknown reference; possibly in a deferred database. Do you want to attempt new connection?')
+      endhandle
+    endhandle
+    if !answer.boolean() then
+      !answered = true
+      !this.pickElement()
+      return !answer.boolean()
+    else
+      !answered = true
+      return !answer.boolean()
+    endif
+  endif
+
+  if (!answered.not() and !element.dbwrite.not()) then
+    !answer = !!alert.confirm('Connecting element (' & !element.type & ') is in a read only database. Do you want to attempt connection? An inter DB macro will be created.')
+    if !answer.boolean() then
+      !answered = true
+      !this.pickElement()
+      return !answer.boolean()
+    endif
+  endif
+
+  if (!answered.not() and !element.lock) then
+    !!alert.error('Connecting element (' & !element.type & ') is locked')
+    !answered = true
+    !this.pickElement()
+    return false
+  endif
+
+  !canModify = !element.dacMod
+  if (!answered.not() and !canModify.not()) then
+    !!alert.error('Connecting element (' & !element.type & ') is Data Access Controlled (DAC)')
+    !answered = true
+    !this.pickElement()
+    return false
+  endif
+
+  !userClaim = !element.userClaim
+  var !user USER
+  !otherUserClaim = (NOT(!userClaim eq '' or !userClaim eq !user))
+  if (!answered.not() and !otherUserClaim) then
+    !!alert.error('Connecting element (' & !element.type & ') is claimed by another user')
+    !answered = true
+    !this.pickElement()
+    return false
+  endif
+
+  if !answer.boolean() then
+    !this.pickElement()
+  endif
+
+  return !answer.boolean()
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      CheckPositionOK
+--
+-- Description: Checks for whether we can position a branch OK
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF      Element to connect
+--    2    R     STRING     HREF, TREF, CREF, CRFA
+--    3    R     STRING     CURSOR or POINT
+--    5    R     STRING     Indication of command line required
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     Yes we can or No we can not proceed
+--
+------------------------------------------------------------------------
+define method .checkPositionOK(!targetElementType is STRING, !nextAction is STRING) is BOOLEAN
+
+  !answer = 'true'
+  !this.pickType   = !targetElementType
+  !this.targetEnd  = ''
+  !this.nextAction = !nextAction
+
+  if (!targetElementType eq 'CURSOR') then
+    !this.pickPosition()
+  elseif (!targetElementType eq 'POINT') then
+    !this.pickPpoint()
+  elseif (!targetElementType eq 'ELEMENT') then
+    !this.pickType   = 'ANY'
+    !this.pickElement()
+  endif
+
+  return !answer.boolean()
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      pickElement
+--
+-- Description: invoke EDG session to pick element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]   [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pickElement()
+
+  -- Initialise Variables
+  !this.pickedElement = object DBREF()
+  if (!this.nextAction.unset()) then
+    return
+  endif
+
+  -- Initialise Variables for EDG
+  !packet = object EDGPACKET()
+  !packet.elementPick('Pick ' & !this.pickType.replace(',', ' or ').replace('|', '') & ' element')
+  !packet.description = 'HVAC element picking'
+  if (!this.pickType.match(',').gt(1)) then
+    !elementFilter = '(TYPE INSET ($!this.pickType))'
+    !packet.pickPacket.picks[1].pick.input[3]   = !elementFilter
+    !packet.pickPacket.picks[1].pick.modifiable = false
+  endif
+  !packet.priority = 1
+  !packet.remove = false
+  !packet.action      = '!!hvacControl.pickedElement(!this.return[1])'
+  !packet.close  = ''
+
+  -- Add event to system
+  !!edgCntrl.add(!packet)
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      pickedElement
+--
+-- Description:  EDG picked post or term to be made current
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]   [Description]
+--    1     R    EDGPICKDATA    From EDG Pick Element
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pickedElement(!data is EDGPICKDATA)
+
+  !number = 3
+  if (!this.pickType eq 'BRAN') then
+    !element = !!dtbFindOwnerOfType(!data.item, !this.pickType, true)
+  else
+    !element = !data.item
+  endif
+
+  if (!element.unset()) then
+    !!alert.error('Wrong type of element picked')
+    !this.pickElement()
+    return
+  else
+    !this.pickedElement = !element
+    -- ******************************* Connection Code *******************************
+    if (!this.pickType eq 'ANY') then
+      !command = !this.nextAction & ' ' & !element.string()
+    elseif (!element.type eq 'BRAN' and !this.targetEnd eq 'HREF') then
+      !command = !this.nextAction & 'H OF ' & !element.string()
+    elseif (!element.type eq 'BRAN' and !this.targetEnd eq 'TREF') then
+      !command = !this.nextAction & 'T OF ' & !element.string()
+    elseif (!element.type inset ('NOZZ','HVACFI') and !this.targetEnd eq 'CREF') then
+      !command = !this.nextAction & ' ' & !element.string()
+    elseif (!element.type inset ('BRCO','THRE','TEE','HFAN','AHU')  and !this.targetEnd eq 'CREF') then
+      -- Get the free connection point
+      !number = (6 - (arri of $!element) - (leav of $!element))
+      !command = !this.nextAction & '$!number OF ' & !element.string()
+    else
+      -- !!alert.error('Debug - No command found')
+      return
+    endif
+    -- **************************** End of Connection Code ****************************
+    -- Check the 'connect to' element
+    if (!this.pickType neq 'ANY') then
+      if (!this.currentRef.badref().not() and !element eq !this.currentRef) then
+        !this.sameConnection = true
+      endif
+      !test = !this.checkConnectOK(!element, !this.targetEnd, 'BRAN', !this.targetEnd, object STRING())
+      -- Always reset to false
+      !this.sameConnection = false
+      if (!test.not()) then
+        -- Do not execute the command
+        return
+      endif
+    endif
+
+    -- Add the standard Undo
+    !!hvacControl.standardUndoable.add()
+    $!command
+    handle (42,55)(7,22)(7,27)
+      -- (42,55)   No answers provided for question ****
+      -- (7,22)    BRANCH P-Point undefined.
+    elsehandle ANY
+      !!alert.error(!!error.text.after(') '))
+    endhandle
+
+    -- Post commands
+    if (!element.type inset ('BRCO','THRE','TEE','HFAN','AHU')  and !this.targetEnd eq 'CREF') then
+      !this.postConnect(!number)
+      handle ANY
+      endhandle
+    endif
+
+    !this.setHeadSize(!element, !this.targetEnd)
+    handle ANY
+    endhandle
+
+    -- Align Tail
+    !this.alignTail()
+    handle ANY
+    endhandle
+
+    -- Show Axes
+    !this.showAxes()
+
+  endif
+
+  -- escape from any EDG session
+  !!edgCntrl.remove('HVAC element picking')
+
+  -- End the standard Undo
+  !!hvacControl.standardUndoable.endUndoable()
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      pickPosition
+--
+-- Description: EDG pick position.
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pickPosition()
+
+  -- Initialise Variables
+  !this.pickedPosition = object POSITION()
+
+  !packet = object EDGPACKET()
+  !packet.definePosition('Pick Position')
+  !packet.description = 'HVAC position picking'
+  !packet.priority = 1
+  !packet.remove   = false
+  !packet.action   = '!!hvacControl.pickedPosition(!this.return[1].position.wrt(worl))'
+  !packet.close  = ''
+  !!edgCntrl.add(!packet)
+
+ endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      pickedPosition()
+--
+-- Description: Return the passed position
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     POSITION    Passed position
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pickedPosition(!position is POSITION)
+
+  !this.pickedPosition = !position
+
+  -- ******************************* Position Code *******************************
+  !command = !this.nextAction & ' ' & !position.string()
+  -- **************************** End of Position Code ****************************
+
+  -- Add the standard Undo
+  !!hvacControl.standardUndoable.add()
+  $!command
+  handle ANY
+    !!alert.error(!!error.text.after(') '))
+  endhandle
+
+  -- Align Tail
+  !this.alignTail()
+  handle ANY
+  endhandle
+
+  -- Show Axes
+  !this.showAxes()
+
+  -- escape from any EDG session
+  !!edgCntrl.remove('HVAC position picking')
+
+  -- End the standard Undo
+  !!hvacControl.standardUndoable.endUndoable()
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      pickPpoint
+--
+-- Description: Define edg event that picks a P-point
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Action on completion
+--    2   R      STRING      Packet description to be added into EDG system with
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pickPpoint()
+
+  -- Initialise Variables
+  !this.pickedPoint = object STRING()
+
+  -- Packet definition
+  !packet = object EDGPACKET()
+  !packet.pickPacket.stdPpoint('Pick HVAC P-point')
+  !packet.description = 'HVAC point picking'
+  !packet.priority = 1
+  !packet.remove   = false
+  !packet.action   = '!!hvacControl.pickedPpoint(!this.return[1])'
+  !packet.close  = ''
+  !!edgCntrl.add(!packet)
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      pickedPpoint
+--
+-- Description: Derive point nearest to point vector
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA Pick Data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pickedPpoint(!pickData is EDGPICKDATA)
+
+  !point = object STRING()
+
+  -- Initialise Variables
+  !toElement   = !pickData.item
+  !toPpoint    = !pickData.point
+
+  !point = 'P' & !toPpoint.string() & ' OF ' & !toElement.string()
+
+  -- ******************************* Position Code *******************************
+  !command = !this.nextAction & ' ' & !point
+  -- **************************** End of Position Code ****************************
+
+  $!command
+  handle ANY
+    !!alert.error(!!error.text.after(') '))
+  endhandle
+
+  -- Align Tail
+  !this.alignTail()
+  handle ANY
+  endhandle
+
+  -- Show Axes
+  !this.showAxes()
+
+  -- escape from any EDG session
+  !!edgCntrl.remove('HVAC point picking')
+
+  !this.pickedPoint = !point
+  return
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      showAxes
+--
+-- Description: Show Axes on HVAC
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .showAxes()
+
+  -- Show Axes
+  if (defined(!!xSECLBINP) and defined(!!xSECLAINP)) then
+    var !axSize ((MAX ($!!xSECLBINP,$!!xSECLAINP)) * 2)
+    handle ANY
+      var !axSize $!!xSECLAINP
+    endhandle
+  else
+    var !axSize 1000mm
+  endif
+
+  -- callibd GAXES $!axSize $<ph$> $<y wrt zone $> $<z wrt zone$>
+  !file = '%PDMSUI%/DES/CLIB/GAXES'
+  if (type of owne eq 'BRAN' and type of owne of bran eq 'HVAC') then
+    !!runMacro('$!file', '$!axSize $<pl$> $<y wrt zone $> $<z wrt zone$>')
+  elseif (type eq 'BRAN' and type of owne eq 'HVAC') then
+    !!runMacro('$!file', '$!axSize $<ph$> $<y wrt zone $> $<z wrt zone$>')
+  elseif (type eq 'NOZZ') then
+    !!runMacro('$!file', '$!axSize $<p0$> $<y wrt zone $> $<z wrt zone$>')
+  else
+    !!runMacro('$!file', '')
+  endif
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      postConnect
+--
+-- Description: Commands run after connecting branch to Ppoint
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      REAL       Number of connection Ppoint
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .postConnect(!point is REAL)
+
+  !testHeadRef = !!ce.href.badref()
+  if (!testHeadRef) then
+    return
+  endif
+  if (!point eq 1) then
+    var !!xSECLAINP (PPWIDT1 OF HREF)
+    handle ANY
+    endhandle
+    var !!xSECLBINP (PPHEIG1 OF HREF)
+    handle ANY
+    endhandle
+    var !shape (PPCONN1 OF HREF)
+    handle ANY
+    endhandle
+    if (!!xSECLAINP.real() eq 0) then
+      var !!xSECLAINP (PPBORE1 OF HREF)
+      handle ANY
+      endhandle
+    endif
+  elseif (!point eq 2) then
+    var !!xSECLAINP (PPWIDT2 OF HREF)
+    handle ANY
+    endhandle
+    var !!xSECLBINP (PPHEIG2 OF HREF)
+    handle ANY
+    endhandle
+    var !shape (PPCONN2 OF HREF)
+    handle ANY
+    endhandle
+    if (!!xSECLAINP.real() eq 0) then
+      var !!xSECLAINP (PPBORE2 OF HREF)
+      handle ANY
+      endhandle
+    endif
+  else
+    var !!xSECLAINP (PPWIDT3 OF HREF)
+    handle ANY
+    endhandle
+    var !!xSECLBINP (PPHEIG3 OF HREF)
+    handle ANY
+    endhandle
+    var !shape (PPCONN3 OF HREF)
+    handle ANY
+    endhandle
+    if (!!xSECLAINP.real() eq 0) then
+      var !!xSECLAINP (PPBORE3 OF HREF)
+      handle ANY
+      endhandle
+    endif
+  endif
+  :HXYsize $!!xSECLAINP $!!xSECLBINP
+  handle ANY
+  endhandle
+
+  if (defined(!shape)) then
+    if (!shape EQ 'CIRC') then
+      HSTUBE /$:AVEVAHVACSPEC$:/HCTUBE
+    elseif (!shape EQ 'OVAL') then
+      HSTUBE /$:AVEVAHVACSPEC$:/HFOTUBEA
+    elseif (!shape EQ 'RECT') then
+      HSTUBE /$:AVEVAHVACSPEC$:/HRTUBEA
+    endif
+  else
+    if (WDESP[40] OF HREF EQ 'CIRC') then
+      HSTUBE /$:AVEVAHVACSPEC$:/HCTUBE
+    elseif (WDESP[40] OF HREF EQ 'OVAL') then
+      HSTUBE /$:AVEVAHVACSPEC$:/HFOTUBEA
+    elseif (WDESP[40] OF HREF EQ 'RECT') then
+      HSTUBE /$:AVEVAHVACSPEC$:/HRTUBEA
+    endif
+  endif
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      setHeadSize
+--
+-- Description: Commands run after connecting to set HXYSIZE
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      REAL       Element to connect to
+--    2    R      STRING     TREF, HREF or CREF to connect to
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setHeadSize(!element is DBREF, !targetEnd is STRING)
+
+  !testHeadRef = !!ce.href.badref()
+  if (!testHeadRef) then
+    return
+  endif
+  if (!element.type inset ('BRAN','NOZZ','HVACFI')) then
+    -- Continue
+  else
+    return
+  endif
+  -- Find out what :HXYSIZE should be
+  !remember = !!ce
+  !!ce = !!ce.href
+  if (!element.type eq 'BRAN' and !targetEnd eq 'TREF') then
+    var !!xSECLAINP (LEAWIDT OF LAST MEM)
+    handle ANY
+    elsehandle NONE
+      var !lastMember LAST MEM
+      !last = !lastMember.dbref()
+      -- Test for Shape (Based of Tubing)
+      if (!last.lstube.badref().not()) then
+        if (!last.lstube.name.match('RTUBE').gt(0)) then
+          !shape = 'RECT'
+        elseif (!last.lstube.name.match('CTUBE').gt(0)) then
+          !shape = 'CIRC'
+        elseif (!last.lstube.name.match('FOTUBE').gt(0)) then
+          !shape = 'OVAL'
+        endif
+      endif
+    endhandle
+    if (!!xSECLAINP.real() eq 0) then
+      var !!xSECLAINP (LBOR OF LAST MEM)
+      handle ANY
+      endhandle
+      !shape = 'CIRC'
+    endif
+    var !!xSECLBINP (LEAHEIG OF LAST MEM)
+    handle ANY
+    endhandle
+  elseif (!element.type eq 'BRAN' and !targetEnd eq 'HREF') then
+    var !!xSECLAINP (ARRWIDT OF FIRST MEM)
+    handle ANY
+    elsehandle NONE
+    -- Test for Shape (Based of Tubing)
+    if (!!ce.hstube.badref().not()) then
+      if (!!ce.hstube.name.match('RTUBE').gt(0)) then
+        !shape = 'RECT'
+      elseif (!!ce.hstube.name.match('CTUBE').gt(0)) then
+        !shape = 'CIRC'
+      elseif (!!ce.hstube.name.match('FOTUBE').gt(0)) then
+        !shape = 'OVAL'
+      endif
+    endif
+    endhandle
+    if (!!xSECLAINP.real() eq 0) then
+      var !!xSECLAINP (ABOR OF FIRST MEM)
+      handle ANY
+      endhandle
+      !shape = 'CIRC'
+    endif
+    var !!xSECLBINP (ARRHEIG OF FIRST MEM)
+    handle ANY
+    endhandle
+  elseif (!element.type inset('NOZZ','HVACFI') and !targetEnd eq 'CREF') then
+    var !!xSECLAINP (PROP AARR)
+    handle ANY
+    endhandle
+    var !!xSECLBINP (PROP BARR)
+    handle ANY
+    endhandle
+    var !shape PPCON1
+    if (!!xSECLBINP.real() eq 0) then
+      !shape = 'CIRC'
+    endif
+  endif
+  !!ce = !remember
+  :HXYsize $!!xSECLAINP $!!xSECLBINP
+
+  if (defined(!shape)) then
+    if (!shape EQ 'CIRC') then
+      HSTUBE /$:AVEVAHVACSPEC$:/HCTUBE
+      HBORE ($!!xSECLAINP)
+    elseif (!shape EQ 'RECT') then
+      HSTUBE /$:AVEVAHVACSPEC$:/HRTUBEB
+      HBORE ($!!xSECLAINP + $!!xSECLBINP )
+    elseif (!shape EQ 'OVAL') then
+      HSTUBE /$:AVEVAHVACSPEC$:/HFOTUBEB
+      HBORE ($!!xSECLAINP + $!!xSECLBINP )
+    else
+      HBORE ($!!xSECLAINP + $!!xSECLBINP )
+    endif
+  endif
+
+  if (defined(!!cdHMain) and !!cdHMain.shown() and !!ce.type.eq('BRAN') and !!ce.owner.type.eq('HVAC')) then
+    !!cdHMain.newOrMod.select('rtext', 'OLD')
+    !!runMacro('%PDMSUI%/DES/HVACADV/IOMAIN', '')
+    handle ANY
+    endhandle
+  endif
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      getFitDuctSizes
+--
+-- Description: HVAC Fit functions - get arrive and leave duct sizes
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      STRING    For New or Existing item fit
+-- Return:
+--   [Data Type] [Description]
+--     ARRAY       Array with Arrive A x B and Leave A x B then X, Y and Z offsets and X direction
+------------------------------------------------------------------------
+define method .getFitDuctSizes(!newOrOld is STRING) is ARRAY
+
+  !return = !this.getFitDuctSizes(!newOrOld, false, false, 'NOT')
+  return !return
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      getFitDuctSizes
+--
+-- Description: HVAC Fit functions - get arrive and leave duct sizes
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      STRING    For New or Existing item fit
+--    2    R      BOOLEAN   Transpose A to be if necessary (Example for a mitred offset)
+-- Return:
+--   [Data Type] [Description]
+--     ARRAY       Array with Arrive A x B and Leave A x B then X, Y and Z offsets and X direction
+------------------------------------------------------------------------
+define method .getFitDuctSizes(!newOrOld is STRING, !transpose is BOOLEAN) is ARRAY
+
+  !return = !this.getFitDuctSizes(!newOrOld, !transpose, false, 'NOT')
+  return !return
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      getFitDuctSizes
+--
+-- Description: HVAC Fit functions - get arrive and leave duct sizes
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      STRING    For New or Existing item fit
+--    2    R      BOOLEAN   Transpose A to be if necessary (Example for a mitred offset)
+--    3    R      BOOLEAN   We are dealing with a bend type element
+-- Return:
+--   [Data Type] [Description]
+--     ARRAY       Array with Arrive A x B and Leave A x B then X, Y and Z offsets and X direction
+------------------------------------------------------------------------
+define method .getFitDuctSizes(!newOrOld is STRING, !transpose is BOOLEAN, !bend is BOOLEAN) is ARRAY
+
+  !return = !this.getFitDuctSizes(!newOrOld, !transpose, !bend, 'NOT')
+  return !return
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      getFitDuctSizes
+--
+-- Description: HVAC Fit functions - get arrive and leave duct sizes
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      STRING    For New or Existing item fit
+--    2    R      BOOLEAN   Transpose A to be if necessary (Example for a mitred offset)
+--    3    R      BOOLEAN   We are dealing with a bend type element
+--    4    R      STRING    Special cases such as SQRD (default 'NOT')
+-- Return:
+--   [Data Type] [Description]
+--     ARRAY       Array with Arrive A x B and Leave A x B then X, Y and Z offsets and X direction 9 = flip
+------------------------------------------------------------------------
+define method .getFitDuctSizes(!newOrOld is STRING, !transpose is BOOLEAN, !bend is BOOLEAN, !special is STRING) is ARRAY
+
+  !return = ARRAY()
+  !plane = object PLANE()
+  !plane2 = object PLANE()
+  !line = object LINE()
+  !angle = 0degrees
+  !firstDistance = 0mm
+  !secondDistance = 0mm
+
+  MARKDB
+
+  !memory = !!ce
+
+  BRAN
+  HEAD
+  NEW STRT
+  DESP N90 0
+  DESP N1  STRA
+  DESP N30 RECT
+  DESP N40 RECT
+  DESP N66 STRA
+  DESP N67 STRA
+  DDESP N2 (:HXYsize[1] of BRAN)
+  handle ANY
+  endhandle
+  DDESP N3 (:HXYsize[2] of BRAN)
+  handle ANY
+  endhandle
+  DDESP N4 (:HXYsize[1] of BRAN)
+  handle ANY
+  endhandle
+  DDESP N5 (:HXYsize[2] of BRAN)
+  handle ANY
+  endhandle
+  DDESP N6 0
+  DESP N58 spec
+  DESP N59 spec
+  SPREF /$:AVEVAHVACSPEC$:/RSTRA
+
+  FCONN AND X IS X OF NEXT
+  handle ANY
+    FCONN
+  endhandle
+
+  LAST
+
+  NEW STRT
+  DESP N90 0
+  DESP N1  STRA
+  DESP N30 RECT
+  DESP N40 RECT
+  DESP N66 STRA
+  DESP N67 STRA
+
+  -- Could leave 1 2 or 3
+  if (LEAVE OF PREV EQ 1) then
+    DDESP N2 (DDESP[2] OF PREV)
+    DDESP N3 (DDESP[3] OF PREV)
+    DDESP N4 (DDESP[2] OF PREV)
+    DDESP N5 (DDESP[3] OF PREV)
+  elseif (LEAVE OF PREV EQ 2) then
+    DDESP N2 (DDESP[4] OF PREV)
+    DDESP N3 (DDESP[5] OF PREV)
+    DDESP N4 (DDESP[4] OF PREV)
+    DDESP N5 (DDESP[5] OF PREV)
+  elseif (LEAVE OF PREV EQ 3) then
+    DDESP N2 (DDESP[41] OF PREV)
+    DDESP N3 (DDESP[42] OF PREV)
+    DDESP N4 (DDESP[41] OF PREV)
+    DDESP N5 (DDESP[42] OF PREV)
+  endif
+  DDESP N6 0
+  DESP N58 spec
+  DESP N59 spec
+  SPREF /$:AVEVAHVACSPEC$:/RSTRA
+
+  ORI AND X IS P6 OF PREV
+  handle ANY
+    ORI
+  endhandle
+
+  POS PA AT PT OF BRAN
+
+  !!ce = !memory
+  if (TYPE EQ 'BRAN') then
+    1
+  endif
+
+  -- set form values to CALCULATED desp values for DESP fields.
+  if (!newOrOld EQ 'OLD') then
+    -- Get first size (existing component)
+    var !prev PREV
+    !previous = !prev.dbref()
+    if (LEAVE OF PREV EQ 1) then
+      var !xSECAAINP (DDESP[2] OF PREV)
+      var !xSECABINP (DDESP[3] OF PREV)
+    elseif (LEAVE OF PREV EQ 2) then
+      var !xSECAAINP (DDESP[4] OF PREV)
+      var !xSECABINP (DDESP[5] OF PREV)
+    else
+      var !xSECAAINP (DDESP[41] OF PREV)
+      var !xSECABINP (DDESP[42] OF PREV)
+    endif
+    var !leavePosition POS PL OF PREV
+    var !leaveDirection DIR PL OF PREV
+    !yDirection = !previous.ori.yDir()
+    !orientation = 'Z IS ' & !leaveDirection & ' AND Y is ' & !yDirection.string()
+    !plane.position = object POSITION(!leavePosition)
+    !plane.orientation = object ORIENTATION(!orientation)
+    if (!special inset ('SKIRT','BRCO')) then
+      var !leavePosition POS PL OF CE
+      var !leaveDirection DIR PL OF CE
+      !yDirection = !!ce.ori.yDir()
+      !orientation = 'Z IS ' & !leaveDirection & ' AND Y is ' & !yDirection.string()
+      !plane.position = object POSITION(!leavePosition)
+      !plane.orientation = object ORIENTATION(!orientation)
+    endif
+  elseif (!newOrOld EQ 'NEW') then
+    -- Get first size (new component)
+    if (LEAVE OF CE EQ 1) then
+      var !xSECAAINP (DDESP[2] OF CE)
+      var !xSECABINP (DDESP[3] OF CE)
+    elseif (LEAVE OF CE EQ 2) then
+      var !xSECAAINP (DDESP[4] OF CE)
+      var !xSECABINP (DDESP[5] OF CE)
+    else
+      var !xSECAAINP (DDESP[41] OF CE)
+      var !xSECABINP (DDESP[42] OF CE)
+    endif
+    var !leavePosition POS PL OF CE
+    var !leaveDirection DIR PL OF CE
+    !yDirection = !!ce.ori.yDir()
+    !orientation = 'Z IS ' & !leaveDirection & ' AND Y is ' & !yDirection.string()
+    !plane.position = object POSITION(!leavePosition)
+    !plane.orientation = object ORIENTATION(!orientation)
+  endif
+
+  -- Get second size (new or existing component)
+  var !nextElement NEXT
+  !next = !nextElement.dbref()
+  var !arrivePosition  POS PA OF NEXT
+  var !arriveDirection DIR PA OF NEXT
+  !yDirectionSecond = !next.ori.yDir()
+  !orientationSecond = 'Z IS ' & !arriveDirection & ' AND Y is ' & !yDirectionSecond.string()
+  !plane2.position = object POSITION(!arrivePosition)
+  !plane2.orientation = object ORIENTATION(!orientationSecond)
+  var !nextShape (WDESP[30] OF NEX)
+  if (ARRIVE OF NEXT EQ 1) then
+    var !xSECLAINP (DDESP[2] OF NEXT)
+    var !xSECLBINP (DDESP[3] OF NEXT)
+    var !secondPosition POS P1 OF NEXT
+  elseif (ARRIVE OF NEXT EQ 2) then
+    var !xSECLAINP (DDESP[4] OF NEXT)
+    var !xSECLBINP (DDESP[5] OF NEXT)
+    var !secondPosition POS P2 OF NEXT
+  else
+    var !xSECLAINP (DDESP[41] OF NEXT)
+    var !xSECLBINP (DDESP[42] OF NEXT)
+    var !secondPosition POS P3 OF NEXT
+  endif
+
+  -- if we have a bend then we want the inclusive angle
+  if (!bend) then
+    !angle = 180degrees - !plane.orientation.zDir().angle(!plane2.orientation.zDir())
+    !vector1 = object POINTVECTOR()
+    !vector1.position = object POSITION(!leavePosition)
+    !vector1.direction = object DIRECTION(!leaveDirection)
+    !vector2 = object POINTVECTOR()
+    !vector2.position = object POSITION(!secondPosition)
+    !vector2.direction = !plane2.orientation.zDir()
+    !intersect = !vector1.intersection(!vector2)
+    !firstDistance = !vector1.position.distance(!intersect)
+    !secondDistance = !vector2.position.distance(!intersect)
+  endif
+
+  -- Calculate the X,Y,Z offset of second position
+  !line.startPosition = object POSITION(!secondPosition)
+  !line.endPosition = object POSITION(!leavePosition)
+  if (!line.length().eq(0)) then
+    !zDistance = 0mm
+  else
+    !lineDirection = object DIRECTION(!leaveDirection)
+    !lineDirection = !lineDirection.opposite()
+    !line = !line.direction(!lineDirection)
+    !line = !line.extendEnd(!plane)
+    !zDistance = !line.length()
+  endif
+
+  !xyOffset = !plane.xyOffset(object POSITION(!secondPosition))
+  !xOffset = !xyOffset.x
+  !yOffset = !xyOffset.y
+
+  !test = !yOffset.between(-0.5mm, 0.5mm)
+  if (!test) then
+    !yOffset = 0mm
+  endif
+  !test = !xOffset.between(-0.5mm, 0.5mm)
+  if (!test) then
+    !xOffset = 0mm
+  endif
+
+  -- Try to give positive dimensions
+  if (!xOffset lt 0) then
+    !xOffset = !xOffset * -1
+    !yOffset = !yOffset * -1
+    !xDirection = !plane.orientation.wrt(ZONE).xDir().opposite().string().before(' WRT')
+  else
+    !xDirection = !plane.orientation.wrt(ZONE).xDir().string().before(' WRT')
+  endif
+
+  -- Test if we need to transpose
+  !mustTranspose = false
+  if (!transpose) then
+    if (!xOffset eq 0 and !yOffset neq 0) then
+      !mustTranspose = true
+    endif
+  endif
+
+  if (!mustTranspose) then
+    if (!xSECABINP.real() neq 0 and !bend.not()) then
+      !xSECAAINP1 = !xSECAAINP
+      !xSECAAINP = !xSECABINP
+      !xSECABINP = !xSECAAINP1
+    endif
+    if (!xSECLBINP.real() neq 0 and !bend.not()) then
+      !xSECLAINP1 = !xSECLAINP
+      !xSECLAINP = !xSECLBINP
+      !xSECLBINP = !xSECLAINP1
+    endif
+    !xOffset1 = !xOffset
+    !xOffset = !yOffset
+    !yOffset = !xOffset1
+    !zDistance = !zDistance
+    -- Try to give positive dimensions
+    if (!xOffset lt 0) then
+      !xOffset = !xOffset * -1
+      !yOffset = !yOffset * -1
+      !xDirection = !plane.orientation.wrt(ZONE).yDir().opposite().string().before(' WRT')
+    else
+      !xDirection = !plane.orientation.wrt(ZONE).yDir().string().before(' WRT')
+    endif
+  else
+    -- Consider if we need to transpose the leave sizes because not parallel with arrive sizes
+    if ((!special inset ('FORD','FOFO','SQFO') or !yDirection eq !yDirectionSecond or !yDirection eq !yDirectionSecond.opposite())) then
+      -- OK we have parallel arrive and leave sizes
+    else
+      if (!xSECLBINP.real() neq 0 and !bend.not()) then
+        !xSECLAINP1 = !xSECLAINP
+        !xSECLAINP = !xSECLBINP
+        !xSECLBINP = !xSECLAINP1
+      endif
+    endif
+  endif
+
+  !flipped = false
+  -- Special Cases
+  if (!special inset ('SQRD','SQFO')) then
+    if (!nextShape eq 'RECT') then
+      !flipped = true
+      -- Use values from second plane
+      !xyOffset = !plane2.xyOffset(object POSITION(!leavePosition))
+      !xOffset = !xyOffset.x
+      !yOffset = !xyOffset.y
+      !xDirection = !plane2.orientation.wrt(ZONE).xDir().string().before(' WRT')
+    endif
+  elseif (!special eq 'FOFO') then
+    if (!nextShape eq 'OVAL') then
+      !flipped = true
+      !yOffset = !yOffset * -1
+      !xDirection = !plane.orientation.wrt(ZONE).xDir().opposite().string().before(' WRT')
+    endif
+  elseif (!special eq 'FORD') then
+    if (!nextShape eq 'CIRC') then
+      !flipped = true
+      !yOffset = !yOffset * -1
+      !xDirection = !plane.orientation.wrt(ZONE).xDir().opposite().string().before(' WRT')
+    else
+      -- Use values from second plane
+      !xyOffset = !plane2.xyOffset(object POSITION(!leavePosition))
+      !xOffset = !xyOffset.x
+      !yOffset = !xyOffset.y
+      !xDirection = !plane2.orientation.wrt(ZONE).xDir().opposite().string().before(' WRT')
+    endif
+  elseif (!special eq 'FMOFFSB') then
+      !xDirection = !plane.orientation.wrt(ZONE).yDir().string().before(' WRT')
+  endif
+  if (!flipped) then
+    !xSECAAINP1 = !xSECAAINP
+    !xSECABINP1 = !xSECABINP
+    !xSECLAINP1 = !xSECLAINP
+    !xSECLBINP1 = !xSECLBINP
+    !xSECAAINP = !xSECLAINP1
+    !xSECABINP = !xSECLBINP1
+    !xSECLAINP = !xSECAAINP1
+    !xSECLBINP = !xSECABINP1
+  endif
+  !!ce = !memory
+
+  !return = ARRAY()
+  !return.append(!xSECAAINP)
+  !return.append(!xSECABINP)
+  !return.append(!xSECLAINP)
+  !return.append(!xSECLBINP)
+  !return.append(!xOffset)
+  !return.append(!yOffset)
+  !return.append(!zDistance)
+  !return.append(!xDirection)
+  !return.append(!flipped)
+  !return.append(!angle)
+  !return.append(!firstDistance)
+  !return.append(!secondDistance)
+
+  UNDODB
+  return !return
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      alignTail
+--
+-- Description: Align tail with head
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .alignTail()
+
+  if (!!ce.type eq 'BRAN') then
+    !test1 = !!ce.tpos.near(!!ce.hpos, 1mm)
+    !positionZero = object POSITION('E0N0U0 wrt owner')
+    !test2 = !!ce.tpos.near(!positionZero, 1mm)
+    if (MCOUNT eq 0 and UNSET(TREF) and (!test1 or !test2) ) then
+      !position = !!ce.hpos
+      !positionTail = !position
+      !positionTail.up = !positionTail.up + 1mm
+      !line = object LINE(!position, !positionTail)
+      !line = !line.direction(!!ce.hdir)
+      !!ce.tpos = !line.endPosition
+      !!ce.tdir =  !!ce.hdir.opposite()
+      !!ce.tbore = !!ce.hbore
+      !!ce.tconn = !!ce.hconn
+      !!ce.attribute(|:txySize|) = !!ce.attribute(|:hxySize|)
+    endif
+    REM BRAN ADD BRAN
+  endif
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      transposeHeadTube
+--
+-- Description: Change the Head tube if wrong by 90 degrees
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .transposeHeadTube()
+
+  BRAN
+  handle ANY
+    return
+  elsehandle NONE
+    if (!!ce.owner.type.neq('HVAC') or !!ce.dbwrite.not() or !!ce.lock) then
+      SAME
+      return
+    endif
+  endhandle
+  if (hstube eq /$:AVEVAHVACSPEC$:/HRTUBEA ) then
+    hstube /$:AVEVAHVACSPEC$:/HRTUBEB
+  elseif (hstube eq /$:AVEVAHVACSPEC$:/HRTUBEB ) then
+    hstube /$:AVEVAHVACSPEC$:/HRTUBEA
+  elseif (hstube eq /$:AVEVAHVACSPEC$:/HFOTUBEA ) then
+    hstube /$:AVEVAHVACSPEC$:/HFOTUBEB
+  elseif (hstube eq /$:AVEVAHVACSPEC$:/HFOTUBEB ) then
+    hstube /$:AVEVAHVACSPEC$:/HFOTUBEA
+    handle ANY
+      -- This is a recent addition to the catalogue
+    endhandle
+  endif
+  REFRESH
+  SAME
+
+endmethod

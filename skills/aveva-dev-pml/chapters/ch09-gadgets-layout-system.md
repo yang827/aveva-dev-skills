@@ -86,7 +86,7 @@ AVEVA PML provides an extensive palette of user interface controls (gadgets) emb
 
 ### 5. Display & Multiline Gadgets
 * **`PARAGRAPH`**: Static text label, multi-line description, or static icon.
-  * Syntax: `paragraph .lblDesc text 'Select a pipe to inspect details:' at x y width 30`
+  * Syntax: `paragraph .lblDesc at x y text 'Select a pipe to inspect details:' width 30`
 * **`TEXTPANE`**: Multi-line rich text area for logging, notes, or multi-line reports.
   * Syntax: `textpane .logArea 'Event Log:' at x y width 40 height 6 scroll`
   * Methods: `.val = !array`, `.append('new line')`, `.clear()`.
@@ -133,7 +133,7 @@ setup form !!engInspector dialog resizable
   title 'Engineering Model & Component Inspector'
 
   -- Left Column: Database Hierarchy Tree Selector
-  paragraph .p1 text 'DABACON Hierarchy:' at x 1 y 1
+  paragraph .p1 at x 1 y 1 text 'DABACON Hierarchy:'
   selector .tree at xmin ymax+0.5 width 25 height 14 anchor top+bottom+left callback '!this.onTreeSelect()'
 
   -- Right Column: Tabset Container
@@ -187,6 +187,7 @@ endmethod
 * **Hardcoding Absolute Layout Coordinates**: Specifying bare numbers (`at x 20 y 35`) breaks across different system display scaling settings. Always use relative coordinates (`xmin`, `xmax`, `ymin`, `ymax`).
 * **Unclosed Frames**: Forgetting `exit` on child `frame` or `container` declarations creates broken layout hierarchies.
 * **Assigning Non-Array to `.dtext`**: Setting `.dtext` on `LIST` or `OPTION` gadgets with a scalar string causes runtime assignment errors; always supply an `ARRAY`.
+* **Calling `.dtext.append(...)`**: `.dtext` is a *property* holding an `ARRAY of STRING` — it exposes no methods. `!this.myList.dtext.append('new item')` is invalid PML. `.append()` belongs to the `ARRAY` object (Ch 2): build or extend an `ARRAY` with `.append()`, then assign the whole array to `.dtext` (see the Ch 8 nozzle-list pattern). This applies identically to `.dtext` on `OPTION`, `LIST`, and `COMBOBOX`.
 
 ## Reference Tables
 | Gadget Keyword | Primary Attributes | Return / Data Property |

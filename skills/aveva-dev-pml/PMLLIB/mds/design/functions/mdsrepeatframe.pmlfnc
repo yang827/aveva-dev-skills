@@ -1,0 +1,806 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:    mdsrepeatframe.pmlfnc
+--   Type:    Function Definition
+--   Group:   Multi Discipline Supports Application
+--     Keyword:   MDS
+--   Module:    design
+--   Replaces:
+--
+-- Author:    Karel Pleschner
+-- Created:   24th Aug 2006
+--
+--
+-- Description:
+-- Function to repeat MDS frame
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsRepeatFrame()
+
+  -- set default distance for positioning
+  !distance = 300mm
+
+  -- initialize MDSREPEATFRAME object
+  !frameData = object MDSREPEATFRAME()
+
+  -- if defined variable !!mdsSilent suppress the error messages
+  if undefined(!!mdsSilent) then
+    !!mdsSilent = true
+  endif
+
+  -- identify support
+  do
+    prompt off
+    prompt load escape 'Identify MDS Support Frame to repeat'
+    !srcSupp = !!mdsGetSuppname(ref of ID@ ).dbref()
+    handle (61,528)
+      prompt on
+      return
+    elsehandle ANY
+      skip
+    endhandle
+
+    skip if !srcSupp.type.neq('STRU')
+
+    -- store support type of identified supp
+    !suppType = !srcSupp.:MdsSuppType
+
+    -- rule out FT22 support
+    if !suppType.eq('FT22') then
+      prompt on
+      !!ce = !srcSupp
+      !!mdsCopySupp.show('At',0,0.07)
+      return
+    endif
+
+    --<kp>feb07 rule out Lighting Supports
+    if !suppType.eq(!!mdslsuppdefs.type).and(!!mdslsuppdefs.error.unset()) then
+      !!alert.error('Copying of Lighting Supports is not currently supported! Select another one.')
+      skip
+    endif
+
+    -- rule out other unsupported types
+    if !frameData.unsupported(!suppType) then
+      !!alert.error('Copying of frame $!suppType is not currently supported! Select another one.')
+      skip
+    endif
+
+    -- check if DATUM atta exists
+    !srcDatum = $!<srcSupp.name>/DATUM
+    handle ANY
+      !!alert.error('Invalid frame - no DATUM atta exists! Select another one.')
+      skip
+    endhandle
+    -- check if SREF atta exists
+    !srcSref = $!<srcSupp.name>/SREF
+    handle ANY
+      !!alert.error('Invalid frame - no SREF atta exists! Select another one.')
+      skip
+    endhandle
+
+
+    -- exit loop if everything above is OK
+    break
+  enddo
+
+  !!mdsSilent.delete()
+
+  --get purpose of supported pipe (PIPE,HVAC,TRAY) from DATUM atta
+  !purp = !srcDatum.owner.pspe.purp
+  if !suppType.eq('SPECIAL') then
+    !stdFrame = false
+  else
+    !stdFrame = true
+  endif
+
+  -- get default tube type for cursor identification
+  !tubeType = !!mdsOptions.pipes
+  if !purp.eq('PIPE') then
+    if !tubeType.eq('FTUB') then
+      !pipeType = 'lined section'
+    else
+      !pipeType = 'tube'
+    endif
+    !idType = 'pipe'
+    !spkbrk = TRUE
+  elseif !purp.eq('TRAY') then
+    !pipeType = 'tray section'
+    !idType = 'cable rack'
+    !spkbrk = FALSE
+  elseif !purp.eq('HVAC') then
+    !pipeType = 'HVAC section'
+    !idType = 'HVAC'
+    !spkbrk = FALSE
+  endif
+
+  -- set support move flag
+  !moveSupport = TRUE
+
+  -- store current element
+  !storeCE = !!ce
+
+  -- rebuild form !!mdsmodifyname as BLOCKING and activate permissible gadgets
+  !!kloadftype('mdsmodifyname','BLOCKING')
+  !!kresetactive(!!mdsmodifyname,false)
+  !!mdsmodifyname.cancel.active   = true
+  !!mdsmodifyname.newname.active  = true
+  !!mdsmodifyname.ok.active       = true
+  !!mdsmodifyname.autoname.active = true
+
+  -- store mode and set it temporarily to forward
+  var !mode mode
+  forwards
+
+  -- Find current units and set the distance unit to metric
+  !currentunits = !!kGetSetUnits()
+
+  -- initialize variables used within a loop below
+  !frames = ARRAY()
+  !templateZone = nulref
+  !template = nulref
+  !tmplSequ = ''
+  if !stdFrame then
+    !splitSrefStyp = !srcSref.styp.split('-')
+    !tmplSequ = !splitSrefStyp.last()
+    !templateZone = /MDS/FRAMES/$!suppType
+    handle ANY
+      if !suppType.eq('FT25') then
+        !ft25typ = !splitSrefStyp[2]
+        !templateZone = /MDS/FRAMES/$!<suppType>$!<ft25typ>
+        !template = /MDS/$!<suppType>$!<ft25typ>/$!<tmplSequ>
+      elseif !suppType.eq('FT03').or(!suppType.eq('FT04')).and(!srcDatum.:mdscp1.split(';')[1].eq('2')) then
+        !templateZone = /MDS/FRAMES/$!suppType-VERT
+        !template = /MDS/$!<suppType>V/$!<tmplSequ>
+      else
+        !templateZone = /MDS/FRAMES/$!suppType-HORI
+        !template = /MDS/$!<suppType>H/$!<tmplSequ>
+      endif
+    elsehandle NONE
+      if !suppType.eq('FT23').or(!suppType.eq('FT41')) then
+        !template = /MDS/$!<suppType>/$!<splitSrefStyp[2]>
+      elseif !suppType.eq('FT24') then
+        !template = /MDS/$!<suppType>/$!<splitSrefStyp[2]>$!<splitSrefStyp[3]>
+      elseif '$!suppType' inset ('FT31','FT32','VT01','VT02','VT03','VT04') then
+        var !allTmpl collect all STRU with desc eq desc of $!srcSupp for $!templateZone
+        !template = !allTmpl[1].dbref()
+      else
+        !template = /MDS/$!<suppType>/$!<tmplSequ>
+      endif
+    endhandle
+  endif
+
+  !styp = !srcDatum.styp
+  !projStd = !srcDatum.prop.rnam
+  handle ANY
+    !projStd = !srcDatum.prop.desc
+  endhandle
+  !frameProjStd = !srcSref.prop.rnam
+  handle ANY
+    !frameProjStd = !srcSref.prop.desc
+  endhandle
+
+  -- set prompt
+  !prompt = 'Identify $!pipeType of $!idType to Add DATUM atta of the Support Frame'
+  -- handle exceptions
+  if !suppType.eq('FT49').or(!suppType.eq('VT22')) then
+    !prompt = 'Identify lugs of type LT13 or LT15 to create support frame on'
+    !moveSupport = FALSE
+  endif
+
+  -------------------------------------------------
+  -- start of the main LOOP to create new frames --
+  -------------------------------------------------
+  do
+    -- issue refresh command to make sure GUI is greyed out
+    --refresh
+
+    -- initialize variables
+    !newSupp = nulref
+    !newDatum = nulref
+    !newSref = nulref
+
+    if !!mdsIdTube(!tubeType, '$!prompt',!purp).not() then
+      break
+    endif
+
+    -- handle exception
+    if !suppType.eq('FT49').or(!suppType.eq('VT22')) then
+      skip if !!ce.type.neq('ATTA')
+      !lugStyp = !!ce.styp
+      handle ANY
+        skip
+      endhandle
+      skip if !lugStyp.eq('LT15').or(!lugStyp.matchwild('LT13?')).not()
+    endif
+
+    -- where to create support
+    !idcomp = ce
+    if !!ce.type.eq('BRAN') then
+      !hdir = !!ce.hdir.wrt(worl)
+      !bore = !!ce.hbor.string(!!boreFMT)
+      !prev = 'PH'
+    else
+      !hdir = !!ce.ldir.wrt(worl)
+      !bore = !!ce.lbor.string(!!boreFMT)
+      !prev = 'PL of PREV'
+    endif
+
+    if !purp.eq('PIPE') then
+    else
+      if !!ce.mten.eq(!!ce.owne) then
+        var !allattas collect all ATTA with sequ gt $!!ce.sequ for bran
+      else
+        !maxSequ = !!ce.mten.sequ
+        var !allattas collect all ATTA with sequ gt $!!ce.sequ and sequ lt $!maxSequ for bran
+      endif
+      if !allattas.set() then
+        !!ce = !allattas.last().dbref()
+        !idcomp = ce
+      else
+        !prev = 'PA of prev'
+      endif
+    endif
+
+    if !stdFrame then
+      if !purp.eq('PIPE') then
+        -- check if horizontal/vertical are allowed for this template
+        if !!mdsChecktemp(!templateZone.name,'$!hdir').not() then
+          skip
+        endif
+
+        -- Check if the bore of the identified pipe does not exceed the maximum allowed bore
+        !checkBore = object MDSCHECKFRAME()
+        if !checkBore.bores('$!template').not() then
+          !!kRestoreUnits(!currentunits)
+          !minBore = !template.:MdsMinBore
+          !maxBore = !template.:MdsMaxBore
+          !!alert.error('Standard not available at this bore! ($!bore). Minimum ($!minBore) Maximum ($!maxBore)')
+          units mm BORE mm DISTANCE
+          skip
+        endif
+      elseif !purp.eq('HVAC') then
+        -- Check that HVAC is within the Maximum Slope Allowed
+        if (!hdir neq U and !hdir neq D ) then
+          if (!!mdsGradient(!idcomp)) then
+            !!alert.message ('The HVAC identified is not within the maximum slope for horizontal HVAC as defined in the application defaults ($!!mdsOptions.slope.val)')
+            skip
+          endif
+        endif
+      elseif !purp.eq('TRAY') then
+        -- Check that RACK is within the Maximum Slope Allowed
+        if (!hdir neq U and !hdir neq D ) then
+          if (!!mdsGradient(!idcomp)) then
+            !!alert.message ('The rack identified is not within the maximum slope for horizontal rack as defined in the application defaults ($!!mdsOptions.slope.val)')
+            skip
+          endif
+        endif
+        -- check if horizontal/vertical are allowed for this template
+        if !!mdsChecktemp(!templateZone.name,'$!hdir').not() then
+          skip
+        endif
+      endif
+    endif
+
+    -- compose provisional name
+    do !index from 1
+      !suppName = '/ProvisionalName' & !index
+      !datumName = !suppName + '/DATUM'
+      !srefName = !suppName + '/SREF'
+      !suppName.dbref()
+      handle NONE
+        skip
+      elsehandle ANY
+      endhandle
+      !datumName.dbref()
+      handle NONE
+        skip
+      elsehandle ANY
+      endhandle
+      !srefName.dbref()
+      handle NONE
+        skip
+      elsehandle ANY
+        break
+      endhandle
+    enddo
+
+    -- get insulation (true/false)
+    !insul = !!ce.inth.boolean()
+
+    -----------------------
+    -- create DATUM atta --
+    -----------------------
+    !!mdsDacControl(true)
+    new atta $!datumName copy $!srcDatum
+    !newDatum = ce
+    spkbrk $!spkbrk
+
+
+    -- if sloped pipe then temporarily remove slope
+    if !!mdsGradient(ce).not() then
+      !orthoLdir = !!mdsRemovegrad(ce)[1]
+      rotate about p10 and PL is $!orthoLdir
+    endif
+    -- store frame ori wrt ce for later use
+    !suppOri = !srcSupp.ori.wrt(ce)
+
+    -- DATUM styp of GT05 depends on insulation
+    if !suppType.eq('GT05') then
+      if !insul then
+        !styp = 'AC10'
+      else
+        !styp = 'PIPE-REST'
+      endif
+      !projStd = !styp
+    endif
+
+    !spref = select spec /MDS with styp '$!styp'
+    handle ANY
+      !!alert.error('Unable to select ancillary $!projStd at this bore ($!bore)')
+      !!mdsDacControl(false)
+      delete atta
+      skip
+    endhandle
+
+    -- set spref and lstub
+    !!ce.spref = !spref[1]
+    !!mdsSelLstu(!!ce)
+
+    -- set default desparams - skip if not specified
+    if !!mdssetdespars(ce).not() then
+      !!alert.error('Unable to select ancillary $!projStd at this bore ($!bore)')
+      !!mdsDacControl(false)
+      delete atta
+      skip
+    endif
+
+    -- copy desparams from source atta if same size
+    if !!ce.spref.eq(!srcDatum.spref) then
+      !!ce.desp = !srcAtta.desp
+      handle ANY
+        -- handle situation if there is no despara
+      endhandle
+    endif
+
+    -- check various DATA values for the current ancillary
+    !mdsattaobj = object MDSREADPARSDATA()
+    if !styp.match('-REST').eq(0) then
+      if !mdsattaobj.mdsdefsdata(!styp, !!ce.lbor.real().value() ).not() then
+        !!alert.error('Aborting the creation of this MDS FRAME')
+        !!mdsDacControl(false)
+        delete atta
+        skip
+      endif
+    endif
+
+    -- set up the object for checking and variables associated with the object calls below
+    !check = object MDSCHECKSTD(!mdsattaobj )
+    !min = STRING()
+    !max = STRING()
+    !materror = STRING()
+
+    --check the PIPE MATERIAL
+    if !purp.eq('PIPE') then
+      if !check.material(!materror).not() then
+        !!alert.error(!materror)
+        !!mdsDacControl(false)
+        delete atta
+        skip
+      endif
+    endif
+
+    -- Check PIPE INSULATION THICKNESS is within the limits of the Selected ancillary Standard
+    -- If the MNIN (Minimum Insulation) data property does not exist in the ancillary's dataset
+    -- the OBJECT 'Mdscheckstd.insu()' will return 'TRUE' and skip the code shown below
+    if (!check.insu(!styp,!min,!max).not()) then
+      !!mdsInsulationError(!currentunits, !min, !max, !projStd)
+      !!mdsDacControl(false)
+      delete atta
+      skip
+    endif
+
+    -- Check BRANCH TEMPERATURE is within the limits of the Selected ancillary Standard
+    -- If the MINT (Minimum Temperature) data property does not exist in the ancillary's dataset
+    -- the OBJECT 'Mdscheckstd.temp()' will return 'TRUE' and skip the code shown below
+    !tMin = STRING()
+    !tMax = STRING()
+    if (!check.temp(!styp,!tMin,!tMax).not()) then
+      var !temp temp of branch
+      !!alert.error('The TEMPERATURE of the identified pipe ($!temp) is not within the MINIMUM/MAXIMUM temperatures ($!tMin / $!tMax)')
+      !!mdsDacControl(false)
+      delete atta
+      skip
+    endif
+
+    -- Test if the ANCILLARY is available at this ELEVATION
+    if !styp.match('-REST').eq(0) then
+      if !check.elevation(!styp).not() then
+        !position = !!ce.position.wrt(/* )
+        !selectedElevation = !position.up
+        !minimumElevation = !mdsattaobj.elevation
+        !!alert.error('The elevation selected is unsuitable for DATUM atta. Selected elevation $!selectedElevation , Minimum elevation $!minimumElevation')
+        !!mdsDacControl(false)
+        delete atta
+        skip
+      endif
+    endif
+
+    -- <sk> 06/07/2012 Test custom criteria
+    !criteria = !check.criteria()
+    if (!criteria.empty().not()) then
+      !!alert.error (!criteria)
+      !!mdsDacControl(FALSE)
+      delete atta
+      skip
+    endif
+    -- </sk> 06/07/2012
+
+    -- Set the material
+    !!mdssetmatref(!!ce)
+
+    -- set ISPE/TSPE
+    !!mdsSetIspe()
+
+    -- position DATUM atta
+    fconnect
+    if !moveSupport then
+      dist $!distance from $!prev
+    endif
+
+    -- reproduce rotation if source and target DATUM atta are both either vertical or horizontal
+    !srcVertical = !srcDatum.ldir.wrt(worl).eq(U).or(!srcDatum.ldir.wrt(worl).eq(D))
+    !trgVertical = !hdir.eq(U).or(!hdir.eq(D))
+    if !srcVertical.and(!trgVertical) then
+      ori and p9 is p9 of $!srcDatum
+    elseif !srcVertical.not().and(!trgVertical.not()) then
+      !plane = object PLANE(!srcDatum.pos, Z is $!srcDatum.ldir and Y is D )
+      !rotAngle = !srcDatum.pdir[9].angle(!plane.orientation.ydir())
+      if !rotAngle.gt(179) then
+        !rotAngle = 180
+      elseif !rotAngle.lt(1) then
+        !rotAngle = 0
+      endif
+      if !plane.xyoffset(!srcDatum.ppos[9]).x.gt(0) then
+        !rotAngle = !rotAngle * -1
+      endif
+      rotate about PL by $!rotAngle
+    endif
+
+
+    ------------------
+    -- create FRAME --
+    ------------------
+    -- Navigate to correct area
+    if (!!mdsmovetosite('').not())then
+      !!ce = !newDatum
+      delete ATTA
+      !!mdsDacControl(false)
+      break
+    endif
+
+    -- create STRU
+    new stru $!suppName
+    !newSupp = ce
+    -- copy stru
+    copy $!srcSupp rename $!srcSupp.name $!suppName
+
+    -- remove various references (ADP drawlist, bedplate refs, etc.)
+    :MdsAdp unset
+    :MdsAdprem unset
+    :MdsBpref1 unset
+    :MdsBpref2 unset
+    :Mdsancref unset
+
+    -- delete all compensations if any
+    !compensations = !!mdsCollectAll('FIXING','gtyp eq ''$!!mdsCompplateDflts.gtyp''',!NewSupp)
+    do !comp values !compensations
+      !!ce = !comp
+      delete $!!ce.type
+    enddo
+    !!ce = !NewSupp
+
+    -- position stru
+    !pos = !srcSupp.position.wrt(!srcDatum)
+    !pos.origin = !newDatum
+    !!ce.pos = !pos
+
+    -- orientate stru
+    !!ce.ori = !suppOri.wrt(worl)
+    -- correct orientation if sloped pipe (within application tolerance)
+    if !!mdsGradient(!newDatum).not() then
+      !!ce = !newDatum
+      !orthoLdir = !!mdsRemovegrad(ce)[1]
+      !storeOri = ori
+      rotate about p10 and PL is $!orthoLdir
+      !newSupp.ori = !suppOri.wrt(worl)
+      !newDatum.ori = !storeOri
+      !!ce = !newSupp
+    endif
+
+
+    -- set :mdsadploc
+    if !srcSupp.:mdsadploc.up.set() then
+      !adploc = !srcSupp.:mdsadploc.wrt(!srcDatum)
+      !adploc.origin = !newDatum
+      !!ce.:mdsadploc = !adploc
+    endif
+
+    -- delete redundant sections and set reference to datum atta
+    !deleteSubs = '$!suppType' inset('CT02','FT02','FT03','FT04','FT12')
+    !notToDeleteBar = !suppType.matchwild('VT*').or(!suppType.eq('FT49'))
+    var !allBars collect all SCTN with (match(name,'$!suppName-BAR-') gt 0) for $!newSupp
+    !datumBar = nulref
+    do !bar values !allBars
+      $!bar
+      if !!ce.:Mdsattaref.findfirst(!srcDatum).set() then
+        !datumBar = !!ce
+        :Mdsattaref $!newDatum
+      else
+        skip if !notToDeleteBar
+        !jois = jois
+        !joie = joie
+        !barSequ = !!ce.name.split('-').last()
+        delete SCTN
+        -- delete attached joints if any
+        if !jois.badref().not() then
+          if !jois.ownls[3].eq(!newSupp) then
+            !!ce = !jois
+            delete $!!ce.type
+          endif
+        endif
+        if !joie.badref().not() then
+          if !joie.ownls[3].eq(!newSupp) then
+            !!ce = !joie
+            delete $!!ce.type
+          endif
+        endif
+        if !deleteSubs then
+          $!suppName/SUBS$!barSequ
+          handle NONE
+            delete SUBS
+            handle ANY
+            endhandle
+          elsehandle ANY
+          endhandle
+        endif
+      endif
+    enddo
+
+    -- delete empty nodes
+    var !emptyNodes collect all (PNOD SNOD) with mcount eq 0 for $!newSupp
+    do !node values !emptyNodes
+      $!node
+      delete $!!ce.type
+    enddo
+
+
+    if !datumBar.badref().not() then
+      -- rename datum bar if it is not named "*-BAR-1"
+      if !datumBar.name.neq(!suppName + '-BAR-1') then
+        !subsSequ = !datumBar.name.split('-').last()
+        !datumBar.name = !suppName + '-BAR-1'
+        if !deleteSubs then
+          -- rename also pad at the end of sctn
+          $!suppName/SUBS$!subsSequ
+          handle NONE
+            name $!suppName/SUBS1
+          elsehandle ANY
+          endhandle
+        endif
+      endif
+    else
+      -- check V sections - and reset reference to datum atta
+      var !allVsctn collect all SCTN with (match(name,'$!suppName-V') gt 0) for $!newSupp
+      do !sctn values !allVsctn
+        $!sctn
+        if !!ce.:Mdsattaref.findfirst(!srcDatum).set() then
+          !datumBar = !!ce
+          :Mdsattaref $!newDatum
+        endif
+      enddo
+    endif
+
+    if !datumBar.badref() then
+      !datumBar = $!allBars[1]
+      handle ANY
+        !datumBar = !newSupp
+      endhandle
+    endif
+
+    -- accommodate frame to pipe size
+    if !suppType.eq('FT52').or(!suppType.eq('FT53')) then
+
+      !vertical[1] = $!suppName-V1
+      !vertical[2] = $!suppName-V2
+      !clearToVert = !srcSref.desp[2]
+      if !styp.eq('PIPE-REST') then
+        !clearToVert = !clearToVert - 10
+      endif
+      !p10Dir = !newDatum.pdir[10].wrt(worl)
+      !p11Dir = !newDatum.pdir[11].wrt(worl)
+
+      pin1 copy p10 of $!newDatum
+      pin1 thro $!vertical[1]
+      var !tmpStrDist1 cons dist pin1 to p10 of $!newDatum
+      !tmpDist1 = !tmpStrDist1.real()
+      pin1 thro $!vertical[2]
+      var !tmpStrDist2 cons dist pin1 to p10 of $!newDatum
+      !tmpDist2 = !tmpStrDist2.real()
+      pin1 off
+      if !tmpDist1.lt(!tmpDist2) then
+        !vnum1 = 1
+        !vnum2 = 2
+      else
+        !vnum1 = 2
+        !vnum2 = 1
+      endif
+
+      !!ce = !vertical[!vnum1]
+      move $!p10Dir clear $!clearToVert behind $!newDatum
+      !!ce = !vertical[!vnum2]
+      move $!p11Dir clear $!clearToVert behind $!newDatum
+
+    elseif !suppType.eq('GT05') then
+
+      !clearToVert = 2mm
+      !clearToHori = !newDatum.inth + 25
+      if !styp.eq('PIPE-REST') then
+        !clearToVert = !clearToVert - 10
+        !clearToHori = !clearToHori - 10
+      endif
+      !p10Dir = !!kSnapOrth(!newDatum.pdir[10])
+      !p11Dir = !!kSnapOrth(!newDatum.pdir[11])
+      !!ce = $!suppName-V2
+      !tmppos1 = !!ce.pos
+      move $!p10Dir clear $!clearToVert behind $!newDatum
+      !ext = !!ce.pos.distance(!tmppos1)
+      !!ce = $!suppName-V1
+      !tmppos2 = !!ce.pos
+      move $!p11Dir clear $!clearToVert behind $!newDatum
+      if !!ce.pos.distance(pos of same).lt(!tmppos1.distance(!tmppos2)) then
+        !ext = !ext * -1
+      endif
+      !!ce = $!suppName-BAR-1
+      extend start $!ext
+      extend end $!ext
+      !udir = Z wrt stru
+      move $!udir clear $!clearToHori behind $!newDatum
+
+    elseif !suppType.eq('GT09').or(!suppType.eq('GT10')) then
+
+      !v1clear = !srcSref.desp[1] - 10
+      !v2Clear = !srcSref.desp[2] - 10
+      !clearToHori = !srcSref.desp[3] - 10
+      !p10Dir = !!kSnapOrth(!newDatum.pdir[10])
+      !p11Dir = !!kSnapOrth(!newDatum.pdir[11])
+      !udir = Z wrt $!newSupp
+      !!ce = $!suppName-V1
+      !v1ref = ce
+      !tmppos1 = !!ce.pos
+      move $!p10Dir clearance $!v1clear behind $!newDatum
+      !ext1 = !!ce.pos.distance(!tmppos1)
+      !!ce = $!suppName-V2
+      !v2ref = ce
+      !tmppos2 = !!ce.pos
+      move $!p11Dir clearance $!v2Clear behind $!newDatum
+      !ext2 = !!ce.pos.distance(!tmppos2)
+      if !v1ref.pos.distance(!v2ref.pos).lt(!tmppos1.distance(!tmppos2)) then
+        !ext1 = !ext1 * -1
+        !ext2 = !ext2 * -1
+      endif
+      !!ce = $!suppName-BAR-1
+      !tmppos3 = !!ce.pos
+      move $!udir clearance $!clearToHori behind $!newDatum
+      !ext3 = !!ce.pos.distance(!tmppos3)
+      if !!ce.pos.distance(!v1ref.pos).lt(!!ce.pos.distance(!v2ref.pos)) then
+        extend start $!ext1
+        extend end $!ext2
+      else
+        extend start $!ext2
+        extend end $!ext1
+      endif
+      if !ext1.lt(0) then
+        !ext3 = !ext3 * -1
+      endif
+      !!ce = !v1ref
+      extend end $!ext3
+      extend start thro p9 of $!newDatum
+      !!ce = !v2ref
+      extend end $!ext3
+      extend start thro p9 of $!newDatum
+    endif
+
+    -- correct position - slide to ancillary/pipe
+    !frameData.correctPosition(!datumBar,!newDatum)
+    handle ANY
+    endhandle
+
+    ----------------------
+    -- create SREF atta --
+    ----------------------
+    !!ce = !newDatum
+    new atta $!srefName
+    copy $!srcSref
+    !frameData.setSprefOfSref(!suppName,'1',!tmplSequ)
+    handle ANY
+      !!alert.error('Unable to select FRAME ' & !frameProjStd & ' at this bore(' & !bore & ')')
+      delete atta
+      !!ce = !newDatum
+      delete atta
+      !!ce = !newSupp
+      delete stru
+      !!mdsDacControl(false)
+      skip
+    endhandle
+    fconnect to prev
+    !newSref = ce
+    spkbrk $!spkbrk
+    !!ce.ispe = !newDatum.ispe
+    handle ANY
+      -- handle ispe nulref
+    endhandle
+    !!ce.lstu = !newDatum.lstu
+
+    ---------------------------
+    -- rename copied support --
+    ---------------------------
+    -- navigate to frame
+    !!ce = !newSupp
+
+    -- initialize form !!mdsmodifyname
+    !!mdsmodifyname.name.val    = !!ce.namn
+    !!mdsmodifyname.newname.val = 'unset'
+
+    -- set form callback
+    !!mdsmodifyname.applyform.clear()
+    !!mdsmodifyname.applyform[1] = '!!mdsmodifyname(1,1,''NAMEONLY'')'
+    !!mdsmodifyname.applyform[2] = '!!mdsmodifyname.name.val = !!ce.namn'
+    !!mdsmodifyname.applyform[3] = '!!mdsmodifyname.newname.val = ''unset'''
+
+    -- Set focus of form
+    !!mdsmodifyname.newname.setfocus()
+
+    -- Show !!mdsmodifyname Form
+    waiton !!mdsmodifyname
+
+    -- set DATUM atta stext
+    !!mdsTransport(!newDatum,!newDatum.name.string())
+
+    !!mdsDacControl(false)
+    !frames.append(!newSupp)
+
+    -----------------------------------------------
+    -- end of the main LOOP to create new frames --
+    -----------------------------------------------
+  enddo
+
+
+  if !frames.unset() then
+    -- navigate to where we were before
+    !!ce = !storeCE
+    !!alert.message('No FRAME has been created')
+  else
+    -- navigate to last created support
+    !!ce = !frames.last()
+  endif
+
+
+  $!mode
+  !!kRestoreUnits(!currentunits)
+
+  -- end of function
+endfunction

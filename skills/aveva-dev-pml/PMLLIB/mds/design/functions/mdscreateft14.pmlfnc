@@ -1,0 +1,1977 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:    mdscreateft14.pmlfnc
+--   Type:    Function Definition
+--   Group:   Multi Discipline Supports Application
+--     Keyword:   MDS
+--   Module:    design
+--   Replaces:          MPS138
+--
+-- Author:    I.osborne
+-- Created:   Tue Jul 22
+--
+--
+-- Description:
+-- function to create support frame type 14
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         STRING       Method of creating support
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsCreateFt14(!method is STRING)
+
+  -- Find current units and set the distance unit to metric
+  !currentunits = !!kGetSetUnits()
+
+  -- Initialise variables
+  call !!mdsResetPins(1,10)
+
+  !support   = !!mdsFT14.support
+  --!clearance = !!mdsOptions.clear.val
+  !selection = !!mdsSetSteel.size.selection('Rtext')
+  !slide     = !!mdsFT14.slide.selection('Rtext')
+  !datum     = !support.datum
+  !stru      = !support.stru
+  !name      = !stru.name
+  !p10dir    = !support.p10Dir
+  !p11dir    = !support.p11Dir
+  !plDir     = !support.plDir
+  !paDir     = !support.paDir
+  !alias     = !support.alias
+  !p9dir     = !support.p9dir
+  --<k.pleschner>May06
+  !datumDflts = object MDSANCGEOMDFLTS(!datum)
+  !clearance = !datumDflts.cend
+  --<k.pleschner>May06
+
+  !desc = desc of /MDS/TEMPLATES
+  handle ANY
+    !desc = ''
+  endhandle
+
+  -- Does the support have attached/Associated supports
+
+  if !!mdsgetconnectedsupp(!stru) then
+    !!kRestoreUnits(!currentunits)
+    return
+  endif
+
+  -- Get configuration support is to be built to.
+
+  !config = !!mdsFT14.slide.val.real()
+  --!refe = !!ce
+  !form = !!mdsFT14
+
+  --<kp>jan2012 MDS associations
+  !picks = ARRAY()
+
+
+  -- Can we write to the spref attribute of the SREF atta
+  -- and the stru
+
+  if !support.datum.badref().not() then
+    !srefName = !support.datum.name.before('/DATUM') + '/SREF'
+    if !!mdsComClaimDac(!support.stru,'DACMOD','POS').not() or !!mdsComClaimDac(!srefName.dbref(),'DACMOD','SPREF').not() then
+      !despars = !srefName.dbref().despar
+      !!mdsResetDims(!form,!despars)
+      !!kRestoreUnits(!currentunits)
+      !!alert.error('Unable to change the support as write access to the SREF atta is not available')
+      return
+    endif
+  endif
+
+  --!haveJoints = FALSE
+
+  --------------------------------------------------------------------------------
+
+  -- Check configuration against method of creation
+
+  if (!method eq 'DIMENSION')then
+    if (!config.gt(3)) and !config.neq(9) then
+      !!alert.warning('Cannot create this configuration by Dimensions. Use Create by Cursor.')
+      !!kRestoreUnits(!currentunits)
+      return
+    endif
+  endif
+
+  -- Check that Datum atta has been created
+  if (!datum.set().not())then
+    !!alert.message('Datum support atta has not been created')
+    !!kRestoreUnits(!currentunits)
+    return
+  endif
+
+  -- Check that Datum atta has been positioned
+  if (!support.position.not())then
+    !!alert.message('Position atta before identifying supporting steelwork')
+    !!kRestoreUnits(!currentunits)
+    return
+  endif
+
+  -- store compensations
+  !complates = !!mdsCompplateDflts.compensatingPlates(!form)
+
+  ------------------------------------------------------------------------------------------------------
+  --<wd>aug2007<mds12>
+  -- ENSURE ALL the current MDS SNIPES(FITTINGS) that EXIST on the current MDS STRUCTURE SCTN elements are STORED,
+  -- so "UPDATE" the FORM MDSSUPPORT object member "!form.support.mdssctns" to represent the current MDS STRUCTURE.
+  -- *** IMPORTANT*** The object needs to be UPDATED before CREATIIN/MODIFICATION of the MDS STRUCTURE commences,
+  -- as ADDITIONAL MDS SNIPES may have been ADDED/MODIFIED/DELETED by the USER since the FORM was initialised,
+  -- via the !!mdsSnipe form utility from the MAIN "MDS DESIGN application" BAR menu option... "Modify>Snipe on Angle..."
+  --
+  -- REGENERATE the DATA stored in the FORM MDSSUPPORT object member "!form.support.mdssctns"
+  -- for ALL of the current MDS Support SCTNS and ALL the associated MDS SNIPE(FITTING) members
+  !!mdssupportsctns(!form)
+
+  -- UPDATE the local !support object variable with the latest MDSSNIPE DATA
+  !support.mdssctns      = !form.support.mdssctns
+  !support.mdssctnsstore = !form.support.mdssctnsstore
+
+  --<wd>aug2007<mds12>
+  ------------------------------------------------------------------------------------------------------
+
+  -- Check which attas to work from
+  if (!support.bars.size().leq(1))then
+    !atta = !support.atta
+  else
+    !atta = !support.bars[1]
+  endif
+
+  -- Set initial orientation
+  !ddir = D wrt world
+  !udir = U wrt world
+
+  -- Store section name and matref for each member
+  -- for resetting later
+
+  !storeMat = ARRAY()
+  !storeMat = !!mdsStoreMat(!name)
+
+  -- Get general direction of pleave of datum atta
+  -- Plane direction is nearest value to 1
+
+  !up = (abs(!plDir.up))
+  !east = (abs(!plDir.east))
+  !north = (abs(!plDir.north))
+  !max = max((abs(!up)), (abs(!east)), (abs(!north)))
+  if (!max.eq(!up))then
+    !planeDir = U wrt world
+  elseif (!max.eq(!east))then
+    !planeDir = E wrt world
+  else
+    !planeDir = N wrt world
+  endif
+
+  -- Determine the general Pleave direction of the datum atta
+
+  PIN 1 COPY PL OF $!datum
+  handle any
+    PIN 1 COPY P2 OF $!datum
+  endhandle
+  PIN 1 plane PIN 1 CLEAR 0 BEH $!datum
+  PIN 1 DIR $!planeDir
+  PIN 2 COPY PIN 1
+  PIN 2 plane PIN 2 THRO $!datum
+  VAR !genPLDir CONS DIR PIN 2 TO PIN 1
+  PIN 1 OFF
+  PIN 2 OFF
+
+  -- Generate pin positions for each creation type
+  --------------------------------------------------
+
+  if (!method eq |CURSOR|)then
+
+    ---------------------------------------------
+    -- Check for Configs 6,7 and 8 - NO External Connections
+    -- possible for MDS frames attached to FT22 Bedplates.
+
+    !errorMessage = STRING()
+    if(!!mdsCheckConns(!form, !errorMessage).eq('UNJOINTED')) then
+      -- nothing to do
+    elseif(!!mdsCheckConns(!form, !errorMessage).eq('WARNING')) then
+      !continue = !!alert.confirm(!errorMessage)
+      if(!continue.eq('NO')) then
+        return
+      else
+        !!mdsSelectJoints(!form,'DISCONNECT','')
+        !support.joints.clear()
+      endif
+    elseif(!!mdsCheckConns(!form, !errorMessage).eq('ERROR')) then
+      !!alert.error(!errorMessage)
+      !!kRestoreUnits(!currentunits)
+      return
+    else
+      -- continue
+      !!mdsSelectJoints(!form,'DISCONNECT','')
+      !support.joints.clear()
+    endif
+
+    label /Element1
+
+    --<wd>may2007<mds12>
+    !session  = current session
+    --<wd>may2007<mds12>
+
+    if (!config.eq(6) or !config.eq(7) or !config.eq(8)) then
+      !idType = 'BOX'
+      !prompt = 'Identify Bed Plate to support from'
+    elseif (!config.eq(9)) then
+      if !session.module().upcase().match('DESIGN').gt(0) then
+        !idType = 'PANE FLOOR WALL GWALL STWALL SCREED CFLOOR CSCREED CWALL BOX'
+      elseif  !session.module().upcase().match('OUTFITTING').gt(0) then
+        !idType = 'PANE FLOOR WALL GWALL STWALL SCREED CFLOOR CSCREED CWALL BOX HPLATE'
+      endif
+      !prompt = 'Identify Wall to support from'
+    else
+      if !session.module().upcase().match('DESIGN').gt(0) then
+        !idType = 'GENSEC SCTN'
+      elseif  !session.module().upcase().match('OUTFITTING').gt(0) then
+        !idType = 'GENSEC SCTN HSTIFF'
+      endif
+      !prompt = 'Identify Section to support from'
+    endif
+
+    !pick = !support.singlePick(!idType,!prompt)
+    if !pick.unset() then
+      !!kRestoreUnits(!currentunits)
+      return
+    endif
+
+    --------------------------------------------------
+    -- Check if Picked BOX is a FT22 Bed Plate for configs 6,7 and 8
+
+    if (!pick.type.eq('BOX')) and !config.neq(9) then
+
+      if (!config.eq(6) or !config.eq(7) or !config.eq(8)) then
+        if (!pick.owner.owner.:MDSSuppType.trim().neq('FT22')) then
+          !krealnum = !!mdsframe.standard.rtext.findfirst('FT22')
+          handle ANY
+            golabel /ERROR
+          endhandle
+          !kdescrip = !!mdsframe.standard.dtext[!krealnum]
+          handle ANY
+            golabel /ERROR
+          endhandle
+          !!alert.error('The identified ELEMENT is NOT a $!<kdescrip>')
+          golabel /Element1
+          label /ERROR
+          !!alert.error('The identified ELEMENT is NOT a MDS BedPlate')
+          golabel /Element1
+        endif
+      endif
+
+
+      --------------------------------------------------
+      --------------------------------------------------
+      -- The Code BELOW is OK when the idtype is a FT22 BEDPLATE BOX
+
+      if (!config.eq(6) or !config.eq(7) or !config.eq(8)) then
+        !testCE = !!mdsFT14tobpl(!!mdsFT14, !datum, !pick, !p10dir, !clearance.real())
+        if (!testCE[1].eq(''))then
+          !!alert.error('Identified Bed Plate is unsuitable for the selected Support Configuration.')
+          golabel /Element1
+        endif
+        if (!config.eq(6) or !config.eq(8)) then
+          if (!testCE[1].upcase().eq('PARALLEL')) then
+            if (!testCE[2].upcase().eq('LEFT')) then
+              !columnDir  = !p11dir
+              !freeEndDir = !p10dir
+              !support.rotateCur =  FALSE
+            elseif (!testCE[2].upcase().eq('RIGHT')) then
+              !columnDir  = !p10dir
+              !freeEndDir = !p11dir
+              !support.rotateCur = TRUE
+            elseif (!testCE[2].upcase().eq('UNSET')) then
+              !!alert.error('Identified Bed Plate is unsuitable for the selected Support Configuration.')
+              golabel /Element1
+            endif
+          endif
+        elseif (!config.eq(7)) then
+          if (!testCE[1].upcase().eq('RIGHTANGLE')) then
+            if (!testCE[2].upcase().eq('LEFT')) then
+              !columnDir  = !p11dir
+              !freeEndDir = !p10dir
+              !support.rotateCur = TRUE
+            elseif (!testCE[2].upcase().eq('RIGHT')) then
+              !columnDir  = !p10dir
+              !freeEndDir = !p11dir
+              !support.rotateCur = FALSE
+            elseif (!testCE[2].upcase().eq('UNSET')) then
+              !!alert.error('Identified Bed Plate is unsuitable for the selected Support Configuration.')
+              golabel /Element1
+            endif
+          endif
+        endif
+      endif
+
+      --------------------------------------------------
+      --------------------------------------------------
+
+      -- For MDS Support type 'FT14' ONLY the UDA ':MDSBpref1' is considered
+      if (!pick.owner.owner.:MDSBpref1.badref().not()) then
+        if (!!alert.confirm('The identified Bed Plate is already referenced by another MDS Support. Do you wish to modify this reference to the current Support and Continue?').eq('NO')) then
+          golabel /Element1
+        else
+          -- Store BedPlate Variables etc. in case Support is Cancelled
+          -- Navigate to Structure/Atta
+          !!ce    = !pick.owner.owner.:MDSBpref1
+          !bpref1 = !!ce.:MDSBpref1
+          !!mdsFT14.strubpref.append(!!ce)
+          !!mdsFT14.storebpref.append(':MDSBpref1 $!bpref1')
+          -- Unset Structure/Atta BedPlate Reference
+          :MDSBpref1 default
+          -- Navigate to BedPlate
+          !!ce   = !pick.owner.owner
+          !stref = !!ce.:MDSBpref1
+          !!mdsFT14.strubpref.append(!!ce)
+          !!mdsFT14.storebpref.append(':MDSBpref1 $!stref')
+          -- Unset Current BedPlate Structure/Atta Reference
+          :MDSBpref1 default
+        endif
+      else
+        -- Store Default Value for Current STRU BedPlate Reference
+        !!mdsFT14.strubpref.append(!pick.owner.owner)
+        !!mdsFT14.storebpref.append(':MDSBpref1 default')
+      endif
+
+      -- Set New reference at the BedPlate
+      !!ce     = !pick.owner.owner
+      !newbedp = !!ce
+      if (!!mdsFT14.name.val.match('/').eq(1)) then
+        !newstru = !!mdsFT14.name.val.dbref()
+      else
+        !xxxstru = '/' & !!mdsFT14.name.val
+        !newstru = !xxxstru.dbref()
+      endif
+      :MDSBpref1  $!newstru
+      -- Set New reference at the Support Structure
+      !!ce     = !newstru
+      :MDSBpref1 $!newbedp
+
+      -- Position Pins for Picked FT22 BedPlate
+      !!mdsCreateMess(TRUE)
+
+      !plane = !testCE[3]
+      var !pdir cons dir $!plane
+      pin 1 at $!pick
+      pin 1 dir $!pdir
+      var !tempinter cons pos int pin 1 $!plane
+      !inter = !tempinter.position()
+      pin 8 at p9 of $!datum
+      pin 8 dir $!columnDir
+      var !pin8pos pin 8 pos wrt world
+
+      pin 9 at $!inter
+      pin 9 dir $!ddir
+      pin 5 copy pin 9
+      pin 10 at pin 8
+      pin 10 dir $!columnDir
+      pin 10 plane pin 10 clear 0 infront $!pick
+
+      -- Position Pin 9 with Overlap on BedPlate at 'Column End' of FT14
+      if (!config.eq(6) or !config.eq(8)) then
+        pin 9 copy pin 10
+        !!ce = /MDS/FT14V/$!selection-BAR-1
+        !overlap = deri len
+        same
+        pin 9 dist $!overlap
+      elseif (!config.eq(7)) then
+        pin 9 copy pin 10
+      endif
+
+      -- Position Pin 4 at Free End of FT14
+      pin 4 copy pin 8
+      pin 4 dir $!freeEndDir
+      !dim = 0
+      --<k.pleschner>May06
+      --do !i values !atta
+      do !iref values !atta
+        -- avoid SREF atta
+        skip if !iref.name.substring(-1,-5).eq('/SREF')
+        !i = object MDSANCGEOMDFLTS(!iref)
+        --pin 4 plane pin 4 clear $!clearance beh $!i
+        if !i.clge.eq('GEOM') then
+          -- use clearance from geometry
+          PIN 4 plane PIN 4 CLEAR $!i.oend BEH $!i
+        else
+          -- use distance from centreline
+          PIN 4 plane PIN 4 THR $!i
+          PIN 4 plane PIN 4 DIST $!i.oend
+        endif
+        handle (2,109)
+          break
+        endhandle
+        var !cdir const dir pin 8 to pin 4
+        !cdim = !!kStrReal('const dist pin 8 to pin 4')
+
+        -- Set object definition
+        !direction = object KEQUALDIR()
+        !direction.directionA = !cdir.direction()
+        !direction.directionB = !freeEndDir
+        !direction.tolerance  = 0.05
+
+        if (!cdim.gt(!dim) and !!kDirEqualDir(!direction)) then
+          pin 4 at pin 8
+          pin 4 dist $!cdim
+          !dim = !cdim
+        else
+          pin 4 at pin 8
+          pin 4 dist $!dim
+        endif
+      enddo
+
+      --RETURN
+      --------------------------------------------------
+      -- The Code BELOW is OK when the idtype is a SCTN
+      --<wd>may2007<mds12>
+      --      elseif (!pick.type.eq('SCTN') or !pick.type.eq('GENSEC')) then
+    elseif (!pick.type.eq('SCTN') or !pick.type.eq('GENSEC') or !pick.type.eq('HSTIFF')) then
+      --<wd>may2007<mds12>
+
+      ------------------- ***** Connexions *****-------------------
+      --$(
+      !support.connections[1] = !pick
+      -- !!mdsFT14.lineUp.active = False
+      --$)
+      !testCE = !!mdsRelToDatum(!datum, !pick, !p10dir, !clearance.real())
+      if (!testCE[1].upcase() eq 'UNSET')then
+        !!alert.error('Identified element is unsuitable to support from.')
+        golabel /Element1
+      elseif (!testCE[1].upcase() eq '')then
+        golabel /Element1
+      elseif (!testCE[1].upcase() eq 'EQUAL')then
+        !!alert.error('Identified element is in line with the datum atta')
+        golabel /Element1
+      elseif (!testCE[1].upcase() eq 'ABOVE')then
+        !columnDir  = !p11dir
+        !freeEndDir = !p10dir
+        !support.rotateCur = TRUE
+      elseif (!testCE[1].upcase() eq 'BELOW')then
+        !columnDir  = !p10dir
+        !freeEndDir = !p11dir
+        !support.rotateCur = FALSE
+      endif
+
+      ---------------------------------------------------------------------------------------------------
+      !!ce = !pick
+
+      -- Check to see if picked section is a beam or a column
+      !posstart = posstart
+      !posend   = posend
+      VAR !dir CONS DIR $!posstart to $!posend
+
+      -- Set object definition
+      !direction = object KEQUALDIR()
+      !direction.directionA = !dir.direction()
+      !direction.directionB = !udir
+      !direction.tolerance  = 0.05
+
+      if (!!kDirEqualDir(!direction)) then
+        !pickedType = 'COLUMN'
+      endif
+
+      -- Set object definition
+      !direction = object KEQUALDIR()
+      !direction.directionA = !dir.direction()
+      !direction.directionB = !ddir
+      !direction.tolerance  = 0.05
+
+      if (!!kDirEqualDir(!direction)) then
+        !pickedType = 'COLUMN'
+      endif
+
+      if (undefined(!pickedType)) then
+        !pickedType = 'BEAM'
+      endif
+      ---------------------------------------------------------------------------------------------------
+
+      -- Check configuration of support against picked type
+
+      if (!config.eq(4) or !config.eq(5))then
+        if (!pickedType eq 'COLUMN') then
+          !!alert.error('Identified section must be a beam for this configuration.')
+          !!ce = !stru
+          !!kRestoreUnits(!currentunits)
+          return
+        endif
+      else
+        if (!pickedType eq 'BEAM')then
+          !!alert.error('Identified section must be a column for this configuration.')
+          !!ce = !stru
+          !!kRestoreUnits(!currentunits)
+          return
+        endif
+      endif
+
+      -- Position Pins
+
+      !!mdsCreateMess(TRUE)
+
+      -- Connection to element picked
+      PIN 8 AT P9 of $!datum
+      PIN 8 DIR $!columnDir
+      VAR !pin8pos PIN 8 POS WRT WORLD
+
+      -- See if we are connecting to the web or flange of the section
+      -- ONLY FOR CONFIGURATION 1
+
+      -- Set object definition
+      if (!config.eq(1))then
+        !inter = !!kFlangeOrWeb(!pick, !pin8pos.position(), !columnDir)
+      else
+        -- Get closest point on section picked
+        !array = !!kClosestPline(!pick, !pin8pos.position(), !columnDir)
+        !inter = !array[2]
+      endif
+
+      PIN 9 AT $!inter
+      PIN 9 DIR $!columnDir
+
+      if (!paDir eq !udir or !plDir eq !udir)then
+        if (!config.lt(4))then
+          !!mdsCreateMess(FALSE)
+          !!alert.warning('Cannot automatically align support to column. Position support manually')
+        endif
+        if (!config.eq(2) or !config.eq(3))then
+          -- Reposition pin 9 the required overlap on the column
+          !!ce = /MDS/FT14V/$!selection-BAR-1
+          !overlap = DERI LEN
+          SAME
+          PIN 9 plane PIN 9 DIST $!overlap
+        endif
+      endif
+
+      -- Free end
+
+      PIN 8 DIR $!freeEndDir
+      PIN 4 copy PIN 8
+      !dim = 0
+      --<k.pleschner>May06
+      --do !i values !atta
+      do !iref values !atta
+        -- avoid SREF atta
+        skip if !iref.name.substring(-1,-5).eq('/SREF')
+        !i = object MDSANCGEOMDFLTS(!iref)
+        --PIN 4 plane PIN 4 CLEAR $!clearance BEH $!i
+        if !i.clge.eq('GEOM') then
+          -- use clearance from geometry
+          PIN 4 plane PIN 4 CLEAR $!i.oend BEH $!i
+        else
+          -- use distance from centreline
+          PIN 4 plane PIN 4 THR $!i
+          PIN 4 plane PIN 4 DIST $!i.oend
+        endif
+        handle (2,109)
+          break
+        endhandle
+        VAR !cdir CONST DIR PIN 8 TO PIN 4
+        !cdim = !!kStrReal('CONST DIST PIN 8 TO PIN 4')
+
+        -- Set object definition
+        !direction = object KEQUALDIR()
+        !direction.directionA = !cdir.direction()
+        !direction.directionB = !freeEndDir
+        !direction.tolerance  = 0.05
+
+        if (!cdim.gt(!dim) and !!kDirEqualDir(!direction)) then
+          PIN 4 AT PIN 8
+          PIN 4 DIST $!cdim
+          !dim = !cdim
+        else
+          PIN 4 AT PIN 8
+          PIN 4 DIST $!dim
+        endif
+      enddo
+
+      -- Position pins for configuration 4 and 5
+      if (!config.eq(4) or !config.eq(5))then
+
+        -- Check that the datum atta is above the bottom flange of the beam
+        VAR !pin9pos PIN 9 POS WRT WORLD
+        !array = !!kFarPline(!pick, !pin9pos.position(), !udir)
+        PIN 1 AT $!array[2]
+        VAR !pin1Pos PIN 1 POS WRT WORLD
+        !array = !!kFarPline(!pick, !pin1Pos.position(), !udir)
+        PIN 2 AT $!array[2]
+        VAR !pin2Pos PIN 2 POS WRT WORLD
+
+        -- Test that the datum atta is above bottom of beam
+        if (!config.eq(5))then
+          !lowest = min(!pin1Pos.position().up, !pin2Pos.position().up)
+          if (!lowest.gt(!pin9pos.position().up))then
+            if (!paDir neq !udir and !plDir neq !udir)then
+
+              -- Reset all pins used so far
+              call !!mdsResetPins(1,10)
+              !!mdsCreateMess(FALSE)
+              !!alert.error('Datum atta must be above lowest point on beam')
+              !!kRestoreUnits(!currentunits)
+              return
+            endif
+          endif
+
+          -- Position pin 7 at lowest point and pin 9 at mid point of beam
+          PIN 7 COPY PIN 1
+          PIN 7 DIR $!ddir
+          if (!lowest.eq(!pin2Pos.position().up))then
+            PIN 7 plane PIN 7 THRO PIN 2
+          endif
+          !d21 = !!kStrReal('CONST DIST PIN 2 TO PIN 1')
+          PIN 9 DIR $!ddir
+          PIN 9 plane PIN 9 THRO PIN 7
+          PIN 9 DIR $!udir
+          PIN 9 DIST ($!d21 / 2)
+          PIN 9 DIR $!columnDir
+        endif
+
+        !array = !!kClosestPline(!pick, !pin1Pos.position(), !udir)
+        PIN 1 AT $!array[4]
+        !array = !!kClosestPline(!pick, !pin2Pos.position(), !udir)
+        PIN 2 AT $!array[4]
+        PIN 1 DIR TO PIN 2
+        PIN 2 DIR TO PIN 1
+        PIN 3 COPY PIN 2
+        PIN 3 plane PIN 3 THRO PIN 9
+        !d23 = !!kStrReal('CONST DIST PIN 2 TO PIN 3')
+        !d31 = !!kStrReal('CONST DIST PIN 3 TO PIN 1')
+        !d21 = !!kStrReal('CONST DIST PIN 2 TO PIN 1')
+        !diff = ((!d21 - (!d23 * 2)) / 2)
+
+        -- Test that cross bar will locate on the web of the beam
+        if (!config.eq(4))then
+          !sum = !d31 + !d23
+          if (!!kRealEqualReal(!sum, !d21, 0.5).not())then
+            if (!paDir eq !udir or !plDir eq !udir)then
+              -- Use middle of beam
+              PIN 3 COPY PIN 2
+              PIN 3 DIST ($!d21 / 2)
+              !diff = 0
+            else
+              -- Reset all pins associated with this support
+              call !!mdsResetPins(1,10)
+
+              !!alert.error('Support is outside the depth of the identified section')
+              !!ce = !stru
+              !!mdsCreateMess(FALSE)
+              !!kRestoreUnits(!currentunits)
+              return
+            endif
+          endif
+        endif
+
+        PIN 3 plane PIN 3 DIST $!diff
+        PIN 5 COPY PIN 9
+        PIN 5 plane PIN 5 THRO $!pick
+        PIN 5 DIR FROM PIN 5 TO PIN 9
+
+        -- Get position on web
+        VAR !pin5Pos PIN 5 POS WRT WORLD
+
+        !array = !!kOrderPlinePos(!pick, !pin5Pos.position(), !columnDir)
+
+        do !i from 2 to !array.size() by 2
+
+          PIN 6 AT $!array[$!i]
+          !tempDist = !!kStrReal('CONST DIST PIN 5 TO PIN 6')
+
+          skip if (!tempDist.eq(0))
+
+          VAR !testDir CONS DIR $!array[$!i] to $!pin5Pos
+
+          -- Test to see if constructed direction equals the direction from the datum
+          -- to the column.
+          -- If they are equal then PIN 6 is on the correct side of the web
+
+          -- Set object definition
+          !direction = object KEQUALDIR()
+          !direction.directionA = !testDir.direction()
+          !direction.directionB = !columnDir
+          !direction.tolerance  = 0.05
+
+          if (!!kDirEqualDir(!direction)) then
+            break
+          endif
+        enddo
+
+        PIN 5 plane PIN 5 THRO PIN 6
+        !dist = !!kStrReal('CONST DIST PIN 5 TO PIN 9')
+        PIN 5 DIST ($!dist / 2)
+
+        -- Reposition PIN 9 to correct position
+        if (!config.eq(4))then
+          PIN 9 plane PIN 9 THRO PIN 6
+        else
+          PIN 9 plane PIN 9 THRO $!pick
+
+          -- Get Overlap required on connection from template
+          if (!paDir eq !udir or !plDir eq !udir)then
+            !!ce = /MDS/FT14V/$!selection-BAR-1
+          else
+            !!ce = /MDS/FT14H/$!selection-BAR-1
+          endif
+          !overlap = DERI LEN
+          SAME
+          PIN 9 DIST $!overlap
+        endif
+      endif
+
+    else
+
+      -- This will for the wall types PANE FLOOR WALL GWALL STWALL SCREED CFLOOR CSCREED CWALL BOX
+
+      ------------------- ***** Connexions *****-------------------
+
+      !support.connections[1] = !pick
+      !testCE = !!mdsRelToDatum(!datum, !pick, !p10dir, !clearance.real())
+      if (!testCE[1].upcase() eq 'UNSET')then
+        !!alert.error('Identified element is unsuitable to support from.')
+        golabel /Element1
+      elseif (!testCE[1].upcase() eq '')then
+        golabel /Element1
+      elseif (!testCE[1].upcase() eq 'EQUAL')then
+        !!alert.error('Identified element is in line with the datum atta')
+        golabel /Element1
+      elseif (!testCE[1].upcase() eq 'ABOVE')then
+        !columnDir  = !p11dir
+        !freeEndDir = !p10dir
+        !support.rotateCur = TRUE
+      elseif (!testCE[1].upcase() eq 'BELOW')then
+        !columnDir  = !p10dir
+        !freeEndDir = !p11dir
+        !support.rotateCur = FALSE
+      endif
+
+
+      ---------------------------------------------------------------------------------------------------
+      !!ce = !pick
+
+      -- Position Pins
+
+      !!mdsCreateMess(TRUE)
+
+      -- Connection to element picked
+
+      PIN 8 AT P9 of $!datum
+      PIN 8 DIR $!columnDir
+      VAR !pin8pos PIN 8 POS WRT WORLD
+
+
+      PIN 9 AT PIN 8
+      PIN 9 DIR $!columnDir
+      --PIN 9 PLANE PIN 9 CLEAR 0 INF $!pick
+      !throPos = !testCE[2].after('through')
+      handle ANY
+        PIN 9 PLANE PIN 9 CLEAR 0 INF $!pick
+      elsehandle NONE
+        PIN 9 PLANE PIN 9 through $!throPos
+        handle ANY
+          PIN 9 PLANE PIN 9 CLEAR 0 INF $!pick
+        endhandle
+      endhandle
+      if !config.eq(9) and !pick.type.eq('STWALL') then
+        var !pin9pos pin 9 pos
+        var !pin9dir pin 9 dir
+        !plinearray = !!kClosestPline(!pick, !pin9pos.position(), !pin9dir.direction())
+        pin 9 plane pin 9 thro $!plinearray[2]
+        handle ANY
+        endhandle
+      endif
+
+      if (!paDir eq !udir or !plDir eq !udir)then
+        if (!config.lt(4))then
+          !!mdsCreateMess(FALSE)
+          !!alert.warning('Cannot automatically align support to column. Position support manually')
+        endif
+        if (!config.eq(2) or !config.eq(3))then
+          -- Reposition pin 9 the required overlap on the column
+          !!ce = /MDS/FT14V/$!selection-BAR-1
+          !overlap = DERI LEN
+          SAME
+          PIN 9 plane PIN 9 DIST $!overlap
+        endif
+      endif
+
+      -- Free end
+
+      PIN 8 DIR $!freeEndDir
+      PIN 4 copy PIN 8
+      !dim = 0
+      --<k.pleschner>May06
+      --do !i values !atta
+      do !iref values !atta
+        -- avoid SREF atta
+        skip if !iref.name.substring(-1,-5).eq('/SREF')
+        !i = object MDSANCGEOMDFLTS(!iref)
+        --PIN 4 plane PIN 4 CLEAR $!clearance BEH $!i
+        if !i.clge.eq('GEOM') then
+          -- use clearance from geometry
+          PIN 4 plane PIN 4 CLEAR $!i.oend BEH $!i
+        else
+          -- use distance from centreline
+          PIN 4 plane PIN 4 THR $!i
+          PIN 4 plane PIN 4 DIST $!i.oend
+        endif
+        handle (2,109)
+          break
+        endhandle
+        VAR !cdir CONST DIR PIN 8 TO PIN 4
+        !cdim = !!kStrReal('CONST DIST PIN 8 TO PIN 4')
+
+        -- Set object definition
+        !direction = object KEQUALDIR()
+        !direction.directionA = !cdir.direction()
+        !direction.directionB = !freeEndDir
+        !direction.tolerance  = 0.05
+
+        if (!cdim.gt(!dim) and !!kDirEqualDir(!direction)) then
+          PIN 4 AT PIN 8
+          PIN 4 DIST $!cdim
+          !dim = !cdim
+        else
+          PIN 4 AT PIN 8
+          PIN 4 DIST $!dim
+        endif
+      enddo
+
+      -- Position pins for configuration 4 and 5
+      if (!config.eq(4) or !config.eq(5))then
+
+        -- Check that the datum atta is above the bottom flange of the beam
+        VAR !pin9pos PIN 9 POS WRT WORLD
+        !array = !!kFarPline(!pick, !pin9pos.position(), !udir)
+        PIN 1 AT $!array[2]
+        VAR !pin1Pos PIN 1 POS WRT WORLD
+        !array = !!kFarPline(!pick, !pin1Pos.position(), !udir)
+        PIN 2 AT $!array[2]
+        VAR !pin2Pos PIN 2 POS WRT WORLD
+
+        -- Test that the datum atta is above bottom of beam
+        if (!config.eq(5))then
+          !lowest = min(!pin1Pos.position().up, !pin2Pos.position().up)
+          if (!lowest.gt(!pin9pos.position().up))then
+            if (!paDir neq !udir and !plDir neq !udir)then
+
+              -- Reset all pins used so far
+              call !!mdsResetPins(1,10)
+              !!mdsCreateMess(FALSE)
+              !!alert.error('Datum atta must be above lowest point on beam')
+              !!kRestoreUnits(!currentunits)
+              return
+            endif
+          endif
+
+          -- Position pin 7 at lowest point and pin 9 at mid point of beam
+          PIN 7 COPY PIN 1
+          PIN 7 DIR $!ddir
+          if (!lowest.eq(!pin2Pos.position().up))then
+            PIN 7 plane PIN 7 THRO PIN 2
+          endif
+          !d21 = !!kStrReal('CONST DIST PIN 2 TO PIN 1')
+          PIN 9 DIR $!ddir
+          PIN 9 plane PIN 9 THRO PIN 7
+          PIN 9 DIR $!udir
+          PIN 9 DIST ($!d21 / 2)
+          PIN 9 DIR $!columnDir
+        endif
+
+        !array = !!kClosestPline(!pick, !pin1Pos.position(), !udir)
+        PIN 1 AT $!array[4]
+        !array = !!kClosestPline(!pick, !pin2Pos.position(), !udir)
+        PIN 2 AT $!array[4]
+        PIN 1 DIR TO PIN 2
+        PIN 2 DIR TO PIN 1
+        PIN 3 COPY PIN 2
+        PIN 3 plane PIN 3 THRO PIN 9
+        !d23 = !!kStrReal('CONST DIST PIN 2 TO PIN 3')
+        !d31 = !!kStrReal('CONST DIST PIN 3 TO PIN 1')
+        !d21 = !!kStrReal('CONST DIST PIN 2 TO PIN 1')
+        !diff = ((!d21 - (!d23 * 2)) / 2)
+
+        -- Test that cross bar will locate on the web of the beam
+        if (!config.eq(4))then
+          !sum = !d31 + !d23
+          if (!!kRealEqualReal(!sum, !d21, 0.5).not())then
+            if (!paDir eq !udir or !plDir eq !udir)then
+              -- Use middle of beam
+              PIN 3 COPY PIN 2
+              PIN 3 DIST ($!d21 / 2)
+              !diff = 0
+            else
+              -- Reset all pins associated with this support
+              call !!mdsResetPins(1,10)
+
+              !!alert.error('Support is outside the depth of the identified section')
+              !!ce = !stru
+              !!mdsCreateMess(FALSE)
+              !!kRestoreUnits(!currentunits)
+              return
+            endif
+          endif
+        endif
+
+        PIN 3 plane PIN 3 DIST $!diff
+        PIN 5 COPY PIN 9
+        PIN 5 plane PIN 5 THRO $!pick
+        PIN 5 DIR FROM PIN 5 TO PIN 9
+
+        -- Get position on web
+        VAR !pin5Pos PIN 5 POS WRT WORLD
+
+        !array = !!kOrderPlinePos(!pick, !pin5Pos.position(), !columnDir)
+
+        do !i from 2 to !array.size() by 2
+
+          PIN 6 AT $!array[$!i]
+          !tempDist = !!kStrReal('CONST DIST PIN 5 TO PIN 6')
+
+          skip if (!tempDist.eq(0))
+
+          VAR !testDir CONS DIR $!array[$!i] to $!pin5Pos
+
+          -- Test to see if constructed direction equals the direction from the datum
+          -- to the column.
+          -- If they are equal then PIN 6 is on the correct side of the web
+
+          -- Set object definition
+          !direction = object KEQUALDIR()
+          !direction.directionA = !testDir.direction()
+          !direction.directionB = !columnDir
+          !direction.tolerance  = 0.05
+
+          if (!!kDirEqualDir(!direction)) then
+            break
+          endif
+        enddo
+
+        PIN 5 plane PIN 5 THRO PIN 6
+        !dist = !!kStrReal('CONST DIST PIN 5 TO PIN 9')
+        PIN 5 DIST ($!dist / 2)
+
+        -- Reposition PIN 9 to correct position
+        if (!config.eq(4))then
+          PIN 9 plane PIN 9 THRO PIN 6
+        else
+          PIN 9 plane PIN 9 THRO $!pick
+
+          -- Get Overlap required on connection from template
+          if (!paDir eq !udir or !plDir eq !udir)then
+            !!ce = /MDS/FT14V/$!selection-BAR-1
+          else
+            !!ce = /MDS/FT14H/$!selection-BAR-1
+          endif
+          !overlap = DERI LEN
+          SAME
+          PIN 9 DIST $!overlap
+
+        endif
+      endif
+
+    endif
+    --<wd>jan2000
+
+    --<kp>jan2012 Store pick for association
+    !picks[1] = !pick
+
+  elseif (!method eq |DIMENSION|)then
+
+    -- Initialise variables for dimension check
+    !d1 = !!mdsFT14.dim1.val
+    !d2 = !!mdsFT14.dim2.val
+
+    if !desc.eq('Zimmer Templates') or (!alias inset ('CT09')) then
+      if (!alias inset ('CT06','CT09')) then
+        !supseq = !!mdsgettempnumber(/MDS/FRAMES/$!form.support.alias , !srefName.dbref().lbor)
+        !length = desp 1 of /MDS/$!form.support.alias/$!supseq-BAR-1
+        !bktthk = desp 6 of /MDS/$!form.support.alias/$!supseq-BAR-1/PJOI
+        handle ANY
+          !bktthk[1] = 0
+        endhandle
+        !!mdsFT14.dim2.val = !length[1] / 2 + !d1 + !bktthk[1] + !clearance
+        if (!alias eq 'CT06') then
+          var !strucoll coll all stru with matchwild(name,'*CT06*') for /MDS/TEMPLATES
+        elseif (!alias eq 'CT09') then
+          var !strucoll coll all stru with matchwild(name,'*CT09*') for /MDS/TEMPLATES
+        endif
+        var !strunames eval name for all from !strucoll
+        !lengarray = ARRAY()
+        do !index indices !strunames
+          !leng = desp 1 of $!strunames[$!index]-BAR-1
+          if (!!mdsFT14.dim2.val.leq(!leng[1])) then
+            !struname = !strunames[$!index]
+            !selection = !index.string()
+            !!mdsFT14.dim2.val = !leng[1]
+            !flag = TRUE
+            break
+          else
+            !flag = FALSE
+          endif
+        enddo
+        if (!flag.eq(FALSE)) then
+          !!alert.error('Unable to find any wall brackets long enough to support this width Dim 2')
+          !!mdsFT14.dim1.val = 0
+          !!mdsFT14.dim2.val = 0
+          STRU
+          delete STRU MEM
+          handle (41,66) (2,113) (2,113)
+          endhandle
+          return
+        endif
+      endif
+    endif
+
+
+    if !desc.neq('Zimmer Templates') or (!alias inset ('CT09')) then
+      -- if !desc.neq('Zimmer Templates') then
+      if (!d1.eq(0) or !d2.eq(0)) then
+        !!alert.error('Not all of the dimensions have been completed.')
+        !!kRestoreUnits(!currentunits)
+        return
+      endif
+
+      --<dw>jan2008 Oglaend brackets
+      if ((desc of /MDS/TEMPLATES ) neq ('OGLAEND Templates')) then
+        if (!d1.gt(!d2)) then
+          !!alert.error('Cannot create from given dimensions. Dim 1 must be less than Dim 2.')
+          !!kRestoreUnits(!currentunits)
+          return
+        endif
+      endif
+      --<dw>jan2008 End of Oglaend brackets
+
+    else
+      if (!d1.eq(0) and !d2.eq(0)) then
+        !!alert.error('No dimensions have been completed.')
+        !!mdsFT14.dim2.val = 0
+        !!kRestoreUnits(!currentunits)
+        return
+      endif
+    endif
+
+    !!mdsCreateMess(TRUE)
+
+
+    --  $p the next line is getting run if it is dim....
+
+    -- Get correct orientation
+    if (!support.rotateCur)then
+      !columnDir  = !p11dir
+      !freeEndDir = !p10dir
+    else
+      !columnDir  = !p10dir
+      !freeEndDir = !p11dir
+    endif
+
+    -- Position pins
+
+    !!ce = !datum
+    PIN 9 COPY P9
+    PIN 9 DIR $!columnDir
+    PIN 8 COPY PIN9
+    PIN 8 DIR $!freeEndDir
+
+    PIN 9 plane PIN 9 THRO CE
+    PIN 8 plane PIN 8 THRO CE
+    PIN 9 DIST $!d1
+    PIN 4 COPY PIN 8
+    PIN 4 DIST ($!d2 - $!d1)
+
+  endif
+
+  ----------------------------------------------------------------------
+  ----------------------------------------------------------------------
+
+  -- Create and ARRAY of Attas with Packing Pieces (PDMS Names ONLY)
+  -- and the Type and Size of the Packing Pieces to Recreate
+  !attapp = !!mdspackers(!support)
+
+  ----------------------------------------------------------------------
+  ----------------------------------------------------------------------
+
+  !!ce = !stru
+
+  -- Pins now in position create framework
+
+  delete STRU MEM
+  handle (41,66) (2,113) (2,113)
+  endhandle
+
+  if !desc.eq('Zimmer Templates') or (!alias inset ('CT09')) then
+    --     if !desc.eq('Zimmer Templates') then
+    if (!alias inset ('CT06','CT09')) then
+      if (!!mdsFT14.dim2.val.eq(0)) then
+        !selection = !!mdsgettempnumber(/MDS/FRAMES/$!alias , !srefName.dbref().lbor).string()
+      else
+        if (!alias eq 'CT06') then
+          var !strucoll coll all stru with matchwild(name,'*CT06*') for /MDS/TEMPLATES
+        elseif (!alias eq 'CT09') then
+          var !strucoll coll all stru with matchwild(name,'*CT09*') for /MDS/TEMPLATES
+        endif
+        var !strunames eval name for all from !strucoll
+        !lengarray = ARRAY()
+        do !index indices !strunames
+          !leng = desp 1 of $!strunames[$!index]-BAR-1
+          if (!!mdsFT14.dim2.val.leq(!leng[1])) then
+            !struname = !strunames[$!index]
+            !selection = !index.string()
+            !!mdsFT14.dim2.val = !leng[1]
+            !flag = TRUE
+            break
+          else
+            !flag = FALSE
+          endif
+        enddo
+        if (!flag.eq(FALSE)) then
+          !!alert.error('Unable to find any wall brackets long enough to support this width Dim 2')
+          !!mdsFT14.dim1.val = 0
+          !!mdsFT14.dim2.val = 0
+          return
+        endif
+        --  q var !!mdsFT14.dim2.val
+        --  q var !derlen
+        --  if (!!mdsFT14.dim2.val.neq(!derlen.real())) then
+        --  $P running
+        --  !!mdsCreateFt14('DIMENSION')
+        --  endif
+      endif
+    endif
+  endif
+
+  --<wd>oct2000
+  if (!alias eq 'FT14') then
+    if (!paDir eq !udir or !plDir eq !udir)then
+      !mdstemp = /MDS/FT14V/$!selection
+    else
+      !mdstemp = /MDS/FT14H/$!selection
+    endif
+  elseif (!alias eq 'CT06') then
+    !mdstemp = /MDS/CT06/$!selection
+  elseif (!alias eq 'CT09') then
+    !mdstemp = /MDS/CT09/$!selection
+  elseif (!alias eq 'DT03') then
+    !mdstemp = /MDS/DT03/$!selection
+  endif
+  :mdscheck $!mdstemp.:mdscheck
+  :mdsframirror $!mdstemp.:mdsframirror
+
+  --<wd>oct2000
+
+
+  --<wd>feb2004
+  -- Position the MDS STRU
+  --AT $!datum
+  if (!datum.styp inset ('AT60')) then
+    at p9 of $!datum
+  else
+    at $!datum
+  endif
+  --<wd>feb2004
+
+  NEW FRMW $!name/MAIN
+  !frmwSupport = !!ce
+
+  -- Copy required template/s
+  if (!alias eq 'FT14') then
+    if (!paDir eq !udir or !plDir eq !udir)then
+      !!ce = /MDS/FT14V/$!selection
+    else
+      !!ce = /MDS/FT14H/$!selection
+    endif
+  elseif (!alias eq 'CT06') then
+    !!ce = /MDS/CT06/$!selection
+  elseif (!alias eq 'CT09') then
+    !!ce = /MDS/CT09/$!selection
+  elseif (!alias eq 'DT03') then
+    !!ce = /MDS/DT03/$!selection
+  endif
+  !desc = desc
+  !mdsBars = :MdsBars
+  !subs = !!kCollectAllFor('SUBS', '', !!ce)
+  !frmw = !!kCollectAllFor('FRMW', '', !!ce)
+  !frameFormat = before(!frmw[1].name, '-FRMW')
+
+  -- Navigate back to support and create template elements
+  !!ce = !frmwSupport
+  COPY ATTRIB OF $!frmw[1]
+  COPY MEM OF $!frmw[1] RENAME $!frameFormat $!name
+
+
+  if (!config.eq(4) or !config.eq(5))then
+    do !i indices !subs
+      NEW SUBS $!name/SUBS$!i COPY ATTRIB OF $!subs[$!i]
+      COPY MEM OF $!subs[$!i] RENAME $!frameFormat $!name
+    enddo
+  endif
+
+  -- Get direction of P9 of datum atta and dist between p9 and p0
+
+  !!ce = !stru
+
+  -- Set stru description for template recognition
+
+  desc '$!desc'
+  :Mdsbars $!mdsBars
+
+  if (!paDir eq !udir or !plDir eq !udir)then
+    !moveDir = !support.p9Dir
+    !oriZ    = !support.p9Dir
+    !oriZ.up    = !support.p9Dir.up * -1
+    !oriZ.east  = !support.p9Dir.east * -1
+    !oriZ.north = !support.p9Dir.north * -1
+  else
+    !moveDir = !ddir
+    !oriZ    = !udir
+  endif
+  !oriX    = !freeEndDir
+
+
+  MOVE $!moveDir THRO P9 OF $!datum
+  --<wd>20may2004
+  if !datum.:mdsguideref.set() and !datum.:mdsguideref.badref().not() then
+    !mdsGuideRef = !datum.:mdsguideref
+    -- Do NOT Move the STRU if the GUIDE is a TRUNNION GUIDE/STOP etc...
+    if (!datum.catref.owner.:mdstrun.not()) then
+      MOVE $!moveDir thro p9 of $!mdsGuideRef
+    endif
+  endif
+  --<wd>20may2004
+
+  --> Modified -<wd>- 4nov1998
+  if (!support.alias inset ('DT01','DT02','DT03','DT04')) then
+    -- For the 'NEW' AVEVA HVAC Designer Only
+    !pplist   = pplst of prev of $!datum
+    !cadchvac = FALSE
+    do !ppval values !pplist
+      if (!ppval.eq(61)) then
+        !cadchvac = TRUE
+        break
+      else
+        skip
+      endif
+    enddo
+    if (!cadchvac) then
+      -- move $!support.p9dir dist ($!datum.despar[2] / 2 )
+    endif
+  endif
+  --< Modified -<wd>- 4nov1998
+
+  ORI X IS $!oriX AND Z IS $!oriZ
+
+  -- If a trunnion is added to a support then we need to store the direction in a
+  -- uda for later use
+
+  var !oriFrame dir y wrt /*
+  :MdsFrameDir $!oriFrame
+
+  -- Move stiffener plate if it exists
+  if (!method eq 'CURSOR')then
+    if (!config.eq(4) or !config.eq(5))then
+      if(!alias.neq('CT06') and !alias.neq('CT09') and !alias.neq('DT03')) then
+        -- Move subs into position
+        !!ce = $!<name>/SUBS1
+
+        handle NONE
+
+          MOVE $!freeEndDir THRO PIN 5
+          MOVE $!udir THRO PIN 3
+
+          -- Size stiffener to suit beam
+          !!ce = first box
+          ORI P6 IS $!udir
+          ZLEN $!d21
+          XLEN $!dist
+
+          if (!paDir eq !udir or !plDir eq !udir)then
+            !nudgeDir = !support.p9dir
+          else
+            !nudgeDir = !genPLDir.direction().wrt(world)
+          endif
+
+          -- Slide stiffener to back of supporting member
+          !!ce = $!<name>/SUBS1
+          PIN 1 AT CE
+          PIN 1 DIR $!nudgeDir
+
+          if (!config.eq(4))then
+            if (!paDir eq !udir or !plDir eq !udir)then
+              PIN 1 plane PIN 1 CLEAR 0 INF $!<name>-BAR-1
+              MOVE $!nudgeDir THRO PIN 1
+              PIN 1 plane PIN 1 CLEAR 0 INF CE
+              MOVE $!nudgeDir THRO PIN 1
+            else
+              if (!support.rotateCur)then
+                PIN 1 plane PIN 1 CLEAR 0 INF $!<name>-BAR-1
+                MOVE $!nudgeDir THRO PIN 1
+                PIN 1 plane PIN 1 CLEAR 0 INF CE
+                MOVE $!nudgeDir THRO PIN 1
+              else
+                PIN 1 plane PIN 1 CLEAR 0 BEH $!<name>-BAR-1
+                MOVE $!nudgeDir THRO PIN 1
+                PIN 1 plane PIN 1 CLEAR 0 BEH CE
+                MOVE $!nudgeDir THRO PIN 1
+              endif
+            endif
+          elseif (!config.eq(5))then
+            if (!paDir eq !udir or !plDir eq !udir)then
+              PIN 1 plane PIN 1 THRO $!<name>-BAR-1
+            else
+              PIN 1 plane PIN 1 THRO P0 of $!datum
+            endif
+            MOVE $!nudgeDir THRO PIN 1
+          endif
+        elsehandle ANY
+        endhandle
+      endif $* new endif
+    endif
+  elseif (!method eq 'DIMENSION')then
+    -- if (!support.config eq 4 or !support.config eq 5)then
+    if (!config eq 4 or !config eq 5)then
+      -- get stored data on  stiffener from form member 'STIFFENER'
+      -- not for ct06 / ct09 / dt03
+      if(!alias.neq('CT06') and !alias.neq('CT09') and !alias.neq('DT03')) then
+        !!ce = $!<name>/SUBS1
+        BOX 1
+        call !!kActionCommands(!!mdsFT14.stiffener)
+      endif
+    endif
+  endif
+
+  -- Extend and move cross bar
+  !!ce = $!<name>-BAR-1
+
+  EXTEND END THRO PIN 4
+  EXTEND START THRO PIN 9
+
+  ----------------------- ****** connexions ******* --------------------
+  if(!support.connections.unset()) then
+    -- dimensions are being used first
+    :MDSConn default
+  else
+    !bar1 = !!ce
+    !connected = !!mdsGetBeamConn(!support,!bar1)
+    :MDSConn $!connected
+    handle ANY
+    endhandle
+  endif
+  ---------------------------********************-----------------------
+
+  if (!paDir eq !udir or !plDir eq !udir)then
+    -- GE 24/08/04 this seems to get rotate wrong for Framatome FANP01 Template
+    -- as it swops the start / end of the sctn. The template used Design Rules for
+    -- positioning the PJOI at the POSE, therefore we cannot swop it for the BOX sctns.
+    if !!ce.gtype.neq('BOX') then
+      if (!support.rotateCur)then
+        -- Reorientate cross bar
+        !midp = MIDP OF CE
+        PIN 1 AT $!datum
+        PIN 1 DIR $!moveDir
+        PIN 2 AT $!midp
+        PIN 2 DIR $!moveDir
+        PIN 1 plane PIN 1 THRO PIN 2
+        PIN 1 DIR $!freeEndDir
+        PIN 1 plane PIN 1 THRO PIN 2
+        PIN 1 DIR $!moveDir
+        ROTATE THRO PIN 1 ABOUT PIN 1 BY 180
+      endif
+    endif
+    -- GE 24/08/04
+  endif
+
+  -- Check to see if support is mirrored
+  if (!support.mirror)then
+    call !!mdsMirrorFt14()
+
+    -- Update form directly and not variable support as the slide function
+    -- may need to use this information.
+    !!mdsFT14.support.mirror = TRUE
+  endif
+
+  if (!config.eq(4) and !method eq 'CURSOR')then
+    if (!paDir eq !udir or !plDir eq !udir)then
+      !!ce = !datum
+      plane $!udir THRO PIN 3
+
+      !!ce = $!<name>/SREF
+
+      !!mdsMConn('ORI','ORI')
+      POS PA AT PREV
+      SAME
+
+      !pos = !!ce.pos.wrt(world)
+
+      $M/%PDMSUI%/DES/CLIB/GAIDTEXT 210 Datum $<$!pos$>
+
+      do !count from 1
+        $!<name>.$!count
+        handle ANY
+          break
+        endhandle
+
+        THRO PIN 3
+        !pos = !!ce.pos.wrt(world)
+        !num = 210 + !count
+
+        $M/%PDMSUI%/DES/CLIB/GAIDTEXT $!num $!count $<$!pos$>
+
+      enddo
+
+      -- Move support to new position
+      !!ce = !stru
+      MOVE $!udir THRO $!datum
+
+      -- Move stiffener back to original position
+      !!ce = $!<name>/SUBS1
+      MOVE $!udir THRO PIN 3
+
+    endif
+  elseif (!config.eq(5) and !method eq 'CURSOR')then
+
+    if (!paDir eq !udir or !plDir eq !udir)then
+
+      PIN 6 COPY PIN 7
+      PIN 6 plane PIN 6 CLEAR 0 INF CE
+      !drop = !!kStrReal('CONST DIST PIN 6 TO PIN 7')
+      if (!drop.gt(0))then
+
+        -- Move to correct position
+        VAR !dir CONS DIR PIN 6 TO PIN 7
+        !dropDir = !dir.direction().wrt(world)
+        !!ce = !datum
+        MOVE $!dropDir DIST $!drop
+        PIN 6 plane PIN 6 THRO CE
+
+        !!ce = $!<name>/SREF
+
+        !!mdsMConn('ORI','ORI')
+        POS PA AT PREV
+        SAME
+
+        !pos = !!ce.pos.wrt(world)
+
+        $M/%PDMSUI%/DES/CLIB/GAIDTEXT 210 Datum $<$!pos$>
+
+        do !count from 1
+          $!<name>.$!count
+          handle ANY
+            break
+          endhandle
+
+          THRO PIN 6
+          !pos = !!ce.pos.wrt(world)
+          !num = 210 + !count
+
+          $M/%PDMSUI%/DES/CLIB/GAIDTEXT $!num $!count $<$!pos$>
+
+        enddo
+
+        -- Move support to new position
+        !!ce = !stru
+        MOVE $!dropDir THRO $!datum
+
+        -- Move stiffener back to original position
+        !!ce = $!<name>/SUBS1
+        MOVE $!dropDir DIST -$!drop
+      endif
+    else
+      MOVE $!ddir CLEAR 0 BEH PIN 7
+    endif
+
+  endif
+
+  -- Set dimensions
+
+  if (!method eq |CURSOR|)then
+
+    -- Dimension 1
+    !dim1 = !!kStrReal('CONST DIST PIN 9 TO PIN 8')
+    !!mdsFT14.dim1.val = !dim1
+
+    -- Dimension 2
+
+    !dim2 = !!kStrReal('CONST DIST PIN 9 TO PIN 4')
+    !!mdsFT14.dim2.val = !dim2
+
+  endif
+
+  !desc = desc of /MDS/TEMPLATES
+  handle ANY
+    !desc = ''
+  endhandle
+
+  if (!method eq 'CURSOR')then
+    if !desc.eq('Zimmer Templates') or (!alias inset ('CT09')) then
+
+      --<dw>feb2009 dun1081 Updated to allow for Dim2 to be evaluated - HPD0038695
+      !d1 = !!mdsFT14.dim1.val
+      if (!alias inset ('CT06','CT09')) then
+        if (!alias eq 'CT06') then
+          var !strucoll coll all stru with matchwild(name,'*CT06*') for /MDS/TEMPLATES
+        elseif (!alias eq 'CT09') then
+          var !strucoll coll all stru with matchwild(name,'*CT09*') for /MDS/TEMPLATES
+        endif
+        var !strunames eval name for all from !strucoll
+        !lengarray = ARRAY()
+        do !index indices !strunames
+          !leng = desp 1 of $!strunames[$!index]-BAR-1
+          !bktthk = desp 6 of $!strunames[$!index]-BAR-1/PJOI
+          handle ANY
+            !bktthk[1] = 0
+          endhandle
+          !!mdsFT14.dim2.val = !d1 + !bktthk[1] + !clearance
+          !dim2 = !!mdsFT14.dim2.val
+          --<dw>feb2009 dun1081 End Dim2 evaluation.
+
+          if (!dim2.leq(!leng[1])) then
+            !struname = !strunames[$!index]
+            !selection = !index.string()
+            !!mdsFT14.dim2.val = !leng[1]
+            -- Need to set the resize of the bkt i.e. size 6
+            if (!support.rotateCur) then
+              !!mdsFT14.support.rotateCur = TRUE
+            endif
+            --<dw>feb2009 dun1081 Commented out where cursor method applied - HPD0038695
+            -- !!mdsCreateFt14('DIMENSION')
+            !flag = TRUE
+            break
+          else
+            !flag = FALSE
+          endif
+          call !!mdsResetPins(1,10)
+        enddo
+
+        if (!flag.eq(FALSE)) then
+          !!alert.error('Unable to find any wall brackets long enough to support this width Dim 2')
+          !!mdsFT14.dim1.val = 0
+          !!mdsFT14.dim2.val = 0
+          STRU
+          delete STRU MEM
+          handle (41,66) (2,113) (2,113)
+          endhandle
+          return
+        endif
+
+      endif
+    endif
+  endif
+
+  -- Select correct spref
+
+  !!ce = $!<name>/SREF
+
+  if (!alias eq 'FT14' or !alias eq 'CT06' or !alias eq 'CT09') then
+    --<wd>dec1999
+    --      if (!config.eq(1))then
+    if (!config.eq(1) or !config.eq(7))then
+      !styp = 'L'
+      --      elseif (!config.eq(2) or !config.eq(3))then
+    elseif (!config.eq(2) or !config.eq(3) or !config.eq(6))then
+      !styp = 'M'
+    elseif (!config.eq(4))then
+      !styp = 'N'
+      --      elseif (!config.eq(5))then
+    elseif (!config.eq(5) or !config.eq(8))then
+      !styp = 'P'
+    elseif !config.eq(9) then
+      !styp = 'L'
+    endif
+  elseif (!alias eq 'DT03') then
+    if (!config.eq(1))then
+      !styp = 'A'
+    elseif (!config.eq(2) or !config.eq(3))then
+      !styp = 'B'
+    elseif (!config.eq(4))then
+      !styp = 'C'
+    elseif (!config.eq(5))then
+      !styp = 'D'
+    endif
+  endif
+
+  !stypFull = '$!alias-$!styp-$!selection'
+  handle (42,64) (42,66) (46,28)
+    !stypFull = 'DT03-A-$!selection'
+  endhandle
+
+  !spec = /MDF
+  !!mdsDacControl(TRUE)
+  if !alias.eq('DT03') then
+    --SEL SPREF WITH STYP '$!alias-$!styp-$!selection' SPEC /MDF
+    !!mdsSelectAttaSpref(!stypFull,!spec)
+    handle (42,64) (42,66) (46,28)
+      spref /MDF/DT03-A-$!selection
+    endhandle
+    spkbrk FALSE
+  else
+    --SEL SPREF WITH STYP '$!alias-$!styp-$!selection' SPEC /MDF
+    !!mdsSelectAttaSpref(!stypFull,!spec)
+  endif
+  if !alias neq 'DT03' then
+    !!mdsSetSuppCode('MODIFY',!name,!alias,'$!alias-L-1')
+  else
+    !!mdsSetSuppCode('MODIFY',!name,!alias,'$!alias-A-1')
+  endif
+
+  !!mdsSetIspe()
+
+  !!mdsSelLstu(!!ce)
+  !!mdsDacControl(TRUE)
+  !!ce = !stru
+
+  -- Associate attas to bar
+
+  !list = !support.bars[1]
+  !references = ''
+  do !i indices !list
+    !references = !references & ' ' & !list[!i].string()
+  enddo
+
+  -- Set atta references to datum cross bar
+  !!ce = $!<name>-BAR-1
+  :MDSAttaRef $!references
+  !support.barLen[1] = deri length of CE
+
+  if !desc.eq('Zimmer Templates') or (!alias inset ('CT09')) then
+    -- if !desc.eq('Zimmer Templates') then
+    !derlen = deri length of CE
+    handle ANY
+      !derlen = '0'
+    elsehandle NONE
+    endhandle
+    if (!!mdsFT14.dim2.val.neq(!derlen)) then
+      --<dw>feb2009 dun1081 Commented out where cursor method applied - HPD0038695
+      --    !!mdsCreateFt14('DIMENSION')
+    endif
+  endif
+
+  !!ce = $!<name>/SREF
+  !!mdsDacControl(TRUE)
+  DESPAR $!!mdsFT14.dim1.val   $!!mdsFT14.dim2.val
+  !!mdsDacControl(FALSE)
+  -- Reset materials of sections
+
+  !!mdsResetMat(!storeMat)
+
+
+  !!ce = !stru
+
+
+  -- Move Support to correct position relative to the supporting structure
+
+  if (!method eq 'CURSOR')then
+    if (!config.lt(4))then
+      if (!paDir neq !udir and !plDir neq !udir)then
+        call !!mdsSlideFt14(!slide, !pick)
+      endif
+      -- Select correct spref for configurations 2 and 3
+      if (!config.gt(1))then
+        !!ce = $!<name>/SREF
+        !!mdsDacControl(TRUE)
+        !stypFull = '$!alias-$!styp-$!selection'
+        !spec = /MDF
+        --          SEL SPREF WITH STYP 'FT14-M-$!selection' SPEC /MDF
+        if !alias.eq('DT03') then
+          -- SEL SPREF WITH STYP '$!alias-$!styp-$!selection' SPEC /MDF
+          !!mdsSelectAttaSpref(!stypFull,!spec)
+          handle (42,64) (42,66)
+            spref /MDF/DT03-A-$!selection
+          endhandle
+        else
+          !!mdsSelectAttaSpref(!stypFull,!spec)
+          --SEL SPREF WITH STYP '$!alias-$!styp-$!selection' SPEC /MDF
+        endif
+        !!mdsDacControl(FALSE)
+      endif
+      !!ce = !stru
+    endif
+  endif
+
+  -- Adjust for slope on horizontal lines only
+  if (!paDir neq !udir and !plDir neq !udir)then
+    -- Check to see if the line is sloping
+    !adjust = 0
+    do !v values !atta
+      !!ce = !v
+      skip if !!ce.:mdsrotdir.east.set()
+      !grad = pl grad
+      handle ANY
+        !grad = p2 grad
+      endhandle
+      if (!grad.neq(0))then
+        !strucElement = ARRAY()
+        !ref = $!name-BAR-1
+        !strucElement.append(!ref)
+        !vHeight = !!mdsAdjustSlope(!strucElement, !v)
+      else
+        !vHeight = 0
+      endif
+      if (!vHeight.gt(!adjust))then
+        !adjust = !vHeight
+      endif
+    enddo
+
+    if (!adjust.neq(0))then
+      -- Adjust required elements
+      !!ce = $!<name>-BAR-1
+      MOVE $!ddir DIST $!adjust
+    endif
+  endif
+
+
+  ----------------------------------------------------------------------
+  ----------------------------------------------------------------------
+
+  -- Set 'FT25' form Support Object to be the same as 'FT14' form Support Object
+  !!mdsFT25.support = !support
+
+  -- Clear packs from 'BOTH forms' Support Objects as the SCTNs have already been deleted
+  -- During the Framework Creation above
+  !!mdsFT25.support.packs.clear()
+  !support.packs.clear()
+
+  -- Create Required Packing Pieces(SCTNs) at the Necessary Attas
+  call !!mdscrpacksft25(!attapp, !!mdsFT14)
+
+  -- Update 'FT14' support.packs data to that held in form 'FT25'
+  !support.packs = !!mdsFT25.support.packs
+
+  -- Now that support has been generated.
+  -- Store new configuration into support object
+  !support.config = !config
+
+  -- Update support data held in form
+  !!mdsFT14.support = !support
+
+  -- Reset distance gadget
+  !!ce = !datum
+  call !!mdsDistance(!!mdsFT14)
+
+  !!mdsCreateMess(FALSE)
+
+  -- Generate field weld position
+  !!ce = $!<name>-BAR-1
+  var !poss poss
+  var !pose pose
+  pin 9 at $!poss
+  pin 8 at $!pose
+  pin 7 at $!datum
+  var !d97 const dist pin 9 to pin 7
+  var !d98 const dist pin 9 to pin 8
+  stru
+  if (!d98.real() gt !d97.real()) then
+    :MDSOrigin 'START'
+  else
+    :MDSOrigin 'END'
+  endif
+
+
+  --<wd>jan2000
+  if (!config.eq(6) or !config.eq(8)) then
+    if (!support.rotateCur) then
+      :MDSOrigin 'START'
+      if (!support.mirror) then
+        :MDSOrigin 'END'
+      endif
+    else
+      :MDSOrigin ' END'
+      if (!support.mirror) then
+        :MDSOrigin 'START'
+      endif
+    endif
+  elseif (!config.eq(7)) then
+    if (!support.rotateCur) then
+      :MDSOrigin 'END'
+      if (!support.mirror) then
+        :MDSOrigin 'START'
+      endif
+    else
+      :MDSOrigin 'START'
+      if (!support.mirror) then
+        :MDSOrigin 'END'
+      endif
+    endif
+  endif
+  --<wd>jan2000
+
+
+  --<wd>jun2001 -- If statement added around the Field Weld Code
+  -- Do Not Show Field Weld text if External Joint is being used
+  if !desc.neq('Zimmer Templates') then
+    if (!support.joints.unset()) then
+      !!mdsFieldWeld(!!mdsFT14,'SHOW')
+    endif
+  else
+    if (!alias eq 'CT09') then
+      !!mdsFieldWeld(!!mdsFT14,'SHOW')
+    endif
+  endif
+  --<wd>jun2001
+
+  -- For vertical pipes make sure members are infront of the 9 of the datum
+
+  !iamHere = !!ce
+  !adir = !datum.adir
+  handle ANY
+    !adir = !datum.pdir[1]
+  endhandle
+  if !adir.wrt(/* ).string().eq('U WRT /*') or !adir.wrt(/* ).string().eq('D WRT /*') or !adir.wrt(/* ).string().eq('Z WRT /*') or !adir.wrt(/* ).string().eq('-Z WRT /*') then
+    Stru
+    var !sctns coll all sctn with matchwild(name,'*BAR*') for ce
+    !p9dir = p9 dir of $!support.datum
+    pin 8 copy p9 of $!support.datum
+    pin 7 copy pin 8
+    do !movesctns values !sctns
+      !!ce = !movesctns.dbref()
+      pin 7 plane pin 7 clear 0 inf ce
+      move $!p9dir clear 0 beh p9 of $!support.datum
+      pin 8 plane pin 8 clear 0 inf ce
+    enddo
+    --var !moved const dist pin 8 to pin 7
+    stru
+    --if (!support.rotateCur.not()) then
+    reconn recalc
+    --endif
+    pin 7 off
+    pin 8 off
+  endif
+  !!ce = !iamHere
+
+
+  -- Reset all pins associated with this support
+  call !!mdsResetPins(1,10)
+
+  -- Show dimensions on graphics if required
+
+  if !!mdsFT14.graphicalDim then
+    !!mdsshowdim(!!mdsFT14)
+  endif
+
+  -- Does the item require bearing plates (Framatome Only)
+
+  !!ce = !support.stru
+  !!mdsAddBearing(!support.datum)
+  !!ce = !support.stru
+
+  stru
+  --if (!support.rotateCur.not()) then
+
+  -- GE added 12/01/05
+  -- Need to execute design rules and recon
+
+  if !desc.eq('Zimmer Templates') then
+    var !coll coll all pnod for stru
+    do !a values !coll
+      $!a
+      rule execute all
+    enddo
+    stru
+  endif
+  -- eof
+
+  reconn recalc
+  handle ANY
+  endhandle
+  --endif
+
+  -- Copy weld locally
+  !unusedcopyWelds = object MDSWELDLIST(!!ce,!form)
+
+  -- adjust ancillary welds to suit the beams they sit on
+  !!mdsWeldAdjust(!!mdsFT14)
+
+  -- reset :mdsancref attributes if set
+  !support.plateconns.restoreconns()
+
+  --<kp>mar07 Handle snipes
+  !!mdsSnipe(!support.stru)
+  ---------------------------------------------------------------------------------------------------
+  --<wd>aug2007<mds12>
+  -- Update the MDSSCTN and MDSFITTING Objects to the latest DATA in the MDSSUPPORT object member .mdssctns,
+  -- i.e. !form.support.mdsctns, where any MDS SNIPES(FITTINGS) exist on the MDS SUPPORT SCTNS where the GTYP of CATREF is 'ANG'
+  -- and the MDS SNIPE/FITTING element PURPOSE attribute is set to 'XGUI'
+  --
+  -- ALL OTHER MDS SNIPES are generated automatically or from the MDS TEMPLATE during the MDS STRUCTURE creation/modification.
+  -- ** NOTE ** The SNIPE UPDATE applies to ALL METHODS(!method) of Creation,
+  -- i.e. 'CREATE by CURSOR/DIMENSION/CLEARANCE and RESIZING of the MDS TEMPLATE
+  !!mdsrestoresnipe(!form, 'DIMENSION')
+  -- REGENERATE the DATA stored in the FORM MDSSUPPORT object member "!form.support.mdssctns"
+  -- for ALL of the MDS Support SCTNS and ALL the associated MDS SNIPE(FITTING) members
+  !!mdssupportsctns(!form)
+  --<wd>aug2007<mds12>
+  ---------------------------------------------------------------------------------------------------
+  --<dw>sep2007 Restore bracing
+  !!mdsrestorebracing(!form)
+  --<dw>sep2007
+
+  !!ce = !support.stru
+
+  --<dw>jan2008 Oglaend brackets
+  if ((desc of /MDS/TEMPLATES ) eq ('OGLAEND Templates')) then
+    $!name-BAR-1
+    !barDesp = !!ce.desp[1]
+    extend end dist $!barDesp from posstart
+    !!mdsFT14.dim2.val = !barDesp
+  endif
+  --<dw>jan2008 End of Oglaend brackets
+$(
+  ---------------------------------------------------------------------------------------------------
+  ---------------------------------------------------------------------------------------------------
+  --<wd>jun2007<mds12>
+  -- Create the Cross Reference ASSOCIATIONS between the MDS SUPPORT SCTN members $!name-BAR-1
+  -- and the Main Structure supporting elements for:
+  -- <a> CURSOR mode !pick
+  --
+  -- Store the Original Current Element
+  !xce = !!ce
+  -- Store the Array of MDS Support Members in the MDSASSOC Object
+  !mdsassoc.mdsmember[1] = $!name-BAR-1
+  -- Initialising the MDSASSOWL object always DELETES ALL of the EXISTING Cross Reference Associations
+  -- (ASSOC) elements for the Current MDS Support, irrespective of the Creation MODE (!method)
+  !mdsassowl = object MDSASSOWL(!form)
+  !mdsassowl.mdsform  = !form
+  !mdsassowl.mdsassoc = !mdsassoc
+  -- Create the Association (ASSOCs) for the Current Support
+  !mdsassowl.mdsassoc(!mdsassoc)
+  -- Update the FORM SUPPORT object to reference the current MDSASSOWL Associations object
+  !form.support.associations[1] = !mdsassowl
+  !support = !form.support
+  -- Navigate back to the Original Current Element
+  !!ce = !xce
+  --<wd>jun2007<mds12>
+  ---------------------------------------------------------------------------------------------------
+  ---------------------------------------------------------------------------------------------------
+$)
+  -- restore compensation
+  -- We only need to restore the compensations if were re creating the framework by e.g. cursor, and not when were cancelling the form.
+  -- The global variable !!cancellingForm is set in !!mdsRestoreForm as this was the only way to do the check
+  if defined(!!cancellingForm) then
+    if !!cancellingForm.not() then
+      !!mdsCompplateDflts.compensatingPlates(!complates)
+    endif
+  else
+    !!mdsCompplateDflts.compensatingPlates(!complates)
+  endif
+
+  --<kp>jan2012 MDS associations
+  !form.support.associations(!picks)
+
+  !support = !form.support
+
+  -- Enhance elements
+  !support.enhance(on)
+
+  !!ce = !support.stru
+
+  -- Reset Units
+  !!kRestoreUnits(!currentunits)
+
+endfunction

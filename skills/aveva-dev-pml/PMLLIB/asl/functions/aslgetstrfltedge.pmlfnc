@@ -1,0 +1,313 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:           aslgetstrfltedge.pmlfnc
+--    Type:         Function Definition
+--   Group:         ASL Application
+--     Keyword:     ASL
+--   Module:        Design
+--   Replaces:
+-- Author:          Karel Pleschner
+-- Created:         Thu May 29 11:44:37 GMT 2008
+--
+--
+--  Description:    Get vertices for handrail running along passed side of stairs
+--
+--
+--------------------------------------------------------------------------------------------------------------
+--
+-- Function Type:   Function
+-- Arguments:
+--   [#] [R/RW] [Data Type]           [Description]
+--    1   R      ANY                   Stair flight (STRFLT element or DBEASLSTRFLT object)
+--    2   R      STRING                Side of stair flight (L, LM, LI, R, RM or RI )
+--    3   R      REAL                  Additional extra offset - applied only if 4th argument is TRUE
+--    4   R      BOOLEAN               If true apply offset obtained from stair flight
+--
+-- Return:
+--   [Data Type]          [Description]
+--    ARRAY                vertices (array of three arrays) in following format:
+--                         [1] - type of vertices
+--                         [2] - position of vertices
+--                         [3] - attributes of vertices
+--                         [4] - reference to associated POINTR (sigref)
+--
+--------------------------------------------------------------------------------------------------------------
+define function !!aslGetStrfltEdge(!stair is ANY,!side is STRING,!xtraXoffset is REAL,!handrailOffset is BOOLEAN) is ARRAY
+
+  -- init
+  !route = ARRAY()
+  !fillet = 100mm
+  !fillet = !!currentHandrailRadius
+  handle NONE
+    !!currentHandrailRadius.delete()
+  elsehandle ANY
+  endhandle
+
+  !xtra = !xtraXoffset
+  if !xtra.unset() then
+    !xtra = 0
+  endif
+
+  -- check argument object type
+  if !stair.objectType().eq('DBREF') then
+    -- get rpath from stair
+    !rpath = !!dtbMemberOfType(!stair,'RPATH',1)
+    if !rpath.unset() then
+      return !route
+    endif
+    -- setup rpath object
+    !pathObj = object ASLRPATH(!stair,'load')
+    handle ANY
+      return !route
+    endhandle
+    !width = !stair.twidth
+    !tmplref = !stair.asstmp
+  elseif !stair.objectType().eq('DBEASLSTRFLT') then
+    !pathObj = !stair.rpath
+    !width = !stair.width
+    !tmplref = !stair.tmplReference
+  else
+    return error 1 'ARGUMENT 1 is invalid - must be either DBREF of DBEASLSTRFLT'
+  endif
+
+  -- exit if path is invalid
+  if !pathObj.unset() then
+    return !route
+  endif
+
+  -- store start/end point references of stair flight
+  !start = !pathObj.refe.first()
+  !end = !pathObj.refe.last()
+
+  -- set defaults
+  !zoffset = 0
+  !ext = 0
+
+  -- get xoffset extension (stringer width) and zoffset from template
+  !whichSide = !side.trim().upcase().substring(1,1)
+  if !handrailOffset then
+    -- get justification info
+    !just = !side.replace(' ','').upcase().substring(2,1)
+    if !just.eq('M').or(!just.eq('I')).not() then
+      !just = ''
+    endif
+
+    -- first trial - get stringer width directly from stringers (not when justification is I{inside})
+    if !just.neq('I') then
+      !ext = !!aslGetStairStringerWidth(!tmplref,!whichSide)
+    endif
+
+    -- second trial - if it could not be obtained (e.g. no stringers within assembly) then the basic stair flight assumed
+    if !ext.eq(0).and(!just.neq('I')) then
+      !ext = !width * 0.025
+    endif
+
+    if !just.eq('M') then
+      !ext = !ext * 0.5
+    endif
+
+    -- third trial - try to get stringer width as property of assembly
+    !xofProp = substring(!whichSide +!just + 'XOF',1,4)
+    !zofProp = substring(!whichSide +!just + 'ZOF',1,4)
+    !ext = !tmplref.ldpr.attribute(!xofProp)
+    handle ANY
+      if !just.eq('M') then
+        -- try to get value as half of extension to the edge
+        !ext = !tmplref.ldpr.attribute(!whichSide + 'XOF') / 2
+        handle ANY
+        endhandle
+      endif
+    endhandle
+    !zoffset = !tmplref.ldpr.attribute(!zofProp)
+    handle ANY
+    endhandle
+
+    !ext = !ext + !xtra
+    if !whichSide.eq('L') then
+      !width = !width * -1
+      !ext = !ext * -1
+    endif
+  else
+    if !whichSide.eq('L') then
+      !width = !width * -1
+    endif
+  endif
+
+  -- compose xoffset
+  !xoffset = (!width * 0.5) + !ext
+  -- get geometry
+  !edges = !pathObj.edges(false)
+  !processEdges = ARRAY()
+
+  -- loop through lines/arcs
+  !tmpOri = Y is N wrt /* and Z is U wrt /*
+  !horiPlane = object PLANE(e0 wrt world, !tmpOri)
+  do !c indices !edges
+    if !edges[!c].length().eq(0) then
+      !edges[!c].delete()
+      skip
+    endif
+    if !edges[!c].objectType().eq('LINE') then
+      !tmpline = !edges[!c]
+      !tmpdir = !tmpline.direction().projected(!horiPlane).cross(!tmpOri.zdir())
+      !edges[!c] = !tmpline.offset(!tmpdir,!xoffset).offset(U wrt world,!zoffset)
+    else
+      !radius = !edges[!c].radius
+      !edges[!c].radius = !radius - !xoffset
+      !edges[!c].position = !edges[!c].position.offset(U wrt world,!zoffset)
+      if !edges[!c].radius.leq(0) then
+        !edges[!c].delete()
+      endif
+    endif
+  enddo
+  !edges.compress()
+
+  !prevtype = ''
+  -- first iteration to get intersection of lines
+  do !c indices !edges
+    if !edges[!c].objectType().eq('LINE') then
+      !nextype = ''
+      if defined(!edges[!c + 1]) then
+        !nextype = !edges[!c + 1].objectType()
+      endif
+
+      !tmpline = !edges[!c]
+      !linedir = !tmpline.direction()
+      if !prevtype.eq('LINE') then
+      -- trim start of line
+        !joint = !edges[!c].intersection(!edges[!c - 1])
+        handle ANY
+          skip
+        endhandle
+        !tmpline.startPosition = !joint
+      endif
+
+      if !nextype.eq('LINE') then
+      -- trim end of line
+        !joint = !edges[!c].intersection(!edges[!c + 1])
+        handle ANY
+          skip
+        endhandle
+        !tmpline.endPosition = !joint
+      endif
+
+      if !tmpline.length().gt(1mm) then
+        if !tmpline.direction().angle(!linedir).lt(1) then
+          !processEdges.append(!tmpline)
+        endif
+      endif
+      !prevtype = 'LINE'
+    else
+      !processEdges.append(!edges[!c])
+      !prevtype = 'ARC'
+    endif
+  enddo
+
+  -- second iteration to work out the gaps between lines
+  !prevtype = ''
+  !edges = !processEdges
+  do !c indices !edges
+    skip if undefined(!edges[!c])
+    if !edges[!c].objectType().eq('LINE') then
+      if !prevtype.eq('LINE') then
+        skip if undefined(!edges[!c - 1])
+        if !edges[!c - 1].endPosition.distance(!edges[!c].startPosition).gt(2mm) then
+          !tmpline = !edges[!c - 1]
+          !tmpplane = !tmpline.startPosition.plane(!tmpline.endPosition,!tmpline.endPosition.offset(D wrt world,250mm))
+          !upperJoint = !tmpplane.intersection(!edges[!c])
+          handle ANY
+            skip
+          endhandle
+          !tmpline = !edges[!c]
+          !tmpplane = !tmpline.startPosition.plane(!tmpline.endPosition,!tmpline.endPosition.offset(D wrt world,250mm))
+          !lowerJoint = !tmpplane.intersection(!edges[!c - 1])
+          handle ANY
+            skip
+          endhandle
+          if !edges[!c - 1].length().leq(!fillet) then
+            !tmpFillet = !fillet - !edges[!c - 1].length()
+            !edges[!c - 1].endPosition = !edges[!c - 1].startPosition
+            if defined(!edges[!c - 2]) then
+              if !edges[!c - 2].objectType().eq('LINE') then
+                !edges[!c - 2] = !edges[!c - 2].extendEnd(-!tmpFillet)
+              endif
+            endif
+            !edges[!c].startPosition = !upperJoint
+            !edges[!c] = !edges[!c].extendStart(-!fillet)
+          elseif !edges[!c].length().leq(!fillet) then
+            !tmpFillet = !fillet - !edges[!c].length()
+            !edges[!c].delete()
+            if defined(!edges[!c + 1]) then
+              if !edges[!c + 1].objectType().eq('LINE') then
+                !edges[!c + 1] = !edges[!c + 1].extendStart(-!tmpFillet)
+              endif
+            endif
+            !edges[!c - 1].endPosition = !lowerJoint
+            !edges[!c - 1] = !edges[!c - 1].extendEnd(-!fillet)
+          else
+            !edges[!c - 1].endPosition = !lowerJoint
+            !edges[!c].startPosition = !upperJoint
+            !edges[!c - 1] = !edges[!c - 1].extendEnd(-!fillet)
+            !edges[!c] = !edges[!c].extendStart(-!fillet)
+          endif
+        endif
+      endif
+      !prevtype = 'LINE'
+    else
+      !prevtype = 'ARC'
+    endif
+  enddo
+
+  -- third iteration to remove zero length lines
+  do !c indices !edges
+    if !edges[!c].length().eq(0) then
+      !edges[!c].delete()
+    endif
+  enddo
+  !edges.compress()
+
+  -- fourth iteration to fill the gaps with lines
+  !prevtype = ''
+  !processEdges = ARRAY()
+  do !c indices !edges
+    !fill = object LINE()
+    if !edges[!c].objectType().eq('LINE') then
+      if !prevtype.eq('LINE') then
+        if !edges[!c - 1].endPosition.distance(!edges[!c].startPosition).gt(2mm) then
+          !fill.startPosition = !edges[!c - 1].endPosition
+          !fill.endPosition = !edges[!c].startPosition
+        endif
+      endif
+      !prevtype = 'LINE'
+    else
+      !prevtype = 'ARC'
+    endif
+    if !fill.set() then
+      !processEdges.append(!fill)
+    endif
+    !processEdges.append(!edges[!c])
+  enddo
+
+  -- transform edges to points
+  !pathObj = object ASLRPATH(!processEdges,!tmpOri.zdir())
+  !route[1] = !pathObj.type
+  !route[2] = !pathObj.vertex
+  !route[3] = !pathObj.detail
+  !route[4] = !pathObj.sigref
+  !route[4][1] = !start
+  !route[4][!route[4].size()] = !end
+
+  -- for graphical debugging only
+  if defined(!!graphicalDebugging) then
+    aid clear all 1
+    do !aid values !processEdges
+      !aid.draw(1,1,7)
+    enddo
+  endif
+
+  return !route
+
+
+endfunction

@@ -1,0 +1,719 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            splupdate.pmlfrm
+--   Type:          Form Definition
+--   Group:         General Application
+--     Keyword:     GEN
+--   Module:        spooler
+--   Replaces:
+--
+-- Author:          C.Brown
+-- Created:         Thu Jul 24 13:39:56 BST 1997
+--
+--
+-- Description:
+-- Update spool/weld/part/joint numbering for spool drg
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  apply()                          -                   Apply action for form
+--  cancel()                         -                   Cancel method
+--  ce()                             -                   links form to the current element
+--  check()                          BOOLEAN             check which alignments and updates will be performed
+--  init()                           -                   Form initialisation on show action
+--  showProgress(STRING)             -                   show progress in prompt
+--  splUpdate()                      -                   Constructor method for form object
+--
+------------------------------------------------------------------------
+
+-- Define form
+setup form !!splUpdate
+
+  !!splUpdate.formTitle     = 'Update/Number Spool Drawing'
+  !!splUpdate.iconTitle     = 'Update'
+  !!splUpdate.callback      = '!!splUpdate.init()'
+  !!splUpdate.formRevision  = ' $Revision: 1.23 $ '
+
+  -- Define form members
+
+  -- stores the element that is current to the form
+  member .ce is DBREF
+
+  -- members used to access all numbering operations
+  member .spoolN is SPLSPOOLN
+  member .fieldN is SPLFIELDN
+  member .weldN  is SPLWELDN
+  member .jointN is SPLJOINTN
+  member .partN  is SPLPARTN
+  member .bendN  is SPLBENDN
+
+  -- members used to control align and update actions
+  member .splDrgAlign is BOOLEAN
+  member .spoolUpdate is BOOLEAN
+  member .fieldUpdate is BOOLEAN
+  member .weldAlign   is BOOLEAN
+  member .weldUpdate  is BOOLEAN
+  member .jointAlign  is BOOLEAN
+  member .jointUpdate is BOOLEAN
+  member .partUpdate  is BOOLEAN
+  member .bendUpdate  is BOOLEAN
+  member .pBendUpdate is BOOLEAN
+
+  -- progress count during update
+  member .stages is REAL
+  member .stagesDone is REAL
+
+  -- holds names of form members that will be used in interactive update mode
+  member .intUpdates is ARRAY
+
+  -- form gadgets
+
+  -- CE button, initialises form to the current element
+  button .setCe 'CE' at xmin ymax
+
+  -- gadget to display name of forms current element
+  paragraph .ceText at xmax+1 ymin width 30 lines 2
+
+  -- gadgets to display align/update actions
+  frame .contents 'Status' at xmin.setCe ymax+0.2 width 40
+    textpane .status at xmin+1 ymax width 34 height 10
+  exit
+
+  -- gadgets to control update of numbering
+  frame .update 'Update Choice Handling' at xmin ymax+0.5 width 40
+    rgroup .interactive at xmin+1 ymax vertical
+      add tag ' Use first available data ' select 'FIRST'
+      add tag ' Always generate new data ' select 'NEW'
+      add tag ' Manual data selection    ' select 'ASK'
+    exit
+  exit
+
+  frame .dependent 'Dependent Spool Drawings' at xmin ymax+0.2 width 40
+    toggle .force ' Align' at xmin+2 ymax+0.2
+  exit
+
+  -- form apply/dismiss gadgets
+  button .apply   ' Apply ' at xmin ymax+0.5 apply
+  button .dismiss 'Dismiss' at xmax form-size ymin
+
+exit
+-- End of form definition for !!splUpdate
+
+------------------------------------------------------------------------
+--
+-- Method:      !splUpdate()
+--
+-- Description: Constructor method for form object
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .splUpdate()
+
+  -- suppress user modification of check output
+  !this.status.setEditable(false)
+
+  -- set gadget callbacks
+  !this.setCe.callback = '!!splUpdate.ce()'
+  !this.apply.callback = '!!splUpdate.apply()'
+  !this.dismiss.callback = '!!splUpdate.cancel()'
+
+endmethod
+-- End of method definition for .splUpdate()
+
+------------------------------------------------------------------------
+--
+-- Method:      !init()
+--
+-- Description: Form initialisation on show action
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .init()
+
+  -- form interlocking
+  if (defined(!!splRenumber)) then
+    if (!!splRenumber.shown()) then
+      -- 'Update not allowed whilst Renumber form is active.'
+      !!messageFile.error(154, 5)
+    endif
+  endif
+  if (defined(!!splModify)) then
+    if (!!splModify.shown()) then
+      -- 'Update not allowed whilst Modify form is active.'
+      !!messageFile.error(154, 6)
+    endif
+  endif
+  if (defined(!!splAsBuilt)) then
+    if (!!splAsBuilt.shown()) then
+      -- 'Update not allowed whilst Modify form is active.'
+      !!messageFile.error(154, 6)
+    endif
+  endif
+
+  -- initialise interactive mode from numbering options
+  !this.interactive.select(!!splNumOpt.interactive())
+
+  -- connect the form to the splDrg
+  !this.ce()
+
+endmethod
+-- End of method definition for .init()
+
+------------------------------------------------------------------------
+--
+-- Method:      !ce()
+--
+-- Description: links form to the current element
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .ce()
+
+  -- link the form and the numbering objects to the current element splDrg
+  !this.ce = !!splDrg()
+  !this.ceText.val = !this.ce.fullName
+
+  -- set the current element for each numbering object
+  !this.fieldN.ce(!this.ce)
+  !this.spoolN.ce(!this.ce)
+  !this.weldN.ce(!this.ce)
+  !this.jointN.ce(!this.ce)
+  !this.partN.ce(!this.ce)
+  !this.bendN.ce(!this.ce)
+
+  -- activate apply button if any alignment or update is required
+  !this.apply.active = !this.check()
+
+endmethod
+-- End of method definition for .ce()
+
+------------------------------------------------------------------------
+--
+-- Method:      !check()
+--
+-- Description: check which alignments and updates will be performed
+--
+-- Method Type: Function
+-- Returns:
+--  [BOOLEAN]  [true if there are alignments or updates to perform]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .check() is BOOLEAN
+
+  -- check if SPLDRG needs aligning and updating
+  -- global numbering options control which checks are made
+  -- count is kept of stages to be actioned so progress can be shown
+  -- results are displayed in textpane
+  !this.splDrgAlign = false
+  !this.fieldUpdate = false
+  !this.spoolUpdate = false
+  !this.weldAlign   = false
+  !this.weldUpdate  = false
+  !this.jointAlign  = false
+  !this.jointUpdate = false
+  !this.partUpdate  = false
+  !this.bendUpdate  = false
+  !this.pBendUpdate = false
+  !this.stages      = 0
+  !this.stagesDone  = 0
+  !this.status.clear()
+  !checkResults = ARRAY()
+
+  !this.splDrgAlign = !this.spoolN.alignReqd()
+
+  if (!this.splDrgAlign) then
+
+    -- 'Contents need aligning with model'
+    !checkResults.append(!!messageFile.messageString(154, 26))
+    !this.stages = !this.stages + 1
+
+    if (!!splNumOpt.spools()) then
+      -- 'Spool data will be updated'
+      !checkResults.append(!!messageFile.messageString(154, 43))
+      !this.spoolUpdate = true
+      !this.stages = !this.stages + 1
+    endif
+
+    if (!!splNumOpt.fields()) then
+      -- 'Field data will be updated'
+      !checkResults.append(!!messageFile.messageString(154, 44))
+      !this.fieldUpdate = true
+      !this.stages = !this.stages + 1
+    endif
+
+    if (!!splNumOpt.welds()) then
+      -- 'Weld data will be updated'
+      !checkResults.append(!!messageFile.messageString(154, 45))
+      !this.weldAlign = true
+      !this.weldUpdate = true
+      !this.stages = !this.stages + 2
+    endif
+
+    if (!!splNumOpt.joints()) then
+      -- 'Joint data will be updated'
+      !checkResults.append(!!messageFile.messageString(154, 46))
+      !this.jointAlign = true
+      !this.jointUpdate = true
+      -- don't count weld/joint align twice
+      if (!!splNumOpt.welds()) then
+        !this.stages = !this.stages + 1
+      else
+        !this.stages = !this.stages + 2
+      endif
+    endif
+
+    if (!!splNumOpt.parts()) then
+      -- 'Part numbers will be updated'
+      !checkResults.append(!!messageFile.messageString(154, 47))
+      !this.partUpdate = true
+      !this.stages = !this.stages + 1
+    endif
+
+    if (!!splNumOpt.bends()) then
+      -- 'Bend numbers will be updated'
+      !checkResults.append(!!messageFile.messageString(154, 48))
+      !this.bendUpdate = true
+      !this.stages = !this.stages + 1
+    endif
+
+    if (!!splNumOpt.pulledBends()) then
+      -- 'Pulled Bend & Tube numbers will be updated'
+      !checkResults.append('Pulled Bend & Tube numbers will be updated')
+      !this.pBendUpdate = true
+      !this.stages = !this.stages + 1
+    endif
+
+  else
+
+    -- 'Contents are aligned with model'
+    !checkResults.append(!!messageFile.messageString(154, 27))
+
+    if (!!splNumOpt.spools()) then
+      !this.spoolUpdate = !this.spoolN.updateReqd()
+      if (!this.spoolUpdate) then
+        -- 'Spool data will be updated'
+        !checkResults.append(!!messageFile.messageString(154, 43))
+        !this.stages = !this.stages + 1
+      else
+        -- 'No errors in spool numbering'
+        !checkResults.append(!!messageFile.messageString(154, 68))
+      endif
+    endif
+
+    if (!!splNumOpt.fields()) then
+      -- no update of field data required if alignment is ok
+      !this.fieldUpdate = false
+    endif
+
+    if (!!splNumOpt.welds()) then
+      -- welds and joints alignment will be checked together if both needed
+      if (!!splNumOpt.joints()) then
+        !this.weldAlign = !this.weldN.alignBothReqd()
+      else
+        !this.weldAlign = !this.weldN.alignReqd()
+      endif
+      if (!this.weldAlign) then
+        -- 'Welds need aligning with model'
+        !checkResults.append(!!messageFile.messageString(154, 29))
+        -- 'Weld data will be updated'
+        !checkResults.append(!!messageFile.messageString(154, 45))
+        !this.weldUpdate = true
+        !this.stages = !this.stages + 2
+      else
+        -- 'Welds are aligned with model'
+        !checkResults.append(!!messageFile.messageString(154, 30))
+        !this.weldUpdate = !this.weldN.updateReqd()
+        if (!this.weldUpdate) then
+          -- 'Weld data will be updated'
+          !checkResults.append(!!messageFile.messageString(154, 45))
+          !this.stages = !this.stages + 1
+        else
+          -- 'No errors in weld numbering'
+          !checkResults.append(!!messageFile.messageString(154, 78))
+        endif
+      endif
+    endif
+
+    if (!!splNumOpt.joints()) then
+      -- welds and joints alignment have been checked together if both needed
+      if (!!splNumOpt.welds()) then
+        !this.jointAlign = !this.weldAlign
+      else
+        !this.jointAlign = !this.jointN.alignReqd()
+      endif
+      if (!this.jointAlign) then
+        -- 'Joints need aligning with model'
+        !checkResults.append(!!messageFile.messageString(154, 32))
+        -- 'Joint data will be updated'
+        !checkResults.append(!!messageFile.messageString(154, 46))
+        !this.jointUpdate = true
+        -- don't count weld/joint align twice
+        if (!!splNumOpt.welds()) then
+          !this.stages = !this.stages + 1
+        else
+          !this.stages = !this.stages + 2
+        endif
+      else
+        -- 'Joints are aligned with model'
+        !checkResults.append(!!messageFile.messageString(154, 33))
+        !this.jointUpdate = !this.jointN.updateReqd()
+        if (!this.jointUpdate) then
+          -- 'Joint data will be updated'
+          !checkResults.append(!!messageFile.messageString(154, 46))
+          !this.stages = !this.stages + 1
+        else
+          -- 'No errors in joint numbering'
+          !checkResults.append(!!messageFile.messageString(154, 73))
+        endif
+      endif
+    endif
+
+    if (!!splNumOpt.parts()) then
+      !this.partUpdate = !this.partN.updateReqd()
+      if (!this.partUpdate) then
+        if (!!splNumOpt.pulledBends()) then
+          -- 'Parts & Pulled Bend numbers will be updated'
+          !checkResults.append('Parts & Pulled Bend numbers will be updated')
+        else
+          -- 'Part numbers will be updated'
+          !checkResults.append(!!messageFile.messageString(154, 47))
+        endif
+        !this.stages = !this.stages + 1
+      else
+        -- 'No errors in part numbering'
+        !checkResults.append(!!messageFile.messageString(154, 79))
+      endif
+    endif
+
+    if (!!splNumOpt.bends()) then
+      !this.bendUpdate = !this.bendN.updateReqd()
+      if (!this.bendUpdate) then
+        -- 'Bend numbers will be updated'
+        !checkResults.append(!!messageFile.messageString(154, 48))
+        !this.stages = !this.stages + 1
+      else
+        -- 'No errors in bend numbering'
+        !checkResults.append(!!messageFile.messageString(154, 84))
+      endif
+    endif
+
+  endif
+
+  -- display status of all checks
+  !this.status.val = !checkResults
+
+  -- return whether any alignments or updates need performing
+  return (!this.splDrgAlign or !this.fieldUpdate or !this.spoolUpdate or !this.weldAlign or $
+          !this.weldUpdate or !this.jointAlign or !this.jointUpdate or !this.partUpdate or !this.bendUpdate)
+
+endmethod
+-- End of method definition for .check() BOOLEAN
+
+------------------------------------------------------------------------
+--
+-- Method:      !apply()
+--
+-- Description: Apply action for form
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .apply()
+
+  -- The apply method will update data for non interactive types prior
+  -- to the interactive updates, using this method, the interactive form
+  -- can be given a list of numbering objects to action, and this removes
+  -- the risk of recursive calls to this method.
+------------------------------------------------------------------------
+-- Author  Date        Ref                  Reason
+-- ------  ----------  -------------------  ----------------------------
+-- NJSB    22/01/2013  86780/S-43004        Re-use deleted Spool Numbers
+------------------------------------------------------------------------
+
+  -- Establish which numbering modes are being updated and which of the
+  -- updates are interactive.
+
+  -- clear the member arrays that holds the names of form members
+  -- pointers to the numbering objects for interactive updates
+  !this.intUpdates.clear()
+  !checkResults = ARRAY()
+
+  -- perform each alignment or update and modify the displayed
+  -- status accordingly
+
+  -- set spool numbering options
+  !!salign = !this.splDrgAlign
+  -- align splDrg with model
+  if (!this.splDrgAlign) then
+    !this.showProgress(!this.spoolN.aligningText())
+    !this.spoolN.align()
+    handle any
+      !this.showProgress('finishing')
+      return error 1 noalert
+    endhandle
+    !this.splDrgAlign = false
+  endif
+  -- 'Contents are aligned with model'
+  !checkResults.append(!!messageFile.messageString(154, 27))
+
+  -- update spool data and numbers
+  if (!this.spoolUpdate) then
+    if (!this.interactive.selection() eq 'ASK') then
+      !this.intUpdates.append('spoolN')
+      -- 'Spool numbers have not been checked'
+      !checkResults.append(!!messageFile.messageString(154, 60))
+    else
+      !this.showProgress(!this.spoolN.updatingText())
+      !this.spoolN.update(!this.interactive.selection() eq 'NEW')
+      !this.spoolUpdate = false
+      -- 'No errors in spool numbering'
+      !checkResults.append(!!messageFile.messageString(154, 68))
+    endif
+  elseif (!!splNumOpt.spools()) then
+    -- 'No errors in spool numbering'
+    !checkResults.append(!!messageFile.messageString(154, 68))
+  endif
+
+  -- update field data
+  if (!this.fieldUpdate) then
+    if (!this.interactive.selection() eq 'ASK') then
+      !this.intUpdates.append('fieldN')
+    else
+      !this.showProgress(!this.fieldN.updatingText())
+      !this.fieldN.update(!this.interactive.selection() eq 'NEW')
+      !this.fieldUpdate = false
+    endif
+  endif
+
+  -- align welds with model
+  if (!this.weldAlign) then
+    -- welds and joints will be aligned together if both needed
+    if (!this.jointAlign) then
+      !this.showProgress(!this.weldN.alignBothText())
+      !this.weldN.alignBoth()
+      handle any
+        !this.showProgress('finishing')
+        return error 1 noalert
+      endhandle
+      !this.jointAlign = false
+    else
+      !this.showProgress(!this.weldN.aligningText())
+      !this.weldN.align()
+      handle any
+        !this.showProgress('finishing')
+        return error 1 noalert
+      endhandle
+    endif
+    !this.weldAlign = false
+  endif
+
+  if (!!splNumOpt.welds()) then
+    -- 'Welds are aligned with model'
+    !checkResults.append(!!messageFile.messageString(154, 30))
+  endif
+
+  -- update weld data and numbers
+  if (!this.weldUpdate) then
+    if (!this.interactive.selection() eq 'ASK') then
+      !this.intUpdates.append('weldN')
+      -- 'Weld numbers have not been checked'
+      !checkResults.append(!!messageFile.messageString(154, 61))
+    else
+      !this.showProgress(!this.weldN.updatingText())
+      !this.weldN.update(!this.interactive.selection() eq 'NEW')
+      !this.weldUpdate = false
+      -- 'No errors in weld numbering'
+      !checkResults.append(!!messageFile.messageString(154, 78))
+    endif
+  elseif (!!splNumOpt.welds()) then
+    -- 'No errors in weld numbering'
+    !checkResults.append(!!messageFile.messageString(154, 78))
+  endif
+
+  -- align joints with model
+  -- welds and joints have been aligned together if both needed
+  if (!this.jointAlign and !this.weldAlign.not()) then
+    !this.showProgress(!this.jointN.aligningText())
+    !this.jointN.align()
+    handle any
+      !this.showProgress('finishing')
+      return error 1 noalert
+    endhandle
+    !this.jointAlign = false
+  endif
+
+  if (!!splNumOpt.joints()) then
+    -- 'Joints are aligned with model'
+    !checkResults.append(!!messageFile.messageString(154, 33))
+  endif
+
+  -- update joint data and numbers
+  if (!this.jointUpdate) then
+    if (!this.interactive.selection() eq 'ASK') then
+      !this.intUpdates.append('jointN')
+      -- 'Joint numbers have not been checked'
+      !checkResults.append(!!messageFile.messageString(154, 62))
+    else
+      !this.showProgress(!this.jointN.updatingText())
+      !this.jointN.update(!this.interactive.selection() eq 'NEW')
+      !this.jointUpdate = false
+      -- 'No errors in joint numbering'
+      !checkResults.append(!!messageFile.messageString(154, 73))
+    endif
+  elseif (!!splNumOpt.joints()) then
+    -- 'No errors in joint numbering'
+    !checkResults.append(!!messageFile.messageString(154, 73))
+  endif
+
+  -- update part numbers
+  if (!this.partUpdate) then
+    if (!this.interactive.selection() eq 'ASK') then
+      !this.intUpdates.append('partN')
+      -- 'Part numbers have not been checked'
+      !checkResults.append(!!messageFile.messageString(154, 58))
+    else
+      !this.showProgress(!this.partN.updatingText())
+      !this.partN.update()
+      !this.partUpdate = false
+      if (!!splNumOpt.pulledBends()) then
+        if(!!splPBendCheck()) then
+          -- 'There are errors in pulled bend part numbering'
+          !checkResults.append('Part numbers for tubi with pulled bends require renumbering')
+        else
+          -- 'No errors in part numbering'
+          !checkResults.append(!!messageFile.messageString(154, 79))
+        endif
+      else
+        -- 'No errors in part numbering'
+        !checkResults.append(!!messageFile.messageString(154, 79))
+      endif
+    endif
+  elseif (!!splNumOpt.parts()) then
+    -- 'No errors in part numbering'
+    !checkResults.append(!!messageFile.messageString(154, 79))
+  endif
+
+  -- update bend numbers
+  if (!this.bendUpdate) then
+    if (!this.interactive.selection() eq 'ASK') then
+      !this.intUpdates.append('bendN')
+      -- 'Bend numbers have not been checked'
+      !checkResults.append(!!messageFile.messageString(154, 59))
+    else
+      !this.showProgress(!this.bendN.updatingText())
+      !this.bendN.update()
+      !this.bendUpdate = false
+      -- 'No errors in bend numbering'
+      !checkResults.append(!!messageFile.messageString(154, 84))
+    endif
+  elseif (!!splNumOpt.bends()) then
+    -- 'No errors in bend numbering'
+    !checkResults.append(!!messageFile.messageString(154, 84))
+  endif
+
+  -- bring status texts up to date
+  !this.status.clear()
+  !this.status.val = !checkResults
+
+  -- deactivate apply button until form reinitialised
+  !this.apply.active = false
+
+  -- interactive updates are executed by passing the numbering objects that
+  -- require updating, to the !!splInteractive form, these are passed via
+  -- the form member !this.intUpdates
+  if (!this.intUpdates.empty().not()) then
+    show !!splInteractive at xr 0.3 yr 0.5
+  else
+    !this.showProgress('finishing')
+    !this.spoolN.alignTidy()
+  endif
+
+endmethod
+-- End of method definition for .apply()
+
+------------------------------------------------------------------------
+--
+-- Method:      !showProgress()
+--
+-- Description: show progress in prompt
+--
+-- Method Type: Procedure
+-- Arguments:
+--  [1] [R] [STRING] [First part of prompt, or 'finishing' for end or error]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .showProgress(!promptText is STRING)
+
+  if (!this.stagesDone ge !this.stages or !promptText eq 'finishing') then
+
+    -- finished
+    PROMPT DISMISS
+
+  else
+
+    -- increment count so we display dot as stage is happening
+    !this.stagesDone = !this.stagesDone + 1
+
+    -- output a prompt showing "graphic" of stages done
+    !promptString = ''
+    do !i to !this.stagesDone
+      !promptString = !promptString + '..'
+    enddo
+    do !i from (!this.stagesDone + 1) to !this.stages
+      !promptString = !promptString + '  '
+    enddo
+    !promptString = !promptText & ' : [' & !promptString & ']'
+    PROMPT '$!promptString'
+
+  endif
+
+endmethod
+-- End of method definition for .showProgress(STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      !cancel()
+--
+-- Description: Cancel method
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .cancel()
+
+  -- cancel interactive update if active
+  if (defined(!!splInteractive)) then
+    if (!!splInteractive.shown()) then
+      if (!!splInteractive.softCancel().not()) then
+        return
+      endif
+    endif
+  endif
+
+  !this.hide()
+
+endmethod
+-- End of method definition for .cancel()

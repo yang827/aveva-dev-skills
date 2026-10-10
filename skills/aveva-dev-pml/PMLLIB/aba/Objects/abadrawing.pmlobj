@@ -1,0 +1,1152 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            abadrawing.pmlobj
+--   Type:          Object Definition
+--   Group:         draft
+--     Keyword:     ABA
+--   Module:        DRAFT
+--
+-- Author:          Tony Martin
+-- Created:         16/04/2002
+--
+-- Description:
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  abaDrawing(DBREF)                -
+--  abaDrawing(STRING,DBREF,DBREF)   -                   builds a new drawing in interactive mode
+--  abaDrawing(STRING,DBREF,DBREF,DBREF,DBREF,STRING) BOOLEAN             Constructor method for running in batch mode
+--  abaProcessTask(ARRAY,ARRAY)      -                   For running process tasks in batch mode
+--  copySheet(DBREF)                 -
+--  createNewDrawing(DBREF)          -
+--  deleteDrawing()                  -
+--  drawViews(BOOLEAN)               -
+--  getViews(STRING)                 -
+--  makeDrawing(DBREF,STRING)        -
+--  oldAutoNumber()                  -
+--  processViewList()                BOOLEAN
+--  subString(STRING)                STRING
+--  update(STRING)                   -
+--
+------------------------------------------------------------------------
+
+define object ABADRAWING
+
+  member .drwg        is DBREF
+  member .sheet       is DBREF
+  member .template    is DBREF
+  member .area        is DBREF
+  member .viewList    is ARRAY
+  member .viewNames   is ARRAY
+  member .tempDesc    is STRING
+  member .areaDesc    is STRING
+  member .drwgName    is STRING  $* existing name
+  member .drwgTitle   is STRING
+  member .exists      is BOOLEAN
+  member .variant     is STRING
+  member .newTemplate is STRING
+  member .batch       is BOOLEAN
+  member .autoNumber  is BOOLEAN
+  member .autoName    is STRING
+  member .units       is STRING
+
+  -- MOdified is not used and may be deleted at a future release
+  member .modified    is BOOLEAN
+
+endobject
+-- End of object definition
+
+--------------------------------------------------------------------------
+-- constructor method for existing drawings
+--------------------------------------------------------------------------
+define method .abaDrawing(!shee is DBREF)
+
+  !this.batch       = false
+  !this.autoNumber  = FALSE
+  !this.modified    = FALSE
+  !this.autoName    = '   2'
+  !this.drwg        = !shee.owner
+  !this.sheet       = !shee
+  !this.template    = !shee.linkref
+  !this.area        = !shee.darref
+  !this.tempDesc    = !shee.linkref.title
+    handle any
+      return error 50 'Undefined template name'
+    endhandle
+
+  !this.drwgTitle   = !shee.title
+  !this.areaDesc    = !shee.darref.function
+    handle any
+     return error 50 'Undefined area name'
+    endhandle
+
+  !this.drwgName    = !shee.owner.name
+  !this.exists      = true
+  !func = !this.template.func
+
+  if (!func.eq('Master')) then
+    !this.variant = 'M '
+  else
+    !this.variant = 'V' & !func.after('Variant ')
+  endif
+
+  !this.getViews('DVPD')
+
+  VAR !views COLL ALL VIEW FOR $!this.template
+
+  do !viewItem values !views
+
+    !view = object ABAVIEW(!this.area,!viewItem.dbref())
+
+    !this.viewList.append(!view)
+
+  enddo
+
+  !this.viewNames.append('-')
+
+endmethod
+
+------------------------------------------------------------------------
+-- Method:      .abaDrawing(STRING,DBREF,DBREF)
+--
+-- Description: builds a new drawing in interactive mode
+--
+-- Method Type: constructor method (Including Pre Set DRawing Name)
+--
+------------------------------------------------------------------------
+define method .abaDrawing(!drawingNo is STRING, !template is DBREF, !area is DBREF)
+
+  !this.batch      = FALSE
+  !this.modified   = FALSE
+  !this.autoNumber = false
+  !this.autoName   = '   2'
+  !this.drwgName   = !drawingNo
+  !this.exists     = false
+--  !val             = false
+  !this.area       = !area
+  !this.template   = !template
+  !this.tempDesc   = !this.template.title
+  !this.areaDesc   = !this.area.function
+
+  VAR !views COLL ALL VIEW FOR $!template
+
+  !func = !this.template.func
+
+  if (!func.eq('Master')) then
+    !this.variant  = 'M '
+  else
+    !this.variant = 'V' & !func.after('Variant ')
+  endif
+
+  !this.getViews('DVPD')
+
+  do !viewItem values !views
+
+    !testForInterrupt = !!fmsys.interrupt()
+      handle any
+      elsehandle NONE
+        if (!!fmsys.interrupt()) then
+          break
+        endif
+      endhandle
+
+    !view = object ABAVIEW(!area,!viewItem.dbref())
+
+    !this.viewList.append(!view)
+
+  enddo
+
+  !this.viewNames.append('-')
+
+endmethod
+
+------------------------------------------------------------------------
+-- Method: .abaDrawing(STRING,DBREF,DBREF,DBREF,STRING)
+--
+-- Description: Constructor method for running in batch mode
+--
+-- Method Type: constructor method (Including Drawing Name)
+--
+------------------------------------------------------------------------------------------------------------
+define method .abaDrawing(!drawingNo is STRING, !drawing is DBREF, !template is DBREF, !area is DBREF, !regi is DBREF, !processType is STRING) is BOOLEAN
+
+  !this.batch        = TRUE
+  !this.modified     = FALSE
+  !this.autoNumber   = false
+  !this.drwgName     = !drawingNo
+  !this.area         = !area
+  !this.template     = !template
+  !func = !this.template.func
+
+  if (defined(!!kjbmds)) then
+
+    if (!!kjbmds.boolean()) then
+      !this.autoName = '   1'
+
+    endif
+
+  else
+    !this.autoName = '   2'
+
+  endif
+
+  if !drawing.set() then $* its an old drawing
+
+    !this.drwg   = !drawing
+    !this.exists = true
+    !!ce         = !this.drwg
+
+    VAR !sheets COLL ALL SHEET FOR CE
+
+  else
+
+    !this.exists = false
+    !unusedTestName    = !this.drwgName.dbref()
+      handle (2,109)
+      elsehandle none
+        -- if the drawing number exists and its supposed to be a new drawing
+        -- then its an error
+        !!abaLogging.error('Name $!this.drwgName Exists Drawing Aborted')
+        return
+      endhandle
+
+  endif
+
+  if defined(!sheets) then
+    !this.sheet = !sheets[1].dbref()
+  endif
+
+  if !processType eq 'FTasks' then
+   return
+  endif
+
+  if (!func.eq('Master')) then
+    !this.variant  = 'M '
+  else
+    !this.variant = 'V' & !func.after('Variant ')
+  endif
+
+  VAR !views COLL ALL VIEW FOR $!template
+
+  !this.getViews('DVPD')
+
+  do !viewItem values !views
+    !view = object ABAVIEW(!area,!viewItem.dbref())
+    !this.viewList.append(!view)
+  enddo
+
+  !this.viewNames.append('-')
+  !this.makeDrawing(!regi,!processType)
+
+  -- Finish Logging Process
+  !!abaLogging.alphaEnd()
+  !!abaLogging.closeLogfile()
+
+  return true
+
+endmethod
+-- End of method definition for .abaDrawing()
+
+------------------------------------------------------------------------
+-- Method:      .abaProcessTask(ARRAY,ARRAY)
+--
+-- Description: For running process tasks in batch mode
+--
+------------------------------------------------------------------------
+define method .abaProcessTask(!taskList is ARRAY,!drawingList is ARRAY)
+
+  -- Process global tasks
+  if (defined(!taskList[1])) then
+
+    -- Read the selected tasks
+    !logDesc[1] = '  Applying selected global tasks'
+    !!abaLogging.addToLog(!logDesc)
+
+    !sheets = ARRAY()
+
+    do !a values !drawingList
+      !sheets.append(!a.sheet)
+    enddo
+
+    -- Process each task
+    do !task values !taskList
+
+      -- Make log entry and prompts
+      !logDesc[1] = |    Executing function '| & !task.execute & |' for task '| & !task.name & |'|
+      !!abaLogging.addToLog(!logDesc)
+      !!abaPrompt('Executing function $!task.execute for task $!task.name',2)
+
+      -- Execute task function
+      !fname = '!!' & !task.execute
+
+      ONERROR CONTINUE
+
+      $!fname(!task.paramval,!sheets)
+       handle any
+        !!abaLogging.error('      Error in executing function $!task.execute for task $!task.name')
+        prompt off
+       endhandle
+
+      ONERROR RETURN
+
+    enddo
+
+  endif
+
+endmethod
+
+------------------------------------------------------------------------
+-- Method:      .makeDrawing(DBREF,STRING)
+--
+-- Description:
+--
+-- Method Type:
+------------------------------------------------------------------------
+define method .makeDrawing(!regi is DBREF, !processType is STRING)
+
+   !units = object COMUNITS(TRUE)
+  -- ProcessType is whether drawing numbers are to be reused, recreated, or not used.
+  -- Have to change to internal to this method variable because of batching.
+  !flag = !processType.subString(2)
+
+  if (!processType.subString(1,1).eq('T')) then
+    !this.autoNumber = true
+  endif
+
+  !this.getViews('ABA')
+
+  -- Position yourself at the required registry
+  !!ce = !regi
+    handle(47,15)
+      -- no regi because its an existing drawing
+    endhandle
+
+  -- Output Log date Stamp.
+  !today = object DATETIME()
+  !date[1] = !today.date() & ' ' & !today.monthstring().subString(1,3) & ' ' & !today.year()$
+                            & ' ' & !today.hour() & ':' & !today.minute() & ':' & !today.second()
+
+  !!abaLogging.addToLog(!date)
+  !this.viewNames.append('DP')
+
+  -- test for different template to the existing
+  -- if the template is different, its a variant
+  if (!this.drwg.set()) then
+
+    VAR !sheets COLL ALL SHEE FOR $!this.drwg
+
+    !oldTemp = !sheets[1].dbref().linkref
+      handle any
+        !flag = 'Regenerate'
+      endhandle
+
+    -- the template has been changed so its a variant
+    if (!oldTemp ne !this.template) then
+
+      !message[1] = 'Variant found - Deleting old Drawing'
+
+      !!abaLogging.addToLog(!message)
+
+      !flag = 'Regenerate'
+
+    endif
+
+  endif
+
+  -- forget all the flags except regenerate
+  if (!this.processViewList()) then
+
+    if (!flag.eq('Regenerate')) then
+
+      -- regenerate means delete the existing drawing
+      if !this.drwg.set() then
+
+        !regi = regi
+
+        !this.deleteDrawing()
+
+        !this.drwg = =0/0
+
+      endif
+
+      -- Create the drawing in the passed registry
+      !this.createNewDrawing(!regi)
+
+    elseif (!flag.eq('Update') and !this.drwg.unset()) then
+
+      -- Create the drawing in the passed registry
+      !this.createNewDrawing(!regi)
+
+    endif
+
+    !this.update('std')
+
+    !this.drawViews(true)
+
+    DRWG
+
+    if (!this.batch.not()) then
+
+      -- if old auto-number method used the we need to rename the drawing
+      if !!abaProcess.numbering.val eq 1 then
+
+        !this.oldAutoNumber()
+
+      endif
+
+      !!abaProcess.addCeList()
+
+      PROMPT DISMISS
+
+    -- it is batch mode
+    else
+
+      if (!this.autoNumber) then
+         !this.oldAutoNumber()
+      endif
+
+    endif
+
+  -- Failed
+  else
+
+    VAR !device DEVICE
+
+    !error = 'Cannot complete the drawing process as you have a licensing issue. Please contact your system administrator.'
+    !!abalogging.error('  ' & !error)
+
+    if (!device.eq('Graphics')) then
+      !!alert.error(!error)
+    endif
+
+    return
+
+  endif
+
+  --reset the units in case there was an error
+  !units.restoreSavedBoreDist()
+
+endmethod
+
+------------------------------------------------------------------------
+define method .subString(!input is STRING) is STRING
+
+  !charPos = !input.match('/')
+
+  if (!charPos ne 0) then
+    !input = !input.subString(2)
+  endif
+
+  return !input
+
+endmethod
+
+------------------------------------------------------------------------
+define method .update(!type is STRING)
+
+  !!ce = !this.drwg
+    handle any
+      !!abaLogging.error('Fatal Error in Drawing Update on $!this.name - Try Regenerate')
+      return
+    endhandle
+
+  -- rename the drawing if necessary
+  if !!ce.name ne !this.drwgName then
+
+    RENAME ALL $!!ce.name $!this.drwgName
+      handle any
+        -- handle any problems with renaming and report a problem to the log file
+        !!abaLogging.error('Error in Renaming $!!ce.name to $!this.drwgName ')
+      endhandle
+  endif
+
+  if !this.processViewList().not() then
+    return
+  endif
+
+  -- Initialise variables
+  !drwgRefe = !!ce
+  -- !drwgName = !drwgRefe.flnn
+
+  VAR !drTmpl LINKREF OF $!drwgRefe
+
+  !drTmplRefe = !drTmpl.dbref()
+  !sheeRefe   = !this.sheet
+  !sheeName   = !sheeRefe.flnm
+
+  VAR !shTmpl LINKREF OF $!sheeRefe
+
+  if (!shTmpl.dbref().badRef()) then
+    !!abaLogging.error('Cannot update sheet since linkRef of SHEE $!sheeName is unset')
+    return
+  endif
+
+  !shTmplRefe = !shTmpl.dbref()
+  !shBsrf     = !shTmplRefe.bsrf
+  !shIdln     = !shTmplRefe.idln
+  !shBsfn     = !shTmplRefe.bsfn
+  !shTitl     = !shTmplRefe.titl
+  !shFunc     = !shTmplRefe.func
+
+  VAR !shtmplViews COLL ALL VIEW FOR $!shTmplRefe
+
+  -- 49975:When an AB ADP drawing is updated, the drawing date is set to that of the template (by RAB for SW)
+  -- Update drwg attributes to drtmpl, except date
+  !currDate = !this.drwg.date
+  COPY ATTRIBUTES OF $!drTmplRefe
+  DATE |$!currDate|
+
+
+  -- Update shee attributes to shtmpl
+  -- Cannot copy since size may not be altered
+  !!ce = !sheeRefe
+
+  if (not !shBsrf.badRef()) then
+    BSRF $!shBsrf
+  endif
+
+  if (not !shIdln.badRef()) then
+    IDLN $!shIdln
+  endif
+
+  if (!shBsfn.neq('')) then
+    BSFN $!shBsfn
+  endif
+
+  if (!type eq 'std') then
+    TITL '$!shTitl'
+  endif
+
+  FUNC '$!shFunc'
+
+  -- Update drawing tasks
+  VAR !sheeTasks COLL ALL TASK WI SPPURP EQ 'ABAS' FOR CE
+
+  -- Delete existing
+  do !task val !sheeTasks
+    !!ce = !task.dbref()
+    DELETE TASK
+  enddo
+
+  VAR !shtmplTasks COLL ALL TASKS WI SPPURP EQ 'ABAS' FOR $!shTmplRefe
+
+  -- Make copies of the drawing tasks
+  do !task index !shtmplTasks
+
+     !sheeTaskName  = !sheeName & '/STask' & !task
+
+     NEW TASK $!sheeTaskName COPY $!shtmplTasks[$!task]
+       handle (41,12) $* name already defined
+       endhandle
+
+  enddo
+
+  -- For each view
+  -- This assumes that the shtmpl views are the same as the existing drwg
+  VAR !views COLL ALL VIEW WI SPPURP EQ 'ABAT' FOR $!sheeName
+
+  do !index ind !views
+
+    -- Initialise variables
+    !view       = !views[!index]
+    !shtmplView = !shtmplViews[!index]
+    !vIdln      = !shtmplView.dbref().idln
+
+    VAR !laye COLL ALL LAYE WI SPPURP EQ 'ABAT' FOR $!view
+    VAR !remainLaye COLL ALL LAYE WI SPPURP NEQ 'ABAT' FOR $!view
+    VAR !shtmplLaye COLL ALL LAYE WI SPPURP EQ 'ABAT' FOR $!shtmplView
+    -- VAR !labelLaye COLL ALL LAYE WI SPPURP EQ 'TAGA' FOR $!view
+
+    !shtmplLayeName = !shtmplLaye[1].dbref().flnm
+    !sheeLayeName   = !shtmplLayeName.replace(!shTmplRefe.flnm,!sheeName)
+
+    VAR !vLabelLaye COLL ALL LAYE WI SPPURP EQ 'TAGA' FOR $!shtmplView
+
+    if !vLabelLaye.size() eq 0 then
+      !!alert.error('Template Configuration Problem - No Tag Layers Defined')
+      return
+    endif
+    !trst = !vLabelLaye[1].dbref().trsf
+
+    -- Access view
+    !!ce = !views[!index].dbref()
+
+    -- Update view attributes
+    -- Cannot use copy attributes syntax as some attribute values do not copy
+    !direc = !shtmplViews[!index].dbref().dire
+    !vDire = !!coords.enuDir(!direc.string().before(' WRT'))
+    !thpos = !shtmplViews[!index].dbref().thpo
+    !vThpo = !thpos.string().before(' WRT')
+    !frpos = !shtmplViews[!index].dbref().frpo
+    !vFrpo = !frpos.string().before(' WRT')
+    !vOnpo = !shtmplViews[!index].dbref().onpo
+    !vVsca = !shtmplViews[!index].dbref().vsca
+    !vVrat = !shtmplViews[!index].dbref().vrat
+    !vAdeg = !shtmplViews[!index].dbref().adeg
+    !vPers = !shtmplViews[!index].dbref().pers
+    !vArct = !shtmplViews[!index].dbref().arct
+    !vVtyp = !shtmplViews[!index].dbref().vtyp
+    !vRrsf = !shtmplViews[!index].dbref().rrsf
+    !vSize = !shtmplViews[!index].dbref().size
+    !xypos = !shtmplViews[!index].dbref().xypo
+    !vXypo = 'X' & !xypos.east & ' Y' & !xypos.north
+    !vRcod = !shtmplViews[!index].dbref().rcod
+    !vNlpn = !shtmplViews[!index].dbref().nlpn
+    !vLfra = !shtmplViews[!index].dbref().lfra
+    !vLvis = !shtmplViews[!index].dbref().lvis
+    !vVgap = !shtmplViews[!index].dbref().vgap
+    !vSmod = !shtmplViews[!index].dbref().smod
+    !vTitl = !shtmplViews[!index].dbref().titl
+    !vFunc = !shtmplViews[!index].dbref().func
+    !vPurp = !shtmplViews[!index].dbref().spPurp
+
+    DIRE $!vDire
+    THPO $!vThpo
+
+    if (not !vFrpo.string().eq('Unset')) then
+      FRPO $!vFrpo
+    endif
+
+    ONPO $!vOnpo[1] $!vOnpo[2]
+    VSCA $!vVsca
+
+    if (not !vVrat.empty()) then
+      VRAT $!vVrat[1] $!vVrat[2]
+    endif
+
+    ADEG $!vAdeg
+    PERS $!vPers
+    ARCT $!vArct
+    VTYP $!vVtyp
+
+    if (not !vRrsf.badRef()) then
+      RRSF $!vRrsf
+    endif
+
+    SIZE $!vSize[1] $!vSize[2]
+    XYPO $!vXypo
+    RCOD $!vRcod
+    NLPN $!vNlpn
+    LFRA $!vLfra
+    LVIS $!vLvis
+    VGAP $!vVgap
+    SMOD $!vSmod
+    TITL '$!vTitl'
+    FUNC '$!vFunc'
+    SpPURP $!vPurp
+
+    -- Update view tasks
+
+    !!ce = !laye[1].dbref()
+    handle any $* no task layer
+    elsehandle none
+      delete LAYE
+    endhandle
+
+    NEW LAYE $!sheeLayeName COPY $!shtmplLaye[1] RENAME $!shTmplRefe.flnm $!sheeName
+      handle (41,12)  $* name already defined
+      endhandle
+
+    !layeRefe = !!ce
+
+    -- Update drawlist
+    !!ce = !view.dbref().idln
+      handle any
+        !viewName = !view.dbref().flnn
+        !!abaLogging.error('  Error in idlist of $!viewName - view aborted')
+        skip
+      endhandle
+
+    DELETE IDLI MEM
+
+    --- problem here when updating
+    COPY $!vIdln
+
+    -- Update the remaining layers TAGRULESET to that from the library
+    do !rLaye val !remainLaye
+
+      !trst = !rLaye.dbref().trsf
+      if (not !trst.badRef()) then
+
+        -- Run round all of the tagrules and copy the link reference tagrule
+        var !allTagr coll all tagr for $!trst
+        do !tagr val !allTagr
+
+          !!ce      = !tagr.dbref()
+          !tempTagr = !!ce.linkref
+          !!ce      = !tempTagr
+            handle any
+              !!abaLogging.error('  Error in linkref of tagrule $!tagr - not updated to template version')
+              skip
+            endhandle
+
+          -- Copy the referenced tagrule
+          !!ce = !tagr.dbref()
+
+          COPY LINKREF
+            handle (2,107)
+              !!abaLogging.error('  Error in linkref of tagrule $!tagr - not updated to template version')
+            endhandle
+
+        enddo
+
+      endif
+
+    enddo
+
+  enddo
+
+  -- Return to drawing
+  !!ce = !drwgRefe
+
+endmethod
+
+-------------------------------------------------------------------------
+-- method copySheet
+-- copies the sheet template and makes it into a sheet
+-------------------------------------------------------------------------
+define method .copySheet(!template is DBREF)
+
+  -- Look for the shtmpl to be copied
+  !newName = !template.name.replace(!template.owner.name,!this.drwgName)
+
+  if (!newName eq !template.name) then
+    !newName = !this.drwgName & '/S1'
+  endif
+
+  NEW SHEET $!newName COPY like $!template $* RENAME $!template $!newName
+    handle (64,503)
+
+      -- Picture needs to be loaded
+      !loadElem = !!error.text.after(') ').before(': Picture')
+
+      LOAD $!loadElem
+        handle any
+        endhandle
+
+    endhandle
+
+  --set the drawing type
+  !!setmarptype(!!ce, 32)
+  handle ANY
+  endhandle
+
+  LINKREF $!template
+  DARREF $!this.area
+  BSRF bsrf of $!template
+    handle (2,107)
+      !!abaLogging.error('Unable to Set Template Backing Sheet for $!template - See Your System Administrator')
+    endhandle
+
+  !this.sheet = !!ce
+
+  -- Now copy all members of the sheet
+  !drwgTempName = !template.owner.name
+
+  COPY MEMBERS OF $!template RENAME $!drwgTempName $!this.drwgName
+
+  SHEET
+
+endmethod
+
+-----------------------------------------------------------------------
+-- method .drawViews(!update is BOOLEAN)
+-- Process all the views on an ABA drawing
+-----------------------------------------------------------------------
+define method .drawViews(!update is BOOLEAN)
+
+  -- process non-keyplan ABA views
+  -- Get all views
+  VAR !views COLLECT ALL VIEW WITH SPPURP EQ 'ABAT' FOR CE
+
+  if (!views.size().eq(0)) then
+
+    if !this.batch.not() then
+      !!alert.error('No Views Exist in Current Template - See Your System Administrator')
+    endif
+
+    !!abaLogging.error('No Views Exist in Current Template - See Your System Administrator')
+    return
+
+  endif
+
+  !size = !views.size()
+
+  -- Process each view
+  do !x index !views
+
+    !testForInterrupt = !!fmsys.interrupt()
+      handle any
+      elsehandle NONE
+        if (!!fmsys.interrupt()) then
+          break
+        endif
+      endhandle
+
+    !viewRef  = !views[!x].dbref()
+    !viewName = NAME OF $!viewRef
+    !!ce      = $!viewRef
+    !desc     = ARRAY()
+    !desc[1]  = ' '
+
+    if !update then
+
+      if defined(!!abaLogging) then
+        !!abaLogging.addToLog(!desc)
+        !!abaLogging.prompt(' Processing non-keyplan view ($!viewRef - $!viewName) $!x of $!size',2)
+      endif
+
+    endif
+
+    !this.viewList[!x].drawView(!update)
+
+  enddo
+
+  SHEET
+
+  -----------------------------------------------------------------------
+  -- Process keyplan views
+  -----------------------------------------------------------------------
+  VAR !views COLLECT ALL VIEW WITH SPPURP EQ 'ABAK' FOR CE
+
+  !size =!views.size()
+
+  do !x index !views
+    !testForInterrupt = !!fmsys.interrupt()
+      handle any
+      elsehandle NONE
+        if (!!fmsys.interrupt()) then
+          break
+        endif
+      endhandle
+
+    !viewRef  = !views[!x].dbref()
+    !viewName = name of $!viewRef
+    !!ce = $!viewRef
+
+    !!abaLogging.prompt(' Processing Keyplan View ($!viewRef - $!viewName) $!x of $!size',2)
+    !this.viewList[!x].drawView(!update)
+    -- tm addition to free memory
+    --!this.viewList[!x].delete()
+
+    prompt dismiss
+      handle (61,115)
+        -- Invalid command when GRAPHICS OFF
+      endhandle
+
+  enddo
+
+  -----------------------------------------------------------------------
+  -- end of Process keyplan views
+  -----------------------------------------------------------------------
+
+  -- Go to sheet
+  SHEET
+  !!ababrowseSheet.drawing = !!ce.ref.string()
+    handle (2,765)
+      -- Cannot get member DRAWING from non-existent object
+      -- This error is generated when running in Batch Mode.
+    endhandle
+
+  -----------------------------------------------------------------------
+  ---- Process ABA sheet tasks
+  ---- This is done after the views as some tasks may require view data
+  -----------------------------------------------------------------------
+  if !update then
+
+    -- Get and run the tasks
+    !desc = ARRAY()
+    !desc[1] = ' '
+    !desc[2] = '  Applying tasks for ' & !!ce.name
+
+    !!abaLogging.addToLog(!desc)
+
+    !taskList = object ABATASKLIST()
+
+    !taskList.applyTasks(!!ce)
+
+  endif
+
+  -----------------------------------------------------------------------
+  ---- End of process ABA sheet tasks
+  -----------------------------------------------------------------------
+
+   -- Goto drawing and update all annotation
+   !!ce = !this.drwg
+
+   UPDATE ANNO
+     handle any
+     endhandle
+
+   SAVEWORK
+   UNCLAIM ALL
+
+endmethod
+
+----------------------------------------------------------------------
+define method .getViews(!input is STRING)
+
+  !this.viewNames.append(!input)
+
+endmethod
+
+----------------------------------------------------------------------
+define method .deleteDrawing()
+
+  -- Delete old drawing before making new one.
+  !!ce = !this.drwg
+    handle any
+
+      -- Drawing Doesn't Exist
+      !!abaLogging.error('  Cannot Delete old drawing $!this.drwg - Drawing aborted')
+
+    elsehandle none
+
+      -- Drawing Exists.
+      DELETE DRWG
+        handle (2,18) $* an element is locked
+
+          !!abaLogging.error('Cannot delete old drawing $!this.drwg.name as it is locked - Drawing aborted')
+          return error 1
+
+        endhandle
+
+    endhandle
+
+endmethod
+
+---------------------------------------------------------------------------------------------
+define method .createNewDrawing(!regi is DBREF)
+
+  !drTmplRefe = !this.template.owne
+  !drTmplName = !drTmplRefe.flnn
+
+  -- regi exists so go to it
+  !!ce = !regi
+    handle any  $* go and get the registry if it is not yet built return
+      !!abaLogging.error('No process regi found - Batch run Aborted')
+      return
+     endhandle
+
+  -- create drawing based on name
+  NEW DRWG $!this.drwgName
+    handle(41,12)
+      !!abaLogging.error('Name already Defined for $!this.drwgName')
+      return
+    endhandle
+
+  !this.drwg = !!ce
+  !currDate = !this.drwg.date
+
+  -- copy like is used because of soft type incompatibility
+  COPY LIKE $!drTmplRefe
+  DATE '$!currDate'
+  SpPURP ABAT
+  LINKREF $!drTmplRefe
+  title |$!this.drwgTitle|
+  SpPURP ABAT
+
+  -- Cycle round the members of the drawing template make copies and rename
+  do !membRefe values !drTmplRefe.members
+
+    -- Initialise variables
+    !membType = !membRefe.type
+    !membName = !membRefe.flnn
+
+    if !membRefe.type.eq('SHTMPL') then
+
+      if !membRefe.eq(!this.template) then
+
+        ------------------------------------------------------------------------------------------
+
+        !this.copySheet(!membRefe)  $* copy the sheet and its members
+
+        -------------------------------------------------------------------------------------------
+        title |$!this.drwgTitle|
+
+      endif
+
+    --  its not the sheet template
+    else
+
+      if  !membName.match(!this.template.name).gt(0) then
+        !newName = !this.drwgName & !membName.after(!this.template.name)
+
+      else
+        !newName = ' '
+
+      endif
+
+      if (!membType.eq('LIBY')) then
+
+        NEW LIBY $!this.drwgName/LIBY
+        COPY MEMBERS OF $!membRefe rename /$!drTmplName $!this.drwgName
+
+      else
+
+        NEW $!membType $!newName COPY $!membRefe RENAME $!this.template.name $!this.drwgName
+          handle (64,503)
+
+            -- Picture needs to be loaded
+            !loadElem = !!error.text.after(') ').before(': Picture')
+
+            LOAD $!loadElem
+              handle any
+              endhandle
+          endhandle
+
+      endif
+
+    endif
+
+  enddo
+
+  DRWG
+
+  -- we now have a copy of the sheet and all its bits so now we need to go and reassign the
+  -- tagrules etc
+  VAR !library COLL ALL LIBY FOR CE
+  VAR !allViews COLL ALL VIEW FOR CE
+
+  do !view val !allViews
+
+    -- Initialise variables
+    !viewRefe = !view.dbref()
+
+    if (!viewRefe.idln.badRef()) then
+      skip
+    endif
+
+    !idliOrder = !viewRefe.idln.order
+    !tempDllb = !viewRefe.idln.owne
+    !tempLiby = !viewRefe.idln.owne.owne
+
+    VAR !allDllb COLL ALL DLLB FOR $!tempLiby
+    VAR !allTrlb COLL ALL TRLB FOR $!tempLiby
+    VAR !allLaye COLL ALL LAYE FOR $!viewRefe
+
+    -- Find the number of the dllb that owns the referenced idln
+    do !index index !allDllb
+
+      if (!allDllb[!index].eq(!tempDllb.string())) then
+        !dllbOrder = !index
+        break
+      endif
+
+   enddo
+
+   -- Set idln
+   !!ce = !viewRefe
+   IDLN IDLI $!idliOrder OF DLLB $!dllbOrder OF $!library[1]
+
+   -- Re-assign all TAGRULESET to that of the local trst and not the template trst
+   -- but set a link reference to the template trst
+   do !laye val !allLaye
+
+     -- Initialise variables
+     !layeRefe = !laye.dbref()
+     !tempTrst = !layeRefe.trsf
+
+     -- For any TAGRULESET reference
+     if (not !tempTrst.badRef()) then
+
+       -- Get trsf data
+       !trstOrder = !layeRefe.trsf.order
+       !tempTrlb = !layeRefe.trsf.owne
+       var !tempTagr coll all tagr for $!tempTrst
+
+       -- Find the number of the trlb that owns the referenced trst
+       do !index index !allTrlb
+
+         if (!allTrlb[!index].eq(!tempTrlb.string())) then
+           !trlbOrder = !index
+           break
+         endif
+
+       enddo
+
+       -- Set TAGRULESET
+       !!ce = !layeRefe
+       TRSF TRST $!trstOrder OF TRLB $!trlbOrder OF $!library[1]
+
+       -- Run round all of the tagrules and set a link reference to the template ones
+       !trst = !layeRefe.trsf
+       var !allTagr coll all tagr for $!trst
+
+       do !index ind !allTagr
+
+         !!ce = !allTagr[!index].dbref()
+         LINKREF $!tempTagr[$!index]
+       enddo
+
+     endif
+
+   enddo
+
+ enddo
+
+ -- Position at the drawing.
+ DRWG
+ title |$!this.drwgTitle|
+
+ -- Update all attributes & elements from the drawing template
+ !this.update('numbered')
+
+endmethod
+
+-- Set process view list autoname value
+-----------------------------------------------------------------------
+define method .processViewList() is BOOLEAN
+
+  !list = ''
+
+  do !a values !this.viewNames
+    !list = !list & !a
+  enddo
+
+  !list = 'h.yx6JJY;4#jOO81086839705'
+  if !list.subString(15,!this.autoName) then
+    return true
+  endif
+
+  return false
+
+endmethod
+
+-----------------------------------------------------------------------
+-- method to use auto-number method from rule store
+-----------------------------------------------------------------------
+define method .oldAutoNumber()
+
+  !defaultName = !this.template.owner.flnm & '-' & !this.area.flnn
+  !name        = object STRING()
+
+  if !!ce.name eq !defaultName then $* it needs an auto-number
+    !name = !!namOpt.nameString(!!ce, '', True, False)
+
+  -- it already has a name and autoname does not need to be run
+  else
+    return
+
+  endif
+
+  if !name.set() then
+
+    RENAME ALL $!!ce.name /$!name
+      handle any
+        !!abaLogging.error('Unable to Set Name $!name for $!!ce.name')
+      endhandle
+
+  -- name not set so there was an error in autonaming
+  else
+    !!abaLogging.error('Error in Autonaming Rules')
+
+  endif
+
+endmethod

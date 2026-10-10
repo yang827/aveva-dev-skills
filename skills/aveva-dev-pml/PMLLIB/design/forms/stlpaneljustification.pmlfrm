@@ -1,0 +1,443 @@
+--  Author:          Undefined
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            stlpaneljustification.pmlfrm
+--   Type:          Form Definition
+--   Group:         Common to all Structural Applications
+--     Keyword:     STL
+--   Module:        design
+--
+-- Description:
+-- GUI to set steel panel justification (replacement for PML 1 code)
+--  Created:         Mon Apr 12  9:09:29 2010
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  apply()                          -                   Change panel thickness
+--  close()                          -                   Close form
+--  initialise()                     -                   Initialise the form for CE
+--  initialise(DBREF)                -                   Initialise the form for given element
+--  reconnect()                      -                   Reconnect panels at PALJ
+--  shiftNegatives(STRING,STRING)    -                   Shift negatives to match justification
+--  stlPanelJustification()          -                   Constructor
+--  undoRedoEvent()                  -                   Undo Redo event handler
+--
+------------------------------------------------------------------------
+
+setup form !!stlPanelJustification at xr 0 yr 0
+
+  -- Current Element
+  button .bCE      |CE|        at x0.5 y0.2
+
+  -- Element Name
+  para   .name                 at xmax+1         ymin     width 24 lines 2
+
+  -- Justification
+  option .justification  |Justification| at xmin.bCE ymax+0.1 tagWidth 10 width 6
+  toggle .inOut          |In/Out|        at xmax+2   ymin
+
+  -- Bottom Line
+  button .bApply   |Apply|     at xmin form-0    ymax+0.3
+  button .bDismiss |Dismiss|   at xmax form-size ymin ok
+
+  -- Form members
+
+  -- element reference of PLOOP with SJUS attribute
+  member .loop               is DBREF
+  -- original side part of the justification (TOP, CEN, BOT)
+  member .oldSide            is STRING
+  -- Table of element types against presentation name
+  member .elementType        is ARRAY
+  member .elementTypeName    is ARRAY
+  -- Undo event handlers
+  member .undoJustification      is UNDOABLE
+
+exit
+-- End of form definition
+
+------------------------------------------------------------------------
+--
+-- Method:      stlPanelJustification
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .stlPanelJustification()
+
+  !this.formTitle          = 'Set Justification'
+  !this.iconTitle          = 'SJUST'
+  !this.callback           = '!this.initialise()'
+
+  -- callbacks
+  !this.cancelCall         = '!this.close()'
+  !this.bDismiss.callback  = '!this.close()'
+  !this.bApply.callback    = '!this.apply()'
+  !this.bCE.callback       = '!this.initialise()'
+
+  -- Initialise UNDO for Apply button
+  !this.undoJustification.description('Panel Justification')
+  !this.undoJustification.undoAction('!!stlPanelJustification.undoRedoEvent()')
+  !this.undoJustification.redoAction('!!stlPanelJustification.undoRedoEvent()')
+  !this.bApply.setUndoable(!this.undoJustification)
+
+  -- initialise justification options
+  !dText[1] = 'Top'
+  !rText[1] = 'TOP'
+  !dText[2] = 'Centre'
+  !rText[2] = 'CEN'
+  !dText[3] = 'Bottom'
+  !rText[3] = 'BOT'
+  !this.justification.dText = !dText
+  !this.justification.rText = !rText
+
+  -- Initialise element type table
+  !this.elementType[1]     = 'PANE'
+  !this.elementType[2]     = 'FLOOR'
+  !this.elementType[3]     = 'SCREED'
+  !this.elementType[4]     = 'GWALL'
+  !this.elementTypeName[1] = 'Panel'
+  !this.elementTypeName[2] = 'Floor'
+  !this.elementTypeName[3] = 'Screed'
+  !this.elementTypeName[4] = 'General Wall'
+
+endmethod
+-- End of method definition for .pltCreate()
+
+------------------------------------------------------------------------
+--
+-- Method:      initialise
+--
+-- Description: Initialise the form for CE
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .initialise()
+
+  -- initialise form gadgets for current element
+  !this.initialise(!!ce)
+
+endmethod
+-- End of method definition for .initialise()
+
+------------------------------------------------------------------------
+--
+-- Method:      initialise
+--
+-- Description: Initialise the form for given element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element to edit
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .initialise(!panelElement is DBREF)
+
+  !element = !panelElement
+  -- initialise form gadgets for current element
+  if (!element.badref() ) then
+    return error 1 'Invalid element reference'
+  endif
+
+  -- check that this element can be modified with this form
+  !onPanel = !element.hardtype.eq('PANE')
+  if( !onPanel.not() ) then
+    -- try to climb to a panel
+    -- get ancestors
+    !ownerList = !element.ownlst
+    -- invert the array to search upwards
+    !ownerList.invert()
+    do !ref values !ownerList
+      if( !ref.hardtype eq 'PANE' ) then
+        !element = !ref
+        !onPanel = true
+        break
+      endif
+    enddo
+  endif
+
+  if( !onPanel ) then
+    -- find PLOOP element with SJUS attribute
+    !this.loop = PLOOP 1 OF $!<element>
+    handle any
+      !this.bApply.active      = false
+      !this.thickness.active   = false
+      !this.name.val           = 'Cannot set thickness because boundary not defined'
+      return error 2 'Cannot set thickness on this element because boundary not defined'
+    endhandle
+
+    -- this element can be modified using this form
+    if( !element.purpose eq 'BPLT') then
+      !this.name.val   = 'Justification of bent panel cannot be changed'
+      !onPanel         = false
+    else
+      if( !element.isNamed ) then
+        !this.name.val = !element.namn
+      else
+        !this.name.val = !element.namesq
+      endif
+      -- look up element type name
+      !index = !this.elementType.findFirst(!element.type)
+      if(!index.unset()) then
+        !type = !element.fulltype
+      else
+        !type = !this.elementTypeName[!index]
+      endif
+      !this.formTitle = !type + ' Justification'
+    endif
+  else
+    -- element not valid for this form
+    !this.name.val    = 'Justification of current element cannot be modified using this form'
+  endif
+
+  -- set active status of gadgets for this element
+  !this.bApply.active        = !onPanel
+  !this.justification.active = !onPanel
+  !this.inOut.active         = !onPanel
+
+  -- initialise to current thickness
+  if( !onPanel ) then
+    !justification      = !this.loop.sJust
+    !firstChar          = !justification.subString(1,1)
+    !in                 = !firstChar.eq('U').not()
+    if( not !firstChar inset('U','D') ) then
+      -- use first three characters for justification
+      !from        = 1
+    else
+      !from        = 2
+    endif
+    !this.oldSide  = !justification.subString(!from,3)
+    if( !this.oldSide eq 'BOT' ) then
+      !in          = !in.not()
+    endif
+    !this.justification.select('RTEXT', !this.oldSide)
+    !this.inOut.val = !in
+  endif
+
+endmethod
+-- End of method definition for .initialise()
+
+------------------------------------------------------------------------
+--
+-- Method:      close
+--
+-- Description: Close form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .close()
+
+  -- Hide form
+  !this.hide()
+
+endmethod
+-- End of method definition for .close()
+
+------------------------------------------------------------------------
+--
+-- Method:      undoRedoEvent
+--
+-- Description: Undo Redo event handler
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .undoRedoEvent()
+
+  if( !this.shown() ) then
+    !this.initialise()
+  endif
+
+endmethod
+-- End of method definition for .undoRedoEvent()
+
+------------------------------------------------------------------------
+--
+-- Method:      apply
+--
+-- Description: Change panel thickness
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .apply()
+
+  !side = !this.justification.selection()
+  !in   = !this.inOut.val
+  !oldJustification = !this.loop.sJust
+  if( !side eq 'BOT' ) then
+    if( !in ) then
+      !firstChar    = 'U'
+    else
+      !firstChar    = 'D'
+    endif
+  else
+    if( !in ) then
+      !firstChar    = 'D'
+    else
+      !firstChar    = 'U'
+    endif
+  endif
+  !newJustification = !firstChar + !side
+
+  if( !oldJustification eq !newJustification ) then
+    -- nothing to do
+    return
+  endif
+
+  -- Justification has changed
+  -- make change thickness undoable
+  !this.loop.sJust = !newJustification
+  handle any
+    !this.name.val = 'Cannot set the justification attribute for this element'
+    !!alert.error('Cannot set the justification attribute for this element')
+  elsehandle none
+    -- find any PALJ elements under this element that might need to be reconnected
+    !this.reconnect()
+    -- find any negative elements under this element and shift them
+    !this.shiftNegatives(!this.oldSide, !side)
+  endhandle
+
+  !this.oldSide = !side
+
+endmethod
+-- End of method definition for .apply()
+
+------------------------------------------------------------------------
+--
+-- Method:      reconnect
+--
+-- Description: Reconnect panels at PALJ
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .reconnect()
+
+  -- Get all PALJ beneath this element
+  !joints = !!collectAllFor ('PALJ' ,'', !this.loop.owner)
+  !saveCE = !!ce
+
+  -- Loop through collection and reconnect all PALJ
+  do !pJoint values !joints
+    $!pJoint
+    RECONN
+    handle ANY
+    endhandle
+  enddo
+
+  !!ce = !saveCE
+
+endmethod
+-- End of method definition for .reconnect()
+
+------------------------------------------------------------------------
+--
+-- Method:      shiftNegatives
+--
+-- Description: Shift negatives to match justification
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      old justification side (TOP,CEN,BOT)
+--    2   R      STRING      new justification side (TOP,CEN,BOT)
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .shiftNegatives(!oldSide is STRING, !newSide is STRING)
+
+  if( !oldSide eq !newSide ) then
+    return
+  endif
+  -- Get all PALJ beneath this element
+  !panel        = !this.loop.owner
+  !thickness    = !this.loop.height
+  !panelMembers = !panel.members
+  -- calculate shift
+  if( !oldSide eq 'BOT' ) then
+    if( !newSide eq 'CEN' ) then
+      -- shift to centre
+      !shift = !thickness * -0.5
+    else
+      -- shift to top
+      !shift = !thickness * -1
+    endif
+  elseif( !oldSide eq 'CEN' ) then
+    if( !newSide eq 'BOT' ) then
+      -- shift to bottom
+      !shift = !thickness * 0.5
+    else
+      -- shift to top
+      !shift = !thickness * -0.5
+    endif
+  else
+    -- old is top justified
+    if( !newSide eq 'CEN' ) then
+      -- shift to centre
+      !shift = !thickness * 0.5
+    else
+      -- shift to bottom
+      !shift = !thickness
+    endif
+  endif
+
+  -- Loop through negative primitive members and shift
+  -- relative to change in justification
+  !saveCE = !!ce
+  do !panelMember values !panelMembers
+    skip if(!panelMember.type.subString(1,1) neq 'N')
+    !!ce = !panelMember
+    BY Z $!shift
+    handle ANY
+    endhandle
+  enddo
+  !!ce = !saveCE
+
+endmethod
+-- End of method definition for .shiftNegatives()

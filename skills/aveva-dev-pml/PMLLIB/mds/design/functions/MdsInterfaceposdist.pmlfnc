@@ -1,0 +1,608 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:      MdsInterfaceposdist.pmlfnc
+--   Type:    Function Definition
+--   Group:   Multi Discipline Supports Application
+--     Keyword:   MDS
+--   Module:    design
+--   Replaces:          MPOSDIST
+--
+-- Author:    I.osborne
+-- Created:   Wed Mar 07
+--
+--
+-- Description:
+-- function to position support
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R          FORM        Support Form
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+
+define function !!mdsInterfacePosDist(!form is FORM)
+
+  --check to see whether or not we are using a virtual fitting
+  if !form.virtualFitting.set() then
+    !virtualFitting = TRUE
+  else
+    !virtualFitting = FALSE
+  endif
+
+  -- Can we move all components of the support
+  if !!mdsCheckAccess(!form,'DACMOD','POS').not() then
+    !!ce = !form.support.datum
+    handle NONE
+      !!mdsDistance(!form)
+    elsehandle ANY
+    endhandle
+    return
+  endif
+
+  -- Get Current units
+  !currentUnits = !!kGetSetUnits()
+
+  ------------ *** Connexion Warnings *** -------------
+  !distTest = !form.dist.val
+
+  -- find the array index the dist setting is stored
+
+  !darray = !!kFindStrInArray(!form.store,'.dist.','FIRST')
+  handle ANY
+    -- in case not set
+  elsehandle NONE
+    !setting = !darray[1]
+    --<GE> 05/02/07 Fix Defect no: 10214
+    handle ANY
+    elsehandle NONE
+      --<GE> 05/02/07
+      -- find the value of the olddist
+      !oldDist = !form.store[!setting].after('=').real()
+      if(!oldDist.eq(!distTest) and !form.support.joints.unset().not()) then
+        return
+      endif
+    endhandle
+  endhandle
+
+  !errorMessage = STRING()
+
+  if(!!mdsCheckConns(!form, !errorMessage).eq('UNJOINTED')) then
+    -- nothing to do
+  elseif(!!mdsCheckConns(!form, !errorMessage).eq('WARNING')) then
+    !continue = !!alert.confirm(!errorMessage)
+    if(!continue.eq('NO')) then
+      !!kRestoreUnits(!currentUnits)
+      --<wd>jan2001
+      -- The forms 'ALIGN SUPPORT' button uses the function !!mdsaligndist which sets the
+      -- distance gadget to the new distance required before we get to here.
+      -- Therefore if the 'NO' option is hit,
+      -- Reset the gadget !form.dist.val to the original distance stored in the global
+      -- variable '!!currentdist'
+      !form.dist.val = !!currentdist
+      handle ANY
+        !form.dist.val = !oldDist
+      endhandle
+      --<wd>jan2001
+      return
+    else
+      !!mdsSelectJoints(!form,'DISCONNECT','')
+      !form.support.joints.clear()
+    endif
+  elseif(!!mdsCheckConns(!form, !errorMessage).eq('ERROR')) then
+    !!alert.error(!errorMessage)
+    !!kRestoreUnits(!currentUnits)
+    return
+  else
+    -- continue
+    !!mdsSelectJoints(!form,'DISCONNECT','')
+    !form.support.joints.clear()
+  endif
+  --$)
+  ---------------------------------------------
+
+  -- Initialise variables
+  !name  = !form.support.stru.name
+  handle ANY
+    -- in case support is just an atta
+    !name = !form.support.datum.name
+    handle ANY
+      !!alert.message('Datum support atta has not been created')
+      !!kRestoreUnits(!currentUnits)
+      return
+    endhandle
+  endhandle
+  !datum = !form.support.datum
+  !supptype = !form.support.type
+
+  !distMM = !form.dist.val
+  !origin = !!ce
+
+  -- Check that Datum atta has been created
+  if (!datum.set().not())then
+    !!alert.message('Datum support atta has not been created')
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+  -- Get plane direction to move
+  !!ce = !datum
+  if !!ce.styp.eq('PIPE-REST-INLINE') then
+    !pldir = P12 DIR of $!datum wrt /*
+  else
+    !pldir = PL DIR of $!datum wrt /*
+  endif
+
+  -- Plane direction is nearest value to 1
+  !up = (abs(!pldir.up))
+  !east = (abs(!pldir.east))
+  !north = (abs(!pldir.north))
+  !max = max((abs(!up)), (abs(!east)), (abs(!north)))
+  if (!max eq !up)then
+    if (!pldir.up.lt(1)) then
+      !planeDir = D wrt /*
+    else
+      !planeDir = U wrt /*
+    endif
+  elseif (!max eq !east)then
+    !planeDir = E wrt /*
+  else
+    !planeDir = N wrt /*
+  endif
+
+  --q var !planeDir
+
+  PIN 9 AT CE
+  --------------------------------------------------------------------------------------------------------
+  -->>>-<wd>nov2002
+  !cecomp = !datum
+
+  -- dtf >>> 16.09.04
+  -- Get prev component not associated with support
+  !ceref  = !!ce
+  !suppName = !datum.name.before('/DATUM')
+  do to 10
+
+    -- Position Pin 10 and Initialise variables for !!mdscheckthro function
+    --pin 10 copy pl of prev
+    prev
+    handle ANY
+      pin 10 copy ph
+      --<wd>>june2003
+      -- To ensure the true DISTANCE command is used
+      -- i.e. P0 to P0 between TWO piping component,
+      -- the position pin 10 needs to be at P0 of the previous componet
+      !prev = !!ce.own
+      break
+    elsehandle NONE
+      !!mdsSilent = TRUE
+      !prevSuppName = ''
+      !prevSuppName = !!mdsGetSuppName(!!ce)
+      !!mdsSilent.delete()
+      if (!prevSuppName NEQ !suppName ) then
+        !prev = !!ce
+        !!ce = !ceref
+        pin 10 copy pl of $!prev
+        pin 10 plane pin 10 thro p0 of $!prev
+        --<<wd>june2003
+        break
+      endif
+
+    endhandle
+
+  enddo
+  !!ce = !ceref
+  -- dtf <<< End of Mod
+
+  --pin 10 dir $!planeDir
+
+  pin 10 dist $!distMM
+  var !pin10pos pin 10 pos wrt /*
+  !pospin10 = !pin10pos.position()
+  !idcomp = !pospin10
+  !!ce    = !cecomp
+
+  if (!!mdscheckthro(!form, !cecomp, !idcomp, !planeDir).not()) then
+    !!ce = !datum
+    --<wd>>june2003
+    -- Ensure the true DISTANCE command is used
+    -- i.e. P0 to P0 between TWO piping component,
+    --      var !dist const dist p0 to pl of prev
+    --var !dist const dist p0 to p0 of prev
+    --<<wd>june2003
+    -- handle (2,113)
+    --    var !dist const dist p0 to ph
+    -- endhandle
+
+    -- dtf >>>
+    if !prev.type eq 'BRAN' then
+      handle ANY
+        -- must be next
+        if !next.type eq 'BRAN' then
+          var !dist const dist p0 to pt
+        else
+          var !dist const dist p0 to p0 of $!next
+        endif
+      elsehandle NONE
+        var !dist const dist p0 to ph
+      endhandle
+    else
+      var !dist const dist p0 to p0 of $!prev
+    endif
+    --dtf <<< End of mod
+    !form.dist.val = $!dist
+    !!mdsDacControl(FALSE)
+    return
+  else
+    pin 9 copy pin 10
+  endif
+
+
+  --<<<-<wd>nov2002
+  --------------------------------------------------------------------------------------------------------
+
+
+
+  -- Set form data to say that the support has been positioned
+  !form.support.position = TRUE
+
+  PIN 9 AT CE
+
+  -- Moving the DATUM Atta
+  !!mdsDacControl(TRUE)
+  --    Dist $!distMM from prev
+  -------------------------------------
+  --    handle (2,113) $* List Exhausted ie. At Branch Head/Tail
+  --      Dist $!form.dist.val
+  --    endhandle
+
+  -- >>>dtf mod sep04
+  if (!prev.type.eq('BRAN')) then
+    Dist $!distMM from hpos of bran
+  elseif (!prev.type.neq('BRAN')) then
+    Dist $!distMM from $!prev
+  endif
+  -- dtf <<< End of Mod
+  !styp = styp
+  if(!styp.match('FH') gt 0 or !styp.match('VH') gt 0 or !styp.match('MH') gt 0) then
+    -- This is an Hanger support
+    -- need to move hanger and steel fitting
+    !ceAtta = !!ce
+    golabel /HANGER
+  endif
+
+  -------------------------------------
+  PIN 8 AT CE
+  -------------------------------------
+  -------------------------------------
+  !!ce = $!name/SREF
+  handle (2,109)
+  elsehandle NONE
+    if (purp of pspe of bran eq 'TRAY') then
+      fconn and p30 is p30 of $!datum
+    else
+      !!mdsMConn('ORI','ORI')
+      POS PA AT $!datum
+    endif
+  endhandle
+
+  !!ce = !datum
+  -- Move everything that is connected
+  VAR !dir CONST DIR PIN 9 TO PIN 8
+  !dist = !!kStrReal('CONST DIST PIN 9 TO PIN 8')
+
+  if (!dist.neq(0))then
+    if (!form.support.stru.set()) then
+      !!ce = !form.support.stru
+      MOVE $!dir wrt world DIST $!dist mm
+      -- <RM> 05/07/07 -- implemented this check for FT61 because it includes an olet which
+      -- needs to be moved with the rest of the support
+      if !!ce.:mdssupptype.eq('FT61') then
+        $!<name>/OLET
+        handle ANY
+          !!ce = !form.support.stru
+        elsehandle NONE
+          MOVE $!dir wrt world DIST $!dist mm
+          !!ce = !form.support.stru
+        endhandle
+      endif
+      -- <RM> 05/07/07
+    endif
+
+    -- get all the support attas for the nudge
+    -- for FR01 and other framatome supports, we need to ignore the attas at 90 degrees
+    !coll = ARRAY()
+    if !form.string() eq 'MDSFR01' then
+      !name = !form.name.val
+      !!ce = fitt1 of $!<name>-V1
+      handle ANY
+      elsehandle NONE
+        !plate = !!ce.cref
+        handle ANY
+        elsehandle NONE
+          if !!mdscheckfitting(!!ce,!plate).not() then
+            !!alert.warning('Section Brackets are Not Within the Plate')
+          endif
+        endhandle
+      endhandle
+      do !at values !form.support.stack.stack1
+        if !at.atta.name.match('SREF').gt(0) or !at.atta.name.match('DATUM').gt(0) then
+          -- its been moved already
+          skip
+        else
+          !coll.append(!at.atta)
+        endif
+      enddo
+      do !at values !form.support.stack.stack3
+        !coll.append(!at.atta)
+      enddo
+    else
+      do !count from 1
+        $!<name>.$!count
+        handle NONE
+          if !!ce.type.eq('ATTA') then
+            !coll.append(!!ce)
+          endif
+          same
+        elsehandle ANY
+          break
+        endhandle
+      enddo
+    endif
+
+    do !count indices !coll
+      $!coll[$!count]
+      handle ANY
+      endhandle
+      -----------------------------------------------------------------------------------
+      -- Modified to account for Sloping Pipes and Packing Pieces
+      -- However the Structure ONLY moves relative to the 'PLeave direction' of the DATUM Atta
+      -- ori
+      --ak-- changed cos of attas not in u/d ori
+
+      !p3dir = p3 dir wrt worl
+      handle ANY
+        -- in case p3 not there
+        ori
+      elsehandle NONE
+        ori and p3 is $!p3dir
+        handle ANY
+        endhandle
+      endhandle
+      --------------------------------------
+      move $!dir wrt world dist $!dist
+      plane $!pldir thro ce
+      --------------------------------------
+      -- Orienatate Additional Attas for Vessel Framework Type 'VT03' - ONLY
+      if (!supptype eq 'VT03') then
+        -- rotate by ( $!count * 90)
+      endif
+      -----------------------------------------------------------------------------------
+    enddo
+  endif
+
+  --<wd>nov2000
+  -- Move ANY :MDSGuideRef referenced ATTAs associated with the Attas on the Current MDS Support
+  if (!dist.neq(0)) then
+    !guides = ARRAY()
+
+    -- $!<name>/DATUM
+    !!ce = !datum
+    handle NONE
+      !guides.append(!!ce)
+      same
+    elsehandle ANY
+    endhandle
+
+    $!<name>/SREF
+    handle NONE
+      !guides.append(!!ce)
+      same
+    elsehandle ANY
+    endhandle
+
+    do !count from 1
+      $!<name>.$!count
+      handle NONE
+        if !!ce.type.eq('ATTA') then
+          !guides.append(!!ce)
+        endif
+        same
+      elsehandle ANY
+        break
+      endhandle
+    enddo
+
+    -- var !guides coll all atta  where (matchwild(name,|$!name$N.*|))
+    -- var !guides append coll all atta where (matchwild(name,|$!name$N/*|))
+
+    do !indx index !guides
+      !dbatta = !guides[!indx]
+      skip if !dbatta.:MDSGuideRef.badref()
+      if (!dbatta.:MDSGuideRef.unset().not()) then
+        !!ce = !dbatta.:MDSGuideRef
+        handle ANY
+          skip
+        endhandle
+        move $!dir wrt world dist $!dist
+        plane $!pldir thro $!dbatta
+        !!ce = !dbatta
+      endif
+    enddo
+
+  endif
+
+  -------------------------------------
+  -------------------------------------
+
+
+  golabel /exit
+  label /HANGER
+  Call !!mdsInterfaceAlignHanger(!ceAtta, !form)
+  label /exit
+  -- Reset Pins
+
+  Call !!mdsResetPins(8,10)
+
+  !!ce = !origin
+
+  -----------------------***** try this connexions *******-----------------------
+  --$(
+  if(!form.support.joints.unset().not()) then
+    do !ind values !form.support.joints
+      !mainStl = !ind.owner.owner
+      !upright = !ind.cref
+      !snodePos =    !!mdsPosInterSctn(!mainStl,!upright)
+      !!ce = !ind.owner
+      ZDIST THRO $!snodePos
+    enddo
+  endif
+  --$)
+  -------------------------------------------------------------------------------
+
+  ---------------------------------------------------------------------------------
+  -- Add the Aid Text to P9 of each Support Atta on the Framework
+  !!mdsaidtext(!form)
+  ---------------------------------------------------------------------------------
+
+  -- If the support is owned by a trunnion then we may need to reorder the attas
+
+  !!ce = !datum
+  bran
+  if (!!ce.:Mdstrun) then
+    !!mdsReoAtta(!!ce)
+    !!ce = !datum
+    !!mdsDistance(!form)
+  endif
+
+
+  --<GE> 05/02/07 Fix Defect no: 10214
+  if !form.graphicalDim.set() then
+    -- Show dimensions if required
+    if !form.graphicalDim then
+      !!mdsShowDim(!form)
+    endif
+  endif
+  --<GE> 05/02/07
+
+  if !datum.styp.eq('MH01') then
+    if (defined(!!mdsInterfaceDynOffset)) then
+      if !!mdsInterfaceDynOffset.shown() then
+        !!mdsInterfaceDynOffset.init(!form)
+      endif
+    endif
+
+    -- dtf 12.12.05 check if pipe parallel to support and adjust tail
+    !supportname = !form.support.datum.string()
+
+    -- get the connected sctn ref
+    var !stref owner of tref of cref of $!supportname
+    !sctn = !stref.dbref()
+    handle ANY
+      !sctn = object DBREF()
+    endhandle
+    -- get the atta ref
+    !comp = !supportname.dbref()
+
+    !hardtype = !sctn.hardtype
+    handle ANY
+      !hardtype = ''
+    endhandle
+
+
+
+    if !hardtype.eq('SCTN') then
+
+      --<RM 06/08/08> included this check and call to reconnecthtail.pmlfnc which will
+      --update the tpos of the hanger and the posl of the connected steelwork fitting
+      --if the altered position of the atta is such that the hanger should now connect to
+      -- another pline on the steelwork
+      if !!mdshangif.eq('LISEGA') then
+        if !virtualFitting then
+          !currentpline = !form.virtualFitting.posline
+          !!reconnecthtail(!datum, !sctn, !datum.cref , !currentpline )
+        else
+          !currentpline = !datum.cref.tref.posl
+          !!reconnecthtail(!datum, !sctn, !datum.cref , !currentpline )
+        endif
+      endif
+
+      -- run parallel check to see if we have a sloping section and sloping line that are parallel
+      -- if this check is true then we don't need to reposition the hanger tail
+      -- Richard Martin 05/07/06
+      !check = !!mdsistubeslopeparallel2sctn(!comp, !sctn)
+      if !check neq TRUE then
+        !!mdsInterfaceReposHtail(!datum, !form)
+      else
+        if !comp.cref.members.size().gt(0) then
+          !lpos = !comp.cref.members[!comp.cref.members.size()].lpos.wrt( /* )
+          !comp.cref.tposition = !lpos
+        else
+          !!mdsInterfaceReposHtail(!datum, !form)
+        endif
+      endif
+    else
+      --if we have a type 6 support then don't reposition the hanger tail
+      if !!mdsInterfaceHanger.confignumber.string().neq('6') and !!mdsInterfaceHanger.confignumber.string().neq('600') then
+        !!mdsInterfaceReposHtail(!datum, !form)
+      endif
+    endif
+
+    if !form.shown() then
+      !tpos = !datum.cref.tposition.wrt( /* )
+      handle ANY
+        -- just incase fom is displayed but not called from this support
+      elsehandle NONE
+        !form.support.tposition  = !tpos
+      endhandle
+
+      -- dtf >> 23.08.06 update aid lines positions
+      -- Update aid lines &  text markers
+      !!mdsaidtext(!form)
+      !hangerStart = !form.support.datum.position
+      !hangerEnd   = !form.support.tposition
+      aid clear line 2999
+      handle ANY
+      elsehandle NONE
+        aid line number 2999 $!hangerStart to $!hangerEnd linestyle dotted
+      endhandle
+
+    endif
+  endif
+
+  --the tail of the hanger needs to be offset in x and y directions following the move for all dynamic types i.e. 7,21,20 and 25
+  !type = !form.name().upcase().after('MDSHANGERTYPE')
+  if !type inset('7', '20', '21', '25') then
+    if defined(!!mdsInterfaceDynOffset) then
+      !!mdsInterfaceDynOffset.init(!form)
+      !!mdsInterfaceDynOffset.hide()
+    else
+      pml load form !!mdsInterfaceDynOffset
+      !!mdsInterfaceDynOffset.init(!form)
+      !!mdsInterfaceDynOffset.hide()
+    endif
+  endif
+
+  -- Deactivate MDS Dac Control variable
+  !!mdsDacControl(FALSE)
+
+  -- Reset Units
+  !!kRestoreUnits(!currentUnits)
+
+  -- set focus to the dim1 gadget if it exists
+  !form.dim1.setfocus()
+  handle ANY
+    -- if for has not got a dim1
+  endhandle
+
+endfunction

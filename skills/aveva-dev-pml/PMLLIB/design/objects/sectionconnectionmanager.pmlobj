@@ -1,0 +1,2211 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            sectionconnectionmanager.pmlobj
+--   Type:          Object Definition
+--   Group:         Design structures
+--     Keyword:     Section connection
+--   Module:        Design
+--   Replaces:
+--
+-- Author:          neil.holmes
+-- Created:         Fri May 18 11:00:00 GMT 2007
+--
+-- Description:
+--    Section connection manager for the connection of SCTN and GENSEC
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  anglePriority()                  -                   Set angle priority
+--  calculateZDistance(DBREF,STRING,POSITION) REAL                Calculate ZDistance of given position
+--  checkCompatible(DBREF)           BOOLEAN             Check dominant and subordinate element are compatible
+--  checkConnectSections(STRING,DBREF,DBREF) BOOLEAN             Check secondary section to primary section connection
+--  checkConnected(POSITION,DBREF)   ARRAY               Check that subordinate section is not already connected
+--  connectSections()                BOOLEAN             Connect secondary section to primary section
+--  connectSections(DBREF,DBREF)     BOOLEAN             Connect secondary section to primary section
+--  connectSections(STRING,DBREF,DBREF) BOOLEAN             Connect secondary section to primary section
+--  connectionPoint()                BOOLEAN             Determine the best connection point current secondary section
+--  connectionPoint(LINE)            BOOLEAN             Determine the best connection point, position and pline for passed line on primary section
+--  defaultPriority()                -                   Set default priority (standard mechanism)
+--  deriveConnection()               -                   Set flags to derive best end for connection
+--  endConnection()                  -                   Set flags to connect start of section
+--  endDistance(LINE,DBREF)          REAL                Determine distance from the end of the passed line to the nearest point on the passed section
+--  getConnectionLine()              LINE                Determine the reference line for deriving the connection (start is the root point)
+--  getLastConnection()              DBREF               Gets last connection made by .connectSections() or unset if no connection
+--  getNode(DBREF)                   DBREF               Gets node of passed joint element, SJOIN or FIXING
+--  getNode(DBREF,STRING,POSITION,REAL) DBREF               Determine the node on the passed section which lies within the given tolerance
+--  getNodeNear(DBREF,STRING,POSITION,REAL) DBREF               Get node on the passed section within the given tolerance of Z Distance
+--  getPlines(DBREF,EXPRESSION)      ARRAY               Get plines for passed element conforming to the passed rule
+--  initialiseConnectSections(STRING,DBREF,DBREF) BOOLEAN             Connect secondary section to primary section
+--  justificationPoint(LINE)         POSITION            Determine the position on the given P-line on primary section
+--  modifyNode(DBREF)                BOOLEAN             Modify node
+--  modifyNodePosition(DBREF)        BOOLEAN             Modify node Position
+--  newConnection(DBREF,STRING,DBREF,POSITION,STRING,DIRECTION) DBREF               New connection, (snode-sjoint or JLDAT-PLDAT-fixing)
+--  newJoint(DBREF,STRING,DIRECTION,DBREF,STRING) DBREF               Create new joint (sjoint or plDatum-fixing)
+--  newNode(DBREF,POSITION,STRING)   DBREF               Create new node (snode or JLDAT)
+--  offsetPriority()                 -                   Set offset priority
+--  primarySection(DBREF)            BOOLEAN             Set primary section
+--  reconnect(DBREF)                 BOOLEAN             Encapsulated Reconnection command to handle all section connection
+--  reconnect(DBREF,STRING,DIRECTION) BOOLEAN             Determine the node on the passed section which lies within the given tolerance
+--  secondarySection(DBREF)          BOOLEAN             Set secondary section (single connection)
+--  sectionConnectionManager()       -                   Constructor
+--  setPlineRule(STRING)             BOOLEAN             Set pline rule
+--  setPlineRulePriority(STRING)     BOOLEAN             Set pline rule
+--  startConnection()                -                   Set flags to connect start of section
+--  test()                           -                   Test method
+--
+------------------------------------------------------------------------
+
+-- Define object
+define object SECTIONCONNECTIONMANAGER
+
+  -- Description
+  member .description         is STRING
+
+  -- Structural Elements
+  -- Primary section (the one being connected too)
+  member .primarySection      is DBREF
+  member .primaryPlines       is ARRAY
+
+  -- Secondary section (the one being connected)
+  member .secondarySection    is DBREF
+
+  -- List of sections that are to be connected to the primary
+  member .sectionList         is ARRAY
+
+  -- Secondary section end for connection
+  member .secondaryStart      is BOOLEAN
+  member .secondaryEnd        is BOOLEAN
+
+  -- Derive end connection
+  member .derivedConnection   is BOOLEAN
+
+  -- Default actions
+  -- Allow reconnection of existing connections
+  member .reconnection        is BOOLEAN
+
+  -- Allow the node owning the connection to be repositioned, this is the SNODE for SCTN
+  -- and JLDAT for GENSEC elements.
+  member .modifyNode          is BOOLEAN
+
+  -- Merge nodes
+  member .mergeNodes          is BOOLEAN
+  member .mergeRadius         is REAL
+
+  -- Joint type
+  member .jointDominant       is BOOLEAN
+
+  -- Angle or Offset precedence
+  member .anglePriority       is BOOLEAN
+  member .offsetPriority      is BOOLEAN
+
+  -- Pline Rule
+  member .plineRule           is EXPRESSION
+
+  -- flag specifies if object p-line rule has priority over rule from global object !!edgPline
+  member .localPlineRulePriority is BOOLEAN
+
+  -- stores last connection made by .connectSections() or unset if no connection - for calling application to retrieve
+  member .lastConnection      is DBREF
+
+  -- Connection Information (private members)
+  -- Best Pline (in theory this could be a separate object
+  -- but we'll have them as private members as there is most
+  -- probably no need for the information in its state to
+  -- be used by anything else).
+  member .connectionPline     is STRING
+  member .connectionPosition  is POSITION
+  member .connectionDirection is DIRECTION
+  member .connectionEnd       is STRING
+
+  -- End of section to be connected (start or end)
+  member .sectionEnd          is STRING
+
+  -- Error handling
+  -- Error state, where a method doesn't return a boolean but a null object is returned
+  member .errorState          is BOOLEAN
+  member .errorText           is STRING
+  member .errorList           is ARRAY
+
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:      sectionConnectionManager
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .sectionConnectionManager()
+
+  -- Initialise Variables
+  !this.errorState      = false
+  !this.errorText       = object STRING()
+  !this.errorList.clear()
+
+  -- Default behaviour
+  !this.reconnection    = true
+  !this.modifyNode      = true
+  !this.mergeNodes      = true
+  !this.mergeRadius     = 1mm
+  !this.jointDominant   = true
+  !this.localPlineRulePriority = false
+
+  -- Priority order
+  !this.defaultPriority()
+
+  -- Set flags for deriving best end for connection
+  !this.deriveConnection()
+
+  -- Set current pline selection rule
+  if(defined(!!edgPlineFilter)) then
+    !this.setPlineRule(!!edgPlineFilter.rule())
+  endif
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      deriveConnection
+--
+-- Description: Set flags to derive best end for connection
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [defaultPriority]
+--
+------------------------------------------------------------------------
+
+define method .deriveConnection()
+  !this.secondaryStart    = false
+  !this.secondaryEnd      = false
+  !this.derivedConnection = true
+  !this.connectionEnd     = object STRING()
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      startConnection
+--
+-- Description: Set flags to connect start of section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [defaultPriority]
+--
+------------------------------------------------------------------------
+
+define method .startConnection()
+  !this.secondaryStart    = true
+  !this.secondaryEnd      = false
+  !this.derivedConnection = false
+  !this.connectionEnd     = 'Start'
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      endConnection
+--
+-- Description: Set flags to connect start of section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [defaultPriority]
+--
+------------------------------------------------------------------------
+
+define method .endConnection()
+  !this.secondaryStart    = false
+  !this.secondaryEnd      = true
+  !this.derivedConnection = false
+  !this.connectionEnd     = 'End'
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      defaultPriority
+--
+-- Description: Set default priority (standard mechanism)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [defaultPriority]
+--
+------------------------------------------------------------------------
+
+define method .defaultPriority()
+  !this.anglePriority   = false
+  !this.offsetPriority  = false
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      anglePriority
+--
+-- Description: Set angle priority
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .anglePriority()
+  -- Rule
+  --    Where the angle between pline direction and opposite direction of
+  --    the reference line takes precedence, followed by the offset between
+  --    reference line and the pline point and the distance from the start
+  --    of the reference line to the pline point on the reference line.
+  !this.anglePriority   = true
+  !this.offsetPriority  = false
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      offsetPriority
+--
+-- Description: Set offset priority
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .offsetPriority()
+  -- Rule
+  --    Where the offset between the pline point and reference line is
+  --    the smallest followed by the distance from the start to the
+  --    reference line to the pline poin on the reference line.
+  !this.anglePriority   = false
+  !this.offsetPriority  = true
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      primarySection
+--
+-- Description: Set primary section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Primary section (SCTN or GENSEC)
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True is assigned (error via !!error.text)
+--
+------------------------------------------------------------------------
+
+define method .primarySection(!section is DBREF) is BOOLEAN
+
+ -- Check if section is valid
+  if (!section.badref() ) then
+      return false
+  endif
+  -- Check type is valid
+  if(not !section.hardType inset('SCTN','GENSEC')) then
+    !!error.text          = 'Element (' & !section.namn & ') is not based on a SCTN or GENSEC.'
+    !this.errorText       = !!error.text
+    !this.errorState      = true
+    return false
+  endif
+
+  -- Assign the section as the primary section
+  !this.primarySection    = !section
+
+  -- Extract Pline information for the primary section
+  !this.primaryPlines     = !this.getPlines(!this.primarySection, !this.plineRule)
+  if(!this.primaryPlines.empty()) then
+    !!error.text          = 'Cannot connect to a Section with unset specification'
+    !this.errorText       = !!error.text
+    !this.errorState      = true
+    return false
+  endif
+
+  return true
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      secondarySection
+--
+-- Description: Set secondary section (single connection)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Secondary section (SCTN or GENSEC)
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True is assigned (error via !!error.text)
+--
+------------------------------------------------------------------------
+
+define method .secondarySection(!section is DBREF) is BOOLEAN
+
+  -- Check type is valid
+  if(not !section.hardType inset('SCTN','GENSEC')) then
+    !!error.text          = 'Element (' & !section.namn & ') is not based on a SCTN or GENSEC.'
+    !this.errorText       = !!error.text
+    !this.errorState      = true
+    return false
+  endif
+
+  -- Assign the section as the secondary section
+  !this.sectionList.clear()
+  !this.sectionList.append(!section)
+  !this.secondarySection  = !section
+
+  return true
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      setPlineRule
+--
+-- Description: Set pline rule
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Pline rule to use
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if set successfully
+--
+------------------------------------------------------------------------
+
+define method .setPlineRule(!rule is STRING) is BOOLEAN
+
+  -- Initialise Variables
+  if(!rule.unset()) then
+    !this.plineRule   = object EXPRESSION()
+  else
+    !this.plineRule   = object EXPRESSION(!rule)
+    handle ANY
+      return false
+    endhandle
+  endif
+
+  return true
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      setPlineRulePriority
+--
+-- Description: Set pline rule
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Pline rule to use
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if set successfully
+--
+------------------------------------------------------------------------
+
+define method .setPlineRulePriority(!rule is STRING) is BOOLEAN
+
+  -- Initialise Variables
+  !return = !this.setPlineRule(!rule)
+  if( !return ) then
+    !this.localPlineRulePriority = true
+  endif
+
+  return !return
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      getPlines
+--
+-- Description: Get plines for passed element conforming to the passed rule
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element to get Plines for
+--    2   R      EXPRESSION  Rule to use for checking plines
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       List of plines conforming to the rule for the element
+--
+------------------------------------------------------------------------
+
+define method .getPlines(!element is DBREF, !rule is EXPRESSION) is ARRAY
+
+  -- Initialise Variables
+  !plines       = ARRAY()
+
+  -- Get plines definition element
+  !plineDef     = !element.pstref
+  handle ANY
+    return !plines
+  endhandle
+
+  -- exit if invalid ref.
+  if !plineDef.badref() then
+    return !plines
+  endif
+
+  -- Get pline definitions that conform to the rule
+  !collection   = object COLLECTION()
+  !collection.scope(!plineDef)
+  if(!rule.set()) then
+    !collection.filter(!rule)
+  endif
+  !collection.type('PLIN')
+
+  -- Get the pline elements
+  !plineItem  = !collection.results()
+
+  -- Get PKEY of element
+  do !i indices !plineItem
+    !plines.append(!plineItem[!i].pkey)
+  enddo
+
+  -- Return
+  return !plines
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      getConnectionLine
+--
+-- Description: Determine the reference line for deriving the connection (start is the root point)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    LINE        Line of section (start-end is approach direction of section)
+--
+------------------------------------------------------------------------
+
+define method .getConnectionLine() is LINE
+
+  -- Initialise Variables
+  !returnLine   = object LINE()
+  !sctnType     = !this.secondarySection.hardType.eq('SCTN')
+  !deriveEnd    = !this.derivedConnection
+  -- Secondary section is a SCTN
+    if(!sctnType) then
+
+    -- Derive line POSS - POSE (end is connection point)
+        !line       = object LINE(!this.secondarySection.posStart, !this.secondarySection.posEnd)
+--        if (!this.connectionEnd.upcase() ne 'START' ) then
+--            !line = !line.reverseSense()
+--        endif
+
+  -- Secondary section is a GENSEC
+    else
+    -- Spine of gensec
+        !spine      = SPINE 1 of $!<this.secondarySection>
+    -- If the spine has only two members, then we'll assume its straight
+        if(!spine.mcount.eq(2)) then
+            !line       = object LINE(!this.secondarySection.posStart, !this.secondarySection.posEnd)
+
+    -- Get start/end lines
+        else
+
+      -- Determine end vectors for connection
+            !start        = !this.secondarySection.posStart
+            !end          = !this.secondarySection.posEnd
+
+      -- Get second point
+            !secondPoint  = !spine.members[2]
+
+      -- Second point is a curve, then use the PPoint information
+            if(!secondPoint.type.eq('CURVE')) then
+                !sLine      = object LINE(!secondPoint.pPosition[6], !secondPoint.pPosition[1])
+
+      -- Second point is a point
+            else
+                !sLine      = object LINE(!start, !secondPoint.position)
+            endif
+
+      -- Point previous to then point
+            !previousEnd  = !spine.members[!spine.mcount - 1]
+
+      -- Point previous to end point is a curve, then use the PPoint information
+            if(!previousEnd.type.eq('CURVE')) then
+                !eLine      = object LINE(!previousEnd.pPosition[6], !previousEnd.pPosition[2])
+
+      -- Second point is a point
+            else
+                !eLine      = object LINE(!previousEnd.position, !end)
+            endif
+
+        endif
+
+    endif
+
+  -- Derive the connection line of a section which can be described as a line
+    if(defined(!line)) then
+
+        !returnLine             = !line
+
+    -- Derive best end (basic rule is which end is the nearest to the primary section
+        if(!deriveEnd) then
+            !this.connectionEnd   = 'Start'
+            !sLine                = !line
+            !eLine                = !line.reverseSense()
+
+      -- Get distances from start/end of reference line
+            !sDistance            = !this.endDistance(!sLine, !this.primarySection)
+            !eDistance            = !this.endDistance(!eLine, !this.primarySection)
+
+      -- The shortest distance is the end we want to connect
+            if(!eDistance.leq(!sDistance)) then
+                !this.connectionEnd = 'End'
+                !returnLine         = !eLine
+            else
+                !returnLine         = !sLine
+            endif
+
+    -- Use start reference line
+        elseif (!this.secondaryStart) then
+            !returnLine           = !line.reverseSense()
+        endif
+
+  -- Derive the connection line of a non-linear section
+  else
+
+    !returnLine             = !sLine
+
+    -- Derive best end (basic rule is which end is the nearest to the primary section
+    if(!deriveEnd) then
+
+      -- Get distances from start/end of reference line
+      !sDistance            = !this.endDistance(!sLine, !this.primarySection)
+      !eDistance            = !this.endDistance(!eLine, !this.primarySection)
+
+      -- The shortest distance is the end we want to connect
+      if(!eDistance.leq(!sDistance)) then
+        !this.connectionEnd = 'End'
+        !returnLine         = !eLine
+      else
+        !this.connectionEnd = 'Start'
+        !returnLine         = !sLine
+      endif
+
+    -- Use start reference line
+    elseif (!this.secondaryEnd) then
+      !returnLine           = !eLine
+    endif
+
+  endif
+
+  -- Return derived line
+  return !returnLine
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      endDistance
+--
+-- Description: Determine distance from the end of the passed line to the nearest point on the passed section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      LINE        Line to check against
+--    2   R      DBREF       Section to check against
+-- Return:
+--   [Data Type] [Description]
+--    REAL        Distance from start of reference line
+--
+------------------------------------------------------------------------
+
+define method .endDistance(!line is LINE, !section is DBREF) is REAL
+
+  -- Initialise Variables
+  !lDirection   = !line.direction().wrt(world)
+  !lPosition    = !line.startPosition.wrt(world)
+
+  -- Derive the nearest Pline
+  var !pline  PKEY OF ONPLINE PPLINE any of $!<section> NEAR $!<lDirection> THROUGH $!<lPosition> BOUNDED
+  handle ANY
+    -- Problem with identifying pline so we will test in the opposite direction
+    !lDirection = !lDirection.opposite()
+    --!lPosition  = !lPosition.offset(!lDirection, 500mm)
+    var !pline  PKEY OF ONPLINE PPLINE any of $!<section> NEAR $!<lDirection> THROUGH $!<lPosition> BOUNDED
+    handle ANY
+      -- Still a problem, return a large number to for the opposite end
+      return 10000000000mm
+    endhandle
+  endhandle
+  var !dirString  DIRECTION PPLINE $!<pline> of $!<section> Z DIRECTION NEAR $!<lDirection> THROUGH $!<lPosition> BOUNDED wrt world
+  var !posString  POSITION  PPLINE $!<pline> of $!<section> NEAR $!<lDirection> THROUGH $!<lPosition> BOUNDED wrt world
+  !plPosition   = object POSITION(!posString)
+
+  -- Map position on to line an check the distance from the start
+--  !mPosition    = !line.near(!plPosition)
+
+  -- Distance from mapped position to line
+  !distance     = !line.startPosition.distance(!plPosition)
+
+  -- Return
+  return !distance
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      connectSections
+--
+-- Description: Connect secondary section to primary section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Section to be connected
+--    2   R      DBREF       Section to be connected to
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True successfully connected
+--
+------------------------------------------------------------------------
+
+define method .connectSections(!object is DBREF, !target is DBREF) is BOOLEAN
+
+  -- Initialise Variables
+  return !this.connectSections('', !object, !target)
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      connectSections
+--
+-- Description: Connect secondary section to primary section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      End of section to connect
+--    2   R      DBREF       Section to be connected
+--    3   R      DBREF       Section to be connected to
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True successfully connected
+--
+------------------------------------------------------------------------
+
+define method .connectSections(!end is STRING, !object is DBREF, !target is DBREF) is BOOLEAN
+
+  -- Initialise Variables
+  !initialised = !this.initialiseConnectSections(!end, !object, !target)
+  if( !initialised.not() ) then
+    return false
+  endif
+
+  -- Connect sections
+  !connection = !this.connectSections()
+
+  -- Return
+  return !connection
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      initialiseConnectSections
+--
+-- Description: Connect secondary section to primary section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      End of section to connect
+--    2   R      DBREF       Section to be connected
+--    3   R      DBREF       Section to be connected to
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True successfully connected
+--
+------------------------------------------------------------------------
+
+define method .initialiseConnectSections(!end is STRING, !object is DBREF, !target is DBREF) is BOOLEAN
+
+  -- Set end being connected, unset/empty is for derived
+  if(!end.unset().or(!end.eq(''))) then
+    !this.deriveConnection()
+  elseif(!end.upcase().substring(1,1).eq('S')) then
+    !this.startConnection()
+  else
+    !this.endConnection()
+  endif
+
+  -- Set current pline selection rule
+  if (defined(!!edgPlineFilter)) then
+    if ( !this.localPlineRulePriority.unset() or !this.localPlineRulePriority.not() ) then
+      !this.setPlineRule(!!edgPlineFilter.rule())
+    endif
+  endif
+
+  -- Set primary section
+  !primaryResult   = !this.primarySection(!target)
+
+  -- Set secondary section
+  !secondaryResult = !this.secondarySection(!object)
+
+  -- return error if either primary or secondary failed
+  return !primaryResult.and(!secondaryResult)
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      checkConnectSections
+--
+-- Description: Check secondary section to primary section connection
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True successfully connected
+--
+------------------------------------------------------------------------
+
+define method .checkConnectSections(!end is STRING, !object is DBREF, !target is DBREF) is BOOLEAN
+
+  -- Initialise Variables
+  !initialised = !this.initialiseConnectSections(!end, !object, !target)
+  if( !initialised.not() ) then
+    return false
+  endif
+
+  !reference            = !!ce
+  !return               = true
+  !this.errorState      = false
+  !this.errorText       = object STRING()
+  !this.errorList.clear()
+  !mergeOffset          = !!stlTolerances.secondaryMerge
+  handle any
+    !mergeOffset        = !this.mergeRadius
+  endhandle
+
+  -- Connection line and end for connection
+  !line           = !this.getConnectionLine()
+
+  -- Check if end is currently connected and that the reference section is the primary section
+  !endConnection  = !this.secondarySection.attribute('JOI' & !this.connectionEnd)
+
+  -- Secondary section end is already connected
+  if(!endConnection.set()) then
+
+    -- Handle Bad reference
+    if(badref(!endConnection)) then
+      !this.errorState   = true
+      !this.errorText    = 'The '& !this.connectionEnd.lowcase() & ' of section "' & !this.secondarySection.namn & '" references a "BADREF", this could be due to an element being deleted or in a deferred DB.'
+      !!ce               = !reference
+      return false
+    endif
+
+    -- Check if section is connected to primary section or another one
+    !connectedToPrimary  = !endConnection.ownLst.findFirst(!this.primarySection).set()
+
+    -- Reference section is not the primary section
+    if(!connectedToPrimary.not()) then
+
+      -- Reconnection is not allowed
+      if(!this.reconnection.not()) then
+        !this.errorState = true
+        !this.errorText  = 'The '& !this.connectionEnd.lowcase() & ' of section "' & !this.secondarySection.namn & '" is already connected.'
+        !!ce             = !reference
+        return false
+
+      -- Reconnection is allowed (disconnect from reference section and unset end connection)
+      else
+        -- !this.disconnect(!this.secondarySection, !this.connectionEnd)
+        !endConnection   = object DBREF()
+      endif
+
+    endif
+
+  endif
+
+  -- Derive connection point
+  !connectionPoint  = !this.connectionPoint(!line)
+
+  if(!connectionPoint) then
+    -- find connection point on the justification line
+    !justificationPosition = !this.justificationPoint(!line)
+    if( !justificationPosition.unset() ) then
+      -- Unable to derive connection point
+      !this.errorState   = true
+      !this.errorText    = 'Unable to derive connection point'
+      !!ce               = !reference
+      return false
+    else
+      -- check in bounds of justification line
+      if( !this.primarySection.hardType eq 'SCTN' ) then
+        !primaryLine     = object LINE(!this.primarySection.poss, !this.primarySection.pose)
+        !nodesOffEnd     = !!stlTolerances.nodesOfEnd
+        handle any
+          !nodesOffEnd   = false
+        endhandle
+        if(!nodesOffEnd.not()) then
+          if( !justificationPosition.near(!this.primarySection.poss, 1mm).not() ) then
+            if( !justificationPosition.near(!this.primarySection.pose, 1mm).not() ) then
+              if( !primaryLine.onProjected(!justificationPosition).not() ) then
+                !this.errorState = true
+                !this.errorText  = 'Connection is past the extremities of the identified section'
+                !!ce             = !reference
+                return false
+              endif
+            endif
+          endif
+        endif
+      else
+        -- No check for GENSEC - to be done
+      endif
+
+      -- check offset from justification line
+      !useOffset           = !!stlTolerances.offsetLock
+      handle any
+        !useOffset         = false
+      endhandle
+      if( !useOffset ) then
+        !offset            = !line.distance(!justificationPosition)
+        !offsetTolerance   = !!stlTolerances.offset
+        handle any
+          !offsetTolerance = 200mm
+        endhandle
+        if( !offset gt !offsetTolerance ) then
+          !this.errorState = true
+          !this.errorText  = !offset.string(!!distanceFmt) + ' Offset between sections exceeds tolerance (' + !offsetTolerance.string(!!distanceFmt) + ')'
+          return false
+        endif
+      endif
+    endif
+
+  else
+
+    !this.errorState    = true
+    -- Unable to derive connection point
+    if( !this.primarySection.hardType eq 'SCTN' ) then
+      !primaryLine      = object LINE(!this.primarySection.poss, !this.primarySection.pose)
+      if( !primaryLine.direction().isParallel(!line.direction()) ) then
+        -- primary and secondary are parallel
+       !this.errorText  = 'Sections are parallel'
+      else
+        !this.errorText = 'Unable to derive connection point'
+      endif
+    else
+      -- no specific geometric checks for GENSEC
+      !this.errorText   = 'Unable to derive connection point'
+    endif
+    !!ce                = !reference
+    !return             = false
+
+  endif
+
+  !!ce = !reference
+
+  return !return
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      connectSections
+--
+-- Description: Connect secondary section to primary section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True successfully connected
+--
+------------------------------------------------------------------------
+
+define method .connectSections() is BOOLEAN
+
+  -- Initialise Variables
+  !reference            = !!ce
+  !return               = true
+  !this.errorState      = false
+  !this.errorText       = object STRING()
+  !this.errorList.clear()
+  !mergeOffset          = !!stlTolerances.secondaryMerge
+  handle any
+    !mergeOffset        = !this.mergeRadius
+  endhandle
+  !this.lastConnection  = object DBREF()
+
+
+  -- Connection line and end for connection
+  !line           = !this.getConnectionLine()
+  -- Check if end is currently connected and that the reference section is the primary section
+  !endConnection  = !this.secondarySection.attribute('JOI' & !this.connectionEnd)
+
+  -- Secondary section end is already connected
+  if(!endConnection.set()) then
+
+    -- Handle Bad reference
+    if(badref(!endConnection)) then
+      !this.errorState    = true
+      !this.errorText     = 'The '& !this.connectionEnd.lowcase() & ' of section "' & !this.secondarySection.namn & '" references a "BADREF", this could be due to an element being deleted or in a deferred DB.'
+      return false
+    endif
+
+    -- Check if section is connected to primary section or another one
+    !connectedToPrimary   = !endConnection.ownLst.findFirst(!this.primarySection).set()
+
+    -- Reference section is not the primary section
+    if(!connectedToPrimary.not()) then
+
+      -- Reconnection is not allowed
+      if(!this.reconnection.not()) then
+        !this.errorState  = true
+        !this.errorText   = 'The '& !this.connectionEnd.lowcase() & ' of section "' & !this.secondarySection.namn & '" is already connected.'
+        return false
+
+      -- Reconnection is allowed (disconnect from reference section and unset end connection)
+      else
+        -- !this.disconnect(!this.secondarySection, !this.connectionEnd)
+        !endConnection    = object DBREF()
+      endif
+
+    endif
+
+  endif
+
+  -- Derive connection point
+  !connectionPoint  = !this.connectionPoint(!line)
+
+  if(!connectionPoint) then
+
+    -- If reconnecting section then redefine the existing connection information
+    if(not !endConnection.badref()) then
+
+      -- Get node from end connection
+      !node = !this.getNode(!endConnection)
+      if(!node.badref()) then
+        -- need to handle unset node (not sure how to do this so return false)
+        return false
+      endif
+
+      -- Modify node
+      if(!this.modifyNode) then
+        if(!this.modifyNode(!node).not()) then
+          !this.errorState  = true
+          !this.errorText   = !!error.text
+          return false
+        endif
+      endif
+
+      -- Reconnect
+      if(!this.reconnect(!endConnection, !this.connectionPline, !this.connectionDirection).not()) then
+        !this.errorState  = true
+        !this.errorText   = !!error.text
+        return false
+      endif
+
+      !this.lastConnection = !endConnection
+
+    -- Generate connection information
+    else
+
+      -- Look for a node at/near connection position
+      if(!this.mergeNodes) then
+        -- find connection point on the justification line
+        !justificationPosition = !this.justificationPoint(!line)
+        if( !justificationPosition.unset() ) then
+          !node   = object DBREF()
+        else
+          !useOffset           = !!stlTolerances.offsetLock
+          handle any
+            !useOffset         = false
+          endhandle
+          if( !useOffset ) then
+            !offset            = !line.distance(!justificationPosition)
+            !offsetTolerance   = !!stlTolerances.offset
+            handle any
+              !offsetTolerance = 200mm
+            endhandle
+            if( !offset gt !offsetTolerance ) then
+              !this.errorState = true
+              !this.errorText  = !offset.string(!!distanceFmt) + ' Offset between sections exceeds tolerance (' + !offsetTolerance.string(!!distanceFmt) + ')'
+              return false
+            endif
+          endif
+          !jusline   = !this.primarySection.jusline
+          if( !jusline.empty() ) then
+            !jusline = 'NA'
+          endif
+          !node   = !this.getNodeNear(!this.primarySection, !jusline, !justificationPosition, !mergeOffset)
+          handle any
+            !node = object DBREF()
+          endhandle
+        endif
+      else
+        !node   = object DBREF()
+      endif
+
+      -- Existing node found and they can be modified
+      if(not !node.badref().and(!this.modifyNode)) then
+
+        -- Modify node
+        if(!this.modifyNode(!node).not()) then
+          !this.errorState  = true
+          !this.errorText   = !!error.text
+          return false
+        else
+          -- Nodes modified, create joint
+          !joint            = !this.newJoint(!node, !this.connectionPline, !this.connectionDirection, !this.secondarySection, !this.connectionEnd)
+          !this.lastConnection = !joint
+          return true
+        endif
+
+      else
+
+        -- Create new connection at connection point on primary section
+        !connection         = !this.newConnection(!this.secondarySection, !this.connectionEnd, !this.primarySection, !this.connectionPosition, !this.connectionPline, !this.connectionDirection)
+        if(!connection.badref()) then
+          !this.errorState  = true
+          !this.errorText   = !!error.text
+          return false
+        endif
+        !this.lastConnection = !connection
+
+      endif
+
+    endif
+
+  -- Unable to derive connection point
+  else
+    !return   = false
+  endif
+
+  -- Return
+  !!ce        = !reference
+  return !return
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      reconnect
+--
+-- Description: Encapsulated Reconnection command to handle all section connection
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Joint being reconnect
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if successful
+--
+------------------------------------------------------------------------
+
+define method .reconnect(!joint is DBREF) is BOOLEAN
+
+  -- Initialise Variables
+  !reference      = !!ce
+  !section        = !joint.cref
+  !!ce            = !joint
+
+  -- Handle SCTN connected to GENSEC
+  if(!joint.hardType.eq('SJOI').and(!section.hardType.eq('GENSEC'))) then
+
+    -- Set cutplane to be perpendicular to pline
+    CUTPLANE PERPENDICULAR
+
+    !end          = !joint.cEnd
+    !direction    = !joint.cutPlane
+    !orientation  = object ORIENTATION('Z is ' & !direction)
+    !plane        = object PLANE(!joint.position, !orientation)
+
+    -- Need to project the end vector of the section on to the plane of the joint
+    !endPoint     = !plane.near(!section.attribute('pos' & !end))
+
+    -- Update section end
+    !section.attribute('pos' & !end)  = !endPoint
+    !section.attribute('drn' & !end)  = !direction
+
+  -- Use standard reconnection command
+  else
+    RECONNECT RECALCULATE
+    handle ANY
+      !!ce  = !reference
+      return false
+    endhandle
+  endif
+
+  -- Return
+  !!ce      = !reference
+  return true
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      reconnect
+--
+-- Description: Determine the node on the passed section which lies within the given tolerance
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Joint being reconnect
+--    2   R      STRING      Pline to project onto
+--    3   R      DIRECTION   Cutplane for end
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if successful
+--
+------------------------------------------------------------------------
+
+define method .reconnect(!joint is DBREF, !pline is STRING, !direction is DIRECTION) is BOOLEAN
+
+  -- Initialise Variables
+  !reference    = !!ce
+  !return       = true
+
+  -- Reconnect the joint
+  !!ce          = !joint
+
+  -- Reconnection to SNODE
+  if(!joint.hardType.eq('SJOI')) then
+    !element    = !joint
+
+  -- Reconnection to GENSEC
+  elseif (!joint.hardType.eq('FIXING')) then
+    !plIndex    = !joint.ahlist.findFirst('PLDATU')
+
+    -- Only handle FIXING owned by a PLDATUM
+    if(!plIndex.set()) then
+      !element  = !joint.ownLst[!plIndex]
+    endif
+
+  -- Unknown type
+  else
+    !!ce        = !reference
+    return false
+  endif
+
+  -- Need to consider how we handle joints which are JFREE TRUE, as this will
+  -- need to determine the DELP position of the SJOI.
+
+  -- Check if position line needs to be redefined
+  if(!element.posLine.neq(!pline)) then
+    !element.posLine  = !pline
+  endif
+
+  -- Check if cut plane needs setting
+  if(!joint.cutPlane.angle(!direction).gt(0)) then
+    !joint.cutPlane   = !direction
+  endif
+
+  -- Reconnect Joint
+  if(!this.reconnect(!joint).not()) then
+    !this.errorState  = true
+    !this.errorText   = !!error.text
+    return false
+  endif
+
+  -- Return
+  !!ce    = !reference
+  return !return
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      getLastConnection
+--
+-- Description: Gets last connection made by .connectSections() or unset if no connection
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       Last connection created
+--
+------------------------------------------------------------------------
+
+define method .getLastConnection() is DBREF
+
+  return !this.lastConnection
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      getNode
+--
+-- Description: Gets node of passed joint element, SJOIN or FIXING
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element to determine node from
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       Identified Node
+--
+------------------------------------------------------------------------
+
+define method .getNode(!joint is DBREF) is DBREF
+
+  -- Initialise Variables
+  !return   = object DBREF()
+
+  -- Determine the owning node
+  if(!joint.hardType.eq('SJOI')) then
+    !return = !joint.owner
+  elseif (!joint.hardType.eq('FIXING')) then
+    !return = !joint.owner.owner
+  endif
+
+  if(not !return.hardType inset('SNOD','JLDATU')) then
+    !return = object DBREF()
+  endif
+
+  -- Return
+  return !return
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      getNode
+--
+-- Description: Determine the node on the passed section which lies within the given tolerance
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Section to scan for near node
+--    2   R      STRING      Pline to project onto
+--    3   R      POSITION    Position to check against
+--    4   R      REAL        Tolerance between position (projected) and node
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       Identified Node
+--
+------------------------------------------------------------------------
+
+define method .getNode(!section is DBREF, !pline is STRING, !position is POSITION, !radius is REAL) is DBREF
+
+  -- Initialise Variables
+  !minDistance    = !radius
+  !return         = object DBREF()
+
+  -- Define collection
+  !collection = object COLLECTION()
+  !filter = object EXPRESSION('owner eq $!<section>')
+  !collection.filter(!filter)
+  !collection.scope(!section)
+
+  if(!section.hardType.eq('SCTN')) then
+    -- Section passed is a SCTN
+    !collection.type('SNODE')
+  else
+    -- Section is GENSEC
+    !collection.type('JLDATU')
+  endif
+
+  -- Get all Nodes
+  !nodes          = !collection.results()
+
+  -- Get positions of each of the nodes
+  do !i indices !nodes
+    !pPosition    = !nodes[!i].position.wrt(world)
+    --var !posString  POSITION PPLINE $!<pline> of $!<section> THROUGH $!<nPosition> UNBOUNDED wrt world
+    --!pPosition    = object POSITION(!posString)
+
+    -- Check if node position on passed PLINE is near the reference point
+    if(!pPosition.near(!position, !radius)) then
+      !distance   = !pPosition.distance(!position)
+      if(!distance.leq(!minDistance)) then
+        !return   = !nodes[!i]
+      endif
+    endif
+
+  enddo
+
+  -- Return
+  return !return
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      getNodeNear
+--
+-- Description: Get node on the passed section within the given tolerance of Z Distance
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Section to scan for near node
+--    2   R      STRING      Pline to project onto
+--    3   R      POSITION    Position to check against
+--    4   R      REAL        Tolerance between position (projected) and node
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       Identified Node
+--
+------------------------------------------------------------------------
+
+define method .getNodeNear(!section is DBREF, !pline is STRING, !position is POSITION, !radius is REAL) is DBREF
+
+  -- Initialise Variables
+  !minDistance    = !radius
+  !return         = object DBREF()
+
+  -- Define collection
+  !collection = object COLLECTION()
+  !filter = object EXPRESSION('owner eq $!<section>')
+  !collection.filter(!filter)
+  !collection.scope(!section)
+
+  if(!section.hardType.eq('SCTN')) then
+    -- Section passed is a SCTN
+    !collection.type('SNODE')
+  else
+    -- Section is GENSEC
+    !collection.type('JLDATU')
+    -- get segment for zDistance
+    var !segment (SEGMENT PPLINE $!<pline> OF $!<section> CUTBACK THROUGH $!<position> VIA SPINE BOUNDED)
+    handle ANY
+      return object DBREF()
+    endhandle
+  endif
+
+  -- calculate zDistance of position along section
+  !zDistancePosition = !this.calculateZDistance(!section, !pline, !position)
+  if( !zDistancePosition.unset() ) then
+    -- abort if P-line wrong or bad position
+    return object DBREF()
+  endif
+
+  -- Get all Nodes
+  !nodes          = !collection.results()
+
+  -- Get positions of each of the nodes
+  do !i indices !nodes
+    !pPosition    = !nodes[!i].position
+    if( !nodes[!i].type eq 'JLDATU' ) then
+      var !pSegment (SEGMENT PPLINE $!<pline> OF $!<section> CUTBACK THROUGH $!<position> VIA SPINE BOUNDED)
+      handle ANY
+        skip
+      endhandle
+      -- not a candidate if point is not on the same segment
+      skip if( !pSegment neq !segment )
+    endif
+
+    !zDistance = !this.calculateZDistance(!section, !pline, !pPosition)
+    skip if( !zDistance.unset() )
+    !difference = abs( !zDistance - !zDistancePosition )
+    if( !difference lt !radius ) then
+      !return = !nodes[!i]
+      break
+    endif
+
+  enddo
+
+  -- Return
+  return !return
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      newConnection
+--
+-- Description: New connection, (snode-sjoint or JLDAT-PLDAT-fixing)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Section to be connected
+--    2   R      STRING      End of section being connected
+--    3   R      DBREF       Section to be connected to
+--    4   R      POSITION    Position node to be created at
+--    5   R      STRING      Pline to connect to
+--    6   R      DIRECTION   Direction of pline connection
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       Connection created
+--
+------------------------------------------------------------------------
+
+define method .newConnection(!section is DBREF, !end is STRING, !targetSection is DBREF, !position is POSITION, !pline is STRING, !direction is DIRECTION) is DBREF
+
+  -- Initialise Variables
+  !connection = object DBREF()
+  !reference  = !!ce
+
+  -- Create new node
+  !line = !this.getConnectionLine()
+  -- find connection point on the justification line
+  !justificationPosition = !this.justificationPoint(!line)
+
+  !jusline   = !this.primarySection.jusline
+  if( !jusline.empty() ) then
+    !jusline = 'NA'
+  endif
+
+  -- Navigate to section
+  !!ce        = !targetSection
+  !node       = !this.newNode(!targetSection, !justificationPosition, !jusline)
+
+  -- Node created
+  if(not !node.badref()) then
+    !connection = !this.newJoint(!node, !pline, !direction, !section, !end)
+  endif
+
+  -- Return
+  !!ce        = !reference
+  return !connection
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      newJoint
+--
+-- Description: Create new joint (sjoint or plDatum-fixing)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Node joint is to be created beneath
+--    2   R      STRING      Pline joint is to be on
+--    3   R      DIRECTIOn   Direction of end cut
+--    4   R      DBREF       Section to be connected
+--    5   R      STRING      End of section to be connected
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       Connection created
+--
+------------------------------------------------------------------------
+
+define method .newJoint(!node is DBREF, !pline is STRING, !direction is DIRECTION, !section is DBREF, !end is STRING) is DBREF
+
+  -- Initialise Variables
+  !joint      = object DBREF()
+  !snodeType   = !node.hardType.eq('SNOD')
+  !reference  = !!ce
+  !dominant   = !!stlTolerances.jointDominant
+  handle any
+    !dominant = false
+  endhandle
+
+  -- Navigate to node
+  !!ce        = !node
+
+  -- Node is SNODE
+  if(!snodeType) then
+
+    -- Create SJOI
+    NEW SJOINT
+    !joint          = !!ce
+    !joint.posLine  = !pline
+    !joint.cutPlane = !direction
+    !joint.jfree    = !dominant
+
+    -- Set joint start/end on section to new joint
+    !section.attribute('joi' & !end) = !joint
+
+    -- Reconnect Joint
+    if(!this.reconnect(!joint).not()) then
+      !this.errorState  = true
+      !this.errorText   = !!error.text
+      return !joint
+    endif
+
+  -- Node is JLDatum
+  else
+
+    -- Create PLDAT
+    NEW PLDATU
+    !!ce.posLine    = !pline
+    -- Might need to set YDIR of PLDAT
+
+    -- Create Fixing
+    NEW FIXING
+    !joint          = !!ce
+    !joint.cutPlane = !direction
+    !joint.jfree    = !dominant
+
+    -- Set joint start/end on section to new joint
+    !section.attribute('joi' & !end) = !joint
+
+    -- Reconnect Joint
+    if(!this.reconnect(!joint).not()) then
+      !this.errorState  = true
+      !this.errorText   = !!error.text
+      return !joint
+    endif
+
+  endif
+
+  -- Return
+  !!ce        = !reference
+  return !joint
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      newNode
+--
+-- Description: Create new node (snode or JLDAT)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Node joint to be created in
+--    3   R      STRING      Pline
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       Connection created
+--
+------------------------------------------------------------------------
+
+define method .newNode(!section is DBREF, !position is POSITION, !pline is STRING) is DBREF
+
+  -- Initialise Variables
+  !node       = object DBREF()
+  !sctnType   = !section.hardType.eq('SCTN')
+  !reference  = !!ce
+
+  -- Navigate to section
+  !!ce        = !section
+
+  -- Section is a SCTN
+  if(!sctnType) then
+    NEW SNODE
+    -- Position node
+    var !zDistance (PLDIST PPLINE $!<pline> OF $!<section> CUTBACK THROUGH $!<position> BOUNDED)
+    handle ANY
+      !!ce      = !reference
+      return object DBREF()
+    endhandle
+    ZDIST $!<zDistance>
+    handle ANY
+    endhandle
+
+  -- Section is a GENSEC
+  else
+    !!ce = last JLDATUM
+    handle ANY
+    endhandle
+    NEW JLDATUM
+    -- Position node
+    var !segment (SEGMENT PPLINE $!<pline> OF $!<section> CUTBACK THROUGH $!<position> VIA SPINE BOUNDED)
+    handle ANY
+      !!ce      = !reference
+      return object DBREF()
+    endhandle
+    var !zDistance (PLDIST PPLINE $!<pline> OF $!<section> CUTBACK THROUGH $!<position> VIA SPINE BOUNDED)
+    handle ANY
+      !!ce      = !reference
+      return object DBREF()
+    endhandle
+    !hpref = !segment.dbref()
+    !zdist = object REAL(!zDistance, !!distanceFmt)
+    !!ce.zdist = !zdist
+    !!ce.hpref = !hpref
+    handle ANY
+    endhandle
+
+  endif
+
+  !node       = !!ce
+
+  -- Return
+  !!ce        = !reference
+  return !node
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      modifyNode
+--
+-- Description: Modify node
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Node to be modified
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     False is an unhandled/unexpected error arises
+--
+------------------------------------------------------------------------
+
+define method .modifyNode(!node is DBREF) is BOOLEAN
+
+  -- If node contains more than 1 joint, then we won't modify the node
+  if(!node.mcount.gt(1)) then
+    return true
+  else
+    return !this.modifyNodePosition(!node)
+  endif
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      modifyNodePosition
+--
+-- Description: Modify node Position
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Node to be modified
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     False is an unhandled/unexpected error arises
+--
+------------------------------------------------------------------------
+
+define method .modifyNodePosition(!node is DBREF) is BOOLEAN
+
+  -- Initialise Variables
+  !reference  = !!ce
+
+  -- Move to node and modify ZDISTANCE
+  !!ce        = !node
+  !section    = !node.owner
+  !line = !this.getConnectionLine()
+  -- find connection point on the justification line
+  !justificationPosition = !this.justificationPoint(!line)
+
+  -- Use existing method .calculateZDistance() to update distance.
+  !sectionPline = |$!section.jus|
+  !newZDistance = !this.calculateZDistance(!section, !sectionPline, !justificationPosition)
+
+  if (!newZDistance.set()) then
+    !!ce.zdistance = !newZDistance
+    handle ANY
+    !!ce      = !reference
+    return false
+    endhandle
+  endif
+
+  -- Return
+  !!ce        = !reference
+  return true
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      connectionPoint
+--
+-- Description: Determine the best connection point current secondary section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if there is a derived connection point
+--
+------------------------------------------------------------------------
+
+define method .connectionPoint() is BOOLEAN
+
+  -- Get line from secondary section to derive connection
+  !line = !this.getConnectionLine()
+
+  -- Get connection point
+  return !this.connectionPoint(!line)
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      connectionPoint
+--
+-- Description: Determine the best connection point, position and pline for passed line on primary section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      LINE        Approach line to be connected (start-end) is direction
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if there is a derived connection point
+--
+------------------------------------------------------------------------
+
+define method .connectionPoint(!line is LINE) is BOOLEAN
+
+  -- Initialise Variables
+  !this.connectionPline     = object STRING()
+  !this.connectionPosition  = object POSITION()
+  !this.connectionDirection = object DIRECTION()
+
+  -- Temporary
+
+  -- Get point vector of passed line (assume start to end)
+  -- We need to move the vector near to the start, but not too close
+  !shortLine = !line.startPosition.line(!line.proportion(0.05))
+  !vPosition = !shortLine.endPosition.wrt(world)
+  !vDirection   = !line.direction().wrt(world)
+  !oDirection   = !vDirection.opposite()
+
+  -- Initial tolerances
+  !minAngle     = 89.99
+  !minOffset    = 100000000mm
+  !minDistance  = 100000000mm
+
+  -- Loop through the current primary plines and determine the pline
+  -- information relative to the intersection vector of the line
+  do !i indices !this.primaryPlines
+    !betterOption   = false
+    !pline          = !this.primaryPlines[!i]
+
+    -- Normal of pline at intersection point
+
+    var !dirString  DIRECTION PPLINE $!<pline> of $!<this.primarySection> CUTBACK Z DIRECTION NEAR $!<vDirection> THROUGH $!<vPosition> VIA PLINE BOUNDED wrt world
+    handle ANY
+      !vDirection = !vDirection.opposite()
+      --!oDirection = !vDirection.opposite()
+      var !dirString  DIRECTION PPLINE $!<pline> of $!<this.primarySection> CUTBACK Z DIRECTION NEAR $!<vDirection> THROUGH $!<vPosition> VIA PLINE BOUNDED wrt world
+      handle ANY
+        skip
+      endhandle
+    endhandle
+
+    !zDirection = !dirString.direction().wrt(world)
+    -- Get angle between pline and line
+    !angle          = !zDirection.angle(!oDirection)
+
+    -- Ignore any pline => 90 to line
+    skip if(!angle.geq(90))
+
+    -- Position of line on pline
+    var !posString  POSITION  PPLINE $!<pline> of $!<this.primarySection> CUTBACK NEAR $!<vDirection> THROUGH $!<vPosition> via PLINE BOUNDED wrt world
+    !pPosition = !posString.position().wrt(world)
+
+    -- Derive data relating to line and pline plane
+    -- Pline Plane
+    --!pv             = object POINTVECTOR(!pPosition, !zDirection)
+    --!plinePlane     = !pv.plane()
+
+    -- Pline point projected on to line
+    !sPosition      = !line.near(!pPosition)
+    -- Offset between line and pline
+    !offset         = !sPosition.distance(!pPosition)
+    -- Distance from start of line to intersection point
+    !sDistance      = !line.startPosition.distance(!sPosition)
+
+    -- Handles plines which are behind the reference vector
+    -- (most probable a bug in the pline query)
+    skip if(!offset.gt(20000mm))
+
+    -- Angle priority (Angle takes priority)
+    if( !this.anglePriority.unset() ) then
+      !this.anglePriority = false
+    endif
+    if( !this.offsetPriority.unset() ) then
+      !this.offsetPriority = false
+    endif
+
+    if(!this.anglePriority) then
+      if(!angle.eq(!minAngle)) then
+        !betterOption   = !offset.leq(!minOffset).and(!sDistance.leq(!minDistance))
+      elseif (!angle.lt(!minAngle)) then
+        !betterOption   = true
+      endif
+
+    -- Offset priority (offset takes priority)
+    elseif (!this.offsetPriority) then
+      if(!offset.eq(!minOffset)) then
+        !betterOption   = !sDistance.leq(!minDistance)
+     elseif (!offset.lt(!minOffset)) then
+        !betterOption   = true
+      endif
+
+    -- Default check uses angle and offset
+    else
+      -- Angle is less than previous minimum
+      if(!angle.leq(!minAngle)) then
+        if(!offset.leq(!minOffset).and(!sDistance.leq(!minDistance))) then
+          !betterOption   = true
+        endif
+      endif
+    endif
+
+    if(!betterOption) then
+      !minAngle     = !angle
+      !minOffset    = !offset
+      !minDistance  = !sDistance
+      !pkey         = !pline
+      !direction    = !zDirection
+      !position     = !pPosition
+    endif
+
+  enddo
+
+  -- Setup pline information of the object and return
+  if(define(!pkey)) then
+
+    !this.connectionPline     = !pkey
+    !this.connectionPosition  = !position
+    !this.connectionDirection = !direction
+    return true
+
+  -- Return
+  else
+    return false
+  endif
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      justificationPoint
+--
+-- Description: Determine the position on the given P-line on primary section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      LINE        Approach line to be connected (start-end) is direction
+--    2   R      STRING      P-line name
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    Position of intersection point
+--
+------------------------------------------------------------------------
+
+define method .justificationPoint(!line is LINE) is POSITION
+
+  !pline   = !this.primarySection.jusline
+  if( !pline.empty() ) then
+    !pline = 'NA'
+  endif
+
+  if( !this.primarySection.hardType eq 'SCTN' ) then
+    !primaryLine = object LINE(!this.primarySection.poss, !this.primarySection.pose)
+    !position    = !primaryLine.intersection(!line)
+    handle ANY
+      !position = object POSITION()
+    endhandle
+  else
+    -- Get point vector of passed line (assume start to end)
+    -- We need to move the vector near to the start, but not too close
+    !shortLine   = !line.startPosition.line(!line.proportion(0.05))
+    !vPosition   = !shortLine.endPosition.wrt(world)
+    !vDirection  = !line.direction().wrt(world)
+    !oDirection  = !vDirection.opposite()
+    -- Position of line on pline
+    var !posString  POSITION  PPLINE $!<pline> of $!<this.primarySection> CUTBACK NEAR $!<vDirection> THROUGH $!<vPosition> via PLINE BOUNDED wrt world
+    handle ANY
+      return object POSITION()
+    endhandle
+    !position = !posString.position().wrt(world)
+  endif
+
+  return  !position
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      test
+--
+-- Description: Test method
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .test()
+
+  -- Test reconnection
+  !connection = !this.connectSections()
+  if(!connection.not()) then
+    -- Errors
+    -- !this.errorText !this.errorList !!error
+  endif
+
+endmethod
+-- End of method definition
+
+-----------------------------------------------------------------------
+--
+-- Method:     checkCompatible
+--
+-- Description: Check dominant and subordinate element are compatible
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Dominant element
+--    2   R      DBREF       Subordinate element
+-- Return:
+--   [Data Type] [Description]
+--     BOOLEAN    Compatible connection?
+--
+----------------------------------------------------------------------
+
+define method .checkCompatible(!dominant is DBREF)is BOOLEAN
+
+  if (badref(!dominant) ) then
+    !compatible = FALSE
+  else
+    !domType  = !dominant.hardType
+    !compatible = ( !domType inset(|SCTN|, |GENSEC|) )
+  endif
+
+  return !compatible
+
+endmethod
+-- End of method definition
+
+--------------------------------------------------------------------
+--
+-- Method:      checkConnected
+--
+-- Description: Check that subordinate section is not already connected
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Subordinate element
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     Connected?
+--
+--------------------------------------------------------------------
+
+define method .checkConnected(!ppos is POSITION, !subordinate is DBREF) is ARRAY
+
+  !connected = FALSE
+
+  if (!subordinate.hardType.neq(|SCTN|) and !subordinate.hardType.neq(|GENSEC|)) then
+  	!returnArray = ARRAY()
+    !returnArray[1] = !connected
+    !returnArray[2] = ''
+    return !returnArray
+  endif
+  	
+  if (!subordinate.hardType.eq(|SCTN|)) then
+    -- Simpler case for handling straight sections
+    !chkLine = object LINE(!subordinate.posStart, !subordinate.posEnd)
+    !propos = !chkLine.near(!ppos)
+    !segLine = object LINE(!subordinate.posStart, !propos)
+    !gaps = ARRAY()
+    !gaps[1] = !chkLine.length()
+    !gapLength = !segLine.length()
+  elseif (!subordinate.hardType.eq(|GENSEC|)) then
+    -- More complex case for handling curved gensec elements
+    -- First find we need to check which end we need to query the connected status of..
+    !!ce = !subordinate
+    SPINE 1
+    !profile = object PROFILE(!!ce)
+    -- Returns the lines and arcs forming the profile from start to finish
+    !profileEdges = !profile.edges()
+    !proLength = 0
+    !gaps = ARRAY()
+    !count = 1
+    -- Stepped list of lengths through profile
+    do !edge values !profileEdges
+      !proLength = !proLength + !edge.length()
+      !gaps[!count] = !proLength
+      !count = !count + 1
+    enddo
+    !gapLength = !proLength
+
+    -- Map picked position on section profile
+    do !i indices !profileEdges
+      if (!profileEdges[!i].onProjected(!ppos)) then
+        -- This is the edge holding the picked position
+        !gapLength = !gaps[!i - 1]
+        handle ANY
+          !gapLength = 0
+        elsehandle NONE
+        endhandle
+        if (!profileEdges[!i].objecttype().eq(|LINE|)) then
+          -- project point onto line
+          !propos = !profileEdges[!i].near(!ppos)
+          -- work out the segment length of the current line
+          !lineLength = !profileEdges[!i].length()
+          !newLine = object LINE(!propos, !profileEdges[!i].endPosition)
+          !gapLength = !gapLength + !lineLength - !newLine.length()
+        elseif (!profileEdges[!i].objecttype().eq(|ARC|)) then
+          -- work out the segment length of the current arc
+          !arcLength  = !profileEdges[!i].length()
+          !arcAngle   = !profileEdges[!i].angle()
+          !pntAngle   = !profileEdges[!i].near(!ppos)
+          !segAngle   = !profileEdges[!i].startangle - !pntAngle
+          if (!segAngle.leq(0)) then
+            !segAngle = !segAngle * -1
+          endif
+          !proportion = !segAngle / !arcAngle
+          -- Distance around arc, presuming arc is of constant radius
+          !arcSegLength = !arcLength * !proportion
+          !gapLength = !gapLength + !arcSegLength
+        endif
+        break
+      endif
+    enddo
+  endif
+
+  -- Tolerance for closer to start or head
+  !halfPoint = !gaps[!gaps.size()] / 2
+
+  if (!gapLength.geq(!halfPoint)) then
+    !endString = 'END'
+  else
+    !endString = 'START'
+  endif
+
+  -- Know we know which end to look at we can now check whether that end is connected or not
+  if (!endString.eq(|END|)) then
+    -- Picked point was closer to the end
+    if (not !subordinate.joiend.badref()) then
+      !connected = true
+    else
+      !connected = false
+    endif
+  elseif (!endString.eq(|START|)) then
+    -- Picked point was closer to the start
+    if (not !subordinate.joistart.badref()) then
+      !connected = true
+    else
+      !connected = false
+    endif
+  endif
+
+  !returnArray = ARRAY()
+  !returnArray[1] = !connected
+  !returnArray[2] = !endString
+
+  return !returnArray
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      calculateZDistance
+--
+-- Description: Calculate ZDistance of given position
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Section
+--    2   R      STRING      Pline to project onto
+--    3   R      POSITION    Position to check against
+-- Return:
+--   [Data Type] [Description]
+--    REAL       ZDistance or unset if error
+--
+------------------------------------------------------------------------
+
+define method .calculateZDistance(!section is DBREF, !pline is STRING, !position is POSITION) is REAL
+
+  -- Initialise Variables
+
+  if(!section.hardType.eq('SCTN')) then
+    -- Section passed is a SCTN
+    var !zDistance (PLDIST PPLINE $!<pline> OF $!<section> THROUGH $!<position> UNBOUNDED)
+    handle ANY
+      return object REAL()
+    endhandle
+  else
+    -- Section is GENSEC
+    var !zDistance (PLDIST PPLINE $!<pline> OF $!<section> THROUGH $!<position> VIA SPINE BOUNDED)
+    handle ANY
+      return object REAL()
+    endhandle
+  endif
+
+  -- Return
+  return !zDistance.real()
+
+endmethod
+-- End of method definition

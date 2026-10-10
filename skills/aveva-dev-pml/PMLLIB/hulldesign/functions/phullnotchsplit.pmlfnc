@@ -1,0 +1,173 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            phullnotchsplit.pmlfnc
+--   Type:          Function Definition
+--   Group:
+--     Keyword:
+--   Module:
+--   Replaces:
+--
+-- Author:          Blazej Porwol
+-- Created:         Thu Jul 17 12:10:00 GMT 2008
+--
+--
+-- Description:
+-- Function for splitting notch previously created by Combine function. Supported notch types are
+-- VU (corner notch) created from corner & seam notches and KU (limit notch) created from 2 limit notches.
+--
+------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   None
+-- Return:
+--   none
+--
+------------------------------------------------------------------------
+
+define function !!phullnotchsplit()
+
+  using namespace 'aveva.marine.design'
+  using namespace 'aveva.marine.ui'
+  using namespace 'aveva.marine.dataExtraction'
+  using namespace 'aveva.marine.geometry'
+
+  !mHullPan = object MARHULLPAN()
+  !mUI = object MARUI()
+  !notchContour = object MARCONTOURPLANAR()
+
+  !mUI.messageNoConfirm('Please select a notch to be separated')
+  !oldNotch = !!phullnotchretrievedata()
+
+  if (UNDEFINED(!oldNotch[2])) then
+    !mUI.messageNoConfirm('Error retrieving notch data!')
+    return
+  endif
+
+  !oldNotchGroup = !mHullPan.groupGet(!oldNotch[2], !oldNotch[3])
+  !oldNotchStmt = !mHullPan.stmtGet(!oldNotch[2], !oldNotchGroup)
+  !refPanel = !oldNotch[2]
+  !seamInfo = !mHullPan.getNearbySeams(!refPanel)
+  !oldNotchStmtArr = !oldNotchStmt.split(',')
+  !notchTypeRad = !oldNotchStmtArr[2].split('*')
+  !oldFirstRad = !notchTypeRad[2]
+  !notchGroup = 0
+
+  !mHullPan.panActivate(!refPanel)
+
+  -- Corner notch
+  if (!oldNotchStmt.matchWild('*VU*')) then
+    !oldLength = !notchTypeRad[1].replace('VU',' ').trim().real()
+    !oldSecondRad = !notchTypeRad[3]
+    !oldCor = !oldNotchStmtArr[3].after('COR=')
+    !oldLim = !oldNotchStmtArr[4].after('LIM=').replace(';',' ').trim()
+    !corCoord = !!phullretrievecorner(!refPanel, !oldCor.real())
+    if (DEFINED(!seamInfo)) then
+      -- loop for creating notches for every seam
+      do !in indices !seamInfo
+        -- do loop only for seams on the same limit as old notch
+        if (!seamInfo[!in].limNo().string() eq !oldLim) then
+          if (SQRT(POWER((!seamInfo[!in].uCoord() - !corCoord[1]), 2) + POWER((!seamInfo[!in].vCoord() - !corCoord[2]), 2)) lt !oldLength) then
+            !seamNotches[!in][0] = !seamInfo[!in].seamNo()
+            !seamNotches[!in][1] = !seamInfo[!in].panelName()
+          endif
+        endif
+      enddo
+    endif
+
+    !newNotchCorStmt = 'NOT, R' & !oldFirstRad & ', COR=' & !oldCor & ';'
+    !mHullPan.stmtExecSingle(!notchGroup, !newNotchCorStmt, !refPanel)
+
+    if (DEFINED(!seamNotches)) then
+      do !in indices !seamNotches
+        !newNotchSeaStmt = 'NOT, R' & !oldSecondRad & ', ' & '''' & '$!seamNotches[$!in][1]' & '''' & ', SEA=' & !seamNotches[!in][0] & ';'
+        !mHullPan.stmtExecSingle(!notchGroup, !newNotchSeaStmt, !refPanel)
+      enddo
+    else
+      !mUI.messageNoConfirm('No seams defined!')
+      return
+    endif
+
+    !mHullPan.panGroupDelete(!oldNotch[2], !oldNotchGroup)
+
+  -- Limit notch
+  elseif (!oldNotchStmt.matchWild('*KU*')) then
+    !oldLim = !oldNotchStmtArr[3].after('LIM=').replace(';',' ').trim()
+    !oldLength = !notchTypeRad[1].replace('KU',' ').trim().real()
+
+    -- Retrieve notch endpoints
+    !mHullPan.getNotchPoints( !refPanel, !oldNotch[3], !notchContour )
+    !contourPML = !notchContour.contourPML()
+    !contourPMLSize = !contourPML.size()
+    !firstEnd[1] = !contourPML[0][0].x()
+    !firstEnd[2] = !contourPML[0][0].y()
+    !secondEnd[1] = !contourPML[!contourPMLSize - 1][0].x()
+    !secondEnd[2] = !contourPML[!contourPMLSize - 1][0].y()
+
+    !uDist = !firstEnd[1] - !secondEnd[1]
+    !vDist = !firstEnd[2] - !secondEnd[2]
+    --if U coordinates of endpoints are equal then calculate new notch centers using V coordinates
+    if (!firstEnd[1] eq !secondEnd[1]) then
+      !vDistNorm = !vDist / (sqrt(POWER(!uDist, 2) + POWER(!vDist, 2)))
+      !newCenter[1] = !!phullroundnumber(!firstEnd[2] - (!oldFirstRad.real() * !vDistNorm))
+      !newCenter[2] = !!phullroundnumber(!secondEnd[2] + (!oldFirstRad.real() * !vDistNorm))
+      !coordParam = ', V='
+    --otherwise use U coordinates
+    else
+      !uDistNorm = !uDist / (sqrt(POWER(!uDist, 2) + POWER(!vDist, 2)))
+      !newCenter[1] = !!phullroundnumber(!firstEnd[1] - (!oldFirstRad.real() * !uDistNorm))
+      !newCenter[2] = !!phullroundnumber(!secondEnd[1] + (!oldFirstRad.real() * !uDistNorm))
+      !coordParam = ', U='
+    endif
+
+    if (DEFINED(!seamInfo)) then
+      -- loop for creating notches for every seam
+      do !in indices !seamInfo
+        -- do loop only for seams on the same limit as old notch
+        if (!seamInfo[!in].limNo().string() eq !oldLim) then
+          if (SQRT(POWER((!seamInfo[!in].uCoord() - !firstEnd[1]), 2) + POWER((!seamInfo[!in].vCoord() - !firstEnd[2]), 2)) lt !oldLength and SQRT(POWER((!seamInfo[!in].uCoord() - !secondEnd[1]), 2) + POWER((!seamInfo[!in].vCoord() - !secondEnd[2]), 2)) lt !oldLength) then
+            !seamNotches[!in][0] = !seamInfo[!in].seamNo()
+            !seamNotches[!in][1] = !seamInfo[!in].panelName()
+            !seamNotches[!in][2] = !seamInfo[!in].uCoord()
+            !seamNotches[!in][3] = !seamInfo[!in].vCoord()
+          endif
+        endif
+      enddo
+      if (DEFINED(!seamNotches)) then
+        do !in indices !seamNotches
+          !newNotchSeaStmt = 'NOT, R' & !oldFirstRad & ', ' & '''' & '$!seamNotches[$!in][1]' & '''' & ', SEA=' & !seamNotches[!in][0] & ';'
+          !mHullPan.stmtExecSingle(!notchGroup, !newNotchSeaStmt, !refPanel)
+        enddo
+      endif
+    endif
+
+    --execute new statements and delete old one
+    !createFirstNotchLim = true
+    !createSecondNotchLim = true
+    if (DEFINED(!seamNotches)) then
+      do !in indices !seamNotches
+        if (SQRT(POWER((!seamNotches[!in][2] - !firstEnd[1]), 2) + POWER((!seamNotches[!in][3] - !firstEnd[2]), 2)) leq (2 * !oldFirstRad.real())) then
+          !createFirstNotchLim = false
+        elseif (SQRT(POWER((!seamNotches[!in][2] - !secondEnd[1]), 2) + POWER((!seamNotches[!in][3] - !secondEnd[2]), 2)) leq (2 * !oldFirstRad.real())) then
+          !createSecondNotchLim = false
+        endif
+      enddo
+    endif
+
+    if (!createFirstNotchLim) then
+      !newNotchStmtFirst = 'NOT, R' & $!oldFirstRad & ', LIM=' & !oldLim & !coordParam & !newCenter[1] & ';'
+      !mHullPan.stmtExecSingle(!notchGroup, !newNotchStmtFirst, !refPanel)
+    elseif (!createSecondNotchLim) then
+      !newNotchStmtSecond = 'NOT, R' & $!oldFirstRad & ', LIM=' & !oldLim & !coordParam & !newCenter[2] & ';'
+      !mHullPan.stmtExecSingle(!notchGroup, !newNotchStmtSecond, !refPanel)
+    endif
+
+    !mHullPan.panGroupDelete(!refPanel, !oldNotchGroup)
+  else
+    -- Other notch types not supported
+    !mUI.messageNoConfirm('Unsupported notch type for splitting!')
+  endif
+
+endfunction

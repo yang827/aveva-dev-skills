@@ -1,0 +1,268 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            pfFabriactionPipeEndControl.pmlobj
+--    Type:          Object Definition
+--    Group:         Pipe Fabrication
+--      Keyword:     PF
+--    Module:        Design
+--  Author:          Jaehun Choi(Daniel)
+--  Created:         11 January 2013
+--
+--  Description:     object for fabrication pipe end
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  createPipeEnd(DBREF,DBREF,REAL,BOOLEAN,BOOLEAN,STRING,PLANE,STRING,REAL) -                   create pipe end
+--
+------------------------------------------------------------------------
+-- Define object
+define object PFFABRIACTIONPIPEENDCONTROL
+  member .undo        is UNDOABLE
+  member .orientation is STRING
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:      createPipeEnd
+-- Description: create pipe end
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       branch ref
+--    2    R     DBREF       tube ref
+--    3    R     BOOLEAN     angle
+--    4    R     BOOLEAN     flag for head part
+--    5    R     STRING      is for slanted end
+--    6    R     PLANE       thread info
+--    7    R     STRING      ref plane
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createPipeEnd(!branchRef is DBREF, !tubeRef is DBREF, !angle is REAL,!isHeadPart is BOOLEAN, !isForSlantedEnd is BOOLEAN, !threadInfo is STRING, !refPlane is PLANE, !note is STRING, !clearanceValue is REAL)
+  !saveCe = !!ce
+
+  var !mode mode
+
+  FORWARD
+
+  if (!isHeadPart) then
+    !flowFlag = 1
+    !insertPos = !tubeRef.aPos
+    !location  = !branchRef
+  else
+    !flowFlag = -1
+    !insertPos = !tubeRef.lPos
+    !location = !tubeRef
+  endif
+
+  !!ce = !location
+
+  !tubeNB = !tubeRef.para[1]
+  !tubeOd = !tubeRef.para[2]
+
+  !line = object LINE(!tubeRef.aPos, !tubeRef.lPos)
+  !pv   = !line.pointVector()
+  !xDir = !pv.plane().orientation.xDir().string().before('WRT')
+  !yDir = !pv.plane().orientation.yDir().string().before('WRT')
+  !tubeOri  = object ORIENTATION('Z is ' & !yDir & ' AND Y is ' & !xDir)
+
+  !this.undo.description('createSlantedPipeEnd')
+  !this.undo.add()
+
+  !prevTubeLength = !tubeRef.ltLen
+
+  NEW FTUBE
+  handle any
+    !!alert.error(!!error.text)
+  endhandle
+
+  if (!angle eq 0) then
+    !insertNote = !note
+  else
+    !insertAngle = !angle.nint().value().string()
+    if (!isForSlantedEnd) then
+      !insertNote = !note.replace('{deg}', !insertAngle) & ' Deg'
+    else
+      !insertNote = !threadInfo
+    endif
+  endif
+
+  matn |$!insertNote|
+
+  !fTubeRef = !!ce
+  SHOP TRUE
+  pos  $!<insertPos>
+  ori $!tubeOri
+
+  var !oriString ori of $!fTubeRef
+
+  !this.orientation = !oriString
+
+  if (!isForSlantedEnd.not()) then
+    !connectionType = !threadInfo.part(1,'-')
+    DESP 0 $!<tubeOd> $!<flowFlag> $!connectionType
+    SPREF /THREADPIPEEND/$!<tubeNB>
+    handle any
+      !!alert.error(!!error.text)
+      $!mode
+      return
+    endhandle
+  else
+    DESP $!<angle> $!<tubeOd> $!<flowFlag>
+    SPREF /SLANTEDPIPEEND/$!<tubeNB>
+    handle any
+      !!alert.error(!!error.text)
+      $!mode
+      return
+    endhandle
+  endif
+
+  !postTubeLength = !tubeRef.ltLen
+
+  !offsetFlag = abs(int(!prevTubeLength) - int(!postTubeLength))
+  if (!offsetFlag  lt 0.5) then
+    !offsetValue = !fTubeRef.aPos.distance(!fTubeRef.lPos)
+--    !offsetDir   = !fTubeRef.aDir.wrt(world).string().before('WRT')
+
+    !newPos = !fTubeRef.pos.offset(!fTubeRef.aDir, !offsetValue)
+    pos $!newPos
+
+    BRAN
+    conn pt to last mem
+    SAME
+  endif
+
+  if (!isHeadPart) then
+    SELECT LSTU
+  else
+    !!ce = !branchRef
+    CONN PT TO LAST MEM
+  endif
+
+  if (!refPlane.unset()) then
+    $!mode
+    return
+  endif
+
+  !baseOri = object ORIENTATION('X is ' & !fTubeRef.ori.yDir().wrt(world))
+  !basePlane = object PLANE(!fTubeRef.pos, !baseOri)
+
+  !projDir1 = !fTubeRef.ori.yDir().projected(!basePlane).wrt(world)
+  !projDir2 = !refPlane.orientation.yDir().projected(!basePlane).wrt(world)
+
+  if (!projDir1 eq !projDir2) then
+    !projDir1 = !fTubeRef.ori.xDir().projected(!basePlane).wrt(world)
+    !projDir2 = !refPlane.orientation.xDir().projected(!basePlane).wrt(world)
+  endif
+
+  !rotAngle = !projDir1.angle(!projDir2)
+
+  !!ce = !fTubeRef
+
+  if (!rotAngle ne 0) then
+    !count = ( 360 / !rotAngle )
+
+    do !count
+      rotate by $!rotAngle about $!fTubeRef.lDir
+      !slantedDir = !fTubeRef.pPos[4].direction(!fTubeRef.pPos[5]).wrt(world)
+--      !orthOri  = object ORIENTATION('X is ' & !slantedDir)
+--      !orthPlane = object PLANE(!fTubeRef.pos, !orthOri)
+--      !orthDir   = !orthPlane.direction()
+
+      !checkAngle = !slantedDir.angle(!refPlane.direction())
+
+      !breakFlag = !slantedDir.dot(!refPlane.direction()) lt 0.1
+      if (nint(!checkAngle) eq 90 and !breakFlag) then
+        break
+      endif
+    enddo
+  endif
+
+--  if (!clearanceValue eq 0) then
+--    return
+--  endif
+
+  !checkPoint1 = !fTubeRef.pPos[4].wrt(world)
+  !checkPoint2 = !fTubeRef.pPos[5].wrt(world)
+
+  !fTubMidPoint = !checkPoint1.midPoint(!checkPoint2)
+  !intersections = !refPlane.intersection(!line)
+
+  if (!intersections.set()) then
+    -- move to intersection position
+    if (!isHeadPart) then
+      !moveDir = !fTubeRef.aDir
+      !revDir  = !fTubeRef.lDir
+    else
+      !moveDir = !fTubeRef.lDir
+      !revDir  = !fTubeRef.aDir
+    endif
+
+--    !offseDistance = !fTubMidPoint.distance(!line.near(!intersections))
+    !addDistance   = !fTubeRef.pos.distance(!line.near(!fTubMidPoint))
+--    !movePos       = !fTubMidPoint.offset(!moveDir,!offseDistance)
+
+    !!ce = !fTubeRef
+    --pos $!movePos
+
+    MOVE $!moveDir thro $!intersections
+    MOVE $!revDir DIST $!addDistance
+
+
+    !checkPlane = object PLANE(!fTubeRef.pos, object ORIENTATION('Z is Z'))
+    !tubeDir    = !line.direction()
+    !projectedDir = !tubeDir.projected(!checkPlane)
+    handle any
+      !angleFlag = false
+    elsehandle none
+      !angleFlag = true
+
+      if (!tubeDir.dot(!projectedDir) eq 0) then
+        !angleFlag = false
+      else
+        !angleFlag = true
+      endif
+    endhandle
+
+--    if (!angleFlag) then
+--      !addDistance = !clearanceValue
+--    else
+      -- move to clearance position
+      !addDistance = abs(!clearanceValue / cos(!angle))
+--    endif
+
+    if (!clearanceValue ge 0) then
+      !moveDir = !moveDir.opposite()
+    endif
+
+    MOVE $!moveDir DIST $!addDistance
+
+    if (!isHeadPart) then
+      !!ce = !branchRef
+      CONN PH TO FIRST MEM
+      SAME
+    else
+      !!ce = !branchRef
+      CONN PT TO LAST MEM
+      SAME
+    endif
+  endif
+
+  !this.undo.endUndoable()
+
+  $!mode
+
+  !!ce = !saveCe
+  handle any
+  endhandle
+endmethod
+-- End of method

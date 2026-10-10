@@ -104,7 +104,7 @@ endfunction
 1. Eliminate all `$GOTO` and `$LABEL` constructs when upgrading to PML 2; replace with `DO` and `BREAK IF`.
 2. Do not use `$` when assigning or evaluating variables in PML 2 expressions (`!a = !b + 1`).
 3. Ensure all files with extended characters are saved with a UTF-8 BOM or converted via `transc.exe`.
-4. Wrap all database mutations in localized `HANDLE ... ELSEHANDLE` blocks to prevent unhandled macro crashes.
+4. Guard every database mutation with a localized `HANDLE ... ELSEHANDLE` block placed immediately **after** the mutation command — the mutation stays outside the trap; recovery code goes inside it (see SKILL.md Core Framework 9).
 
 ## Connects To
 - **Ch 1**: PML Basics & Environment

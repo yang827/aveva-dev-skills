@@ -1,0 +1,506 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:  Mdscreateft49.pmlfnc
+--   Type:  Function Definition
+--   Group:  Multi Discipline Supports Application
+--     Keyword:  MDS
+--   Module:  design
+--   Replaces:          MVS101
+--
+-- Author:  Tony Martin
+-- Created:  15/04/2004 12:23
+--
+--
+-- Description:
+-- function to create support frame type 'FT49'
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         STRING       Method of creating support
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdscreateFT49(!method is STRING)
+
+  -- Save current db position
+  --!ce = !!ce
+
+  -- Find current units and set the distance unit to metric
+  !currentunits = !!kgetsetunits()
+
+  -- Initialise variables
+  call !!mdsresetpins(1,10)
+  !form      = !!mdsFT49
+  --!idtype    = 'PYRA'
+  !support   = !!mdsFT49.support
+  --!clearance = !!mdsoptions.clear.val
+  !selection = !!mdsSetSteel.size.selection('Rtext')
+  !datum     = !support.datum
+  !stru      = !support.stru
+  !name      = !stru.name
+  !p9dir     = !support.p9dir
+  !p10dir    = !support.p10dir
+  !p11dir    = !support.p11dir
+  --!pldir     = !support.pldir
+  --!padir     = !support.padir
+  !alias     = !support.alias
+  !datumName = !name & '/' & 'DATUM'
+  !srefName  = !name & '/' & 'SREF'
+  !unlocked  = ARRAY()
+  !resetLock = false
+
+  -- Does the support have attached/Associated supports
+  if !!mdsgetconnectedsupp(!stru) then
+    !!kRestoreUnits(!currentunits)
+    return
+  endif
+
+  --------------------------------------------------------------------------------
+  -- Check that Datum atta has been created
+  if (!datum.set().not())then
+    !!alert.message('Datum support atta has not been created')
+    !!kRestoreUnits(!currentunits)
+    return
+  endif
+
+  -- Can we write to the spref attribute of the SREF atta and the stru
+  if !support.datum.badref().not() then
+    !srefName = !support.datum.name.before('/DATUM') + '/SREF'
+    if !!mdsComClaimDac(!support.stru,'DACMOD','POS').not() or !!mdsComClaimDac(!srefName.dbref(),'DACMOD','SPREF').not() then
+      !despars = !srefName.dbref().despar
+      !!mdsResetDims(!form,!despars)
+      !!kRestoreUnits(!currentunits)
+      !!alert.error('Unable to change the support as write access to the SREF atta is not available')
+      return
+    endif
+  endif
+
+  --!bore      = !!mdsFT49.support.atta[1].abore
+  -- Store section name and matref for each member
+  -- for resetting later
+  !storeMat = ARRAY()
+  !storeMat = !!mdsStoreMat(!name)
+
+  --<wd>jun2007<mds12>
+  -- Initialise the MDS Associations Data Creation Object MDSASSOC
+  !form = !!mdsFT49
+  !mdsassoc = object MDSASSOC()
+  !mdsassoc.mode = !method
+  --<wd>jun2007<mds12>
+
+  -- Identify existing support atta (LT13A or LT13B<P4501>/LT15<P4502>)
+  if !method eq 'CURSOR' then
+
+    label /Element0
+
+    prompt off
+    prompt load escape |Identify existing support lugs on pipe|
+    id ATTA @
+    handle (61,528)
+      prompt on
+      !!kRestoreUnits(!currentunits)
+      return
+    endhandle
+    prompt dismiss
+    prompt on
+    !suplug = !!ce
+    !lugalias = prop rnam
+
+    -- Is the identified atta owned by same branch as the datum atta
+    bran
+    !suplugBran = !!ce.name
+    $!datum
+    bran
+    !datumBran = !!ce.name
+    if (!suplugBran.neq(!datumBran)) then
+      !!alert.error('Identified ATTA is not owned by same branch as datum ATTA. Please retry')
+      golabel /Element0
+    endif
+
+    -- Identify four brackets on equipment
+    label /Element1
+    prompt off
+    prompt load escape |Identify pline to connect to|
+    var !pl pick pline
+    handle (61,528)
+      prompt on
+      !!kRestoreUnits(!currentunits)
+      return
+    endhandle
+    prompt dismiss
+    prompt on
+    -- pline format is 'PPline NALO OF =16388/32752'
+    !pline = !pl[1].split()[2]
+    !sctn = !pl[1].split()[4].dbref()
+    !p9dir = !sctn.plor.$!<pline>.zdir().wrt(/* )
+
+    -- check to see if the pline picked is suitable to connect to
+    !poss = !sctn.plst.$!<pline>.wrt(/* )
+    !pv = object POINTVECTOR()
+    !pv.position = !suplug.position.wrt(/* )
+    !pv.direction = !p9dir.opposite()
+    !pq = !pv.offset(100)
+    !ps = !pv.through(!poss)
+    if !pv.position.distance(!poss) lt !pq.position.distance(!poss) then
+      !!alert.error('Picked pline is unsuitable - Please try again')
+      golabel /Element1
+    endif
+
+    -- set the dimensions
+    !!mdsFT49.dim1.val = !pv.position.distance(!ps.position)
+    !!mdsFT49.dim2.val = !suplug.prop.hei.real() * 2 + !suplug.lod + 3
+
+    -- ************************ Connexions ***********************
+    !support.connections[1] = !sctn
+    !support.connections[2] = !sctn
+    --------------------------------------------------------------
+
+    --<wd>jun2007<mds12>
+    -- Save !sctn for the TWO Associations
+    !mdsassoc.pick1 = !sctn
+    !mdsassoc.pick1inter = !ps.position
+    !mdsassoc.pick2 = !sctn
+    !mdsassoc.pick2inter = !ps.position
+    --<wd>jun2007<mds12>
+
+  else
+    --$* its building by dimensions
+    label /Element4
+
+    prompt off
+    prompt load escape |Identify existing support lugs on pipe|
+    id ATTA @
+    handle (61,528)
+      prompt on
+      !!kRestoreUnits(!currentunits)
+      return
+    endhandle
+    prompt dismiss
+    prompt on
+    !suplug = !!ce
+    !lugalias = prop rnam
+    -- Is the identified atta owned by same branch as the datum atta
+    bran
+    !suplugBran = !!ce.name
+    $!datum
+    bran
+    !datumBran = !!ce.name
+    if (!suplugBran.neq(!datumBran)) then
+      !!alert.error('Identified ATTA is not owned by same branch as datum ATTA. Please retry')
+      golabel /Element4
+    endif
+
+
+  endif
+
+
+  -- Generate Please Wait... Prompt
+  !!mdscreatemess(true)
+  -- pin 2 copy p9 of $!suplug
+  -- pin 2 thro $!suplug
+
+
+  -- go to the MDS FRAMEWORK DATUM<Rest Atta> and SREF attas and reorientate their P9 to suit
+  --var !p2d pin 2 dir wrt /*
+  !!ce = $!datumName
+  ori and p9 is $!p9dir
+  !!ce = $!srefName
+  ori and p9 is $!p9dir
+  !support.p9dir = p9 dir of $!datumName wrt /*
+
+  -------------------------------------------------
+  --<wd>dec2004
+  -- Check with USER if the Identified LUG is to be RE-ORIENTATED to suit the MDS FRAMEWORK STRUCTURE
+  --!lugstyp  = !suplug.styp.upcase()
+  --!lugstrg  = '!!code' & !lugstyp
+  --!lugalias = $!lugstrg
+  !lugname  = !suplug.fullname
+  if (!!alert.confirm('Do you want rotate the $!<lugalias> type LUG, named $!<lugname>, to suit the orientation of the MDS framework?').upcase() eq 'YES') then
+    -- Rotate LUGS to suit MDS FRAMEWORK
+    !!ce = !suplug
+    ori and p9 is $!p9dir
+  endif
+  --<wd>dec2004
+  -------------------------------------------------
+
+  -- Now reset pin 2 to match p9 of datum (this may have been rotated)
+  !!ce = $!datumName
+  pin 2 copy p9
+
+  -- Navigate to Stru
+  !!ce = !stru
+
+  -- Pins now in position create Framework
+  delete stru mem
+  handle (41,66) (2,113) (2,113)
+  endhandle
+  !mdstemp = /MDS/$!alias/$!selection
+  :mdscheck $!mdstemp.:mdscheck
+  :mdsframirror $!mdstemp.:mdsframirror
+
+
+  -- Temporarily Position Structure at Datum Atta
+  at $!datum
+  new frmw $!name/MAIN
+  !frmwsupport = !!ce
+
+  -- Copy required template/s
+  !!ce         = /MDS/$!alias/$!selection
+  --!loadType    = before(after(upcase(descr),'TYPE '),',')
+  !frmw        = !!kCollectAllFor('FRMW', '', !!ce)
+  !subs        = !!kCollectAllFor('SUBS', '', !!ce)
+  !frameFormat = before(!frmw[1].name, '-FRMW')
+
+  --------------------------------------------------------------------------------------
+  -- Navigate back to support and create template elements
+  !!ce = !frmwsupport
+  copy $!frmw[1] rename $!frameFormat $!name
+
+  -- Set stru description for template recognition
+  !desc = desc of /MDS/$!alias/$!selection
+  !mdsBars = :mdsbars of /MDS/$!alias/$!selection
+
+  -- Position and Orientate Structure
+  !!ce = !stru
+  desc '$!desc'
+  :mdsbars $!mdsBars
+
+  -- Navigate back to support and create template elements
+  do !i indices !subs
+    NEW SUBS $!name/SUBS$!i COPY ATTRIB OF $!subs[$!i]
+    COPY MEM OF $!subs[$!i] RENAME $!frameFormat $!name
+  enddo
+
+  stru
+  -------------------------------------------------
+  --<wd>dec2004
+  --Orientate MDS Structure
+  if (!support.pldir.up.abs().neq(1))then
+    -- Sloping and True Horizontal Pipes ONLY
+    !directions = !!mdsremovegrad(!datum)
+    !support.datumorthdirs = !directions
+    !orixd = !directions[6]
+    !orizd = !directions[3]
+    ori x is $!orixd and z is $!orizd
+
+  else
+    -- Vertical Pipes ONLY - Uses the Original ORIENTATION Code
+    ori y is d and z is $!p9dir
+  endif
+  -- Orientate stru
+  --  ori y is d and z is $!p9dir
+  --<wd>dec2004
+  -------------------------------------------------
+
+  -- position horizontal member's centreline (defined by dimension A)
+  -- at centre of top support bracket and move all attas to this new
+  -- elevation (this assumes the top brackets to be the datum location
+  -- for the support)
+
+  -- get direction for bracing members
+  !!ce = $!<name>-V1
+  extend start thro $!datum
+  extend start $!!mdsFT49.dim1.val
+  !half = !!mdsFT49.dim2.val / 2
+  move w dist $!half
+  extend end thro $!datum
+  extend end $!half
+
+  !!ce = $!<name>-V2
+  extend start thro $!datum
+  extend start $!!mdsFT49.dim1.val
+  move e dist $!half
+  extend end thro $!datum
+  extend end $!half
+
+  !!ce = $!<name>-BAR-1
+  extend start $!half
+  extend end $!half
+  move d dist $!half
+  var !mdscp2 prop desc
+
+  !!ce = $!<name>-BAR-2
+  extend start $!half
+  extend end $!half
+  move u dist $!half
+
+  -- now reset v1 an v2 to clear the bar
+  !!ce = $!<name>-V1
+  :MDSAttaRef $!<name>/DATUM
+  extend end beh $!<name>-BAR-2
+  handle (73,214)
+    return
+  endhandle
+  extend end 25
+  var !mdscp1 prop desc
+  !nameV1 = !!ce
+
+  ------------------****** connexions *******----------------------
+  if(!support.connections.unset()) then
+    -- dimensions are being used first
+    :MDSConn default
+  else
+    !connected = !!mdsGetBeamConn(!support,!nameV1)
+    :MDSConn $!connected
+  endif
+  --------------------*******************--------------------------
+
+  !!ce = $!<name>-V2
+  extend end beh $!<name>-BAR-2
+  handle (73,214)
+    return
+  endhandle
+  extend end 25
+  !nameV2 = !!ce
+
+  ------------------****** connexions *******----------------------
+  if(!support.connections.unset()) then
+    -- dimensions are being used first
+    :MDSConn default
+  else
+    !connected = !!mdsGetBeamConn(!support,!nameV2)
+    :MDSConn $!connected
+  endif
+  --------------------*******************--------------------------
+
+  -- Reset distance gadget to new position
+  !!ce = !datum
+  call !!mdsDistance(!!mdsFT49)
+  !!mdsDacControl(false)
+
+$(
+  -- Select correct spref for sref
+  !!ce = $!<name>/SREF
+  !!mdsDacControl(true)
+  sel spref with styp '$!alias-$!selection' spec /MDF
+
+  !!mdsSetIspe()
+  !!mdsSelLstu(!!ce)
+$)
+
+  -- Set position flag
+  !support.position = true
+  !!mdsDacControl(true)
+
+  !!ce = $!<name>/SREF
+  -- Store design parameters
+  despar $!!mdsFT49.dim1.val $!!mdsFT49.dim2.val
+  -- store the section type in :MDSCp1
+  !!ce.:mdscp1 = !mdscp1
+  !!ce.:mdscp2 = !mdscp2
+
+  !!mdsDacControl(false)
+
+  -- Reset materials of sections
+  !!mdsResetMat(!storeMat)
+
+  -- Reset datum tag
+  !!ce = !datum
+  VAR !pOS POS WRT WORLD
+  $M/%PDMSUI%/DES/CLIB/GAIDTEXT 210 Datum $<$!pOS$>
+
+  -- Navigate to Structure
+  !!ce = !stru
+
+  -- Enhance elements using colour set for highlight
+  !colourlist = ARRAY()
+  !colourlist.append(!!ce)
+  !colourlist.appendarray(!support.atta)
+
+  -- Colour Support
+  call !!kenhancelist(!colourlist)
+  !!ce = !stru
+
+  -- reset :mdsancref attributes if set
+  !support.plateconns.restoreconns()
+
+  -- Update support data held in form
+  !!mdsFT49.support = !support
+
+  -- Show dimensions on graphics if required
+  if !!mdsFT49.graphicalDim then
+    !!mdsshowdim(!!mdsFT49)
+  endif
+
+  -- Reset all pins associated with this support
+  call !!mdsresetpins(1,10)
+
+  -- Lock any items that have been locked
+  !!mdsDacControl(true)
+
+  if !resetLock then
+    do !lock values !unlocked
+      !!ce = !lock
+      lock all
+    enddo
+  endif
+
+  -- We need to add the associated branches to the ADP drawlist so they draw on the ADP drawing
+  -- plus the equipment
+  !!mdsDacControl(true)
+
+$(
+  !!ce = !datum
+  !mdsAdp = :MdsAdp
+  !mdsAdp.append(equi of $!sb1 )
+  !mdsAdp.append(bran of $!suplug )
+  !mdsAdp.unique()
+  do !add from 1 to !mdsAdp.size()
+    :MdsAdp number $!add $!mdsAdp[$!add]
+  enddo
+$)
+  !!ce = !stru
+  --------------------------------------------------------------------------------------
+  -- Remove Wait.. Prompt from Screen
+  !!mdscreatemess(false)
+  !!mdsDacControl(false)
+
+  ---------------------------------------------------------------------------------------------------
+  ---------------------------------------------------------------------------------------------------
+  --<wd>jun2007<mds12>
+  -- Create the Cross Reference ASSOCIATIONS between the MDS SUPPORT SCTN members $!name-BAR-1 and $!name-V1
+  -- and the Main Structure supporting elements for:
+  -- <a> CURSOR mode with ONE pick, !pick, but there are TWO Associations required
+  --
+  -- Store the Original Current Element
+  !xce = !!ce
+
+  -- Store the Array of MDS Support Members in the MDSASSOC Object
+  !mdsassoc.mdsmember[1] = $!name-V1
+  !mdsassoc.mdsmember[2] = $!name-V2
+
+  -- Initialising the MDSASSOWL object always DELETES ALL of the EXISTING Cross Reference Associations
+  -- (ASSOC) elements for the Current MDS Support, irrespective of the Creation MODE (!method)
+  !mdsassowl = object MDSASSOWL(!form)
+  !mdsassowl.mdsform  = !form
+  !mdsassowl.mdsassoc = !mdsassoc
+
+  -- Create the Association (ASSOCs) for the Current Support
+  !mdsassowl.mdsassoc(!mdsassoc)
+
+  -- Update the FORM SUPPORT object to reference the current MDSASSOWL Associations object
+  !form.support.associations[1] = !mdsassowl
+  !support = !form.support
+
+  -- Navigate back to the Original Current Element
+  !!ce = !xce
+
+  --<wd>jun2007<mds12>
+  ---------------------------------------------------------------------------------------------------
+  ---------------------------------------------------------------------------------------------------
+
+  -- Reset Units
+  !!kRestoreUnits(!currentunits)
+
+  --------------------------------------------------------------------------------------
+endfunction

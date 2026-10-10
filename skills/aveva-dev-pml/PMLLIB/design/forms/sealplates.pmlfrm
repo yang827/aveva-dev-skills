@@ -1,0 +1,344 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            sealplates.pmlfrm
+--   Type:          Form Definition
+--   Group:         Piping Penetrations
+--     Keyword:     PIPE
+--   Module:        design
+--   Replaces:
+--
+-- Author:          T.Martin
+-- Created:         18/08/2007 10:31
+--
+--
+-- Description:
+-- Convert a hull fixing to a plate.
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  apply()                          -
+--  dismiss()                        -
+--  init()                           -
+--  overlap()                        -
+--  quitCallback()                   -
+--  remove()                         -
+--  setOverlap()                     -
+--  setThickness()                   -
+--
+
+-- Define form
+setup form !!sealplates
+
+  !this.formTitle     = 'Seal Plates'
+  !this.iconTitle     = 'Seal Plates'
+  !this.callback      = '!this.apply()'
+  !this.initcall      = '!this.init()'
+  !this.formRevision  = ' $Revision: 1.4 $ '
+  !this.quitCall      = '!this.quitCallback()'
+
+  -- Body of form definition
+
+  path down
+
+  button .ce 'CE' call '!this.init()'
+  text   .overlap   'Plate overlap  '   callback '!this.overlap()'      width 14 is REAL format !!distanceFmt
+  text   .thickness 'Plate Thickness'   callback '!this.setThickness()' width 14 is REAL format !!distanceFmt
+  option .side      'Panel side     '   callback '!this.setThickness()' width 12
+
+  !a[1] = 'Front Face'
+  !a[2] = 'Back  Face'
+
+  !b[1] = 'front'
+  !b[2] = 'back'
+
+
+  !this.side.dtext = !a
+  !this.side.rtext = !b
+
+ button .apply 'Update' call '!this.apply()'
+ path right
+ button .remove 'Remove' call '!this.remove()'
+ --button .undo  'undo' at xmax ymin
+ button .dismiss 'Close' call '!this.dismiss()' at xmax form -size ymin.apply
+
+ member .penetrated is DBREF
+ member .fixing     is DBREF
+ member .panel      is DBREF
+ member .profile    is PROFILE
+ member .buildArea  is DBREF
+ member .hmHole     is HMHOLE
+ member .validSeal  is BOOLEAN
+ member .undopoint1 is UNDOABLE
+
+exit
+
+-- End of form definition for !!sealplates
+-------------------------------------------------------------------------------------------------
+
+-------------------------------------------------------------------------------------------------
+define method .init()
+
+  !this.overlap.val   = 0
+  !this.thickness.val = 0
+  !this.panel = object DBREF()
+  -- mark the database
+  !this.undopoint1.add()
+
+
+  !assos = !!ce.assos
+  if( !assos.empty() ) then
+    -- If at an association just use the association
+    if (!!ce.hardType eq 'ASSOC') then
+      !assos[1] = !!ce
+    else
+      return error 2 'Cannot find a hole management association for this fixing. Please navigate to a hole management Fixing element to create seal plates'
+    endif
+  endif
+
+  !hmHole = object HMHOLE(!assos[1])
+  !this.fixing = !hmHole.virtualHole
+  if (badref(!this.fixing)) then
+    return error 1 'The fixing element is incorrectly set up'
+  endif
+  if (!hmHole.fixiType eq 'Free') then
+    return error 6 'Unable to create seal plates for Free holes'
+  endif
+  !this.hmHole = !hmHole
+  if (not badref(!hmHole.hullPlate)) then
+    !this.penetrated = !hmHole.hullPlate
+  else
+    !this.penetrated = !hmHole.holeOwner
+  endif
+  if (badref(!this.penetrated)) then
+    return error 3 'Penetrated panel not found - Badly defined penetration'
+  endif
+
+  -- Find out if there is an area set up to create the seal plate
+  !finder = object COLLECTION()
+  !finder.type(|STRU|)
+  !finder.filter(object EXPRESSION(|PURP eq 'HMCM' and dbwrite|))
+  !buildArea = !finder.results()
+  if (!buildArea.size() eq 0 ) then
+    return error 4 |Unable to locate STRU to work in (PURP=HMCM). Seal plate can not be created|
+  else
+    !this.buildArea = !buildArea[1]
+  endif
+
+  -- get the plate thickness
+  !this.thickness.val = !hmHole.plateThickness
+
+  -- get the parameter for overlap
+  !this.overlap.val = !this.fixing.rprop.olap
+  handle any
+    return error 5 'Current Penetration does not have property OLAP'
+  endhandle
+
+  -- get an existing seal plate panel if there is one
+  if (!hmHole.sealPlate.set()) then
+    !this.remove.active = TRUE
+    !this.panel = !hmHole.sealPlate.amemrf
+    !this.thickness.val = !this.panel.lohe
+    !this.validSeal = TRUE
+  else
+    !this.remove.active = FALSE
+    !this.validSeal = FALSE
+  endif
+
+  !this.dismiss.active = FALSE
+  !this.overlap()
+
+endmethod
+-------------------------------------------------------------------------------------------------
+
+-------------------------------------------------------------------------------------------------
+-- method to apply the changes to the current fixing and extract the profile from the fixing
+define method .overlap()
+
+  if( badref(!this.fixing) ) then
+    !!alert.error('Hole Fixing element not selected. Please navigate to a penetration fixing and select with the CE button')
+    return
+  endif
+  !cataProfile = !this.fixing.spre.catref.gmre.member[2].member[1]
+  handle any
+    !!alert.error('Cannot extract the hole boundary curve from the selected Fixing element. Please navigate to a valid penetration fixing and select with the CE button')
+    return
+  endhandle
+
+ !!ce = !this.fixing
+ -- get a list of all sub fixings
+
+ var !subFixings coll ce mem
+
+ -- go and set the correct design parameter
+ !this.setOverlap()
+ !this.profile = object PROFILE(!cataProfile,!this.fixing)
+ -- we haven't got a panel yet
+ if !this.panel.set() then
+   !!ce = !this.panel
+   ploop 1
+   delete ploop mem
+ else
+   !!ce = !this.buildArea
+   NEW FRMW
+   NEW PANE
+   !this.panel = !!ce
+   NEW PLOO
+   !ce = !!ce
+   do !i from 1 to !subFixings.size()
+     !!ce = !this.panel
+     new nxtr
+     new loop
+   enddo
+   $!ce
+ endif
+ HEI $!this.thickness.val
+ !this.profile.dbwrite(!!ce)
+ !this.panel = !!ce.owner
+ -- now include any holes in the new plate for the pipes
+ do !i from 1 to !subFixings.size()
+   loop 1 of nxtr $!i
+   !loop = !!ce
+   -- Temporary fix to get the actual profile is so that it is around the penetrating object
+   -- The profile should be obtained from GML but we need a core change
+   -- Go to the sub fixing and set the design parameter so that the clearance is 0
+   -- Get the profile and then set the design parameters back
+   if (!subFixings[!i].dbref().excess eq 0 ) then
+     !profile = object PROFILE(!subFixings[!i].dbref().spre.catref.gmre.member[2].member[1],!subFixings[!i].dbref())
+   else
+     !!ce = !subFixings[!i].dbref()
+     !clearance = !!ce.excess
+     !type = !!ce.spre.name
+     if (matchwild(!type,'*TYPE-D')) then
+       !param1 = DDESP[1]
+       !tempParam1 = (!param1 - 2 * !clearance)
+       DDESP N1 $!<tempParam1>
+       !profile = object PROFILE(!subFixings[!i].dbref().spre.catref.gmre.member[2].member[1],!subFixings[!i].dbref())
+       DDESP N1 $!<param1>
+     else
+       !param1 = DDESP[1]
+       !param2 = DDESP[2]
+       !tempParam1 = (!param1 - 2 * !clearance)
+       !tempParam2 = (!param2 - 2 * !clearance)
+       DDESP N1 $!<tempParam1>
+       DDESP N2 $!<tempParam2>
+       !profile = object PROFILE(!subFixings[!i].dbref().spre.catref.gmre.member[2].member[1],!subFixings[!i].dbref())
+       DDESP N1 $!<param1>
+       DDESP N2 $!<param2>
+     endif
+   endif
+   !!ce = !loop
+   !profile.dbwrite(!!ce)
+ enddo
+ !this.setThickness()
+
+endmethod
+-------------------------------------------------------------------------------------------------
+
+-------------------------------------------------------------------------------------------------
+define method .setThickness()
+
+  !!ce = !this.panel
+  handle any
+     return
+  endhandle
+  var !nxtr collect all nxtr for ce
+  ploop 1
+  HEI $!this.thickness.val
+  end
+  !dir = !this.panel.orientation.zdir().wrt(/* )
+  if !this.side.selection().eq( 'back') then
+    move along $!dir clear 0 behind $!this.penetrated
+    do !i from 1 to !nxtr.size()
+      $!nxtr[$!i]
+      HEI $!this.thickness.val
+      move along $!dir clear 0 behind $!this.penetrated
+    enddo
+  else
+    move along $!dir clear 0 infront $!this.penetrated
+    do !i from 1 to !nxtr.size()
+      $!nxtr[$!i]
+      HEI $!this.thickness.val
+      move along $!dir clear 0 infront $!this.penetrated
+    enddo
+  endif
+
+
+endmethod
+-------------------------------------------------------------------------------------------------
+
+-------------------------------------------------------------------------------------------------
+define method .setOverlap()
+
+!dtre =  !this.fixing.catref.dtre
+do !a values !dtre.members
+  if !a.dkey.eq('OLAP') then
+    !pprop = !a.pprop.after('[').before(']').real()
+    handle any
+      --$P $!!error.text
+    elsehandle NONE
+      !this.fixing.desp[!pprop] = !this.overlap.val
+    endhandle
+    break
+  endif
+enddo
+
+endmethod
+-------------------------------------------------------------------------------------------------
+
+-------------------------------------------------------------------------------------------------
+define method .dismiss()
+
+  !!ce = !this.fixing
+  !this.hide()
+
+endmethod
+-------------------------------------------------------------------------------------------------
+
+define method .apply()
+
+  !control = object HMCONTROL()
+  !control.addMemberToHole(!this.hmHole, !this.panel, 'sealPlate')
+  !this.dismiss.active = TRUE
+  !!ce = !this.fixing
+  !this.remove.active = TRUE
+  !this.validSeal = TRUE
+
+
+endmethod
+-------------------------------------------------------------------------------------------------
+
+-------------------------------------------------------------------------------------------------
+
+define method .remove()
+
+  !!ce = !this.panel.owner
+  !type = !!ce.type
+  DELETE $!<type>
+  !control = object HMCONTROL()
+  !control.removeMemberFromHole(!this.hmHole, 'sealPlate')
+  !this.dismiss()
+
+endmethod
+-------------------------------------------------------------------------------------------------
+
+-------------------------------------------------------------------------------------------------
+
+define method .quitCallback()
+  if (!this.validSeal ne TRUE) then
+    !!ce = !this.panel.owner
+    !type = !!ce.type
+    DELETE $!<type>
+  endif
+  -- undo all db operations
+  !this.undopoint1.endundoable()
+  undodb
+
+  !this.dismiss()
+
+endmethod

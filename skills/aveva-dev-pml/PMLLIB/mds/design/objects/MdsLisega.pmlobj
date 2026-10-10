@@ -1,0 +1,2410 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:    MdsLisega.pmlobj
+--   Type:    Object Definition
+--   Group:   Multi Discipline Supports Application
+--   Keyword:   MDS
+--   Module:    design
+--   Replaces:
+--
+-- Author:    D.flannery
+-- Created:   Mon 22nd November 2004
+--
+--
+-- Description:
+-- Multi Discipline Support Lisega hanger object.
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  checkThatWeCanRotateScla(DBREF)  BOOLEAN
+--  getHeleDir(STRING)               DIRECTION
+--  mdsLisega(FORM,FORM)             -
+--  postBuild()                      -
+--  preBuild(ARRAY)                  ARRAY
+--  rotateWeldedAttachments(STRING)  -
+--
+
+-- Define Object
+define object MDSLISEGA
+
+  member .supportName is STRING
+  member .ce is DBREF
+  member .savedTailPosition is POSITION
+  member .savedTailDirection is DIRECTION
+  member .headtoTailDir is DIRECTION
+  member .hangerForm is FORM
+  member .vendorForm is FORM
+  member .virtualFitting is BOOLEAN
+  member .virtualFittingNames is ARRAY
+  member .rotateWeldedAttachment is BOOLEAN
+  member .rotateWeldedAttachmentLine is STRING
+
+endobject
+
+define method .mdsLisega(!vendorForm is FORM, !form is FORM)
+
+  -- Method to Initialise and build object
+
+  !this.supportName = !vendorForm.ce.name
+  !this.ce = !vendorForm.ce
+  !this.hangerForm = !form
+  !this.vendorForm = !vendorForm
+
+  --dun1218 initialise the virtual fittings members
+  !this.virtualFitting = !vendorForm.virtualFitting
+  !this.virtualFittingNames = !vendorForm.virtualFittingNames
+
+  !this.rotateWeldedAttachment = false
+
+endmethod
+
+define method .preBuild(!fileLines is ARRAY) is ARRAY
+
+  !configNumber = :MdsHConfig of $!this.supportName
+  if (!configNumber.match('31').gt(0) or !configNumber.match('32').gt(0)) then
+    !p5dir = !this.getHeleDir(!configNumber)
+  endif
+
+  --fix to set up hanger correctly
+  !sizeOfFileLines = !fileLines.size()
+  !fileLines[$!sizeOfFileLines].delete()
+  !fileLines.append('$!this.supportName/H1')
+  !fileLines.append('conn pt to $!this.supportName/FITT/H1')
+  !fileLines.append('$!this.supportName')
+  !fileLines.append(|resel with spec /MDS stype 'MH01'|)
+  !fileLines.append(|:MDSSuppType 'MH01'|)
+
+  --fix to change the uda name and types
+  !currentComp = 'NONE'
+  !currentSpref = 'NONE'
+  !dmyexists = FALSE
+  do !replace from 1 to !fileLines.size()
+    if (!fileLines[!replace].match('NEW').gt(0)) then
+      !currentComp = !fileLines[!replace].after('NEW').trim()
+    elseif (!fileLines[!replace].match('SPRE').gt(0)) then
+      !currentSpref = !fileLines[!replace].after('SPRE').trim()
+      if (!currentSpref.match('/79').gt(0) and !currentSpref.match('DMY').gt(0)) then
+        !dmyexists = TRUE
+      endif
+    endif
+    -- dtf >>> 3.2.06
+    if (!fileLines[!replace].upcase().match(':MDSSUPPFUNC').gt(0)) then
+      if (!this.supportName.dbref().:MDSSuppFunc.neq('')) then
+        -- leave the support function alone if already set
+        !fileLines[!replace] = ||
+      endif
+    endif
+    -- dtf <<< end of mod
+    !fileLines[$!replace] = !fileLines[$!replace].replace('USTSPRINGRATE','USTSPRRATE')
+    !fileLines[$!replace] = !fileLines[$!replace].replace('USTDYNLOADS','USTFORCES')
+    !fileLines[$!replace] = !fileLines[$!replace].replace('/LISEGA3.0R/M','/LISEGA3.0R/RM')
+    if (!currentComp.eq('HELE') and !currentSpref.match('LISEGA3.0/79').gt(0)) then
+      !sprefCode = !currentSpref.after('/79')
+      !sprefCode = !sprefCode.substring(3,2)
+      if (!sprefCode.eq('34') or !sprefCode.eq('37') or !sprefCode.eq('39')) then
+        if (!fileLines[!replace].trim().eq('ROT ABO Y BY 180 THRO P2') and !dmyexists.not()) then
+          !fileLines[$!replace] = 'ROT ABO Y wrt ce BY 180 THRO P2'
+        endif
+      endif
+    elseif (!currentComp.eq('SCLA')) then
+      if (!fileLines[!replace].trim().match('ROT BY').gt(0)) then
+        !this.rotateWeldedAttachment = true
+        !this.rotateWeldedAttachmentLine = !fileLines[!replace].trim()
+        !fileLines[!replace] = ''
+      endif
+    endif
+    if (!fileLines[$!replace].upcase().match('.real()').gt(0)) then
+      !fileLines[$!replace] = !fileLines[$!replace].upcase().replace('.real()', '.real().value()')
+    endif
+
+    --replace the line for type 31 in which the hele 1 p5 dir is set. this was originally hard coded as P11 of the atta
+    --we now set it so that it points towards FITT/H1 (or the virtual equivalent)
+    if (!fileLines[$!replace].lowcase().match('var !or dir').gt(0) and (!configNumber.match('31').gt(0) or !configNumber.match('32').gt(0))) then
+      !fileLines[$!replace] = 'var !or dir $!p5dir'
+    endif
+  enddo
+
+  !this.savedTailPosition = tpos of $!this.supportName/H1 wrt /*
+  !this.savedTailDirection = tdir of $!this.supportName/H1 wrt /*
+  var !hhtoHtdir construct dir hh of $!this.supportName/H1 to HT of $!this.supportName/H1
+  !this.hangerForm.support.headtoTailDir = !hhtoHtdir.direction()
+  return !fileLines
+
+endmethod
+
+--====================================================================================
+define method .postBuild()
+
+  -- What if the hanger require a lugs. These will be types required
+  -- *** Lisega requirements ***
+  -- Type 34/48 will require round lugs, part of piping class styp 'LUC'
+  -- Type 45/46 will require flat lugs, part of piping class styp 'LUF'
+  -- Type 36/37 will require shear lugs, part of piping class styp 'LS1' to 'LS8' dependent on clamp type (sixth char)
+  -- First find pcla 1 of hanger 1
+
+  !ce = !!ce
+  !!mdsDacControl(TRUE)
+
+  $!this.supportName/H1
+
+  --<CP> Code block to handle LD08 and LD13 hanger types if they are created on a horizontal pipe - START
+
+  --Check if the type of hanger being built is an LD08 or LD13 so we know whether the orientation
+  --needs to be reset
+  if (!!ce.owner.:USTHCFGKEY.match('LD.08').gt(0) or !!ce.owner.:USTHCFGKEY.match('LD.13').gt(0)) then
+    !restoreOri = true
+  else
+    !restoreOri = false
+  endif
+
+  pcla 1
+  --If the PCLAMP is a type 34 clamp then some processing needs to be done if the hanger is horizontal.
+  if (!!ce.spref.name.match('/LISEGA').eq(1)) then
+    !firstTwoChars = !!ce.spref.namn.after('/').substring(1,2)
+    if (!firstTwoChars inset ('34')) then
+      $!this.supportName
+      --We need to restore the orientation for the ATTA to the state before the hanger was deleted
+      --and recreated
+      if(!restoreOri) then
+        !!ce.orientation = !this.vendorForm.orientation[1].wrt(/* )
+        handle ANY
+        endhandle
+      endif
+      $!this.supportName/H1
+
+      --LICAD will always set the hdir for the hanger to D so we need to correct it if it is a horizontal pipe
+      !h = !!ce.href.name
+      !dir = !!ce.tdir.opposite()
+
+      if (!this.supportName.dbref().pdir[!this.supportName.dbref().leave].wrt( /* ).dot(!!ce.tdir).gt(0)) then
+        !!ce.hdir = !this.supportName.dbref().pdir[!this.supportName.dbref().leave].wrt( /* )
+      else
+        !!ce.hdir = !this.supportName.dbref().pdir[!this.supportName.dbref().arrive].wrt( /* )
+      endif
+
+      !tref = !!ce.tref
+
+      PCLA 1
+      conn
+      --We need to restore the orientation for the PCLA to the state before the hanger was deleted
+      --and recreated
+      if(!restoreOri) then
+        !!ce.orientation = !this.vendorForm.orientation[2].wrt(/* )
+        handle ANY
+        endhandle
+      endif
+      var !hh NAME
+
+      hele 1
+      --If the hanger type is an LD08, it will have an extra HELE element and this requires handling
+      if (!!ce.owner.owner.:USTHCFGKEY.match('LD.08').gt(0)) then
+        conn
+        hele 2
+        conn and P13 is $!dir
+      else
+        conn and P13 is $!dir
+      endif
+      SCLA 1
+      conn and PL is $!dir
+      OWN
+      CONN PT TO LAST MEM
+
+      tref $!tref
+
+      !h = !h + '/H2'
+      $!h
+      !tref = !!ce.tref
+      CONN HH TO P3 of $!hh
+      hele 1
+      --If the hanger type is an LD08, it will have an extra HELE element and this requires handling
+      if (!!ce.owner.owner.:USTHCFGKEY.match('LD.08').gt(0)) then
+        conn
+        hele 2
+        conn and P13 is $!dir
+      else
+        conn and P13 is $!dir
+      endif
+
+      scla 1
+      conn and PL is $!dir
+      OWN
+      CONN PT TO LAST MEM
+
+      tref $!tref
+
+    endif
+  endif
+  --<CP> Code block to handle LD08 and LD13 hanger types if they are created on a horizontal pipe - END
+
+  !!ce = !this.ce.cref
+  handle NONE
+    pcla 1
+    handle NONE
+      !clampref = !!ce
+      if (!!ce.spref.name.match('/LISEGA').eq(1)) then
+        !firstChar = !!ce.spref.namn.after('/').substring(1,1)
+        !firstTwoChars = !!ce.spref.namn.after('/').substring(1,2)
+        if (!firstChar.eq('R')) then
+          !firstTwoChars = !!ce.spref.namn.after('/R').substring(1,2)
+        endif
+        if (!firstTwoChars inset ('34','48')) then
+          -- Anti Rotational Lugs for Caged Clamps
+          !!ce = !this.ce
+
+          new olet name $!this.ce.name/LUG1 choose with styp 'LUC'
+          handle (41,12)
+            delete olet
+            !!ce = $!this.ce.name/LUG1
+            choose with styp 'LUC'
+            nweld 1
+            handle ANY
+              delete olet
+            elsehandle NONE
+              at prev
+              ori and p3 is p94 of pcla 1 of cref of $!this.ce.name
+              handle ANY
+                ori and p3 is p9 of prev
+                !p3dir = p3 dir
+                !opp3dir = !p3dir.opposite()
+              endhandle
+              $!this.ce.name/LUG2
+              handle (2,109)
+                new olet name $!this.ce.name/LUG2 copy prev
+              endhandle
+              --rotate thro pl by 180
+              ori and p3 is p95 of pcla 1 of cref of $!this.ce.name
+              handle ANY
+                ori and p3 is  $!opp3dir
+              endhandle
+              nweld 1
+            endhandle
+            select lstu
+            handle ANY
+            endhandle
+          elsehandle (2,614)
+            !!alert.error('Unable to select round lugs (styp LUC) another user has the branch claimed')
+          elsehandle ANY
+            delete olet
+            !!alert.error('Unable to select round lugs (styp LUC) from piping specification')
+          elsehandle NONE
+            at prev
+            ori and p3 is p94 of pcla 1 of cref of prev
+            handle ANY
+              ori and p3 is p9 of prev
+              !p3dir = p3 dir
+              !opp3dir = !p3dir.opposite()
+            endhandle
+            nweld 1
+            new olet $!this.ce.name/LUG2 copy prev
+            --rotate thro pl by 180
+            ori and p3 is p95 of pcla 1 of cref of prev 2
+            handle ANY
+              ori and p3 is  $!opp3dir
+            endhandle
+            nweld 1
+            select lstu
+            handle ANY
+            endhandle
+          endhandle
+        elseif (!firstTwoChars inset ('T9')) then
+          -- Anti Rotational Lugs for T9 Clamps
+          !!ce = !this.ce
+          new olet name $!this.ce.name/LUG1 choose with styp 'LUC'
+          handle (41,12)
+            delete olet
+            !!ce = $!this.ce.name/LUG1
+            choose with styp 'LUC'
+            !aName = !this.ce.name
+            --at prev
+            --ori and p3 is p10 of pcla 1 of cref of prev
+            at $!aName
+            ori and p3 is p10 of pcla 1 of cref of $!aName
+            nweld 1
+            select lstu
+            handle ANY
+            endhandle
+          elsehandle NONE
+            !aName = !this.ce.name
+            --at prev
+            --ori and p3 is p10 of pcla 1 of cref of prev
+            at $!aName
+            ori and p3 is p10 of pcla 1 of cref of $!aName
+            nweld 1
+            select lstu
+            handle ANY
+            endhandle
+          elsehandle (2,614)
+            !!alert.error('Unable to select round lugs (styp LUC) another user has the branch claimed')
+          elsehandle ANY
+            delete olet
+            !!alert.error('Unable to select round lugs (styp LUC) from piping specification')
+          endhandle
+        elseif (!firstTwoChars inset ('45','46')) then
+          -- Pipe Clamp Risers
+          !!ce = !this.ce
+          !plDir = pl dir wrt /*
+          if (!plDir.string().eq('D WRT /*') or !plDir.string().eq('-Z WRT /*')) then
+            !where = 'BEFORE'
+          else
+            !where = ''
+          endif
+          new olet $!where name $!this.ce.name/LUG1 choose with styp 'LUF'
+          handle (41,12)
+            delete olet
+            !!ce = $!this.ce.name/LUG1
+            choose with styp 'LUF'
+            pin 1 at $!this.ce
+            pin 1 dir d
+            if (!firstTwoChars inset ('46')) then
+              at $!this.ce
+              ori and p3 is p10 of $!this.ce
+            else
+              pin 1 plane pin 1 clear 0 inf pcla 1 of cref of $!this.ce
+              at $!this.ce
+              ori and p3 is p10 of pcla 1 of cref of $!this.ce
+            endif
+            rotate thro pl by 45
+            move d wrt /* clear 0 inf pin 1
+            !!mdsResetPins(1,1)
+            if (!firstTwoChars inset ('45')) then
+              rotate thro pl by -45
+              $!this.ce.name/LUG2 copy prev
+              rotate thro pl by 180
+              nweld 1
+            else
+              $!this.ce.name/LUG2 copy prev
+              rotate thro pl by 90
+              nweld 1
+              $!this.ce.name/LUG3 copy prev
+              rotate thro pl by 90
+              nweld 1
+              $!this.ce.name/LUG4 copy prev
+              rotate thro pl by 90
+              nweld 1
+            endif
+            --nweld 1
+            select lstu
+            handle ANY
+            endhandle
+          elsehandle NONE
+            pin 1 at $!this.ce
+            pin 1 dir d
+            if (!firstTwoChars inset ('46')) then
+              at $!this.ce
+              ori and p3 is p10 of $!this.ce
+            else
+              pin 1 plane pin 1 clear 0 inf pcla 1 of cref of $!this.ce
+              at $!this.ce
+              ori and p3 is p10 of pcla 1 of cref of $!this.ce
+            endif
+            rotate thro pl by 45
+            move d wrt /* clear 0 inf pin 1
+            !!mdsResetPins(1,1)
+            if (!firstTwoChars inset ('45')) then
+              rotate thro pl by -45
+              new olet $!this.ce.name/LUG2 copy prev
+              rotate thro pl by 180
+              nweld 1
+            else
+              new olet $!this.ce.name/LUG2 copy prev
+              rotate thro pl by 90
+              nweld 1
+              new olet $!this.ce.name/LUG3 copy prev
+              rotate thro pl by 90
+              nweld 1
+              new olet $!this.ce.name/LUG4 copy prev
+              rotate thro pl by 90
+              nweld 1
+            endif
+            --nweld 1
+            select lstu
+            handle ANY
+            endhandle
+          elsehandle (2,614)
+            !!alert.error('Unable to select flat lugs (styp LUF) another user has the branch claimed')
+          elsehandle ANY
+            !!alert.error('Unable to select flat lugs (styp LUF) from piping specification')
+          endhandle
+        elseif (!firstTwoChars inset ('36','37')) then
+          -- Dynamic Pipe Clamps
+          if (!!ce.owner.owner.:USTHCFGKEY.upcase().eq('UNSET') or !!ce.owner.owner.:USTHCFGKEY.eq('')) then
+            !testType1 =  ''
+            !testType2 =  ''
+            !testType3 =  ''
+          else
+            !testType1 =  !!ce.owner.owner.:USTHCFGKEY.split('.')[1]
+            !testType2 =  !!ce.owner.owner.:USTHCFGKEY.split('.')[2]
+            !testType3 =  !!ce.owner.owner.:USTHCFGKEY.split('.')[3]
+          endif
+          if ( (!testType1.eq('LD') and !testType2 inset ('01')) or (!testType1.eq('LS') and !testType2.eq('55')) ) then
+            --!sixthChar = !!ce.spref.namn.after('/').substring(6,1)
+            !sixthChar = !!ce.spref.namn.after('/').substring(-1,1)
+            !!ce = !this.ce
+            new olet name $!this.ce.name/LUG1 choose with styp 'LS$!sixthChar'
+            handle (41,12)
+              delete olet
+              !!ce = $!this.ce.name/LUG1
+              choose with styp 'LS$!sixthChar'
+              handle (2,614)
+                !!alert.error('Unable to select flat lugs (styp LS$!sixthChar) another user has the branch claimed')
+              elsehandle ANY
+                delete olet
+                !!alert.error('Unable to select flat lugs (styp LS$!sixthChar) from piping specification')
+              elsehandle NONE
+                at $!this.ce
+                ori and p3 is p94 of pcla 1 of cref of $!this.ce
+                handle ANY
+                  ori and p3 is p4 of pcla 1 of cref of $!this.ce
+                endhandle
+                nweld 1
+              endhandle
+              select lstu
+              handle ANY
+              endhandle
+              -- check to see if lug 2 defined because it may have been a type 7 10 11 or 12 before
+              !!ce = $!this.ce.name/LUG2
+              handle ANY
+              elsehandle NONE
+                delete olet
+              endhandle
+
+            elsehandle NONE
+              at $!this.ce
+              ori and p3 is p94 of pcla 1 of cref of prev
+              handle ANY
+                ori and p3 is p4 of pcla 1 of cref of prev
+              endhandle
+              nweld 1
+              select lstu
+              handle ANY
+              endhandle
+            elsehandle (2,614)
+              !!alert.error('Unable to select flat lugs (styp LS$!sixthChar) another user has the branch claimed')
+            elsehandle ANY
+              delete olet
+              !!alert.error('Unable to select flat lugs (styp LS$!sixthChar) from piping specification')
+            endhandle
+
+          elseif ( !testType1.eq('LD') and !testType2 inset ('07','10') ) then
+
+            -- create 2 lugs under clamp for ld.07.35.xx
+            if ( (!!ce.adir.up.eq(-1) or !!ce.adir.up.eq(1) )  and !testType3.eq('35')  and !testType1.eq('LD') and !testType2 inset ('07','10') ) then
+              !sixthChar = !!ce.spref.namn.after('/').substring(6,1)
+
+              !!ce = !this.ce
+              new olet name $!this.ce.name/LUG1 choose with styp 'LUF'
+              handle (41,12)
+                delete olet
+                !!ce = $!this.ce.name/LUG1
+                choose with styp 'LUF'
+                handle (2,614)
+                  !!alert.error('Unable to select flat lugs (styp LUF) another user has the branch claimed')
+                elsehandle ANY
+                  delete olet
+                  !!alert.error('Unable to select flat lugs (styp LUF) from piping specification')
+                elsehandle NONE
+                  at $!this.ce
+                  ori and p3 is p94 of pcla 1 of cref of $!this.ce
+                  handle ANY
+                    ori and p3 is p4 of pcla 1 of cref of $!this.ce
+                  endhandle
+                  nweld 1
+                  if (  !!ce.adir.up.eq(-1)  ) then
+                    rule set pos dynamic p15 pos of $!clampref
+                    if (!!ce.arrive.eq(1)) then
+                      flip
+                      !me = !!ce
+                      !num1 = !!ce.order
+                      !num2 = !num1 - 1
+                      end
+                      reo $!num1 before $!num2
+                      !!ce = !me
+                    endif
+                  else
+                    rule set pos dynamic p16 pos of $!clampref
+                  endif
+                  --ori and p9 is p9 of $!this.ce
+                  ori and p9 is p2 of pcla 1 of cref of $!this.ce
+                  handle ANY
+                    --ori and p3 is p9 of $!this.ce
+                    ori and p3 is p2 of pcla 1 of cref of $!this.ce
+                  endhandle
+                  rotate about pa by 15
+                  new olet name $!this.ce.name/LUG2 copy prev
+                  handle (41,12)
+                    delete olet
+                    !!ce = $!this.ce.name/LUG2
+                    copy $!this.ce.name/LUG1
+                    rotate about pa by -30
+                  elsehandle NONE
+                    rotate about pa by -30
+                  endhandle
+                  nweld 1
+                  select lstu
+                  handle ANY
+                  endhandle
+                endhandle
+
+              elsehandle ANY
+                delete olet
+                !!alert.error('Unable to select flat lugs (styp LUF) from piping specification')
+              elsehandle NONE
+                at $!this.ce
+                ori and p3 is p94 of pcla 1 of cref of $!this.ce
+                handle ANY
+                  ori and p3 is p4 of pcla 1 of cref of $!this.ce
+                endhandle
+                nweld 1
+                if (  !!ce.adir.up.eq(-1)  ) then
+                  rule set pos dynamic p10 pos of $!clampref
+                  if (!!ce.arrive.eq(1)) then
+                    flip
+                    !me = !!ce
+                    !num1 = !!ce.order
+                    !num2 = !num1 - 1
+                    end
+                    reo $!num1 before $!num2
+                    !!ce = !me
+                  endif
+                else
+                  rule set pos dynamic p11 pos of $!clampref
+                endif
+
+                --ori and p9 is p9 of $!this.ce
+                ori and p9 is p2 of pcla 1 of cref of $!this.ce
+                handle ANY
+                  --ori and p3 is p9 of $!this.ce
+                  ori and p3 is p2 of pcla 1 of cref of $!this.ce
+                endhandle
+                rotate about pa by 15
+                new olet name $!this.ce.name/LUG2 copy prev
+                handle (41,12)
+                  delete olet
+                  !!ce = $!this.ce.name/LUG2
+                  copy $!this.ce.name/LUG1
+                elsehandle NONE
+                  rotate about pa by -30
+                endhandle
+                nweld 1
+                select lstu
+                handle ANY
+                endhandle
+              endhandle
+            endif
+
+          endif
+
+        else
+          -- Lugs no longer required so delete them if they exist
+          do !count from 1 to 4
+            !!ce = $!this.ce.name/LUG$!count
+            handle NONE
+              delete olet
+            elsehandle ANY
+            endhandle
+          enddo
+        endif
+      endif
+      !!ce = !ce
+    elsehandle ANY
+      !!ce = !ce
+    endhandle
+  elsehandle ANY
+  endhandle
+
+  -- PUT THIS IN POST BUILD FOR LISEGA
+
+  -- With a type 7/20 (Dynamic hanger) if an offset has been given we will have to rebuild the support
+  -- because that are only built them vertically
+
+  !!ce = !this.ce
+  handle NONE
+    !supportName = !!ce.name
+    $!supportName/H1
+    handle ANY
+    endhandle
+    !configNumber = :MdsHConfig of $!supportName
+    if (!configNumber.upcase().eq('UNSET') or !configNumber.eq('')) then
+      !configNumber = !!mdsInterfaceHanger.configNumber.string()
+    endif
+
+    -- The rest element will have the :USTHCFGKEY user defined attribute set
+    -- The configuration selected in LICAD will be stored at field two
+    -- in a string like LD.01.35.00.03
+    -- Strip out the config selected
+
+    !licadConfigString = :USTHCFGKEY of owner of $!supportName/H1
+    !licadConfig = !licadConfigString.after('.').before('.').real()
+
+    -- Remove any alpha chars H and V from confignumber
+    !configNumber = !configNumber.replace('V','').replace('H','')
+    !dynOffset  = :MdsDynOffset of $!supportName/H1
+    !dynOffsetY = :MdsDynOffY of $!supportName/H1
+
+    -- Find Number of Hangers in REST
+    var !hangColl coll all HANG for REST
+    !hangNum = !hangColl.size()
+    --$R110
+    --------------------------------------------------------
+    -- Dynamic or Angulating supports
+    --------------------------------------------------------
+    if (!configNumber.real().eq(7) or !configNumber.real().eq(20) or !configNumber.real().eq(25) or !configNumber.real().eq(21)) then
+
+      -- dtf >> dec 2005 check for parallel dynamic
+      !dynamicparallel =  FALSE
+      if (!licadConfig.eq(9) or !licadConfig.eq(8)) then
+        -- we need to test if hh to ht direction id the same as the leave of atta
+        !directions = !!mdsremovegrad(!this.ce)
+        if (!directions[1].angle(!this.hangerForm.support.tdir).gt(179.9) and !directions[1].angle(!this.hangerForm.support.tdir).lt(180.1)) then
+          !dynamicparallel =  TRUE
+        elseif (!directions[1].angle(!this.hangerForm.support.tdir).gt(-0.1) and !directions[1].angle(!this.hangerForm.support.tdir).lt(0.1)) then
+          !dynamicparallel =  TRUE
+        else
+        endif
+
+        -- <RM> - fix 12/02/08 - changed below because i was having problems with parallel dynamic supports being created 180 degrees away from the connecting face
+        --!dirofstrut = !this.hangerForm.support.tdir.opposite()
+        -- if there are any problems with this try uncommenting the logic test below
+        --if !dynamicparallel then
+        !dirofstrut = !this.hangerForm.support.tdir.opposite()
+        --else
+        --  !dirofstrut = !this.hangerForm.support.tdir.opposite()
+        --endif
+        -- <RM> -- end of fix 12/02/08
+      endif
+      -- dtf <<< end of check
+
+      --if !licadConfig.eq(1) or !licadConfig.eq(2) or !licadConfig.eq(9) then
+      if (!hangNum.eq(1)) then
+        -- Dynamic or Angulating support and only 1 hanger?
+
+        -- Orientate pipe clamp/support atta using tail direction
+        hang
+        !hhtoHtdir = !this.hangerForm.support.headtoTailDir
+        !tdir = tdir wrt /*
+        --q var !tdir
+        pcla 1
+        !firstChar = !!ce.spref.namn.after('/').substring(1,1)
+        !typeOfPcla = !!ce.spref.namn.after('/').substring(1,2)
+        if (!firstChar.eq('R')) then
+          !typeOfPcla = !!ce.spref.namn.after('/R').substring(1,2)
+        endif
+        if (!typeOfPcla.eq('37')) then
+          ori and p4 is $!tdir
+          ori and p4 is $!hhtoHtdir
+          handle ANY
+            ori
+          elsehandle NONE
+            --rotate about pa by 180
+          endhandle
+
+        else
+          if (!dynamicparallel) then
+            var !p9dir p9 dir of $!supportName
+            !p9diropp = !p9dir.direction().opposite()
+            ori and p10 is $!p9diropp
+          else
+            ori and p12 is $!tdir
+            handle ANY
+              ori
+            endhandle
+          endif
+        endif
+        if (!licadConfig.eq(9)) then
+          if (!dynamicparallel) then
+            var !p9dir p9 dir of $!supportName
+            !p9diropp = !p9dir.direction().opposite()
+            ori and p10 is $!p9diropp
+          else
+            --q var !tdir
+            ori and p10 is $!tdir
+            handle ANY
+              ori and p11 is p9 of $!supportName
+              rotate about pa by 180
+              -- pipe must be vertical
+
+            elsehandle NONE
+              rotate about pa by 180
+            endhandle
+          endif
+        elseif (!licadConfig.eq(62)) then
+          !opTdir = !tdir.opposite()
+          ori and p10 is $!opTdir
+        endif
+
+        if (!typeOfPcla.eq('36')) then
+          -- Orientate the Olet accordingly
+          !orice = !!ce
+
+          $!supportName/LUG1
+          handle ANY
+          elsehandle NONE
+            ori and p12 is p4 of pcla 1 of $!supportName/H1
+            handle ANY
+              ori and p3 is p4 of pcla 1 of $!supportName/H1
+            endhandle
+          endhandle
+          !!ce = !orice
+        elseif (!typeOfPcla.eq('T9')) then
+          -- Orientate the Olet accordingly
+          !orice = !!ce
+
+          $!supportName/LUG1
+          handle ANY
+          elsehandle NONE
+            if (!dynamicparallel.not()) then
+              ori and p12 is p11 of pcla 1 of $!supportName/H1
+              handle ANY
+                ori and p3 is p11 of pcla 1 of $!supportName/H1
+                handle ANY
+                endhandle
+              endhandle
+            else
+              ori and p12 is $!p9diropp
+              handle ANY
+                ori and p3 is $!p9diropp
+                handle ANY
+                endhandle
+              endhandle
+            endif
+          endhandle
+          !!ce = !orice
+
+        elseif (!typeOfPcla.eq('37')) then
+          !orice = !!ce
+          $!supportName/LUG1
+          handle ANY
+          elsehandle NONE
+            ori and p3 is p4 of pcla 1 of $!supportName/H1
+          endhandle
+          !!ce = !orice
+        endif
+        $!supportName
+
+        if (!dynamicparallel.not()) then
+          ori and p9 is $!tdir
+          handle ANY
+            ori and p9 is p4 of pcla 1 of $!supportName/H1
+            handle ANY
+            elsehandle NONE
+              rotate about pl by 180
+            endhandle
+          endhandle
+        endif
+        same
+
+        -- Connect and point hele 1 (snubber) at the tail
+        -- If the pcla is a type 37 then there is an extra scla for the connection
+
+        if (!typeOfPcla.eq('36') or !typeOfPcla.eq('T9')) then
+          hele 1
+          if (!dynOffset.eq(0) and !dynOffsetY.eq(0)) then
+            ang 90
+            --            elseif !dynOffsetY.neq(0) and !!mdsInterfaceDynOffset.anglex.val.gt(0) then
+          elseif (!dynOffsetY.neq(0) and !dynOffset.gt(0)) then
+            ang 0
+          elseif (!dynOffsetY.neq(0)) then
+            ang 90
+          else
+            -- offset x only
+            ang 0
+          endif
+
+          if (!licadConfig.eq(1)) then
+            conn and p13 is p97 of prev
+            handle ANY
+            endhandle
+          elseif (!licadConfig.eq(9)  and !dynamicparallel ) then
+            if (!dynOffsetY.eq(0) and !dynOffset.eq(0)) then
+              -- set a default value the same as the length of PLCA 1
+              --!!ce.owner.tpos  = !this.savedTailPosition
+              pin 1 at pl of prev
+              !tpos = !!ce.owner.tposition
+              pin 2 at $!tpos
+              !this.hangerForm.support.tposition = !tpos
+              !this.savedTailPosition = !tpos
+              conn and p13 is $!dirofstrut
+            else
+              pin 1 at pl of prev
+              pin 2 at $!this.hangerForm.support.tposition
+              var !ddir const dir pin 1 to pin 2
+              conn and  p13 is $!ddir
+            endif
+
+          elseif (!licadConfig.eq(9) and !dynOffsetY.neq(0)) then
+            pin 1 at pl of prev
+            pin 2 at $!this.hangerForm.support.tposition
+            var !ddir const dir pin 1 to pin 2
+            conn and  p13 is $!ddir
+          else
+            --conn and p12 is $!tdir
+            pin 1 at pl of prev
+            pin 2 at $!this.hangerForm.support.tposition
+            var !ddir const dir pin 1 to pin 2
+            conn and  p13 is $!ddir
+            handle ANY
+              !opTdir = !tdir.opposite()
+              conn and p4 is $!opTdir
+              handle any
+                --specific fix for type 16 spring i.e. /LISEGA3.0/165225 series
+                flip ori
+                conn and p3 is $!opTdir
+              endhandle
+            endhandle
+          endif
+          nex
+          if (!configNumber.real().eq(25) and !dynOffset.eq(0)) then
+            conn and pl is pa of prev
+            handle ANY
+            endhandle
+
+          elseif (!configNumber.real().eq(7) and !dynamicparallel) then
+            conn and pl is $!dirofstrut
+          else
+            conn
+          endif
+
+        elseif (!typeOfPcla.eq('37')) then
+          hele 1
+          if (!!ce.:MDSVprmMto.not()) then
+            conn and pl is p8 of prev
+          else
+            conn
+          endif
+          --conn and pl is p8 of prev
+          hele 2
+          if (!dynOffset.eq(0) and !dynOffsetY.eq(0)) then
+            ang 90
+          elseif (!dynOffsetY.neq(0) and !!mdsInterfaceDynOffset.anglex.val.gt(0)) then
+            ang 0
+          elseif (!dynOffsetY.neq(0)) then
+            ang 90
+          else
+            -- offset x only
+            ang 0
+          endif
+          --conn and p12 is $!tdir
+          conn and p13 is p2 of prev 2
+          handle ANY
+            !opTdir = !tdir.opposite()
+            conn and p4 is $!opTdir
+            handle any
+              flip ori
+              conn and p3 is $!opTdir
+            endhandle
+          endhandle
+          nex
+          if (!configNumber.real().eq(25) and !dynOffset.eq(0)) then
+            conn and pl is pa of prev
+          else
+            !opTdir = !tdir.opposite()
+            conn and pl is $!opTdir
+          endif
+        endif
+
+        -- Connect and point the steel clamp at the tail (opposite)
+        scla 1
+        --!opTdir = !this.hangerForm.support.tdir.opposite()
+        !opTdir = !!ce.owner.tdir.opposite()
+        --!opTdir = !tdir.opposite()
+        conn and p2 is $!opTdir
+        if (!configNumber.real().neq(20)) then
+          rotate about pl by 180
+        elseif (!licadConfig.eq(9) or !licadConfig.eq(1)) then
+          ori p2 is $!opTdir and pa is pl of prev
+          rotate about pl by 180
+        endif
+
+        -- If there is a welded plate, connect that to the scla
+
+        wpad 1
+        handle ANY
+        elsehandle NONE
+          -- <RM> 09 Dec 06 -- fix 2 -- modified the following line
+          -- so that the connection ori of the wpad takes into account
+          -- the pads zdir as well as x, this was because
+          -- the pad was not being orientated parallel to an stwall
+          -- conn and x is p1 of prev
+          conn and x is p1 of prev and z is $!tdir
+          handle ANY
+            conn
+          endhandle
+          -- <RM> 09 Dec 06 -- end of fix 2
+        endhandle
+
+        -- Reposition tail at pl of last mem if no offset is found, otherwise put the tail at the saved tail position
+        hang
+        if (!dynOffset.eq(0) and !dynOffsetY.eq(0)) then
+          pos pt at pl of last mem
+          if (!dynamicparallel) then
+            -- need to project from pl of the pclamp to the tdir/tpos plane
+            -- and reposition the hanger tail there
+            -- set the new tailpos
+            -- get a plane at tpos with z ori tdir
+
+            !correcttpos = !!ce.tref.position.wrt( /* )
+            --!tdirpv = object POINTVECTOR(!this.savedTailPosition, !tdir)
+            !tdirpv = object POINTVECTOR(!correcttpos, !tdir)
+
+            -- get a pointvector at pl of the pclamp in the opposite direction to tdir
+            var !pclaplpos pos pl of pcla 1 wrt /*
+
+            --<RM 11/07/08> -- altered the attachment point on the support surface so that it runs directly parallel to the pipe
+            -- as per instruction from Areva specifically Lutzian Widuch.
+
+            var !vecdir dir pl of $!supportName
+            !pclapv = object POINTVECTOR(!pclaplpos.position(), !vecdir.direction())
+            --!pclapv = object POINTVECTOR(!pclaplpos.position(), !tdir.opposite())
+            !newtpos = !pclapv.intersection(!tdirpv.plane())
+            --!this.savedTailPosition = !!ce.tpos
+            pos pt at $!newtpos
+          else
+            tpos $!this.savedTailPosition
+            last mem
+            if (!!ce.type.eq('WPAD')) then
+              pos pl at pt
+              prev
+              if (!!ce.type.eq('SCLA')) then
+                pos pl at pa of next
+              endif
+            elseif (!!ce.type.eq('SCLA')) then
+              pos pl at pt
+            endif
+            prev
+            -- <RM> 19/02/07 -- changed the following to direct p13 in a derived direction
+            -- this is to stop an error where the rigid strut was not pointing toward the sclamp
+            --conn and p13 is from pl of prev to pa of next
+            var !strutdir const direction pa to pa of next
+            conn and p13 is $!strutdir
+            handle ANY
+              prev
+              conn and p4 is from pl of prev to pa of next 2
+              handle any
+                --handle situation in which we have an SCLA connected between a PCLA and type 16 spring i.e. /LISEGA3.0/165225 series
+              endhandle
+              next conn
+            endhandle
+            hang
+
+          endif
+          --move ht u thr tref
+          -- dtf >>> Mod to check to see if the tail direction needs adjusting
+
+          if (!configNumber.real().eq(7) or !configNumber.real().eq(21)) then
+
+            -- Position the scla/wpad at the saved tail position
+            wpad 1
+            handle NONE
+              pos pl at pt
+              bac
+              ori
+              conn to HT
+              scla 1
+              pos pl at pa of prev
+              conn
+              handle ANY
+                fconn
+              endhandle
+              !p2dir = p2 dir of nex
+              !opp2dir = !p2dir.opposite()
+              ori and p1 is $!opp2dir
+              for
+              wpad 1
+              conn and x is p1 of prev
+              handle ANY
+                conn
+              endhandle
+              same
+            elsehandle ANY
+              scla 1
+              pos pl at pt
+              bac
+              conn
+              handle ANY
+                fconn
+              endhandle
+              !p2dir = p2 dir of nex
+              !opp2dir = !p2dir.opposite()
+              ori and p1 is $!opp2dir
+              handle ANY
+                --handle case where p2 is not at the connecting eye of the hele i.e lisega component /LISEGA3.0/331818
+                !p2dir = p98 dir of nex
+                handle ANY
+                  --do nothing
+                elsehandle NONE
+                  !opp2dir = !p2dir.opposite()
+                  ori and p1 is $!opp2dir
+                  handle ANY
+                  endhandle
+                endhandle
+              endhandle
+              for
+            endhandle
+
+            -- Orientate the pipe clamp
+            pcla 1
+            if (!licadConfig.eq(9) and !dynamicparallel) then
+              -- orientate p10 in the opposite direction of p 9 of atta
+              !p9diropp = !!ce.owner.href.pdir[9].opposite()
+              ori and p10 is $!p9diropp
+            elseif (!licadConfig.eq(9)) then
+              ori and p10 is tow pa of scla 1
+            elseif (!licadConfig.eq(62)) then
+              ori and p10 is tow pa of scla 1
+            else
+              ori and p12 is tow pa of scla 1
+              rotate about pa by 180
+            endif
+
+            -- Orientate the snubber
+
+            if (!typeOfPcla.eq('36')  ) then
+              hele 1
+              -- <RM> 19/02/07 -- changed the following to direct p13 in a derived direction
+              -- this is to stop an error where the rigid strut was not pointing toward the sclamp
+              --conn and p13 is from pl of prev to pa of next
+              var !strutdir const direction pa to pa of next
+              conn and p13 is $!strutdir
+              handle (2,360)
+                conn and p4 is from pl of prev to ht
+                handle any
+                endhandle
+              endhandle
+              pos pa at pl of prev
+            elseif (!typeOfPcla.eq('37')) then
+              hele 1
+              if (!!ce.:MDSVprmMto.not()) then
+                conn and pl is p8 of prev
+              else
+                conn
+              endif
+              nex
+              hele 2
+              -- <RM> 19/02/07 -- changed the following to direct p13 in a derived direction
+              -- this is to stop an error where the rigid strut was not pointing toward the sclamp
+              --conn and p13 is from pl of prev to pa of next
+              var !strutdir const direction pa to pa of next
+              conn and p13 is $!strutdir
+              handle (2,360)
+                conn and p4 is from pl of prev to ht
+                handle any
+                  --handle situation in which we have an SCLA connected between a PCLA and type 16 spring i.e. /LISEGA3.0/165225 series
+                endhandle
+              endhandle
+              pos pa at pl of prev
+            elseif (!typeOfPcla.eq('T9') and !dynamicparallel.not()) then
+              HELE 1
+              -- altered this LINE as it was causing connection direction problems - Richard Martin 16\08\06
+              --conn and p13 is from pa of prev to pa of next
+              -- <RM> 19/02/07 -- changed the following to direct p13 in a derived direction
+              -- this is to stop an error where the rigid strut was not pointing toward the sclamp
+              --conn and p13 is from pl of prev to pa of next
+
+              var !strutdir const direction pa to pa of next
+              conn and p13 is $!strutdir
+              handle ANY
+                conn and p4 is from pa of prev to ht
+              endhandle
+            elseif (!typeOfPcla.eq('T9') and !dynamicparallel) then
+              HELE 1
+              var !strutdir const direction pa to pa of next
+
+              -- <RM> 24/07/08 -- end of fix
+              conn and p13 is $!strutdir
+            endif
+
+
+            if (!licadConfig.eq(9) and !dynamicparallel) then
+              -- LD09 support is parallel to pipe
+              nex scla
+              conn and pl is $!dirofstrut
+              nex wpad
+              handle ANY
+              elsehandle NONE
+                conn
+              endhandle
+              end
+            endif
+
+          elseif (!configNumber.real().eq(20) or !configNumber.real().eq(21)) then
+
+            !iamHere = !!ce
+            hele 1
+            -- <RM> 19/02/07 -- changed the following to direct p13 in a derived direction
+            -- this is to stop an error where the rigid strut was not pointing toward the sclamp
+            --conn and p13 is from pl of prev to pa of next
+            var !strutdir const direction pa to pa of next
+
+            -- <RM> 19/02/08 -- added this test for dynamic parallel types because the strut direction
+            -- was not being created properly
+            if (!dynamicparallel) then
+              var !dynamicdir const dir pa to pt
+              --!strutdir = !strutdir.direction().opposite().string()
+              !strutdir = !dynamicdir
+            else
+              !strutdir = !strutdir
+            endif
+            -- <RM> 19/02/08 -- end of fix
+
+            conn and p13 is $!strutdir
+            handle (61,220)
+              --If the hele 1 is already in the correct position it will fail to connect
+            endhandle
+          endif
+          -- dtf <<< end of mod
+
+        else
+
+          -- If we have positioned the tail at the saved tail position the hanger has an offset which we require to rebuild the hanger
+
+          tpos $!this.savedTailPosition
+          -- Position the scla/wpad at the saved tail position
+          wpad 1
+          handle NONE
+            pos pl at pt
+            bac
+            ori
+            pos pl at pt
+            scla 1
+            pos pl at pa of prev
+            conn
+            handle ANY
+              fconn
+            endhandle
+            !p2dir = p2 dir of nex
+            !opp2dir = !p2dir.opposite()
+            ori and p1 is $!opp2dir
+            for
+            wpad 1
+            conn and x is p1 of prev
+            handle ANY
+              conn
+            endhandle
+            same
+          elsehandle ANY
+            scla 1
+            pos pl at pt
+            hang
+            !opTdir = !!ce.tdir.opposite()
+            same
+
+            if (!licadConfig.eq(9)) then
+              -- this fix was applied to stop a problem where the scla was orientating incorrectly
+              -- when we have x and y offsets.
+              -- do nothing
+            else
+              ori and pl is $!opTdir
+            endif
+          endhandle
+          -- Orientate the pipe clamp
+
+          pcla 1
+          if (!licadConfig.eq(9) or !licadConfig.eq(62)) then
+
+            -- RM 22/02/08 -- fixed a problem below where if the sclamp was not orientated correctly
+            -- the pclamp was not rotated towards it correctly and hence the resulting hele direction was incorrect and produced an error
+            -- get the direction to rotate the pclamp to
+            --ori and p10 is tow pa of scla 1
+            !direction =  tdir of $!this.supportName/H1 wrt /*
+            var !tposi tpos of $!this.supportName/H1 wrt /*
+            !tpospv = object POINTVECTOR(!tposi.position().wrt( /* ), !direction)
+            var !scladist const dist pa of scla 1 of $!supportName/H1 to pl of scla 1 of $!supportName/H1
+            !tpospv = !tpospv.offset(!scladist.real())
+            !sclapos = !tpospv.position
+
+            var !a pl dir wrt /*
+            var !pclapos pos p0 wrt /*
+            --var !sclapos pos pa of scla 1 of $!supportName/H1 wrt /*
+            !pclapv = object POINTVECTOR(!pclapos.position().wrt( /* ), !a.direction())
+            var !b const dir p0 to $!sclapos
+            ori and p0 is $!b wrt /*
+            handle ANY
+              ori and p10 is tow pa of scla 1
+            endhandle
+            -- <RM> 22/02/08 -- end of fix
+          else
+
+            ori and p12 is tow pa of scla 1
+            rotate about pa by 180
+          endif
+          if (!typeOfPcla.eq('36') or !typeOfPcla.eq('37') or !typeOfPcla.eq('T9')) then
+            -- Orientate the Olet accordingly
+            !orice = !!ce
+            $!supportName/LUG1
+            handle ANY
+            elsehandle NONE
+              ori and p12 is tow pa of scla 1 of $!supportName/H1
+              handle ANY
+                ori and p3 is tow pa of scla 1 of $!supportName/H1
+              endhandle
+            endhandle
+            !!ce = !orice
+          endif
+
+          -- Orientate the snubber
+          hele 1
+          if (!licadConfig.eq(55) or !licadConfig.eq(62)) then
+            conn and p12 is $!tdir
+            handle ANY
+              --conn and p4 is $!opTdir
+              conn and p4 is from pl of prev to ht
+            endhandle
+            nex
+            conn
+          else
+            if (!typeOfPcla.eq('36') or !typeOfPcla.eq('T9')) then
+
+              -- <RM> 19/02/07 -- changed the following to direct p13 in a derived direction
+              -- this is to stop an error where the rigid strut was not pointing toward the sclamp
+              --conn and p13 is from pl of prev to pa of next
+              var !strutdir const direction pa to pa of next
+              conn and p13 is $!strutdir
+            elseif (!typeOfPcla.eq('37')) then
+              if (!!ce.:MDSVprmMto.not()) then
+                conn and pl is p8 of prev
+              else
+                conn
+              endif
+              next hele
+              -- <RM> 19/02/07 -- changed the following to direct p13 in a derived direction
+              -- this is to stop an error where the rigid strut was not pointing toward the sclamp
+              --conn and p13 is from pl of prev to pa of next
+              var !strutdir const direction pa to pa of next
+              conn and p13 is $!strutdir
+            endif
+          endif
+          pos pa at pl of prev
+          if (!licadConfig.eq(9) and ( !dynOffsetY.neq(0) or !dynOffset.neq(0) )) then
+            nex
+            ori p2 is $!opTdir and pa is pl of prev
+            rotate about pl by 180
+            prev
+            -- <RM> 19/02/07 -- changed the following to direct p13 in a derived direction
+            -- this is to stop an error where the rigid strut was not pointing toward the sclamp
+            --conn and p13 is from pl of prev to pa of next
+            var !strutdir const direction pa to pa of next
+            conn and p13 is $!strutdir
+            sam
+            -- If the pipe is on a large slope the effective yoff may be greater than the value off xoffset so
+            -- we work out the angles and rotate the hele and scla accordingly
+            !angletoscla = !!mdsgetsclaangle(!!ce)
+            if (!angletoscla[2].gt(!angletoscla[1])) then
+              prev
+              if (!!ce.angle.eq(0)) then
+                !!ce.angle = 90
+                nex
+                rotate about pl by -90
+              elseif (!!ce.angle.eq(90)) then
+                !!ce.angle = 0
+                nex
+                rotate about PL by 90
+              endif
+              -- check for Angle non pivot greater than 6 degreed here !!!!!
+            endif
+          else
+            nex
+            handle ANY
+            elsehandle NONE
+              ori p2 is $!opTdir and pa is pl of prev
+              rotate about pl by 180
+              prev
+              -- <RM> 19/02/07 -- changed the following to direct p13 in a derived direction
+              -- this is to stop an error where the rigid strut was not pointing toward the sclamp
+              --conn and p13 is from pl of prev to pa of next
+              var !strutdir const direction pa to pa of next
+              conn and p13 is $!strutdir
+              handle ANY
+              endhandle
+              sam
+            endhandle
+            -- If the pipe is on a large slope the effective yoff may be greater than the value off xoffset so
+            -- we work out the angles and rotate the hele and scla accordingly
+            !angletoscla = !!mdsgetsclaangle(!!ce)
+            --q var !angletoscla
+
+            if (!angletoscla[2].gt(!angletoscla[1])) then
+              prev
+              if (!!ce.angle.eq(0)) then
+                !!ce.angle = 90
+                nex
+                -- <RM> 9 Dec 06 -- was getting a very specific error in which the scla's where
+                -- being rotated about an arbitrary point instead of pl of the scla, rotate about
+                -- pin 1 instead for this case
+                var !a ref of wpad 1
+                handle ANY
+                  !wpad = FALSE
+                elsehandle NONE
+                  !wpad = TRUE
+                endhandle
+                if (!licadConfig.eq(1) and !wpad) then
+                  rotate about pin 1 by -90
+                else
+                  rotate about pl by -90
+                endif
+                -- <RM> 9 Dec 06 -- end of fix
+              elseif (!!ce.angle.eq(90)) then
+                !!ce.angle = 0
+                nex
+                rotate about PL by 90
+              endif
+              -- check for Angle non pivot greater than 6 degreed here !!!!!
+            endif
+          endif
+        endif
+        -- LD07 LD11
+      elseif (!licadConfig.eq(7) or !licadConfig.eq(11)) then
+
+        -- Hanger numbers must be 2
+        -- The pipe clamp must always point away from the wall/floor/ceiling
+        pcla 1
+        ori and p2 is tdir of owner
+        var !tdirOfOwner tdir of owner
+        -- Align atta p9
+        $!supportName
+        ori and p9 is $!tdirOfOwner
+        same
+
+        !orice = !!ce
+        $!supportName/LUG1
+        handle ANY
+        elsehandle NONE
+          ori and p12 is p2 of pcla 1 of cref of $!this.ce
+          handle ANY
+            ori and p3 is p2 of pcla 1 of cref of $!this.ce
+          endhandle
+          --if ( (!!ce.adir.up.eq(-1) or !!ce.adir.up.eq(1) )  and !lisegaType.eq('LD') and !lisegaNumber inset ('07') and !lisegaclampno.eq('35') ) then
+          if ( (!!ce.adir.up.eq(-1) or !!ce.adir.up.eq(1) )  and !testType1.eq('LD') and !testType2 inset ('07','10') and !testType3.eq('35') ) then
+            rotate about pa by 15
+            $!supportName/LUG2
+            handle NONE
+              --ori and p12 is p9 of $!this.ce
+              ori and p12 is p2 of pcla 1 of cref of $!this.ce
+              handle ANY
+                ori and p3 is p2 of pcla 1 of cref of $!this.ce
+              endhandle
+              rotate about pa by -15
+            elsehandle ANY
+            endhandle
+          endif
+        endhandle
+        !!ce = !orice
+
+        !tdirOpp = !tdirOfOwner.direction().opposite()
+        hele 1
+        if (!licadConfig.eq(11)) then
+          conn and y is p27 of prev
+        else
+          conn and y is p9 of prev
+          handle ANY
+            conn and y is p11 of href of owner
+          endhandle
+        endif
+        nex
+        if (!!ce.:MDSVprmMto.not()) then
+          conn and pl is p5 of prev
+        else
+          conn
+        endif
+        !padir = !!ce.adir
+        --nex conn and P12 is $!tdirOfOwner
+        nex conn and P12 is $!padir
+        -- Steel clamp
+        nex conn and pl is $!tdirOpp
+        nex
+        handle ANY
+          -- Wpad not selected
+        elsehandle NONE
+          conn and x is p1 of prev
+          handle ANY
+            conn
+          endhandle
+        endhandle
+        hang 2
+        conn ph to p3 of href
+        hele 1
+        if (!!ce.:MDSVprmMto.not()) then
+          conn and pl is p5 of href of owner
+        else
+          conn
+        endif
+        !padir = !!ce.adir
+        --nex conn and P12 is $!tdirOfOwner
+        nex conn and P12 is $!padir
+        nex conn and pl is $!tdirOpp
+        nex
+        handle ANY
+          -- Wpad not selected
+        elsehandle NONE
+          conn and x is p1 of prev
+          handle ANY
+            conn
+          endhandle
+        endhandle
+        hang 1
+        pos pt at pl of last mem
+        hang 2
+        pos pt at pl of last mem
+        -- LD10 LD12
+      elseif (!licadConfig.eq(10) or !licadConfig.eq(12)) then
+        -- The pipe clamp must always point towards the wall/floor/ceiling
+        pcla 1
+
+        var !tdirOfOwner tdir of owner
+        !tdirOpp = !tdirOfOwner.direction().opposite()
+        ori and p2 is $!tdirOpp
+
+        !orice = !!ce
+        $!supportName/LUG1
+        handle ANY
+        elsehandle NONE
+          ori and p12 is p2 of pcla 1 of cref of $!this.ce
+          handle ANY
+            ori and p3 is p2 of pcla 1 of cref of $!this.ce
+          endhandle
+          --if ( (!!ce.adir.up.eq(-1) or !!ce.adir.up.eq(1) )  and !lisegaType.eq('LD') and !lisegaNumber inset ('07') and !lisegaclampno.eq('35') ) then
+          if ( (!!ce.adir.up.eq(-1) or !!ce.adir.up.eq(1) )  and !testType1.eq('LD') and !testType2 inset ('07','10') and !testType3.eq('35') ) then
+            rotate about pa by 15
+            $!supportName/LUG2
+            handle NONE
+              --ori and p12 is p9 of $!this.ce
+              ori and p12 is p2 of pcla 1 of cref of $!this.ce
+              handle ANY
+                ori and p3 is p2 of pcla 1 of cref of $!this.ce
+              endhandle
+              rotate about pa by -15
+            elsehandle ANY
+            endhandle
+          endif
+
+
+          -- if ( (!!ce.adir.up.eq(-1) or !!ce.adir.up.eq(1) ) and !licadConfig.eq(10) ) then
+          -- this is a special case already catered for above
+          -- dtf but it may get rotated here so do it again
+          --else
+
+          --  ori and p12 is $!tdirOpp
+          --handle ANY
+          --  ori and p3 is $!tdirOpp
+          --endhandle
+          --endif
+        endhandle
+        !!ce = !orice
+
+        hele 1
+        if (!licadConfig.eq(12)) then
+          conn and y is p27 of prev
+        else
+          conn and y is p9 of prev
+          handle ANY
+            conn and y is p11 of href of owner
+          endhandle
+        endif
+        nex
+        if (!!ce.:MDSVprmMto.not()) then
+          conn and pl is p5 of prev
+        else
+          conn
+        endif
+        !padir = !!ce.adir
+        --nex conn and P12 is $!tdirOfOwner
+        nex conn and P12 is $!padir
+        -- Steel clamp
+        nex conn and pl is $!tdirOpp
+        nex
+        handle ANY
+          -- Wpad not selected
+        elsehandle NONE
+          conn and x is p1 of prev
+          handle ANY
+            conn
+          endhandle
+        endhandle
+        hang 2
+        Href HELEMENT 1 of HANGER 1
+        conn ph to p3 of href
+        hele 1
+        if (!!ce.:MDSVprmMto.not()) then
+          conn and pl is p5 of href of owner
+        else
+          conn
+        endif
+        !padir = !!ce.adir
+        --nex conn and P12 is $!tdirOfOwner
+        nex conn and P12 is $!padir
+        nex conn and pl is $!tdirOpp
+        nex
+        handle ANY
+          -- Wpad not selected
+        elsehandle NONE
+          conn and x is p1 of prev
+          handle ANY
+            conn
+          endhandle
+        endhandle
+        hang 1
+        pos pt at pl of last mem
+        hang 2
+        pos pt at pl of last mem
+      elseif (!licadConfig.eq(08)) then
+        -- LD08
+
+        hang1
+        pin 1 at hh
+        pin 2 at $!!ce.tref
+        !tdir = !this.hangerForm.support.tdir
+        if (!!ce.href.adir.up.eq(1) or !!ce.href.adir.up.eq(-1)) then
+          pin 2 copy pin 1
+          !pin1dir = !!ce.href.adir
+          pin 2 dir $!pin1dir
+          pin 2 plane pin 2 thro $!!ce.tref
+          var !temphdir construct dir pin 2 to pin 1
+          !hdir = !temphdir.direction()
+          hdir $!hdir
+          var !tempTdir construct dir pin 2 to pin 1
+          !tdir = !tempTdir.direction()
+          tdir $!tdir
+        else
+          --var !tempTdir construct dir pin 2 to pin 1
+          --!tdir = !tempTdir.direction()
+          --Tdir $!tdir
+          --!this.hangerForm.support.tdir = !tdir
+          -- Get absolute leave dir of atta because if its a dynamic riser clamp the tdir may not be UP or DOWN
+          !dirs = !!mdsremovegrad(!!ce.href)
+          !hhdir = !dirs[1]
+          if (!hhdir.neq(!tdir)) then
+            !hdir = !dirs[1].opposite()
+          else
+            !hdir = !dirs[1]
+          endif
+          hdir $!hdir
+        endif
+        !ophdir = !hdir.opposite()
+        pcla 1
+        conn and p5 is p11 of href of hang 1
+        nex
+        conn and pl is p5 of prev
+        nex
+        --          conn and p13 is $!ophdir
+        conn and p13 is $!dirofstrut
+
+        handle ANY
+          conn and p13 is $!ophdir
+        endhandle
+        var !p13dir dir p13
+        nex
+        !opTdir = !tdir.opposite()
+        conn and pl is $!opTdir
+        do from !!ce.order + 1 to !!ce.owner.mcount()
+          nex conn
+        enddo
+        hang
+        pos pt at pl of last mem
+        hang 2
+        pos hh at p3 of href
+        !ophdir = !this.hangerForm.support.tdir.opposite()
+        hdir $!ophdir
+        --hdir $!hdir
+        1
+        conn and pl is p5 of href of owner
+        nex
+        conn and p13 is $!ophdir
+        nex
+        conn and pl is $!opTdir
+        do from !!ce.order + 1 to !!ce.owner.mcount()
+          nex conn
+        enddo
+        hang
+        pos pt at pl of last mem
+      endif
+      -- Static angulated supports
+    elseif (!configNumber.real().eq(21) or !configNumber.real().eq(25)) then
+      -- $P Why do we change the leav of prev?
+      scla 1
+      prev
+      lea 1
+      scla 1
+      conn
+      end
+      pos pt at pl of last mem
+    endif
+  elsehandle ANY
+  endhandle
+
+  if (!licadConfig.eq(9)) then
+    --<RM> 21/08/08 removed the dynamicparallel check because the scla wasn't being orientated properly for these cases
+    --if !licadConfig.eq(9) and !dynamicparallel.not() then
+
+    -- <RM> 06/02/07 -- Fix for rigid strut direction,
+    -- where we have complex offset configurations for LD09's we need to rotate
+    -- the strut end and sclamp precisely so that they abide by the creation rules
+    -- we have agreed upon
+
+    !current = !!ce
+
+    !sclaOridir = !this.hangerForm.support.tdir
+
+    -- direct a vector from the pa point on the sclamp to the pl point on the pclamp
+    var !posScla pos pa of scla 1 wrt /*
+
+    var !posPcla pos pl of pcla 1 wrt /*
+
+    !sclatopcla = !posScla.position().direction(!posPcla.position())
+
+    if (!sclatopcla.string().neq(!sclaOridir.string())) then
+
+      -- cross the direction with tdir
+      !heleEyedir = !sclatopcla.cross(!sclaOridir)
+      handle ANY
+        -- we are hitting an error where the strut dir from scla to pcla is very nearly but not quite the same
+        -- as tdir, in this case just handle the error as no more action is required
+      elsehandle NONE
+
+        -- get the existing hele leave direction
+        --var !heleleavedir dir pl of hele 1 wrt /*
+
+        --!heleDiffAngle = !heleleavedir.direction().angle(!heleEyedir)
+
+        -- didn't want to use pins as below but i couldn't get the .angle calculation above to work
+        -- <RM> 28/03/07
+        pin 7 copy pl of hele 1
+        pin 8 at pl of hele 1
+        pin 8 dir $!heleEyedir
+        handle ANY
+          golabel /END
+        endhandle
+
+        var !a dir pin 7
+        var !b dir pin 8
+        !c = !a.direction().angle(!b.direction())
+
+        var !existingAngle angle of hele 1
+
+        !adjustedAngle = !existingAngle.real() + !c
+        hele 1
+
+        if (!adjustedAngle.gt(180)) then
+          !adjustedAngle = !adjustedAngle - 360
+        elseif (!adjustedAngle.lt(-180)) then
+          !adjustedAngle = !adjustedAngle + 360
+        endif
+
+        angle $!adjustedAngle
+
+        -- test the new angle to make sure it is the same as the calculated new heleeyedir
+        pin 7 copy pl of hele 1
+        var !a dir pin 7
+        !d = !a.direction().angle(!b.direction())
+        if (!d.abs().gt(1)) then
+          -- we chose the wrong angle for the strut, modify accordingly
+          !adjustedAngle = !existingAngle.real() - !c
+          hele 1
+          angle $!adjustedAngle
+        endif
+
+        -- now reconnect the sclamp and the wpad if it exists
+        scla 1
+        back
+        connect and p1 is $!heleEyedir
+        handle ANY
+          connect
+          handle ANY
+            fconnect and p1 is $!heleEyedir
+            handle ANY
+              fconn
+            endhandle
+          endhandle
+        endhandle
+        wpad 1
+        handle ANY
+        elsehandle NONE
+          back
+          connect
+        endhandle
+        forwards
+        $!current
+      endhandle
+    endif
+    -- <RM> 06/02/07 -- End of fix
+  endif
+
+  label /END
+  -- LISEGA DYNAMIC POST BUILD END
+
+  !ce = !!ce
+  rest
+  handle NONE
+    !lisegaType = !!ce.:USTHCFGKEY.substring(1,2)
+    !lisegaNumber = !!ce.:USTHCFGKEY.after('.').substring(1,2)
+    !lisegaclampno = !!ce.:USTHCFGKEY.after('.').after('.').substring(1,2)
+    !lisegaConfig = !lisegaType + !lisegaNumber
+    if (!lisegaConfig inset ('LS05','LS13','LS15','LS31','LS33','LS34','LS44','LS45','LS51','LS52','LS60','LS61','LS62','LS63')) then
+      hang 1
+      last mem
+      var !lbor pl bore
+      end
+      tbor $!lbor
+      if (!lisegaConfig inset ('LS05','LS31','LS72')) then
+        hang 1
+        POS pt AT last mem
+        TCONN ROD
+        TDIR D
+        hang 2
+        POS pt AT last mem
+        TCONN ROD
+        TDIR D
+
+      elseif (!lisegaConfig inset ('LS34')) then
+        hang 1
+        tdir D
+        TCON ROD
+        hang 2
+        last mem
+        !plDir = pl dir
+        !oppPldir = !plDir.opposite()
+        hang 2
+        tdir $!oppPldir
+        tcon FHEL
+      endif
+    elseif (!lisegaConfig inset('LS73','LS74')) then
+      hang 1
+      -- Make sure offsets set to 0 because we don't use it for these types
+      -- and we don't want to pass it to licad in modify mode
+      :MDSDynOffset  0
+      :MDSDynOffy  0
+      !tdir = !!ce.tdir
+      !opTdir = !tdir.opposite()
+      -- Make sure pclamp is in correct orientation
+      pcla 1
+      if (!lisegaConfig inset('LS73')) then
+        conn and p2 is $!opTdir
+        --rotate about pa by 180
+      else
+        conn and p2 is $!tdir
+      endif
+      -- Need to make sure cross beam is in correct orientation, it will have a p5 along the length of the beam
+      hele 1
+      conn and p5 is p10 of href of hang 1
+      handle ANY
+        conn and y  is p10 of href of hang 1
+      endhandle
+      -- check to see if cross member 180 out
+      !h1 = !!ce.owner.tref
+      if (!this.virtualFitting) then
+        !position = !this.virtualFittingNames[1].getPosition()
+        var !dist2 construct dist p2 to $!position
+        var !dist3 construct dist p3 to $!position
+      else
+        var !dist2 construct dist p2 to p0 of $!h1
+        var !dist3 construct dist p3 to p0 of $!h1
+      endif
+      if (!dist2.real() gt !dist3.real()) then
+        conn and p5 is p11 of href of hang 1
+        handle ANY
+          conn and y  is p11 of href of hang 1
+        endhandle
+      endif
+      nex
+      conn and pl is p5 of prev
+      !padir = !!ce.adir.opposite()
+      --nex conn and p4 is $!opTdir
+      nex conn and p4 is $!padir
+      nex
+      conn and pl is pa of prev
+      handle ANY
+        -- some times the extension piece not required
+      elsehandle NONE
+        nex
+      endhandle
+      conn and p2 is $!opTdir
+      do from !!ce.order + 1 to !!ce.owner.mcount()
+        nex conn
+      enddo
+      -- Second Hanger
+      hang 2
+      hcon lose
+      conn ph to p3 of hele 1 of hang 1
+      1
+      conn and pl is p5 of href of owner
+      !padir = !!ce.adir.opposite()
+      --nex conn and p4 is $!opTdir
+      nex conn and p4 is $!padir
+      nex
+      conn and pl is pa of prev
+      handle ANY
+        -- some times the extension piece not required
+      elsehandle NONE
+        nex
+      endhandle
+      conn and p2 is $!opTdir
+      do from !!ce.order + 1 to !!ce.owner.mcount()
+        nex conn
+      enddo
+      hang 1
+      pos ht at pl of last mem
+      last mem
+      var !lbor pl bore
+      end
+      tbor $!lbor
+      hang 2
+      pos ht at pl of last mem
+      last mem
+      var !lbor pl bore
+      end
+      tbor $!lbor
+    elseif (!lisegaConfig inset('LS75')) then
+      hang1
+      --pin 1 at pl of 1
+      pin 1 at href
+      --pin 2 at $!!ce.tref
+      --var !hdir construct dir pin 2 to pin 1
+      pin 2 copy pin 1
+      !pin1dir = !!ce.href.adir
+      pin 2 dir $!pin1dir
+      pin 2 plane pin 2 thro $!!ce.tref
+      var !temphdir construct dir pin 2 to pin 1
+      !hdir = !temphdir.direction()
+      hdir $!hdir
+      var !tempTdir construct dir pin 2 to pin 1
+      !tdir = !tempTdir.direction()
+      tdir $!tdir
+
+      !ophdir = !hdir.opposite()
+      --!ophdir = !this.hangerForm.support.tdir
+      pcla 1
+      conn and p5 is p11 of href of hang 1
+      nex
+      conn and pl is p5 of prev
+      nex
+      conn and p4 is $!ophdir
+      nex
+      conn and pl is p5 of pcla 1 of hang 1
+      nex
+      conn and pl is $!ophdir
+      do from !!ce.order + 1 to !!ce.owner.mcount()
+        nex conn
+      enddo
+      end
+      pos ht at pl of last mem
+      hang 2
+      pos hh at p3 of href
+      hdir $!ophdir
+      hele 1
+      conn and pl is p5 of pcla 1 of prev hang
+      nex
+      conn and p4 is $!ophdir
+      nex
+      conn and pl is p5 of pcla 1 of hang 1
+      nex
+      conn and pl is $!ophdir
+      do from !!ce.order + 1 to !!ce.owner.mcount()
+        nex conn
+      enddo
+      end
+      pos ht at pl of last mem
+    elseif (!lisegaConfig inset ('LS32')) then
+      hang 1
+      pos ht at pl of last mem
+      last mem
+      var !lbor pl bore
+      end
+      tbor $!lbor
+      --elseif !lisegaConfig inset('LS01','LS02','LS03','LS04','LS39','LS40','LS66','LS67','LS68','LS69','LS70','LS71','LS72') then
+    elseif (!lisegaConfig inset('LS01','LS02','LS03','LS04','LS06','LS07','LS10','LS11','LS39','LS40','LS42','LS43','LS65','LS66','LS67','LS68','LS69','LS70','LS71','LS72')) then
+      -- Need to make sure cross beam is in correct orientation, it will have a p5 along the length of the beam
+      hang 1
+      if (!lisegaConfig inset('LS06','LS07','LS42')) then
+        hele 3
+      elseif (!lisegaConfig inset('LS10','LS11')) then
+        hele 4
+      elseif (!lisegaConfig inset('LS43')) then
+        hele 5
+      else
+        hele 1
+        handle ANY
+          -- Set the uda :mdsdesimatl at the support atta to the material the
+          -- support was designed with
+
+          $!name
+          handle NONE
+            !pipeMaterial = :MdsPipemat of pspe of bran
+            handle NONE
+              !!ce.:MdsDesiMatl = !pipeMaterial
+              handle ANY
+              endhandle
+            elsehandle ANY
+            endhandle
+          elsehandle ANY
+          endhandle
+
+          !!ce = !ce
+          !!mdsDacControl(FALSE)
+          return
+        endhandle
+      endif
+
+      if (!lisegaConfig inset('LS04','LS67')) then
+        conn and p5 is p11 of href of hang 1
+        handle ANY
+          -- no p5 defined
+          conn and y  is p11 of href of hang 1
+        endhandle
+        -- check to see if cross member 180 out
+        !h1 = !!ce.owner.tref
+        --dun1218 if we are using virtual fittings then get positional information from the virtual fitting
+        --as an actual fitting may not exist
+        if (!this.virtualFitting) then
+          !position = !this.virtualFittingNames[1].getPosition()
+          var !dist2 construct dist p2 to $!position
+          var !dist3 construct dist p3 to $!position
+        else
+          var !dist2 construct dist p2 to p0 of $!h1
+          var !dist3 construct dist p3 to p0 of $!h1
+        endif
+        if (!dist2.real() lt !dist3.real()) then
+          conn and p5 is p10 of href of hang 1
+          handle ANY
+            conn and y  is p10 of href of hang 1
+          endhandle
+        endif
+
+      else
+        conn and p5 is p10 of href of hang 1
+        handle ANY
+          conn and y  is p10 of href of hang 1
+          handle ANY
+            PREV
+            rotate about pa by 180
+            NEX
+            CONN
+          endhandle
+
+        endhandle
+        -- check to see if cross member 180 out
+        !h1 = !!ce.owner.tref
+        --dun1218 if we are using virtual fittings then get positional information from the virtual fitting
+        --as an actual fitting may not exist
+        if (!this.virtualFitting) then
+          !position = !this.virtualFittingNames[1].getPosition()
+          var !dist2 construct dist p2 to $!position
+          var !dist3 construct dist p3 to $!position
+        else
+          var !dist2 construct dist p2 to p0 of $!h1
+          var !dist3 construct dist p3 to p0 of $!h1
+        endif
+        if (!dist2.real() gt !dist3.real()) then
+          conn and p5 is p11 of href of hang 1
+          handle ANY
+            conn and y  is p11 of href of hang 1
+            handle ANY
+              PREV
+              rotate about pa by 180
+              NEX
+              CONN
+            endhandle
+          endhandle
+        endif
+      endif
+
+      if (!lisegaConfig inset('LS02','LS03','LS39','LS40','LS66','LS69')) then
+
+        nex
+        conn
+      elseif (!lisegaConfig inset('LS68','LS70')) then
+        nex
+        conn
+        nex
+        conn
+        nex
+        conn
+      elseif (!lisegaConfig inset('LS04')) then
+        nex
+        if (!!ce.spref.name.matchwild('/79*').not()) then
+          -- special config selection in licad requires 1 less hele
+          prev
+        else
+          conn
+        endif
+      endif
+
+      do from !!ce.order + 1 to !!ce.owner.mcount()
+        nex
+        !u = !!ce.position
+        pos pa at pl of prev
+        ori
+        plane u thr $!u
+        if (!!ce.type.eq('SCLA')) then
+          prev
+          ori and y  is p11 of href of hang 1
+          nex
+          conn
+          handle ANY
+            fconn
+          endhandle
+        endif
+      enddo
+
+      hang 2
+      if (!lisegaConfig.neq('LS67') and !lisegaConfig.neq('LS04')) then
+        if (!lisegaConfig inset('LS06','LS07','LS42')) then
+          conn hh to p3 of hele 3 of hang 1
+        elseif (!lisegaConfig inset('LS10','LS11')) then
+          conn hh to p3 of hele 4 of hang 1
+        elseif (!lisegaConfig inset('LS43')) then
+          conn hh to p3 of hele 5 of hang 1
+        else
+          conn hh to p3 of hele 1 of hang 1
+        endif
+        hele 1
+        conn
+        !num = 1
+
+        if (!lisegaConfig inset('LS39','LS68','LS70')) then
+          nex
+          conn
+          nex
+          conn
+        endif
+      else
+        conn hh to p3 of hele 2 of hang 1
+        handle ANY
+          conn hh to p3 of hele 1 of hang 1
+          !lsrod  = !!ce.owner.member[1].member[2].lsrod
+          !num = 0
+        elsehandle NONE
+          !lsrod  = !!ce.owner.member[1].member[3].lsrod
+          !num = 0
+        endhandle
+        hsrod  $!lsrod
+        1
+        !num = 0
+      endif
+      !count = 1
+      do from !!ce.order + $!num to !!ce.owner.mcount()
+        if (!lisegaConfig.neq('LS67') and !lisegaConfig.neq('LS04')) then
+          nex
+          !u = !!ce.position
+          pos pa at pl of prev
+        elseif (!lisegaConfig.eq('LS67') or  !lisegaConfig.eq('LS04')  ) then
+          if (!count.eq(1)) then
+            !u = !!ce.position
+            pos pa at hh
+
+          else
+            nex
+            !u = !!ce.position
+            pos pa at pl of prev
+          endif
+        endif
+        ori
+        plane u thr $!u
+        if (!!ce.type.eq('SCLA')) then
+          prev
+          ori and y  is p11 of href of hang 1
+          nex
+          conn
+          handle ANY
+            fconn
+          endhandle
+        endif
+
+        !count = !count + 1
+      enddo
+
+      hang 1
+      pos ht at pl of last mem
+      last mem
+      var !lbor pl bore
+      end
+      tbor $!lbor
+      if (!lisegaConfig inset ('LS01','LS72')) then
+        TCONN ROD
+        TDIR D
+      endif
+      hang 2
+      pos ht at pl of last mem
+      last mem
+      var !lbor pl bore
+      end
+      tbor $!lbor
+      if (!lisegaConfig inset ('LS01','LS72')) then
+        TCONN ROD
+        TDIR D
+      endif
+      -- In some cases tref unset I think because of a 'conn pt to last mem', so just making sure
+      if (!!ce.tref.unset()) then
+        TREF $!this.supportName/FITT/H2
+        handle ANY
+          $!this.supportName/SBFI/H2
+          handle ANY
+          endhandle
+        endhandle
+      endif
+
+
+    elseif (!lisegaConfig.eq('LS55') or !lisegaConfig.eq('LS62')) then
+      hang 1
+      handle ANY
+      elsehandle NONE
+        scla 1
+        handle ANY
+        elsehandle NONE
+          conn and p2 is $!opTdir
+          nex
+          handle ANY
+          elsehandle NONE
+            conn and x is p1 of prev
+            handle ANY
+              conn
+            endhandle
+          endhandle
+        endhandle
+      endhandle
+    elseif (  !lisegaConfig.eq('LD01') and !lisegaclampno.real().eq(35)) then
+      -- if support angle between 0 deg +/- 5deg or 180 deg +/- 5deg
+      --set atta :MDSSuppFunc 'RW'
+      hang 1
+      var !dir constru dir ht to hh
+      --!hangerAngle = !dir.after(' ').before(' ')
+      !hangerAngle = !dir.direction().angle(D)
+      --        q var !hangerAngle
+      if (!hangerAngle.string().upcase().neq('UNSET') and !hangerAngle.string().neq('')) then
+        if (!hangerAngle.real().lt(5) or !hangerAngle.real().gt(175)) then
+          $!supportName
+          :MDSSuppFunc 'RW'
+          same
+        endif
+      else
+        if (!dir.eq('U') or !dir.eq('D') or !dir.eq('Z') or !dir.eq('-Z')) then
+          $!supportName
+          :MDSSuppFunc 'RW'
+          same
+        endif
+      endif
+      !iamHere = !!ce
+      $!supportName
+      !!mdsTransport(!!ce,!supportName )
+      !!ce = !iamHere
+    elseif (  !lisegaConfig inset ('LD07','LD10') and !lisegaclampno.real().eq(35)) then
+      -- if horizontal pipe to wall and vertical pipe (HT dir cannot be up down) then
+      --set atta :MDSSuppFunc 'RV'
+      hang 1
+      -- Make sure offsets set to 0 because we don't use it for these types
+      -- and we don't want to pass it to licad in modify mode
+      :MDSDynOffset  0
+      :MDSDynOffy  0
+      !tdir = !!ce.tdir
+      if (!tdir.up.neq(1) and !tdir.up.neq(-1)) then
+        $!supportName
+        :MDSSuppFunc 'RV'
+      endif
+      same
+      !iamHere = !!ce
+      $!supportName
+      !!mdsTransport(!!ce,!supportName )
+      !!ce = !iamHere
+    elseif (  !lisegaConfig inset ('LD07','LD10','LD11','LD12')  ) then
+      hang 1
+      -- Make sure offsets set to 0 because we don't use it for these types
+      -- and we don't want to pass it to licad in modify mode
+      :MDSDynOffset  0
+      :MDSDynOffy  0
+      !tdir = !!ce.tdir
+      if (!tdir.up.neq(1) and !tdir.up.neq(-1)) then
+        $!supportName
+        :MDSSuppFunc 'RV'
+      endif
+      same
+      !iamHere = !!ce
+      $!supportName
+      !!mdsTransport(!!ce,!supportName )
+      !!ce = !iamHere
+    elseif (!lisegaConfig inset ('LD08')  ) then
+      hang 1
+      -- Make sure offsets set to 0 because we don't use it for these types
+      -- and we don't want to pass it to licad in modify mode
+      :MDSDynOffset  0
+      :MDSDynOffy  0
+    endif
+
+  elsehandle ANY
+  endhandle
+
+  --if the 'rotate connection part' button is ticked in Licad then we need to rotate all SCLA elements by the amount stated in the LOF file
+  if (!this.rotateWeldedAttachment) then
+    !this.rotateWeldedAttachments(!supportName)
+  endif
+
+  -- Make sure we orientate the wpads
+  !ce = !!ce
+  do !loop from 1 to 5
+    !name = !this.ce.name
+    $!name/H$!loop
+    handle NONE
+      wpad 1
+      handle NONE
+        conn and x is p1 of prev
+        handle ANY
+        endhandle
+        !desc = desc of /MDS/TEMPLATES
+        if (!desc.eq('Framatome Templates')) then
+          if (!this.vendorForm.wpadmat.unset().not()) then
+            -- retain mdsmatref if already stated values from Licad are best guess
+            --:MdsMatref $!this.vendorForm.wpadmat
+            if (!this.vendorForm.wpadmat.name.eq('/S355J2G3')) then
+              matref $!this.vendorForm.wpadmat
+              handle ANY
+                :MdsMatref $!this.vendorForm.wpadmat
+              endhandle
+            elseif (!!ce.desp[4].gt(20)) then
+              matref /S235J2G3
+              handle ANY
+                :MdsMatref /S235J2G3
+              endhandle
+            else
+              matref /S235JRG2
+              handle ANY
+                :MdsMatref /S235JRG2
+              endhandle
+            endif
+          elseif (!!ce.desp[4].gt(20)) then
+            matref /S235J2G3
+            handle ANY
+              :MdsMatref /S235J2G3
+            endhandle
+          else
+            matref /S235JRG2
+            handle ANY
+              :MdsMatref /S235JRG2
+            endhandle
+          endif
+        endif
+      elsehandle ANY
+      endhandle
+    elsehandle ANY
+    endhandle
+  enddo
+  !!ce = !ce
+
+  -- Set the uda :mdsdesimatl at the support atta to the material the
+  -- support was designed with
+
+  $!name
+  handle NONE
+    !pipeMaterial = :MdsPipemat of pspe of bran
+    handle NONE
+      !!ce.:MdsDesiMatl = !pipeMaterial
+      handle ANY
+      endhandle
+    elsehandle ANY
+    endhandle
+
+  elsehandle ANY
+  endhandle
+
+  !!ce = !ce
+  !!mdsDacControl(FALSE)
+
+  --$R
+endmethod
+
+--method to correctly identify the p5 direction required for the current config
+define method .getHeleDir(!configNumber is STRING) is DIRECTION
+
+  if (!configNumber.eq('31V') or !configNumber.eq('32V')) then
+    --get the direction from the atta to FITT/H1
+    if (!this.virtualFitting) then
+      !fittPos = !this.virtualFittingNames[1].getPosition()
+    else
+      !fitt = $!this.supportName/FITT/H1
+      !fittPos = !fitt.position
+    endif
+
+    !support = !this.supportName.dbref()
+    !plDir = !support.ldir.wrt( /* )
+    !pv1 = object POINTVECTOR(!support.position.wrt( /* ), !plDir)
+    !pv1 = !pv1.through(!fittPos)
+    !pv1 = !pv1.towards(!fittPos)
+    return !pv1.direction
+
+  else
+
+    if (!this.virtualFitting) then
+      !fittPos = !this.virtualFittingNames[1].getPosition()
+    else
+      !fitt = $!this.supportName/FITT/H1
+      !fittPos = !fitt.position
+    endif
+
+    --get the direction from the atta to FITT/H1
+    !support = !this.supportName.dbref()
+    !pv1 = object POINTVECTOR(!support.position.wrt( /* ), up)
+    !pv1 = !pv1.towards(!fittPos)
+    --now get the P11 dir of the atta
+    !pv2 = object POINTVECTOR(!support.position.wrt( /* ), !support.pdir[11].wrt( /* ))
+
+    --dot product the two directions. if we get negative then we need to use P10 direction for P5
+    !dotp = !pv1.direction.dot(!pv2.direction)
+    if (!dotp.lt(0)) then
+      return !support.pdir[11].wrt( /* ).opposite()
+    else
+      return !support.pdir[11].wrt( /* )
+    endif
+  endif
+endmethod
+
+define method .rotateWeldedAttachments(!supportName is STRING)
+  !ce = !!ce
+  do !loop from 1 to 5
+    !hangerName = !supportName + '/H' + !loop.string()
+    !hangerRef = !hangerName.dbref()
+    handle (2,109)
+      --hanger reference does not exist
+      skip
+    endhandle
+    !!ce = !hangerRef
+    scla 1
+    handle (2,113)
+      --scla does not exist
+      skip
+    endhandle
+    !sclaRef = !!ce
+
+    if (!this.checkThatWeCanRotateScla(!sclaRef).not()) then
+      skip
+    endif
+
+    !!ce = !sclaRef
+    !rotationCommand = !this.rotateWeldedAttachmentLine
+    $!rotationCommand
+    handle any
+    endhandle
+    prev conn to nex
+  enddo
+  !!ce = !ce
+endmethod
+
+--check against the hanger and the SCLA to ensure that they line up in such a way that the support surface is perpendicular to the hanger direction
+--if this is not the case then we cannot physically rotate the welded clamp without breaking the connection
+define method .checkThatWeCanRotateScla(!sclaRef is DBREF) is BOOLEAN
+
+  !ce = !!ce
+  !!ce = !sclaRef
+  !sclaPlDir = !!ce.ldir.wrt( /* )
+  prev
+  !heleDir = !!ce.apos.direction(!!ce.lpos)
+  !!ce = !ce
+  if (!heleDir.dot(!sclaPlDir).abs().neq(1)) then
+    return false
+  else
+    return true
+  endif
+
+endmethod

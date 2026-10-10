@@ -1,0 +1,282 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            isoanalysebrco.pmlfnc
+--   Type:          Function Definition
+--   Group:         ISOADP
+--     Keyword:     Isometric
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         25 March 2010
+--
+-- Description:
+-- Analyses the brcos and groups them with their owning STRT
+-- Any other element with a brco is too complicated to dimension and best handled manually
+--
+------------------------------------------------------------------------
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       The first component reference
+--
+-- Return:
+--   [Data Type] [Description]
+--    ISOBRCO     Object holding the arrays for each STRT with its associated BRCOs intersection points
+--                and projection line directions
+--
+-------------------------------------------------------------------------
+define function !!isoAnalyseBrco(!allComp is ARRAY) is ISOBRCO
+
+  -- Initialise variables
+  !worl        = WORL OF $!allComp[1]
+  !isoBrcoObj  = object ISOBRCO()
+  !format      = object FORMAT()
+  !format.dp   = 2
+  !brcoRefes   = ARRAY()
+  !positions   = ARRAY()
+  !intersects  = ARRAY()
+  !dimDirs     = ARRAY()
+  !plDirs      = ARRAY()
+
+  -- For each BRCO find the associated STRT
+  do !index ind !allComp
+
+     -- Get the component
+    !compRefe = !allComp[!index]
+    !compType = !compRefe.type.upCase()
+
+    -- We have a brco
+    if (!compType.eq('BRCO')) then
+
+      -- Initialise variables
+      !countedDownStrts = 0
+      !countedUpStrts   = 0
+
+      -- Store brco in the index of the brco location in the original passed array
+      !brcoRefes[!index] = !compRefe
+
+      -- Look down the line for any neighbouring brcos
+      do !count from !index to !allComp.size()
+
+        -- Get the next element
+        !nextRefe = !allComp[!count]
+        !nextType = !nextRefe.type.upCase()
+
+        -- Ignore the first element because it is this one
+        skip if (!count.eq(!index))
+
+        -- If we have already found a strt then there are no other candidates in this direction so stop
+        break if (!countedDownStrts.eq(1))
+
+        -- Test the next strt
+        if (!nextType.eq('STRT')) then
+
+          -- Initialise variables
+          !strtIndex              = !allComp.findfirst(!nextRefe)
+          !countedDownStrts       = !countedDownStrts + 1
+
+          -- Define the strt centreline
+          !mainCentreline = object LINE(!nextRefe.ppos[!nextRefe.arrive].wrt(!worl), !nextRefe.ppos[!nextRefe.leave].wrt(!worl))
+
+          -- Calculate the strt orientation
+          !mainOrientation = !nextRefe.wori
+
+          -- Allow for any vertical offset by using a plane to intersect with the strt centreline
+          !plane = object PLANE(!compRefe.ppos[3].wrt(!worl), !mainOrientation)
+
+          -- Get any intersection
+          !intersection = !plane.intersection(!mainCentreline)
+            handle any
+              skip
+            endhandle
+
+          -- Get distances from ends of component to the brco intersection point and the distance through the component
+          !arriveDist  = !nextRefe.ppos[!nextRefe.arr].wrt(!worl).distance(!intersection)
+          !leaveDist   = !nextRefe.ppos[!nextRefe.lea].wrt(!worl).distance(!intersection)
+          !throughDist = !nextRefe.ppos[!nextRefe.arr].wrt(!worl).distance(!nextRefe.ppos[!nextRefe.lea].wrt(!worl))
+
+          -- Compare the two distances
+          !addDist = !arriveDist + !leaveDist
+
+          if (!addDist.nint().eq(!throughDist.nint())) then
+
+            -- Initialise variables
+            !intersects[!strtIndex] = ARRAY()
+
+            -- We have a strt and hence the intersection at the centreline
+            -- Store the intersection into an array for when we dimension the strt
+            !intersects[!strtIndex].append(!intersection.string().before('WRT'))
+
+            -- Store the intersection into an array with index position that matches the brco in the original passed  array
+            -- We will use these when dimensioning the brco
+            !positions[!index] = !intersection.string().before('WRT')
+
+            -- Calculate the dimension pldir perpendicular to the intersection and the brco cl
+            -- To do this, we use a plane at the intersection orientated to the main cl and brco cl and read the X axis
+            !brcoCl  = object LINE(!intersection, !compRefe.ppos[3].wrt(!worl))
+            !brcoDir = !brcoCl.direction().string().before('WRT')
+            !mainDir = !mainCentreline.direction().string().before('WRT')
+            !axisOri = object ORIENTATION('Y is ' & !brcoDir & ' and Z is ' & !mainDir)
+            !inPlane = object PLANE(!intersection, !axisOri)
+
+            -- Store the pldir in the index of the brco location in the original passed array
+            -- We will use these when dimensioning the brco
+            !plDirs[!index] = !inPlane.orientation.xdir().string().before('WRT')
+
+            -- Get direction between the intersection and the brco P3
+            !direction = !intersection.direction(!compRefe.ppos[3].wrt(!worl))
+            !dimnDir   = !direction.string(!format).before(' WRT')
+            !dir       = !dimnDir.split()
+            !angle     = !dir.size()
+
+            -- Return the horizontal direction
+            if (!angle.eq(5)) then
+              !horizDir = !dir[1] & !dir[2].real().nint() & !dir[3]
+
+            elseif (!angle.eq(3)) then
+
+              if (!direction.up.eq(1) or !direction.up.eq(-1)) then
+                !horizDir = !dir[1]
+
+              else
+                !horizDir = !dir[1] & !dir[2].real().nint() & !dir[3]
+
+              endif
+
+            else
+              !horizDir = !dir[1]
+
+            endif
+
+            -- Store the horizontal direction in the index of the brco location in the original passed array
+            -- We will use these when dimensioning the brco
+            !dimDirs[!index] = !horizDir
+
+            -- As we have found the strt associated with this brco we can stop here
+            break
+
+          endif
+
+        endif
+
+      enddo
+
+      -- Look up the line for any neighbouring brcos
+      do !count from !index to 1 by -1
+
+         -- Get the previous element
+        !prevRefe = !allComp[!count]
+        !prevType = !prevRefe.type.upCase()
+
+        -- Ignore the first element because it is this one
+        skip if (!count.eq(!index))
+
+        -- If we have already found a strt then there are no other candidates in this direction so stop
+        break if (!countedUpStrts.eq(1))
+
+        -- Test any stifs
+        if (!prevType.eq('STRT')) then
+
+          -- Initialise variables
+          !strtIndex      = !allComp.findfirst(!prevRefe)
+          !countedUpStrts = !countedUpStrts + 1
+
+          -- Define the strt centreline
+          !mainCentreline = object LINE(!prevRefe.ppos[!prevRefe.arrive].wrt(!worl), !prevRefe.ppos[!prevRefe.leave].wrt(!worl))
+
+          -- Calculate the strt orientation
+          !mainOrientation = !prevRefe.wori
+
+          -- Allow for any vertical offset by using a plane to intersect with the strt centreline
+          !plane = object PLANE(!compRefe.ppos[3].wrt(!worl), !mainOrientation)
+
+          -- Get any intersection
+          !intersection = !plane.intersection(!mainCentreline)
+            handle any
+              skip
+            endhandle
+
+          -- Get distances from ends of component to the brco intersection point and the distance through the component
+          !arriveDist  = !prevRefe.ppos[!prevRefe.arr].wrt(!worl).distance(!intersection)
+          !leaveDist   = !prevRefe.ppos[!prevRefe.lea].wrt(!worl).distance(!intersection)
+          !throughDist = !prevRefe.ppos[!prevRefe.arr].wrt(!worl).distance(!prevRefe.ppos[!prevRefe.lea].wrt(!worl))
+
+          -- Compare
+          !addDist = !arriveDist + !leaveDist
+
+          if (!addDist.nint().eq(!throughDist.nint())) then
+
+            -- Initialise variables
+            if (undefined(!intersects[!strtIndex])) then
+              !intersects[!strtIndex] = ARRAY()
+            endif
+
+            -- We have a strt and hence the intersection at the centreline
+            !intersects[!strtIndex].append(!intersection.string().before('WRT'))
+            !positions[!index] = !intersection.string().before('WRT')
+
+            -- Calculate the dimension pldir perpendicular to the intersection and the brco cl
+            -- To do this, we use a plane at the intersection orientated to the main cl and brco cl and read the X axis
+            !brcoCl  = object LINE(!intersection, !compRefe.ppos[3].wrt(!worl))
+            !brcoDir = !brcoCl.direction().string().before('WRT')
+            !mainDir = !mainCentreline.direction().string().before('WRT')
+            !axisOri = object ORIENTATION('Y is ' & !brcoDir & ' and Z is ' & !mainDir)
+            !inPlane = object PLANE(!intersection, !axisOri)
+
+            -- Store the pldir in the index of the brco location in the original passed array
+            !plDirs[!index] = !inPlane.orientation.xdir().string().before('WRT')
+
+            -- Get direction between the intersection and the brco P3
+            !direction = !intersection.direction(!compRefe.ppos[3].wrt(!worl))
+            !dimnDir   = !direction.string(!format).before(' WRT')
+            !dir       = !dimnDir.split()
+            !angle     = !dir.size()
+
+            -- Return the horizontal direction
+            if (!angle.eq(5)) then
+              !horizDir = !dir[1] & !dir[2].real().nint() & !dir[3]
+
+            elseif (!angle.eq(3)) then
+
+              if (!direction.up.eq(1) or !direction.up.eq(-1)) then
+                !horizDir = !dir[1]
+
+              else
+                !horizDir = !dir[1] & !dir[2].real().nint() & !dir[3]
+
+              endif
+
+            else
+              !horizDir = !dir[1]
+
+            endif
+
+            -- Store the horizontal direction in the index of the brco location in the original passed array
+            !dimDirs[!index] = !horizDir
+
+            -- As we have found the strt associated with this brco we can stop here
+            break
+
+          endif
+
+        endif
+
+      enddo
+
+    endif
+
+  enddo
+
+  -- Add the references and pldirs
+  !isoBrcoObj.addBrco(!brcoRefes)
+  !isoBrcoObj.addDimdir(!dimDirs)
+  !isoBrcoObj.addIntersects(!intersects)
+  !isoBrcoObj.addPldir(!plDirs)
+  !isoBrcoObj.addPoss(!positions)
+
+  return !isoBrcoObj
+
+endfunction

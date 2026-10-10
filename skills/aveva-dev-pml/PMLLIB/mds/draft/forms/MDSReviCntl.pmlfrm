@@ -1,0 +1,676 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+------------------------------------------------------------------------
+--
+-- File: MDSReviCntl.pmlfrm
+--   Type: Form Definition
+--   Group:
+--     Keyword:
+--   Module:
+--   Replaces:
+--
+-- Author: Barry Cheetham
+-- Created: 12 November 2001
+--
+--
+-- Description: Generate Revision Information
+-- Dependencies:
+-- 1 Set Font 1 to UNIFORM in ADMIN to allow characters to have equal width
+-- 2 Set DateFormat of DEPT to DDMOYY at DEPT
+------------------------------------------------------------------------
+--
+
+setup form !!mdsReviCntl
+
+  title 'MDS Revision Control'
+
+  bar
+    !this.bar.add('Settings','settings')
+    menu .settings
+    !this.settings.add ('CALLBACK','Modify...','!this.numberOfRevs()')
+    button .ce ' CE ' call '!this.ceinit()'
+    text .drwgname  width 30 is STRING
+    !this.drwgname.seteditable(false)
+    path down
+
+    frame .outer '' at xmin .ce
+      option .name 'Name ' call '!this.setvals()' width 29
+      text   .revi 'Revision ' width 5 is STRING
+      path down
+      text   .desc 'Desc     ' at xmin .revi width 29 is STRING
+      text   .drby 'By       ' width 9 scroll 9 is STRING
+      option .day  'Date     ' width 2
+      path right
+      option .month  width 3
+      option .year   width 4
+      path down
+      text   .chkd 'Checked  ' at xmin_day ymax width 9 scroll 9 is STRING
+      text   .appr 'Approved ' width 9 scroll 9 is STRING
+      path down
+    exit
+
+    button .create 'New Revision' call '!this.create()' TOOLTIP 'Create New Revision' at xmin .ce
+    path right
+    paragraph .messagea width 20 height 1
+    path down
+    button .apply  'Apply' at xmin .ce call '!this.apply()' TOOLTIP 'Update Current Values & Generate Revision Table'
+    path right
+
+    button .delete  'Delete Revi' call '!this.deleterevi(true)' TOOLTIP 'Delete selected revision and Update Revision Table'
+    button .clear   'Clear' call '!this.clearform()' TOOLTIP 'Clear current form settings for drwn, chkd, appd'
+    button .cancel 'Dismiss' call '!this.dismiss()' at xmax form - size
+
+    member .mnumrevs is REAL
+    member .myoffset is REAL
+    member .mXoffSet is REAL
+    member .btasktrue is BOOLEAN
+    member .waiting is BOOLEAN
+
+  exit
+
+  -- Setup date options
+  !day = ARRAY()
+  !year = ARRAY()
+  !month = ARRAY()
+  do !a from 1 to 31
+    !day.append( !a.string() )
+    !yr = 1998 + !a
+    !year.append(!yr.string())
+  enddo
+
+  do !a from 1 to 12
+    !date = object DATETIME(2002,!a,1)
+    !month.append(!date.monthstring().substring(1,3))
+  enddo
+
+  !this.day.dtext = !day
+  !this.year.dtext = !year
+  !this.month.dtext = !month
+
+  define method .init()
+
+    !desc = desc of /MDS/TEMPLATES
+    handle ANY
+      !desc = ' '
+    endhandle
+    if (!desc.eq('Framatome Templates')) then
+      --!this.chkd.active = FALSE
+      --!this.appr.active = FALSE
+    else
+      !this.chkd.active = TRUE
+      !this.appr.active = TRUE
+    endif
+
+    !checkTask = !this.chktaskexist()
+    if (!checkTask.eq(99)) then
+      return
+    endif
+
+    -- Set waiting to false
+    !this.waiting = FALSE
+
+    -- We have found a drawing but is it an MDS drawing
+    drwg
+
+    if (!!ce.function.neq('MDS')) then
+      !!alert.error('Selected drawing is not an MDS drawing')
+      return
+    endif
+
+    -- OK we have found an MDS drawing
+    !this.drwgname.val = !!ce.name.string()
+
+    -- Collect existing revisions if any
+    var !revcoll coll all revi for ce
+
+    if (!revcoll.size().eq(0)) then
+
+      -- No revisions set the form to empty
+      !this.name.clear()
+      !this.revi.val = ''
+      !this.desc.val = ''
+      !this.revi.val = ''
+      !this.chkd.val = ''
+      !this.appr.val = ''
+
+    else
+
+      var !eval eval name for all from !revcoll
+      !newname = ARRAY()
+
+      do !item values !eval
+        if (!item.match('=').eq(1)) then $* its a reference number
+          !size = !newname.size() + 1
+          !newname.append('Revision' & !size)
+        else
+          !newname.append(!item)
+        endif
+      enddo
+
+      !this.name.dtext = !newname
+      !this.name.rtext = !eval
+
+      if (!revcoll.size() ne 0) then
+        !this.name.val = !revcoll.size()
+        !this.setvals()
+      else
+        !this.unsetvals()
+      endif
+
+    endif
+
+    !this.chkSignRectExist()
+
+    -- Finally show form
+    !this.show()
+
+  endmethod
+
+  define method .ceinit()
+
+    !this.init()
+    !checkTask = !this.chktaskexist()
+    if (!checkTask.eq(99)) then
+      return
+    endif
+  endmethod
+
+  define method .create()
+
+    DRWG
+    handle (2,111)
+      return error 1 'Navigate to required drwg'
+    endhandle
+
+    !drgname = !!ce.name
+    last revi
+    handle (2,113)
+      last mem
+    endhandle
+    var !unusedPosdrev  xypos of ptrf of $!drgname/S1/DREV
+    handle (2,109)
+      !!alert.error('No positioning box found for DREV - Cannot Create REVI')
+      return
+    endhandle
+    New Revi
+    !unusedrevi = !!ce
+    !this.init()
+    !this.messagea.val = ' Enter Values & Apply'
+    !this.messagea.background = 5
+    !this.activate(true)
+    !this.waiting = TRUE
+
+  endmethod
+
+  define method .setvals()
+
+    --Set values on form when form is initialised
+    !this.revi.val = !this.name.selection().dbref().rvsnumber
+    !date = object DATETIME(!this.name.selection().dbref().revdate.split()[3].real(),!this.name.selection().dbref().revdate.split()[2],!this.name.selection().dbref().revdate.split()[1].real())
+    !this.day.select('dtext',!date.date().string())
+    !this.month.select('dtext',!date.monthstring().substring(1,3))
+    !this.year.select('DTEXT',!date.year().string())
+    !this.desc.val = !this.name.selection().dbref().stext
+
+    --Build up form for Drwn By, Chkd , Appd etc
+    !appval = !this.name.selection().dbref().approver.split(',')
+    if (!appval.unset() neq TRUE and !appval.size().eq(3)) then
+      !this.drby.val = !appval[1].trim()
+      !this.chkd.val = !appval[2].trim()
+      !this.appr.val = !appval[3].trim()
+    endif
+
+  endmethod
+
+  define method .unsetvals()
+
+    !this.revi.val = ' '
+    !this.desc.val = ' '
+    !this.activate(false)
+
+  endmethod
+
+  define method .activate(!action is BOOLEAN)
+
+    !this.revi.active   = !action
+    !this.day.active    = !action
+    !this.year.active   = !action
+    !this.month.active  = !action
+    !this.desc.active   = !action
+    !this.drby.active   = !action
+    !desc = desc of /MDS/TEMPLATES
+    handle ANY
+      !desc = ' '
+    endhandle
+    if (!desc.eq('Framatome Templates')) then
+      --!this.chkd.active = FALSE
+      --!this.appr.active = FALSE
+    else
+      !this.chkd.active = !action
+      !this.appr.active = !action
+    endif
+    !this.delete.active = !action
+
+  endmethod
+
+  --------------------------------------------------------------
+  define method .apply()
+    --------------------------------------------------------------
+
+    !this.messagea.val = ''
+    !this.messagea.background = 205
+    DRWG
+    handle (2,111)
+      return error 1 'Navigate to required drwg'
+    endhandle
+    !drgname = !!ce.name
+
+    !setrevi = !this.name.val
+    var !revcoll coll all revi for DRWG
+    var !eval eval name for all from !revcoll
+
+    if (!revcoll.size() neq 0) then
+      --Check for duplication of Revision Number
+      !currevi = !this.name.selection().dbref().rvsnumber.string()
+      handle(2,109)(2,754)
+        !currevi = STRING()
+      endhandle
+      var !evalrevno eval rvsnumber for all from !revcoll
+      !evalrevno.removelast()
+      do !i values !evalrevno
+        skip if (!i eq !currevi)
+        if (!i eq !this.revi.val) then
+          return error 1 'This Revision has already been used. Select a different one & Apply'
+        endif
+      enddo
+
+      if (!this.name.selection().dbref().name ne !drgname & '/REV' & !this.revi.val) then
+        !this.name.selection().dbref().name = !drgname & '/REV' & !this.revi.val
+        handle (41,12)
+          return error 1 'This Revision has already been used. Select a different one & Apply'
+        endhandle
+      endif
+
+      --Build up array of drwn chkd appd from form and enter a space if no value set
+      --The space allows the use of #APPR to work ok for no value set.
+      --Else removes spaces if value is set.
+      if (!this.drby.val eq '' or !this.drby.val eq ' ') then
+        !drby = ' '
+      else
+        !drby = !this.drby.val.trim()
+      endif
+      if (!this.chkd.val eq '' or !this.chkd.val eq ' ') then
+        !chkd = ' '
+      else
+        !chkd = !this.chkd.val.trim()
+      endif
+      if (!this.appr.val eq '' or !this.appr.val eq ' ') then
+        !appr = ' '
+      else
+        !appr = !this.appr.val.trim()
+      endif
+
+      --Re build option gadget with new name of Revision
+      var !revcoll coll all revi for DRWG
+      var !eval eval name for all from !revcoll
+      !this.name.dtext= !eval
+      !this.name.val = !setrevi
+
+      --Set all values for Revision from form
+      !this.name.selection().dbref().rvsnumber = !this.revi.val
+      !this.name.selection().dbref().revdate   = !this.day.selection() & ' ' & !this.month.selection() & ' ' & !this.year.selection()
+      !this.name.selection().dbref().stext     = !this.desc.val
+
+      -- Remove width check as the text gadgets are fixed by width and scrool
+      !approv = !drby & ',' & !chkd & ',' & !appr
+
+      if (!approv.length() gt 28) then
+        return error 1 'Number of letters in by chkd appd exceeds maximum of 28.'
+      endif
+
+      !this.name.selection().dbref().approver  = !approv
+
+      --Remove revisions from array if REVI's are greater than 6.
+      --This is the default setting. It is set in the init i.e. !this.mnumrevs = 6
+      if (!revcoll.size() gt !this.mnumrevs  ) then
+        !num = !revcoll.size() - !this.mnumrevs
+        !revcoll.deleteto(!num)
+      endif
+
+    endif
+
+    -- Set text height depending on sheet size
+    SHEET 1
+    !shname = !!ce.name
+    !sheetsize = !!ce.size
+    !chei = 3mm
+    !brchei = 8mm
+    !boxhei = !this.myoffset
+    if (!sheetsize[1] eq 420) then
+      !chei = 2.3mm
+      !brchei = 5mm
+    endif
+
+    --Get Positions of first Texp depending on sheet size
+    var !posdrev  xypos of ptrf of $!drgname/S1/DREV
+    handle (2,109)
+      !!alert.error('No positioning box found for DREV - Cannot Create REVI')
+      !this.deleterevi(false)
+      return
+    endhandle
+
+    var !posrev180   xypos of ptrf of $!drgname/S1/DREV180
+    handle (2,109)
+    endhandle
+
+    var !posrev   xypos of ptrf of $!drgname/S1/REV
+    handle (2,109)
+      !!alert.error('No positioning box found for REV - Cannot Create REVI')
+      !this.deleterevi(false)
+      return
+    endhandle
+
+    var !posrdate xypos of ptrf of $!drgname/S1/RDATE
+    handle (2,109)
+      !!alert.error('No positioning box found for RDATE - Cannot Create REVI')
+      !this.deleterevi(false)
+      return
+    endhandle
+
+    var !posrdesc xypos of ptrf of $!drgname/S1/RDESC
+    handle (2,109)
+      !!alert.error('No positioning box found for RDESC - Cannot Create REVI')
+      !this.deleterevi(false)
+      return
+    endhandle
+
+    --Calculate Xlen of rdesc box
+    !rdesc = $!drgname/S1/RDESC
+    !xmove = !rdesc.xlen / 2
+
+    var !posrBY xypos of ptrf of $!drgname/S1/BY
+    handle (2,109)
+      !!alert.error('No positioning box found for BY - Cannot Create REVI')
+      !this.deleterevi(false)
+      return
+    endhandle
+
+    var !posrCHK xypos of ptrf of $!drgname/S1/CHK
+    handle (2,109)
+      !!alert.error('No positioning box found for CHK - Cannot Create REVI')
+      !this.deleterevi(false)
+      return
+    endhandle
+
+    var !posrAPP xypos of ptrf of $!drgname/S1/APP
+    handle (2,109)
+    endhandle
+
+    !notename = !shname & '/Revisions'
+    !!ce = !notename.dbref()
+    handle (2,109)
+      NEW NOTE $!notename
+      CHEI $!chei
+      TXCOLOUR 6
+      JUST CENTRE
+      ALIGN HBODY
+    elsehandle none
+      delete note mem
+    endhandle
+
+    -- Create Texp's and Position on sheet
+    !posy = 0mm
+    do !i index !revcoll
+      NEW TEXP at $!posrev
+      by y $!posy
+      btex '#RVSN<FR DREVAY[$!i]>'
+
+      NEW TEXP at $!posrdate
+      by y $!posy
+      btex '#RVDT<FR DREVAY[$!i]>'
+
+      NEW TEXP at $!posrdesc
+      by y $!posy  X-$!xmove
+      JUST LEFT
+      btex '#STEXT<FR DREVAY[$!i]>'
+
+      NEW TEXP at $!posrBY
+      by y $!posy
+      btext '#APPR<FR DREVAY[$!i]>(P,1:1)'
+
+      NEW TEXP at $!posrCHK
+      by y $!posy
+      btext '#APPR<FR DREVAY[$!i]>(P,2:2)(C2:)'
+
+      NEW TEXP at $!posrAPP
+      handle any
+      elsehandle none
+        by y $!posy
+        btext '#APPR<FR DREVAY[$!i]>(P,3:3)(C2:)'
+      endhandle
+      !posy = !posy + !boxhei
+    enddo
+
+    -- Position Revision Texp in bottom right corner
+    !k = !revcoll.maxindex()
+    if (!k neq 0) then
+      NEW TEXP at $!posdrev
+      CHEI $!brchei
+      ALIGNMENT HBODY
+      JUST CENTRE
+      btex '#RVSN<FR DREVAY[$!k]>'
+      --Position text at top left if 180 rect found
+      NEW TEXP at $!posrev180
+      handle any
+      elsehandle none
+        CHEI $!brchei
+        ALIGNMENT HBODY
+        JUST CENTRE
+        adeg 180
+        btex '#RVSN<FR DREVAY[$!k]>'
+      endhandle
+    endif
+
+    DRWG
+    REFRESH
+    --Check if Font 1 is set to Unform width(Not reqd any more 7/12/01)
+    !this.waiting = FALSE
+
+  endmethod
+
+  ----------------------------------------------------------------
+  define method .deleterevi(!confirm is BOOLEAN)
+    ----------------------------------------------------------------
+
+    !revname = !this.name.selection().dbref().rvsnumber
+    handle(2,754)
+      return
+    endhandle
+
+    if (!confirm) then
+      !answer = !!alert.confirm ('Delete Revision $!revname and re-build table on drawing. Do you want to continue?')
+      if (!answer eq 'NO') then
+        return
+      endif
+    endif
+
+    !!ce = !this.name.selection().dbref()
+    delete Revi
+    !this.init()
+    !this.apply()
+
+  endmethod
+
+  ----------------------------------------------------------------
+  define method .chkfont()
+    ----------------------------------------------------------------
+
+    VAR !c COLL ALL FONTFILE
+    VAR !e EVAL STNO FOR ALL FROM !c
+    if (!e[1] neq 'UWLINE') then
+      !!alert.warning('Text may not line up due to Font 1 not being set to Uniform Width. Modify in Admin.')
+    endif
+
+  endmethod
+  -- End of method definition for .chkfont()
+
+  ----------------------------------------------------------------
+  define method .clearform()
+    ----------------------------------------------------------------
+
+    !this.drby.val = ''
+    !this.chkd.val = ''
+
+  endmethod
+
+  ----------------------------------------------------------------
+  define method .chkSignRectExist()
+    ----------------------------------------------------------------
+
+    !drgname = !this.drwgname.val
+    !signame = !drgname & '/S1/BY'
+    !s = !signame.dbref()
+    handle (2,109)
+      !this.drby.val = ''
+      !this.drby.seteditable(false)
+    elsehandle none
+      !this.drby.seteditable(true)
+    endhandle
+    !signame = !drgname & '/S1/CHK'
+    !s = !signame.dbref()
+    handle (2,109)
+      !this.chkd.val = ''
+      !this.chkd.seteditable(false)
+    elsehandle none
+      !this.chkd.seteditable(true)
+    endhandle
+    !signame = !drgname & '/S1/APP'
+
+  endmethod
+
+  ----------------------------------------------------------------
+  define method .numberOfRevs()
+    ----------------------------------------------------------------
+
+    kill !!fNumRevs
+    setup form !!fNumRevs
+      title 'No. of Revs per Sheet & Offset in Y'
+      path down
+      paragraph .tasktrue width 33 hei 1
+      text .tNumRevs 'Enter Number Of Revisions   i.e. 6 ' width 8 is REAL
+      text .tYOffSet 'Enter Offset in Y Direction i.e. 7 ' width 8 is REAL $*FORMAT !!realfmt
+      button .ok ' OK ' call '!!mdsReviCntl.numberOfRevsOk()' OK
+      path right
+      button .cancel at xmax form-size ymin| Cancel | cancel
+      !!fNumRevs.tNumRevs.val = !!mdsReviCntl.mnumrevs
+      !!fNumRevs.tYOffSet.val = !!mdsReviCntl.myoffset
+    exit
+
+    show !!fNumRevs
+
+    if (!!mdsReviCntl.btasktrue) then
+      !!fNumRevs.tasktrue.val = 'Values taken from Task Parameters'
+      !!fNumRevs.tasktrue.background = 5
+    endif
+
+  endmethod
+
+  ----------------------------------------------------------------
+  define method .numberOfRevsOk()
+    ----------------------------------------------------------------
+
+    !this.mnumrevs = !!fNumRevs.tNumRevs.val
+    !this.myoffset = !!fNumRevs.tYOffSet.val
+
+    !!mdsReviCntl.btasktrue = FALSE
+    !!fNumRevs.tasktrue.val = ''
+    !!fNumRevs.tasktrue.background = 205
+    !!alert.message('This will only modify the setting for this session of PDMS. To Permanently modify the setting you must modify the func of the template revision note')
+
+  endmethod
+
+  ---------------------------------------------------------------
+  define method .chktaskexist() is REAL
+    ---------------------------------------------------------------
+
+    --Check if the task exists and if so set the values from the task paras
+    --and also check if units are FINCH. If it is set values in imperial.
+    drwg
+    handle ANY
+      !!alert.error('You must be at an MDS drawing or below to set MDS revisions')
+      return 99
+    endhandle
+    var !sheets coll all sheet for ce
+    !imp = !sheets[1].dbref().name.matchwild('*IMP*')
+    handle ANY
+      !imp = FALSE
+    endhandle
+
+    if (!!isImperialLength('DIST')) then
+      !metric = FALSE
+      !!realfmt.dimension = 'L'
+      !!realfmt.units = 'INCH'
+      !!realfmt.fraction = FALSE
+      !!realfmt.denominator = 4
+      !!realfmt.zeros = FALSE
+      !!realfmt.dp = 4
+    else
+      !metric = TRUE
+      !!realfmt.dimension = 'L'
+      !!realfmt.units = 'MM'
+      !!realfmt.fraction = FALSE
+      !!realfmt.denominator = 4
+      !!realfmt.zeros = FALSE
+      !!realfmt.dp = 2
+    endif
+
+    !sheetname = !sheets[1].dbref().name
+    !revisionNoteName = !sheetname + '/Revisions'
+    !!ce = !revisionNoteName.dbref()
+    handle ANY
+      !!alert.error('ABA Template does not contain revision control')
+      return 99
+    endhandle
+    !function = func
+    !tpVal = !function.split(',')
+
+    !this.btasktrue = TRUE
+    !this.mnumrevs = !tpVal[1].real()
+    handle any
+      !this.mnumrevs = 6
+    endhandle
+    !this.myoffset = !tpVal[2].real()
+    handle any
+      !this.myoffset = 7
+    endhandle
+    !this.mXoffSet = !tpVal[3].real()
+    handle any
+      !this.mXoffSet = 0
+    endhandle
+    if (defined(!!fNumRevs)) then
+      !!fNumRevs.tNumRevs.val = !!mdsReviCntl.mnumrevs
+      !!fNumRevs.tYOffSet.val = !!mdsReviCntl.myoffset
+      !!fNumRevs.tasktrue.val = ''
+      !!fNumRevs.tasktrue.background = 5
+    endif
+
+    return 0
+
+  endmethod
+
+  --------------------------------------------------------------
+  define method .dismiss()
+    --------------------------------------------------------------
+
+    if (!this.waiting) then
+      if (!!alert.confirm('You Created a revi but did press apply to set its values - Ok to delete rev?') eq 'YES') then
+        !this.deleterevi(false)
+        !this.hide()
+      endif
+    else
+      !this.hide()
+    endif
+
+  endmethod

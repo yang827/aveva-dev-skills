@@ -1,0 +1,428 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:          stlpenadd.pmlfrm
+-- Type:          Form Definition
+-- Group:         General Application
+-- Keyword:       Penetration
+-- Module:        Design
+--
+-- Description:
+-- Create a penetration
+--
+--  Author:          M. Ward
+--  Created:         Wed Dec 12 15:38:15 2007
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  apply()                          -                   Invoke the hole manager with selected items
+--  close()                          -                   Close form actions
+--  edgPickPenetrating()             -                   Set EDG to pick penetrating items
+--  findPenetrations()               -                   Find penetration positions
+--  initialiseForm()                 -                   Actions when form is shown
+--  pickPenetrating(EDGPICKDATA)     -                   EDG callback for penetrating items pick
+--  readConfigurationFile()          -                   Read system configuration file (if it exists) and store settings
+--  setPenetrating(BOOLEAN)          -                   Set True if currently in a penetrating EDG pick cycle
+--  stlPenAdd()                      -                   Constructor
+--  tidy()                           -                   Close form actions
+--  updatePenetrating()              -                   Update penetrating items list
+--
+------------------------------------------------------------------------
+--
+
+-- Define form
+setup form !!stlPenAdd dialog resize
+
+  --------------------------------- MEMBERS -----------------------------
+  -- List of penetrating items as picked
+  member .penetratingRaw         is ARRAY
+  -- List of penetrating items
+  member .penetrating            is ARRAY
+  -- List of penetrated items
+  member .penetrated             is DBREF
+  -- Penetration type
+  member .penetrationType        is STRING
+  -- List of elements highlighted in this form
+  member .enhancePenetrating     is ARRAY
+
+  -- Penetrating EDG packet
+  member .penetratingPacketDesc  is STRING
+
+  -- Is penetrating pick
+  member .isPenetratingPick      is BOOLEAN
+
+  -- steelwork penetration data object
+  member .penetrations           is ARRAY
+
+  --------------------------------  FORM  ------------------------------
+
+
+  frame .framePenetrating panel  anchor left + top + right at x0 y0
+    button .butPickPenetrating   anchor left + top         'Pick Penetrating Items' at x0.5 ymax
+    list   .listPenetrating      anchor left + top + right at xmin ymax+0.5   width 34 length 6
+  exit
+
+  -- Bottom Line
+  button .ok      anchor bottom + left  'OK' at x0.5 ymax  width 9
+  button .cancel  anchor bottom + right 'Cancel' at xmax form-size ymin  width 9 callback '!this.close()'
+
+-- End of form definition
+exit
+
+------------------------------------------------------------------------
+--
+-- Method:      .stlPenAdd()
+--
+-- Description: Constructor
+--
+------------------------------------------------------------------------
+define method .stlPenAdd()
+
+  -- form properties
+  !this.callback         = |!this.initialiseForm()|
+  !this.formTitle        = 'Add Penetration'
+  !this.iconTitle        = 'Add Penetration'
+  !this.autoScroll       = true
+
+  -- gadget properties
+  !this.ok.callback      = '!this.apply()'
+  !this.cancelCall       = '!this.close()'
+  !this.cancel.callback  = '!this.close()'
+
+  !this.butPickPenetrating.callback = '!this.edgPickPenetrating()'
+
+  -- EDG
+  !this.penetratingPacketDesc       = 'Pick Penetrating'
+  !this.isPenetratingPick           = false
+
+  !this.penetrationType = 'SCTN'
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      initialiseForm
+--
+-- Description: Actions when form is shown
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .initialiseForm()
+
+  -- Initialise common parts of the form
+  -- Make properties and plotfile buttons inactive
+  !this.ok.active         = false
+  !this.listPenetrating.clear()
+  !this.penetrating.clear()
+  !this.penetratingRaw.clear()
+
+  -- read configuration file if not already loaded
+  !this.readConfigurationFile()
+
+  !this.penetrated = !!hmDefinition.managedHole.holeOwner
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .close()
+--
+-- Description: Close form actions
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .close()
+
+  !this.tidy()
+  !this.hide()
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .tidy()
+--
+-- Description: Close form actions
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .tidy()
+
+  !enhanceList = ARRAY()
+  !enhanceList.appendArray(!this.enhancePenetrating)
+  UNENHANCE ALL FROM !enhanceList
+  handle any
+  endhandle
+  !!edgCntrl.remove('Pick Penetrating')
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .edgPickPenetrating()
+--
+-- Description: Set EDG to pick penetrating items
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .edgPickPenetrating()
+
+  -- Define packet for penetrating items
+  !packet                = object EDGPACKET()
+  !packet.elementPick('Pick penetrating item')
+  !packet.description    = !this.penetratingPacketDesc
+  !packet.priority       = 3
+  !packet.close          = '!!stlPenAdd.setPenetrating(FALSE)'
+  !packet.action         = '!!stlPenAdd.pickPenetrating(!this.return[1])'
+  !packet.pickPacket.picks[1].pick.input[3]   = 'HARDTYPE inset(|SCTN|,|GENSEC|)'
+  !packet.pickPacket.picks[1].pick.modifiable = false
+
+  -- Add to system
+  !!edgCntrl.add(!packet)
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .pickPenetrating()
+--
+-- Description: EDG callback for penetrating items pick
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .pickPenetrating(!data is EDGPICKDATA)
+
+  -- second pick on an item removes it from the list
+  !index = !this.penetratingRaw.findFirst(!data.item)
+  if( !index.set() ) then
+    !this.penetratingRaw.remove(!index)
+  else
+    !this.penetratingRaw.append(!data.item)
+  endif
+  !this.updatePenetrating()
+
+  !!edgCntrl.remove('Pick Penetrating')
+
+  !this.edgPickPenetrating()
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .updatePenetrating()
+--
+-- Description: Update penetrating items list
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .updatePenetrating()
+
+  !dText            = ARRAY()
+  !rText            = ARRAY()
+  !this.penetrating = ARRAY()
+
+  -- unenhance old list
+  !oldList = !this.enhancePenetrating
+  UNENHANCE ALL FROM !oldList
+
+  do !item values !this.penetratingRaw
+    !displayedItem = !item
+    !this.penetrating.append(!displayedItem)
+    !dText.append(!displayedItem.fullname)
+    !rText.append(!displayedItem.string())
+  enddo
+
+  !this.listPenetrating.dText = !dText
+  !this.listPenetrating.rText = !rText
+  !this.enhancePenetrating    = !rText
+
+  !this.ok.active = !this.penetrating.empty().not()
+
+  -- enhance new list
+  ENHANCE ALL FROM !rText COL 30
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .setPenetrating()
+--
+-- Description: Set True if currently in a penetrating EDG pick cycle
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .setPenetrating(!state is BOOLEAN)
+
+  !this.isPenetratingPick = !state
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .apply()
+--
+-- Description: Invoke the hole manager with selected items
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .apply()
+
+  -- find new penetrations
+  !this.findPenetrations()
+
+  if(!this.penetrations.empty()) then
+    !!alert.warning('No penetrations found')
+    return
+  endif
+
+  !this.tidy()
+  !this.hide()
+
+  -- make new penetration
+  -- populate the hm form for multi-penetrations
+  !!hmDefinition.setPenetrationData(!this.penetrations)
+  !!hmDefinition.processPenetrationData()
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .findPenetrations()
+--
+-- Description: Find penetration positions
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .findPenetrations()
+
+  -- Save Clash Data
+  !!runSynonym(|CALLSTL DCLADAT SET|)
+
+  -- Perform Clash Check between penetrated and penetrating items
+  !this.penetrations = ARRAY()
+
+  -- loop through each penetrated item in turn to find the penetration
+  !penetratedItem = !this.penetrated
+
+  -- Set Obstructions
+  DESCLASH
+    REMOVE OBST ALL
+    if( !penetratedItem.hardType eq 'HPANEL' ) then
+      do !panelMember values !penetratedItem.members
+        if( !panelMember.hardType eq 'HPLATE' ) then
+          OBST $!<panelMember>
+        endif
+      enddo
+    elseif( !penetratedItem.hardType eq 'CPANEL' ) then
+      do !panelMember values !penetratedItem.smembers
+        if( !panelMember.hardType eq 'CPLATE' ) then
+          OBST $!<panelMember>
+        endif
+      enddo
+    else
+      OBST $!<penetratedItem>
+    endif
+    MIDPOINT ON
+  EXIT
+
+  -- find clash position for each penetrating object
+  do !index indices !this.penetrating
+
+    !penetratingItem = !this.penetrating[!index]
+    DESCLASH CHECK $!<penetratingItem> EXIT
+
+    var !ccnt           clash count all
+    var !ccnt           ($!ccnt A A A )
+    !clashCount = !ccnt.real()
+    skip if(!clashCount eq 0)
+
+    -- find the nearest clash to the original selected component
+    !clashPosition    = ARRAY()
+    !distanceFromPick = ARRAY()
+    do !cIndex from 1 to !clashCount
+      var !cPos  CLASH $!cIndex POS
+      !clashPosition[!cIndex]    = !cPos.position()
+      !distanceFromPick[!cIndex] = !clashPosition[!cIndex].distance(!this.penetratingRaw[!index].position)
+    enddo
+
+    -- use sort to find index of closest clash to the original picked component
+    !indexNearToPick = !distanceFromPick.sortedIndices()
+    !number = !indexNearToPick[1]
+
+    -- find clash data for the selected clash
+    var !cObj  CLASH $!number FIRST
+    var !cTar  CLASH $!number SECOND
+
+    !section = !cObj.dbref()
+
+    if (!cTar.dbref().type eq 'PANE') then
+      !panel  = !cTar.dbref()
+    else
+      !panel = !cTar.dbref().owner
+    endif
+
+    if (!!hmCheckExistingHole(!section, !panel, !clashPosition[!number])) then
+      !errorString = 'A hole already exists at the current location for ' & !section.fullname
+      !!alert.error(!errorString)
+      !existing = TRUE
+    else
+      !existing = FALSE
+    endif
+
+    if (!existing.not()) then
+      !penetration = object STLPENETRATIONDATA(!cObj.dbref(), !cTar.dbref(), !clashPosition[!number], false)
+      !this.penetrations.append( !penetration )
+    endif
+
+  enddo
+  DESCLASH MIDPOINT OFF EXIT
+
+  -- Restore Clash Data
+  !!runSynonym(|CALLSTL DCLADAT LOAD|)
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      readConfigurationFile
+--
+-- Description: Read system configuration file (if it exists) and store settings
+--              (%PDMSDFLTS%\des-holemgt-config)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .readConfigurationFile()
+
+  if(not defined(!!holeManagementConfiguration)) then
+    !tempConfig = object HMCONFIG()
+    if(!tempConfig.loadConfigurationFile().not()) then
+      return error 1 'Error in configuration file. Please Contact your systems administrator'
+    endif
+  endif
+
+endmethod
+-- End of method definition for .readConfigurationFile()

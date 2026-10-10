@@ -1,0 +1,1314 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            abaTemplateSht
+--   Type:          Form Definition
+--   Group:         draft
+--     Keyword:     ABA
+--   Module:        DRAFT
+--   Replaces:
+--
+-- Author:          Mpw
+-- Created:         13 - April - 99
+--
+--
+-- Description:
+-- Template Sheet Definition, used for creation and modification.
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  abaTemplateSht()                 -
+--  addTask()                        -                   Remove a task from the available list and add it to the selected list
+--  backing(STRING)                  -
+--  cancel()                         -
+--  choiceAfterSelectChange(ARRAY)   -                   Callback on grid control after select change of the choice grid
+--  choicePopup(ARRAY)               -                   Pop-up for the choice grid control
+--  clear(STRING)                    -                   Clear relevant data arrays
+--  copy()                           -
+--  findEntry(STRING)                REAL                Find an entry in the choice grid
+--  format(STRING)                   -
+--  getAllTasks()                    -                   Get all drawing tasks
+--  init()                           -
+--  modifyTask()                     -                   Modify the selected task from the choice grid
+--  move(STRING)                     -                   Move the selected entry in choice grid list order
+--  okCall()                         -
+--  optionsAfterSelectChange(ARRAY)  -                   Callback on grid control after select change of the options grid
+--  parseTasks()                     -                   Parse the tasks for the relevant grids
+--  receiveTask(ABATASK)             -                   Receive the modified task object from the modifying form
+--  removeTask()                     -                   Remove a task from the selected list and add it to the available list
+--  setTask(STRING,REAL)             -                   Parse the tasks for the relevant grids
+--  sheetSize(STRING)                -
+--  sppurpStructure(DBREF)           -
+--
+------------------------------------------------------------------------
+import 'GridControl'
+  handle any
+  endhandle
+
+setup form !!abaTemplateSht
+
+  title 'ABA Template Sheet'
+  cancelCall |!this.cancel()|
+  init |!This.init()|
+
+  para .name     at x0 y0.2 text 'Sheet Name '
+  para .pdmsName at xmax ymin width 50 hei 1
+
+  para .descT  at xmin.name     ymax+0.3 text |Description|
+  para .desc   at xmin.PDMSname ymin.descT width 15 height 1
+
+  para .titleT at xmin.name     ymax+0.3 text 'Sheet Title'
+  text .title  at xmin.pdmsName ymin width 52 is STRING
+
+  option .size 'Paper' at xmin.name ymax+0.5 call |!this.sheetSize(!this.size.selection('RTEXT'))| width 4
+
+  rgroup .form '' frame vertical at ymin-0.3
+   add tag 'Landscape' select 'Landscape' call |!this.format('Landscape')|
+   add tag 'Portrait ' select 'Portrait'  call |!this.format('Portrait')|
+
+  text .width  'Width ' at            ymin.form+0.3 call '' width 13 is REAL format !!distanceFMT
+  text .height 'Height' at xmin.width ymax+0.1      call '' width 13 is REAL format !!distanceFMT
+
+  para .back at x0 ymax.form+0.2 text 'Backing Sheet'
+
+  rgroup .ref '' frame vertical at xmax ymin
+   add tag 'Unset'     select 'Unset'     call |!this.backing('Unset')|
+   add tag 'Reference' select 'Reference' call |!this.backing('Reference')|
+   add tag 'Filename ' select 'FileName'  call |!this.backing('Filename')|
+
+  option .backs '' at xmax+0.5 ymin+0.5 width 33
+
+  path down
+  text .file '' at xmin ymax+0.5 width 35 is STRING
+
+  -- Define Task Selection/Modification Areas.
+  frame .taskMod 'Tasks' at x0 ymax+0.5
+
+    para .tasks  at x10 ymin+0.5 text 'Available'
+
+    container .optionsGrid nobox pmlNetControl 'NET' at x0.6 ymax-0.4 width 30 height 7
+
+    path right
+    button .add '' at xmax.optionsGrid+0.1 y3 pixmap call '!this.addTask()'
+
+    path down
+    button .rem '' pixmap call '!this.removeTask()'
+
+    para .chosen at xmax.add+10 ymin.tasks text 'Selected'
+
+    container .choiceGrid nobox pmlNetControl 'NET' at xmax.add-1.8 ymin.optionsGrid width 30 height 7
+
+    button .modify 'Modify Task' at xmin call |!this.modifyTask()|
+
+  exit
+
+  button .ok at x0 ymax.taskMod+0.2 ' OK ' OK
+
+  path right
+  button .cancel 'Cancel' at xmax form-size call |!this.cancel()| cancel
+
+  button .copy |Copy as Variant| at xmax form-size ymin.desc call |!this.copy()|
+
+  -- Members
+  member .allTaskList     is ABATASKLIST
+  member .optionsTaskList is ABATASKLIST
+  member .choiceTaskList  is ABATASKLIST
+  member .task            is ABATASK
+  member .mode            is STRING
+  member .fromDrawing     is BOOLEAN
+  member .backsList       is ARRAY
+  member .drTmpl          is DBREF
+  member .shTmpl          is DBREF
+
+  -- Declare the grid controls
+  using namespace 'Aveva.Pdms.Presentation'
+  member .optionsControl  is NETGRIDCONTROL
+  member .choiceControl   is NETGRIDCONTROL
+
+  member .headings        is ARRAY
+
+exit
+-- End of form definition
+
+------------------------------------------------------------------------
+--
+-- Method:      .abaTemplateSht()
+--
+-- Description: Constructor method
+--
+-- Method Type: Constructor
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------------------------------
+define method .abaTemplateSht()
+
+  -- Define pop-up menu
+  !menu = !this.newMenu('choicePopUp')
+    !menu.add('callback', 'Move Up', |!this.move('UP')|,'UP')
+    !menu.add('callback', 'Move Down', |!this.move('DOWN')|, 'DOWN')
+
+  -- Get all available Backing Sheets.
+  VAR !back COLL ALL BACK
+  VAR !backs EVAL NAME FOR ALL FROM !back
+  !this.backs.dtext = !backs
+  !this.backsList   = !backs
+
+  -- Set pixmaps
+  !this.rem.addPixmap(!!PML.getPathName('leftarrow16.png'))
+  !this.add.addPixmap(!!PML.getPathName('rightarrow16.png'))
+
+  !this.autoCall     = '!this.autoCall()'
+  !this.okCall       = '!this.okCall()'
+  !this.file.active  = false
+  !this.backs.active = false
+
+  -- Create instances of the grid controls
+  using namespace 'Aveva.Pdms.Presentation'
+  !this.optionsControl = object NETGRIDCONTROL()
+  !this.choiceControl  = object NETGRIDCONTROL()
+
+  -- Add .net control to the containers
+  !this.optionsGrid.control = !this.optionsControl.handle()
+  !this.choiceGrid.control  = !this.choiceControl.handle()
+
+  -- Add PML event handlers to .net controls
+  !this.optionsControl.addEventHandler('afterSelectChange', !this, 'optionsAfterSelectChange')
+  !this.choiceControl.addEventHandler('afterSelectChange', !this, 'choiceAfterSelectChange')
+  !this.choiceControl.addEventHandler('onPopup', !this, 'choicePopup')
+
+  -- Set grid visual attributes
+  !this.optionsControl.columnExcelFilter(false)
+  !this.optionsControl.outlookGroupStyle(false)
+  !this.optionsControl.fixedRows(false)
+  !this.optionsControl.gridHeight(1000.0)
+  !this.optionsControl.editableGrid(false)
+  !this.optionsControl.singleRowSelection(true)
+  !this.optionsControl.columnExcelFilter(false)
+  !this.optionsControl.fixedHeaders(false)
+  !this.optionsControl.headerSort(true)
+  !this.optionsControl.columnSummaries(false)
+  !this.choiceControl.columnExcelFilter(false)
+  !this.choiceControl.outlookGroupStyle(false)
+  !this.choiceControl.fixedRows(false)
+  !this.choiceControl.gridHeight(1000.0)
+  !this.choiceControl.editableGrid(false)
+  !this.choiceControl.singleRowSelection(true)
+  !this.choiceControl.columnExcelFilter(false)
+  !this.choiceControl.fixedHeaders(false)
+  !this.choiceControl.headerSort(true)
+  !this.choiceControl.columnSummaries(false)
+
+  -- Set grid control headings
+  !this.headings.append('Name')
+  !this.headings.append('Description')
+
+  -- Set List of Tasks Available.
+  !this.getAllTasks()
+
+endmethod
+-- End of method definition for .abaTemplateSht()
+
+-----------------------------------------------------------------------
+--
+-- Method:      .init()
+--
+-- Description: Method to initilize the form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .init()
+
+  -- Initialise variables
+  !drTmpl  = !this.drTmpl
+  !newLiby = false
+
+  -- Clear all relevant arrays
+  !this.clear('ALL')
+
+  -- Set paper size gadgets
+  !!abaPaperSizes(!this.size)
+
+  -- Create sheet template
+  if (!this.mode.eq('CREATE')) then
+
+    -- Find number of sheets for current drawing template
+    VAR !sheets COLL ALL SHTMPL FOR $!drTmpl
+
+    -- Determine next sheet number and variant number
+    !lastNum = !sheets.size()
+    !nextNum = !sheets.size() + 1
+    if (!nextNum.eq(1)) then
+      !func = 'Master'
+      !newLiby = true
+    elseif (!nextNum.eq(2)) then
+      !func = 'Variant 1'
+    else
+      !variant = !sheets[!sheets.size()].dbref().func.split()
+      !nextVar = !variant[2].real() + 1
+      !func = 'Variant ' & !nextVar
+    endif
+
+    -- Create sheet or make copy
+    !lastName = !drTmpl.name & '/S' & !lastNum
+    !newName  = !drTmpl.name & '/S' & !nextNum
+    if (!func.eq('Master')) then
+
+      NEW SHTMPL
+        handle(41,8)
+          -- Cannot Create Sheet At This Level
+          return
+        endhandle
+      Name $!newName
+
+    else
+
+      -- Make the new sheet template a copy
+      !!ce = !lastName.dbref()
+      !oldname = !this.shTmpl.flnm
+      NEW SHTMPL $!newName COPY $!oldName RENAME $!oldName $!newName
+       title unset
+
+    endif
+
+    SPPURPOSE ABAT
+    FUNCTION '$!func'
+    !this.shTmpl = !!ce
+
+    -- Select paper size
+    !this.width.val  = !this.shTmpl.size[1]
+    !this.height.val = !this.shTmpl.size[2]
+    !this.size.select('RTEXT',!this.shTmpl.size[1] & ' ' & !this.shTmpl.size[2])
+      handle (61,567)
+        !this.size.select('RTEXT',' ')
+      endhandle
+
+    -- Create library
+    if (!newLiby) then
+      !libyname = !!ce.owner.name & '/LIBY'
+      var !exist exist $!libyname
+      if (!exist.eq('FALSEA')) then
+        NEW LIBY $!libyname
+        SpPurpose ABAT
+      else
+        LIBY $!libyname
+        SpPurpose ABAT
+      endif
+    endif
+
+    -- Access sheet template
+    !!ce               = !this.shTmpl
+    !this.PDMSname.val = !newName
+    !this.title.val    = !!ce.owner.title
+
+    -- Set copy button inactive
+    !this.copy.active = false
+
+    !!abaAddGraphElem(!!ce.ref.string())
+
+    -- Get tasks
+    !this.optionsTaskList.taskArray = !this.allTaskList.taskArray
+
+  -- Modify sheet template
+  else
+
+    !this.shTmpl = !!ce
+    !!abaAddGraphElem(!!ce.ref.string())
+    !this.PDMSname.val = !this.shTmpl.flnm
+    !this.title.val = !this.shTmpl.title
+      handle any
+        !this.shTmpl       = !!abaSheetList.sheetList.selection('RTEXT').dbref()
+        !this.PDMSname.val = !this.shTmpl.flnm
+        !this.title.val    = !this.shTmpl.title
+     endhandle
+
+    !xy = !this.shTmpl.size
+    !paper = !xy[1] & ' ' & !xy[2]
+    !list = !this.size.rtext
+    !size = !list.find(!paper)
+    if (!size.empty()) then
+      !this.size.val = 1
+    else
+      !this.size.val = !size[1]
+    endif
+
+    !this.width.val = !xy[1]
+    !this.height.val = !xy[2]
+    !bsrf = !this.shTmpl.bsrf
+    !bsfn = !this.shTmpl.bsfn
+
+    if (!bsrf.string() eq '' and !bsfn.string() eq '') then
+
+      !this.ref.val = 1
+      !this.backs.active = FALSE
+      !this.file.active = FALSE
+
+    elseif (!bsrf.string() ne '' and !bsfn eq '') then
+
+      !this.ref.val = 2
+      !this.backs.active = TRUE
+      !this.file.active = FALSE
+
+      if (unset(!bsrf)) then
+        !!alert.warning('No Backing Sheet Reference Set')
+        !this.ref.val = 1
+        !this.backs.active = FALSE
+        !this.file.active = FALSE
+
+      else
+
+        !test = !this.backsList.find(!bsrf.name)
+
+        if (!test[1] ne 0) then
+          !this.backs.val = !test[1]
+        else
+          !!alert.error('Backing Sheet ' & !bsrf & ' not Found')
+        endif
+
+      endif
+
+    else
+
+      !this.ref.val      = 3
+      !this.backs.active = FALSE
+      !this.file.active  = TRUE
+      !test              = (BSFNAME OF $!name)
+
+      BSFNAME $!test
+        handle (64,417)
+          -- SHEET /T003/S1: Cannot open Plotfile /name
+          !!alert.error('Backing Sheet ' & !bsrf & ' not Found')
+        endhandle
+
+    endif
+
+    -- Go off and collect all assigned "tasks" for this sheet.
+    !this.choiceTaskList.readTempTask(!this.shTmpl)
+
+    -- Get the names of all the tasks in the current view
+    !chosenNameArray = !this.choiceTaskList.getListNames()
+
+    -- Find the unchosen tasks
+    do !taskObj val !this.allTaskList.taskArray
+
+      -- Skip if the task is already chosen
+      skip if (!chosenNameArray.findFirst(!taskObj.name.upcase()).set())
+
+      -- Add not chosen task to the options array
+      !this.optionsTaskList.taskArray.append(!taskObj)
+
+    enddo
+
+    -- Set copy button active
+    !this.copy.active = true
+
+  endif
+
+  -- Add the relevant tasks row data to each grid
+  !this.parseTasks()
+
+  -- Set copy description
+  !this.shTmpl   = !!ce
+  !this.desc.val = !this.shTmpl.func
+
+endmethod
+-- End of method definition for .init()
+
+------------------------------------------------------------------------
+--
+-- Method:      .addTask()
+--
+-- Description: Remove a task from the available list and add it to the selected list
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .addTask()
+
+  -- Check for any selected entry
+  if (!this.optionsControl.getSelectedRows().set()) then
+
+    -- Selected row
+    !rowNumber = !this.optionsControl.getSelectedRowTags()[1].real()
+    !taskName  = !this.optionsControl.getSelectedRows()[1][1]
+
+    -- Move the selected options task from the options list array to the choice list array
+    !this.choiceTaskList.taskArray.append(!this.optionsTaskList.taskArray[!rowNumber])
+    !this.optionsTaskList.taskArray.remove(!rowNumber)
+
+    -- Add the relevant tasks row data to each grid
+    !this.parseTasks()
+
+    -- Select the added task in the choice grid
+    !this.choiceControl.selectRow(!this.findEntry(!taskName))
+
+  endif
+
+endmethod
+-- End of method .addTask()
+
+------------------------------------------------------------------------
+define method .backing(!Type is STRING)
+
+  -- Decide on the type of backing sheet.
+  if (!Type eq 'Unset') then
+
+    !this.backs.active = false
+    !this.file.active  = false
+
+  elseif (!type eq 'Reference') then
+
+    !this.Backs.Active = true
+    !this.file.Active  = false
+
+  else
+
+    !this.backs.active = false
+    !this.file.active  = true
+
+  endif
+
+endmethod
+-- End of method definition for .backing(STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      .cancel()
+--
+-- Description: Cancel this form
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .cancel()
+
+  -- Delete sheet template
+  if (!this.Mode eq 'CREATE') then
+
+    -- Access this sheet template
+    !!ce = !this.shTmpl
+    delete SHTMPL
+
+    -- Test for zero sheet templates
+    var !sheets coll all shtmpl for $!!ce
+    if (!sheets.size().eq(0)) then
+      delete DRTMPL
+    endif
+
+  endif
+
+   !!abaProcess.visible()
+
+endmethod
+-- End of method .cancel()
+
+------------------------------------------------------------------------
+--
+-- Method:      .choiceAfterSelectChange(ARRAY)
+--
+-- Description: Callback on grid control after select change of the choice grid
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .choiceAfterSelectChange(!array is ARRAY)
+
+  -- Select the task
+  if (!this.choiceControl.getSelectedRowTags().set()) then
+
+    -- Clear any options selection
+    !this.optionsControl.clearRowSelection()
+
+    -- Set task
+    !this.setTask('CHOICE', !array[0][1].real())
+
+  -- Clear current task
+  else
+    !this.task = object ABATASK()
+
+  endif
+
+endmethod
+-- End of method definition for .choiceAfterSelectChange(ARRAY)
+
+------------------------------------------------------------------------
+--
+-- Method:      .choicePopup()
+--
+-- Description: Pop-up for the choice grid control
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    0   R      REAL      Cursor position X
+--    1   R      REAL      Cursor position Y
+--    2   R      ARRAY     Array of selected row tags
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .choicePopup(!array is ARRAY)
+
+  -- Get selected row number
+  !selectedNumber = !this.choiceControl.getSelectedRowTags()[1].real()
+
+  -- Test for only one entry
+  if (!selectedNumber.eq(1) and !this.choiceControl.getRows().size().eq(1)) then
+
+    -- Prevent any moves
+    !this.choicePopup.setFieldProperty('UP','ACTIVE',false)
+    !this.choicePopup.setFieldProperty('DOWN','ACTIVE',false)
+
+  -- Test for first entry
+  elseif (!selectedNumber.eq(1)) then
+
+    -- Prevent any move up
+    !this.choicePopup.setFieldProperty('UP','ACTIVE',false)
+    !this.choicePopup.setFieldProperty('DOWN','ACTIVE',true)
+
+  -- Test for last entry
+  elseif (!selectedNumber.eq(!this.choiceTaskList.taskArray.size())) then
+
+    -- Prevent any move down
+    !this.choicePopup.setFieldProperty('UP','ACTIVE',true)
+    !this.choicePopup.setFieldProperty('DOWN','ACTIVE',false)
+
+  else
+
+    -- Allow all moves
+    !this.choicePopup.setFieldProperty('UP','ACTIVE',true)
+    !this.choicePopup.setFieldProperty('DOWN','ACTIVE',true)
+
+  endif
+
+  -- Show the pop-up
+   !this.choiceGrid.popup = !this.choicePopUp
+   !this.choiceGrid.showPopup(!array[0], !array[1])
+
+endmethod
+-- End of method definition for .choicePopup()
+
+------------------------------------------------------------------------
+--
+-- Method:      .clear(STRING)
+--
+-- Description: Clear relevant data arrays
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      What to clear ALL or GRIDS
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .clear(!what is STRING)
+
+  -- Clear ALL
+  if (!what.eq('ALL')) then
+
+    -- Clear task data
+    !this.optionsTaskList.clear()
+    !this.choiceTaskList.clear()
+
+  endif
+
+  -- Clear the grids
+  !this.optionsControl.clearGrid()
+  !this.choiceControl.clearGrid()
+
+  -- Reset the current task
+  !this.task = object ABATASK()
+
+endmethod
+-- End of method definition for .clear()
+
+------------------------------------------------------------------------
+define method .copy()
+
+  -- Set this form mode to create & rerun
+  !this.mode = 'CREATE'
+  !this.init()
+
+  -- Refresh form
+  !this.mode = 'MODIFY'
+  !this.init()
+
+  -- Set mode to create so sheet will be deleted if cancelled
+  !this.mode = 'CREATE'
+
+  -- Prevent this sheet being copied since it is not finished yet
+  -- as the library references are only created on OKCALL
+  !this.copy.active = false
+
+endmethod
+-- End of method .copy()
+
+------------------------------------------------------------------------
+--
+-- Method:      .findEntry(STRING)
+--
+-- Description: Find an entry in the choice grid
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      The string to find
+--
+-- Return:
+--   [Data Type] [Description]
+--    REAL        Index of found string
+--
+------------------------------------------------------------------------
+define method .findEntry(!what is STRING) is REAL
+
+  -- Initialise variables
+  !allRows = !this.choiceControl.getRows()
+
+  -- Search all grid entries
+  do !index ind !allRows
+
+    -- Initialise variables
+    !row = !allRows[!index]
+
+    -- Look for the passed string in the row array
+    if (!row.findFirst(!what).set()) then
+      return !index
+    endif
+
+  enddo
+
+  return 0
+
+endmethod
+-- End of method definition for .findEntry(STRING)
+
+------------------------------------------------------------------------
+define method .format(!aspect is STRING)
+
+  -- Formats the aspect of the drawing sheet.
+  !paper = !this.size.selection('RTEXT').split('')
+
+  if (!aspect eq 'Landscape') then
+    !this.width.val  = !paper[1].real()
+    !this.height.val = !paper[2].real()
+
+  else
+    !this.width.val  = !paper[2].real()
+    !this.height.val = !paper[1].real()
+
+  endif
+
+endmethod
+-- End of method definition for .format(STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      .getAllTasks()
+--
+-- Description: Get all drawing tasks
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getAllTasks()
+
+  -- Get all drawing tasks
+  !this.allTaskList.getLibraryTasks('DRAWING')
+
+endmethod
+-- End of method .getAllTasks()
+
+------------------------------------------------------------------------
+--
+-- Method:      .modifyTask()
+--
+-- Description: Modify the selected task from the choice grid
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .modifyTask()
+
+  -- Test for any selected task
+  if (!this.choiceControl.getSelectedRows().set()) then
+
+    -- Attempt to find a form that matches the task
+    !taskForm = '!!' & !this.task.execute
+
+    -- If the form does not exist then attempt to load it
+    if (undefined($!taskForm)) then
+
+      pml load form $!taskForm
+
+      if (undefined($!taskForm)) then
+
+        -- Build a form to allow the user to modify the task parameters
+        !!abaBuildEditForm(!this.task,'DRAWING')
+
+        -- If form has been built (may not of there are no parameters)
+        if (defined(!!editUserTask)) then
+          !taskForm = !!editUserTask
+        endif
+
+        -- Done
+        return
+
+      endif
+
+    endif
+
+    -- Set the form member to the selected task
+    !form      = $!taskForm
+    !form.task = !this.task
+    !form.form = !this
+
+    -- Show the form
+    !form.show('CEN', 0.5, 0.5)
+
+  endif
+
+endmethod
+-- End of method .modifyTask()
+
+------------------------------------------------------------------------
+--
+-- Method:      .move(STRING)
+--
+-- Description: Move the selected entry in choice grid list order
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Direction of move UP or DOWN
+--
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .move(!direction is STRING)
+
+  -- Initialise variables
+  !taskName = !this.task.name
+  !sorted   = ARRAY()
+
+  -- Get selected row number
+  !selectedNumber = !this.choiceControl.getselectedrowtags()[1].real()
+
+  -- Created sorted indices array
+  do !count from 1 to !this.choiceTaskList.taskArray.size()
+
+    -- Move UP one level in the list order
+    if (!direction.eq('UP')) then
+
+      -- Test for the position of the entry immediately before the selected entry
+      if (!count.eq(!selectedNumber - 1)) then
+        !sorted.append(!count + 1)
+
+      -- Test for the position of the selected entry
+      elseif (!count.eq(!selectedNumber)) then
+        !sorted.append(!count - 1)
+
+      else
+        !sorted.append(!count)
+
+      endif
+
+    -- Move DOWN one level in the list order
+    else
+
+      -- Test for the position of the selected entry
+      if (!count.eq(!selectedNumber)) then
+        !sorted.append(!count + 1)
+
+      -- Test for the position of the entry immediately after the selected entry
+      elseif (!count.eq(!selectedNumber + 1)) then
+        !sorted.append(!count - 1)
+
+      else
+        !sorted.append(!count)
+
+      endif
+
+    endif
+
+  enddo
+
+  -- Sort the choice task array
+  !this.choiceTaskList.taskArray.reIndex(!sorted)
+
+  -- Clear the choice grid and associated data
+  !this.choiceControl.clearGrid()
+  !this.choiceRowSet.clear()
+
+  -- Reset the choice grid
+  do !taskObj val !this.choiceTaskList.taskArray
+
+    -- Initialise variables
+    !rowData  = ARRAY()
+
+    -- Build row data
+    !rowData.append(!taskObj.name.after('/'))
+    !rowData.append(!taskObj.description)
+
+    -- Add row data to row set array
+    !this.choiceRowSet.append(!rowData)
+
+  enddo
+
+  -- Set the grids
+  using namespace 'Aveva.Pdms.Presentation'
+  !this.choiceControl.bindToDataSource(object NETDATASOURCE('Options', !this.headings, !this.choiceRowSet, '^Name'))
+
+  -- Reselect the moved entry
+  !this.choiceControl.selectRow(!this.findEntry(!taskName))
+
+endmethod
+-- End of method definition for .move(STRING)
+
+------------------------------------------------------------------------
+define method .okCall()
+
+  -- Initialise variables
+  !allNames = ARRAY()
+
+  -- For a variant copy
+  if (!this.shTmpl.func.match('Variant').neq(0) and !this.mode.eq('CREATE')) then
+
+    -- Initialise variables
+    !trsf = ARRAY()
+    VAR !libys COLL ALL LIBY FOR $!this.drTmpl
+    VAR !views COLL ALL VIEW FOR $!this.shTmpl
+    VAR !idln EVAL IDLN FOR ALL FROM !views
+
+    -- For each copied view
+    do !index ind !views
+
+      -- Build library elements & set view references
+      !references = !!abaUserView.copyLiby(!views[!index].dbref())
+      break if (!references[1].string().eq('FAIL'))
+
+    enddo
+
+    -- Return to sheet template
+    !!ce = !this.shTmpl
+
+    -- Delete shtmpl if building library elements has failed
+    if (!references[1].string().eq('FAIL')) then
+      delete SHTMPL
+      return
+    endif
+
+    -- Set form to modify
+    !this.mode = 'MODIFY'
+
+  endif
+
+  -- Navigate to item......
+  $!this.PDMSname.val
+    TITLE |$!this.title.val|
+       handle any
+       endhandle
+
+  !pap = !this.width.val & ' ' & !this.height.val
+
+    BSRF nulref
+    SIZE $!pap
+
+    if (!this.ref.val eq 1) then
+      BSRF nulref
+
+    elseif  (!this.ref.val eq 2) then
+      !a = !this.backs.selection()
+      BSRF $!a
+        handle (64,10)
+          !!alert.Error('Backing Sheet size does not match the size of the sheet. Backing sheet set to nulref.')
+        endhandle
+    else
+
+      if (!this.file.val.unset()) then
+        BSFNAME unset
+      else
+        BSFNAME |$!this.file.val|
+      endif
+
+    endif
+
+  -- Add the slashes to the displayed names
+  do !name val !this.choiceControl.getColumn(1)
+    if (!name.substring(1,1).neq('/')) then
+      !allNames.append('/' & !name)
+    else
+      !allNames.append(!name)
+    endif
+  enddo
+
+  -- Set the tasks applied to this sheet.
+  !this.choiceTasklist.writeTaskData(!allNames,'SHTMPL')
+
+  -- Show the view edit form
+  if (!this.mode eq 'CREATE') then
+
+    !!abaUserView.Mode = 'CREATE'
+      handle (2,765)
+        -- Cannot get member MODE from non-existent object
+        loadform !!abaUserView
+        !!abaUserView.Mode = 'CREATE'
+      endhandle
+
+    !!abaUserView.deleteView = TRUE
+    show !!abaUserView at XR .2 YR .2
+    !!abaUserView.runInit()
+
+  endif
+
+  -- Modify the views
+  VIEW 1
+    handle (2,113)
+      !!abaUserView.Mode = 'CREATE'
+      show !!abaUserView at XR .2 YR .2
+      !!abaUserView.runInit()
+
+    elsehandle none
+      !!abaUserView.Mode = 'MODIFY'
+      !!abatemplate('VIEW','MODIFY')
+
+    endhandle
+
+endmethod
+-- End of method definition for .okCall()
+
+------------------------------------------------------------------------
+--
+-- Method:      .optionsAfterSelectChange(ARRAY)
+--
+-- Description: Callback on grid control after select change of the options grid
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .optionsAfterSelectChange(!array is ARRAY)
+
+  -- Select the task
+  if (!this.optionsControl.getSelectedRowTags().set()) then
+
+    -- Clear any choice selection
+    !this.choiceControl.clearRowSelection()
+
+    -- Set task
+    !this.setTask('OPTIONS', !array[0][1].real())
+
+  -- Clear current task
+  else
+    !this.task = object ABATASK()
+
+  endif
+
+endmethod
+-- End of method definition for .optionsAfterSelectChange(ARRAY)
+
+------------------------------------------------------------------------
+--
+-- Method:      .parseTasks()
+--
+-- Description: Parse the tasks for the relevant grids
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .parseTasks()
+
+  -- Initialise variables
+  !optionsRowSet = ARRAY()
+  !choiceRowSet  = ARRAY()
+
+  -- Clear the grids
+  !this.clear('GRIDS')
+
+  -- Build the not chosen tasks array for the options grid
+  do !taskObj val !this.optionsTaskList.taskArray
+
+    -- Initialise variables
+    !rowData  = ARRAY()
+
+    -- Build row data
+    !rowData.append(!taskObj.name.after('/'))
+    !rowData.append(!taskObj.description)
+
+    -- Add row data to row set array
+    !optionsRowSet.append(!rowData)
+
+  enddo
+
+  -- Build the chosen tasks array for the choice grid
+  do !taskObj val !this.choiceTaskList.taskArray
+
+    -- Initialise variables
+    !rowData  = ARRAY()
+
+    -- Build row data
+    !rowData.append(!taskObj.name.after('/'))
+    !rowData.append(!taskObj.description)
+
+    -- Add row data to row set array
+    !choiceRowSet.append(!rowData)
+
+  enddo
+
+  -- Set the grids
+  using namespace 'Aveva.Pdms.Presentation'
+  !this.optionsControl.bindToDataSource(object NETDATASOURCE('Options', !this.headings, !optionsRowSet, '^Name'))
+  !this.choiceControl.bindToDataSource(object NETDATASOURCE('Options', !this.headings, !choiceRowSet, '^Name'))
+
+endmethod
+-- End of method .parseTasks()
+
+------------------------------------------------------------------------
+--
+-- Method:      .receiveTask(ABATASK)
+--
+-- Description: Receive the modified task object from the modifying form
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .receiveTask(!task is ABATASK)
+
+  -- Replace this task
+  !this.task = !task
+
+  -- Find the task in the task list array
+  do !position ind !this.allTaskList.taskArray
+
+    !task = !this.allTaskList.taskArray[!position]
+
+    break if (!task.name.eq(!this.task.name))
+
+  enddo
+
+  !this.allTaskList.taskArray[!position] = !this.task
+
+  -- Replace the selected task in the choice grid
+  !this.choiceTaskList.taskArray[!this.choiceControl.getSelectedRowTags()[1].real()] = !this.task
+
+endmethod
+-- End of method .receiveTask(ABATASK)
+
+------------------------------------------------------------------------
+--
+-- Method:      .removeTask()
+--
+-- Description: Remove a task from the selected list and add it to the available list
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .removeTask()
+
+  -- Check for any selected entry
+  if (!this.choiceControl.getSelectedRows().set()) then
+
+    -- Selected row
+    !rowNumber = !this.choiceControl.getSelectedRowTags()[1].real()
+    !taskName  = !this.choiceControl.getSelectedRows()[1][1]
+
+    -- Move the selected options task from the choice list array to the options list array
+    !this.optionsTaskList.taskArray.append(!this.choiceTaskList.taskArray[!rowNumber])
+    !this.choiceTaskList.taskArray.remove(!rowNumber)
+
+    -- Add the relevant tasks row data to each grid
+    !this.parseTasks()
+
+    -- Select the added task in the choice grid
+    !this.optionsControl.selectRow(!this.findEntry(!taskName))
+
+  endif
+
+endmethod
+-- End of method .removeTask()
+
+------------------------------------------------------------------------
+--
+-- Method:      .setTask(STRING,ARRAY)
+--
+-- Description: Parse the tasks for the relevant grids
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Which grid is being selected OPTIONS or CHOICE
+--    2   R      REAL        The row being selected
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setTask(!gridName is STRING, !rowNumber is REAL)
+
+  -- For the Options grid
+  if (!gridName.eq('OPTIONS')) then
+
+    -- Reset the task to the current selection
+    !this.task = !this.optionsTaskList.taskArray[!rowNumber]
+
+  -- For the Choice grid
+  else
+
+    -- Reset the task to the current selection
+    !this.task = !this.choiceTaskList.taskArray[!rowNumber]
+
+  endif
+
+endmethod
+-- End of method .setTask(STRING,ARRAY)
+
+------------------------------------------------------------------------
+define method .sheetSize(!size is STRING)
+
+  -- Formats the aspect of the drawing sheet.
+  if (!size.neq(' ')) then
+
+    !this.Width.Val = !size.split()[1].real()
+    !this.Height.Val = !size.split()[2].real()
+
+  endif
+
+endmethod
+-- End of method definition for .sheetSize(STRING)
+
+------------------------------------------------------------------------
+define method .sppurpStructure(!ce is DBREF)
+
+   -- Save current position.
+   !save = !!ce
+
+      var !view coll all view for $!ce
+      do !v value !view
+      $!v
+      SpPurp ABAT
+-- Layers
+          var !laye coll all layer for $!v
+          do !l value !laye
+              $!l
+              sppurp ABAT
+              if (!!ce.name.upcase().match('TASKS') ne 0) then
+                  sPpurp ABAT
+                  -- Tasks
+                  var !task coll all task for ce
+                  do !t value !task
+                     $!t
+                     if (!!ce.name.upcase().match('VTASK') ne 0) then
+                         sppurp ABAV
+                         var !tkp coll all tkpara for ce
+                         do !tk value !tkp
+                         $!tk
+                         sppurp ABAV
+                         enddo
+                     elseif (!!ce.name.upcase().match('STASK') ne 0) then
+                         sppurp ABAS
+                         var !tkp coll all tkpara for ce
+                         do !tk value !tkp
+                         $!tk
+                         sppurp ABAS
+                         enddo
+                     else
+                         sppurp ABAG
+                         var !tkp coll all tkpara for ce
+                         do !tk value !tkp
+                         $!tk
+                         sppurp ABAG
+                         enddo
+                     endif
+                   enddo
+               endif
+
+              if (!!ce.name.upcase().match('USER_DIMS') ne 0) then
+                  sPpurp DIMA
+              elseif (!!ce.name.upcase().match('USER_LABS') ne 0) then
+                  sPpurp LABA
+              elseif (!!ce.name.upcase().match('USER_NOTES') ne 0) then
+                  sPpurp NOTA
+              elseif (!!ce.name.upcase().match('USER_TAGS') ne 0) then
+                  sPpurp TAGA
+              endif
+          enddo
+
+      enddo
+   -- return to original position in hierarchy.
+   !!ce = !save
+endmethod
+-- End of method .sppurpStructure(DBREF)

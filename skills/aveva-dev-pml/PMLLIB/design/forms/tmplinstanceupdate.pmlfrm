@@ -1,0 +1,556 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            tmplinstanceupdate.pmlfrm
+--    Type:          Form Definition
+--    Group:         Undefined
+--      Keyword:     Undefined
+--    Module:        Undefined
+--  Author:          Undefined
+--  Created:         Wed Nov 30 16:15:13 2016
+--
+-- Description:
+--   Propagate changes to a Design Template to selected Design Template owner
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  clear()                          -                   Clear form gadgets
+--  clearMessages()                  -                   Clear message panel
+--  climbToTemplateReference(DBREF)  DBREF               climb hierarchy to find a template reference (recursive)
+--  displayLog()                     -                   Display error log messages
+--  initialise(DBREF)                -                   Form initialisation
+--  instanceMessage(DBREF)           STRING              Returns state of element to be updated
+--  propagate()                      -                   Propagate Design Template changes to the selected instances
+--  tmplInstanceUpdate()             -                   Constructor
+--  update()                         -                   Update form
+--  updateList(DBREF,DATETIME,STRING) -                   Update the design template information
+--  updateUndo()                     -                   Undo callback
+--
+----------------------------------------------------------------------
+
+layout form !!tmplInstanceUpdate dialog resize
+
+  -- Element Name
+  button .ce  anchor left + top 'CE'    at xmin ymin
+
+  -- Current Design Template owner information
+  path down
+  paragraph .instanceName          anchor left + right + top  width 59 lines 1
+  paragraph .instanceLastModified  anchor left + right + top  width 59 lines 1
+
+  frame .tmplDetails anchor left + right + top + bottom
+    -- Design Template Information
+    list .lstMembers |Design Template|  anchor left + right + top + bottom width 60 length 5.5
+  exit
+
+  frame .frameMessage anchor left + right + bottom  at xmin.tmplDetails  ymax width.tmplDetails
+    -- error log
+    paragraph .tmplMessageHead   anchor left + right + bottom  at x0.5  ymax   width 61 lines 1
+    paragraph .tmplMessage       anchor left + right + bottom  at x0.5  ymax   width 61 lines 2
+  exit
+
+  halign right
+  path down
+
+  button .update   'Update'    anchor left + bottom   at x0              ymax+0.25 callback '!this.propagate()' width 8
+  button .dismiss  'Cancel'   anchor right + bottom   at xmax form-size  ymin                                   width 8 cancel
+
+  -- Form members
+
+  -- Equipment and Template references
+  member .instance            is DBREF
+  member .designTemplate      is DBREF
+
+  -- Design Template information headings
+  member .columnHeadings      is ARRAY
+
+  -- error log containing messages from the update
+  member .errorLog            is COMPROPERROR
+
+  -- Undo event handlers
+  member .undoUpdate          is UNDOABLE
+
+exit
+-- End of form definition
+
+------------------------------------------------------------------------
+--
+-- Method:      tmplInstanceUpdate
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .tmplInstanceUpdate()
+
+  !this.formTitle     = 'Update Template'
+  !this.iconTitle     = 'TMPLUPDATE'
+  !this.callback      = '!this.initialise(!!ce)'
+  !this.ce.callback   = '!this.initialise(!!ce)'
+
+  -- Define list information
+  !this.clear()
+
+  -- Design Template information headings
+  !this.columnHeadings[1] = 'Name'
+  !this.columnHeadings[2] = 'Last Modified'
+  !this.columnHeadings[3] = 'State'
+
+  -- initialise update button to be inactive
+  !this.update.active = false
+
+  -- Initialise create button undo
+  !this.undoUpdate.description('Update Template Instance')
+  !this.undoUpdate.undoAction('!!tmplInstanceUpdate.updateUndo()')
+  !this.undoUpdate.redoAction('!!tmplInstanceUpdate.updateUndo()')
+  !this.update.setUndoable(!this.undoUpdate)
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      displayLog
+--
+-- Description: Display error log messages
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .displayLog()
+
+  !this.tmplMessage.val = ' '
+  if( defined(!this.errorLog) ) then
+    if( !this.errorLog.hasErrors() ) then
+      !this.tmplMessageHead.val = 'Severity: ' + !this.errorLog.getErrorSeverity()
+      !this.tmplMessage.val     = !this.errorLog.getErrorContext() + ': ' + !this.errorLog.getErrorText()
+    else
+      !this.tmplMessageHead.val = 'No messages'
+    endif
+  else
+    !this.tmplMessageHead.val = 'No messages'
+  endif
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      clearMessages
+--
+-- Description: Clear message panel
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .clearMessages()
+
+  !this.tmplMessageHead.val = ' '
+  !this.tmplMessage.val     = ' '
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      clear
+--
+-- Description: Clear form gadgets
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .clear()
+
+  -- Template Information
+  !this.instanceName.val         = ''
+  !this.instanceLastModified.val = ''
+  !this.lstMembers.clear()
+  !this.clearMessages()
+  -- Initialise progress bar
+  !this.update.active = false
+  -- clear members
+  !this.errorLog      = object COMPROPERROR()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      initialise
+--
+-- Description: Form initialisation
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .initialise(!element is DBREF)
+
+  -- check for good reference
+  if( badref(!element) ) then
+    return error 1 'Bad Element Reference'
+  endif
+
+  -- make sure that we have not found an element inside a TMPL
+  !templateElement = !!dtbFindOwnerOfType(!element, 'TMPL', false)
+  if(!templateElement.unset()) then
+    !instance = !element
+  else
+    -- look above the template element in the hierarchy
+    !instance = !templateElement
+  endif
+
+  -- search up for an element that has a template reference, and can own a Template
+  !item     = !instance
+  -- note that .climbToTemplateReference is recursive. Take care with argument
+  !instance = !this.climbToTemplateReference(!item)
+
+  if (!instance.unset()) then
+    return error 2 'Unable to navigate to an element with a Design Template'
+  endif
+
+  -- we do not want to update SUBE individually. Go to owning EQUI
+  !equipment = !!dtbFindOwnerOfType(!instance, 'EQUI', false)
+  if(!equipment.set()) then
+    -- find an equipment element
+    !instance = !equipment
+  endif
+
+  -- clear the form gadgets
+  !this.clear()
+
+  -- get instance data
+  !this.instance         = !instance
+  !!ce                   = !this.instance
+  !this.instanceName.val = !this.instance.namtyp
+  !instanceLastModified  = object DATETIME(!this.instance.lastmod.hier)
+  !this.instanceLastModified.val = 'Last Modified: ' + !instanceLastModified.string()
+
+  -- get Design Template reference
+  !templateMaster        = !this.instance.tmpref
+  handle any
+    !templateMaster      = object DBREF()
+  endhandle
+  !this.designTemplate   = !templateMaster
+
+  -- get warnings to be presented to the user
+  !message                  = !this.instanceMessage(!this.instance)
+  !this.tmplMessageHead.val = ' '
+  !this.tmplMessage.val     = !message
+
+  if( !this.designTemplate.set() ) then
+    -- update design template information
+    !this.update()
+  endif
+
+  -- only allow update if there is no error message
+  !this.update.active = !message.empty()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      update
+--
+-- Description: Update form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .update()
+
+  -- get (session) time that the master was last modified
+  !templateLastModified = object DATETIME(!this.designTemplate.lastmod.hier)
+
+  -- last modified time of equipment
+  -- and work out if the master has been modified since the instance
+  !instanceLastModified = object DATETIME(!this.instance.lastmod.hier)
+  if( !templateLastModified eq !instanceLastModified ) then
+    -- master probably updated since the instance
+    -- Note that time comparison cannot be made if changes are made
+    -- within the same session
+    !status       = 'Suspect: Design Template master and instance modified in the same session'
+    !activeUpdate = true
+  elseif( !templateLastModified gt !instanceLastModified ) then
+    -- Master updated after instance
+    !status        = 'Update: Master Design Template modified since last instance update'
+    !activeUpdate = true
+  else
+    -- equipment modified after master template
+    !activeUpdate = false
+    -- check the TMPL elements in case other EQUI attributes have changed
+    -- Instance updated after master
+    !templateCollection = object COLLECTION()
+    !templateCollection.scope(!this.instance)
+    !templateCollection.type('TMPL')
+    !templateCollection.filter(object EXPRESSION('NOT BADREF(TMPREF OF OWNER)'))
+    !templates          = !templateCollection.results()
+    do !template values !templates
+      do !member values !template.members
+        !templateMemberLastModified = object DATETIME(!member.lastmod.attribute('orrf'))
+        if( !templateMemberLastModified eq !templateLastModified) then
+          !status       = 'Suspect: Design Template master and instance modified in the same session'
+          !activeUpdate = true
+          break
+        elseif( !templateLastModified gt !templateMemberLastModified ) then
+          -- Master updated after instance
+          !status       = 'Update: Master Design Template modified since last instance update'
+          !activeUpdate = true
+          break
+        endif
+        break if(!activeUpdate)
+      enddo
+      break if(!activeUpdate)
+    enddo
+    if( !activeUpdate.not() ) then
+      !status = !this.instance.fulltype + ' Design Template is up to date'
+    endif
+  endif
+
+  !this.update.active = !activeUpdate
+
+  -- initialise the instance list
+  !this.updateList(!this.designTemplate, !templateLastModified, !status)
+  !this.instanceLastModified.val = 'Last Modified: ' + !instanceLastModified.string()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      updateList
+--
+-- Description: Update the design template information
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .updateList(!template is DBREF, !lastModified is DATETIME, !status is STRING)
+
+  !data    = ARRAY()
+  !data.append(!template.flnn)
+  !data.append(!lastModified.string())
+  !data.append(!status)
+  !columns = ARRAY()
+  !columns[1] = !this.columnHeadings
+  !columns[2] = !data
+  !this.lstMembers.setColumns(!columns)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      propagate
+--
+-- Description: Propagate Design Template changes to the selected instances
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .propagate()
+
+  -- create an error object to log any errors found during the update
+  !errorObject = object COMPROPERROR()
+
+  -- handle the case where the list has got out of date
+  if( badref(!this.designTemplate) ) then
+    -- handle bad input argument
+    !errorObject.addError('FAIL')
+    !errorObject.setErrorText('Cannot access Design Template - bad reference')
+    !errorObject.setErrorContext('Find Design Template')
+  else
+    -- update the Design Template Instance
+    !instanceObject = object COMPROP(!this.instance)
+    handle any
+      !errorObject.addError('FAIL')
+      !errorObject.setErrorText(!!error.text)
+      !errorObject.setErrorContext('Read element Properties')
+      !errorObject.setErrorCommand(!!error.command)
+      !errorObject.setErrorLine(!!error.line)
+    elsehandle none
+      -- tell the instanceObject to force changes to the Design
+      -- Template definition to be made to the instance
+      !errorObject = !instanceObject.propagateChanges()
+    endhandle
+
+    -- delete the object
+    !instanceObject.delete()
+    handle any
+    endhandle
+  endif
+
+  -- add error status to error log
+  !this.errorLog = !errorObject
+  -- update the table of instances
+  if( !errorObject.hasErrors() ) then
+    if( !errorObject.isCritical() ) then
+      -- !criticalError = true
+      !errorLevel = 'Critical'
+    else
+      !errorLevel = 'Failed'
+    endif
+    !message = !errorLevel + ': ' + !errorObject.getErrorText()
+  else
+    !message = 'Updated'
+  endif
+
+  -- return false only if critical error found
+  !this.update.active = false
+
+  -- update the Design Template details
+  !this.update()
+
+  -- display error messages during propagation
+  !this.displayLog()
+
+  return
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      updateUndo
+--
+-- Description: Undo callback
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .updateUndo()
+
+  -- Close the form if shown so user does not see out of date information
+  if(!this.shown()) then
+    !this.hide()
+  endif
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      instanceMessage
+--
+-- Description: Returns state of element to be updated
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element to test
+-- Return:
+--   [Data Type] [Description]
+--    STRING      Error message, or empty string if not error
+--
+------------------------------------------------------------------------
+
+define method .instanceMessage(!item is DBREF) is STRING
+
+  -- Note that this has the same checks as DBREFUPDATABLE with different actions
+  !return = ''
+  -- Is the item locked
+  if( badref(!item) ) then
+    !return = 'Element ' + !item.string() + ' not found'
+  -- check for element referencing a Template
+  elseif( badref(!item.spref) ) then
+    !return = 'This element does not have a valid Specification'
+  elseif( badref(!item.tmpref) ) then
+    !return = 'Cannot Find Design Template Referenced by this element'
+  elseif(!item.lock) then
+    !return = 'Element ' + !item.flnm + ' is locked'
+  -- Check if we have read/write access to the element
+  elseif(!item.dbWrite.not()) then
+    !return = 'Cannot modify: Read only'
+  -- Check if item has been claimed out by any other user
+  else
+    if(!item.dbAccess eq 'MULTIWRITE') then
+      -- check claim by other user
+      if (not !item.okClaim and not !item.lclm) then
+        return  'Cannot modify: Claimed by ' + !item.userC
+      endif
+      -- get any other modification error message
+      !return = !item.moderr
+    endif
+  endif
+
+  return !return
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      climbToTemplateReference
+--
+-- Description: climb hierarchy to find a template reference (recursive)
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .climbToTemplateReference(!element is DBREF) is DBREF
+
+  -- search up for an element that has a TMPREF pseudo attribute
+  !instance = !!dtbWithAttribute(!element, 'TMPREF')
+  if ( !instance.unset() ) then
+    return !instance
+  endif
+  -- ignore elements that cannot own TMPL elements and ignore panels that should not contain TMPL elements
+  if( !instance.list.findFirst('TMPL').unset() or !instance.hardtype inset('PANE', 'BPANEL') ) then
+    !item = !instance.owner
+    -- RECURSIVE call
+    !instance = !this.climbToTemplateReference(!item)
+  endif
+
+  return !instance
+
+endmethod
+-- End of method definition

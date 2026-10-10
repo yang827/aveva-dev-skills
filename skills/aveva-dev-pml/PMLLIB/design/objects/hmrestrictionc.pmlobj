@@ -1,0 +1,336 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            hmrestrictionc.pmlobj
+--   Type:          Object Definition
+--   Group:
+--     Keyword:     Hole Management
+--   Module:        All
+-- Author:          Martin Ward
+--  Created:        June 2007
+--
+-- Description:
+--   Object used to verify an association in the Hole Management system
+--    1.  Load hm configuration file to retrieve list of eligible marker types
+--    2.  Loop through all ASSMBRs
+--    2.1.  Create list of all subFIXINGs with FRMW grandparents
+--    2.2.  Evaluate PosEv of candidate AMEMRF elements of ASSMBRs. Store as atta list
+--    3.  Check all owning fixings and panel fittings are in the same place
+--    4.  Loop through all PosEv results from 2.1
+--    4.1.  Check atta position matches corresponding fixing position
+
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  checkAttaFixiCoincident()        BOOLEAN             check the ATTA elements and fixings are coincident
+--  checkMarkerFaceAlignment(DBREF)  BOOLEAN
+--  gatherData()                     -
+--  hmRestrictionC()                 -
+--  testEv()                         BOOLEAN
+--
+------------------------------------------------------------------------
+
+define object HMRESTRICTIONC
+
+ -- MEMBER names are compulsory to tie in with ASSOCIATIONS
+ -- COMPONENT = RESTRICTION element
+   member .association   is DBREF
+   member .component     is DBREF
+
+   member .allAssMbr     is ARRAY
+
+   -- Additional members required to simplify processing
+   member .hmHole       is HMHOLE
+
+
+   member .debug         is BOOLEAN
+endobject
+-- End of object definition
+
+
+------------------------------------------------------------------------
+--
+-- Method:      hmRestrictionC
+--
+-- Description: Constructor method
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .hmRestrictionC()
+
+  !this.debug = FALSE
+  if (defined(!!debug) ) then
+    !this.debug = TRUE
+  endif
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      testEv
+--
+-- Description: test that ATTA elements and fixings are coincident
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .testEv() is BOOLEAN
+
+-- Manually trigger the CONSTRUCTOR - does not get run automatically at the moment
+  !this.hmRestrictionC()
+
+  !this.gatherData()
+
+-- If key data not located then fail
+  if (!this.allAssMbr.unset() ) then
+    if (!this.debug ) then
+      write 'Assmbr list unset in hmRestrictionC.testEv()'
+    endif
+    return FALSE
+  endif
+
+-- Check on profile of Hole Owner
+  if ( NOT !this.checkAttaFixiCoincident() ) then
+    if (!this.debug ) then
+      write 'Failed check in hmRestrictionC.checkAttaFixiCoincident()'
+    endif
+    return FALSE
+  endif
+-- Once all checks completed successfully...
+  return TRUE
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      GatherData
+--
+-- Description: Collect all key information for member variables
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .gatherData()
+
+-- Gather all hole data for this association
+  !this.hmHole = object HMHOLE(!this.association)
+
+  !this.allAssMbr = object ARRAY()
+
+-- Locate ALL the Assmbr elements for this ASSOCIATION
+
+  !find = object COLLECTION()
+  !find.type('ASSMBR')
+  !find.scope(!this.hmHole.element)
+  !this.allAssMbr = !find.results()
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      checkAttaFixiCoincident
+--
+-- Description: check the ATTA elements and fixings are coincident
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .checkAttaFixiCoincident() is BOOLEAN
+
+-- find all the atta and fixings in the association
+!attas            = ARRAY()
+!owningFixingPos  = object POSITION()
+!coamingFixingPos = object POSITION()
+!fixis            = ARRAY()
+!pFitPos          = object POSITION()
+--    1.  Load hm configuration file to retrieve list of eligible marker types
+  if(not defined(!!holeManagementConfiguration)) then
+    !tempConfig = object HMCONFIG()
+    if(!tempConfig.loadConfigurationFile().not()) then
+      !!setRestrictionError(!this.association, !this.component, |Unable to load HM configuration file|)
+      return false
+    endif
+  endif
+!markerTypes = !!holeManagementConfiguration.markerTypes
+--    2.  Loop through all ASSMBRs
+do !i values !this.allAssMbr
+  if (badref(!i.amemrf)) then
+    !!setRestrictionError(!this.association, !this.component, |Bad reference in an AMEMRF field in one of the elements in the hole association|)
+    return FALSE
+  endif
+--    2.1.  Create list of all subFIXINGs with FRMW grandparents
+  if (!i.amemrf.type eq 'FIXING' and !i.amemrf.owner.type eq 'FIXING' and !i.amemrf.owner.owner.type eq 'FRMW') then
+    !fixis.append(!i.posev)
+  endif
+
+--    2.2.  Evaluate PosEv of candidate AMEMRF elements of ASSMBRs. Store as atta list
+  if( !markerTypes.findFirst(!i.amemrf.type).set() ) then
+    -- check for additional item (not marker element) by LNAME beginning not beginning with '='
+    if( !i.lname.set() ) then
+      if( !i.lname.subString(2,1) eq '=' ) then
+        !markerRef = !i.amemrf
+        -- check for special orientated flange
+        if( !markerRef.type.eq('COUP') and !markerRef.catref.comptype.eq('ORIC')) then
+          if( !this.checkMarkerFaceAlignment(!markerRef).not() ) then
+            return false
+          endif
+          !attas.append(!i.posev)
+        elseif( !markerRef.type eq 'ATTA' and !this.hmHole.holetype eq 'TRAY' ) then
+          -- get offset position of tray marker from AHRP p-point
+          !attas.append(!this.hmHole.getTrayPosition(!markerRef))
+        else
+          !attas.append(!i.posev)
+        endif
+      endif
+    endif
+  endif
+  if (!i.amemrf.type eq 'FITT') then
+    !attas.append(!i.posev)
+  elseif ((!i.amemrf.type.eq('FIXING')) AND $
+          (!i.amemrf.owner.type.eq('FIXING')) AND $
+          (!i.amemrf.owner.owner.type.eq('PLDATU'))) then
+    !attas.append(!i.posev)
+  elseif (!i.amemrf.type eq 'PFIT') then
+    !pFitPos = !i.posev
+  elseif (!i.amemrf.type eq 'CMFI') then
+    if (!i.amemrf.member[1].type.eq('SBFI')) then
+      !sFit = !i.amemrf.members[1]
+    elseif (!i.amemrf.member[1].type.eq('TMPL')) then
+      skip
+    endif
+    !pFitPos = !sFit.position.wrt(Worl)
+  elseif (!i.amemrf.type eq 'JLDATU') then
+    !plDatu = !i.amemrf.member[1]
+    !fixings = !plDatu.members
+    do !val values !fixings
+      if (!val.spref.set()) then
+        !pFitPos = !val.position.wrt(Worl)
+      endif
+    enddo
+  elseif ( !i.amemrf.type eq 'FIXING' and !i.amemrf.owner.type neq 'FIXING') then
+    if (!i.lname eq '/coaming') then
+      !coamingFixingPos = !i.posev
+    else
+      !owningFixingPos = !i.posev
+    endif
+  endif
+enddo
+
+if (!attas.size() neq !fixis.size()) then
+  if (!this.debug) then
+    write 'not the same number of ATTA elements and fixings'
+  endif
+  !!setRestrictionError(!this.association, !this.component, |Different number of ATTA elements and fixings|)
+  return FALSE
+endif
+
+--    3.  Check all owning fixings and panel fittings are in the same place
+if (!pFitPos.set() and !coamingFixingPos.set()) then
+  if (!pFitPos neq !coamingFixingPos or !pFitPos neq !owningFixingPos) then
+    !!setRestrictionError(!this.association, !this.component, |PFIT position different from coaming or virtual hole position|)
+    return FALSE
+  endif
+elseif (!pFitPos.set() and !coamingFixingPos.unset()) then
+  if (!pFitPos neq !owningFixingPos) then
+    !!setRestrictionError(!this.association, !this.component, |PFIT position different from virtual hole position|)
+    return FALSE
+  endif
+elseif (!pFitPos.unset() and !coamingFixingPos.set()) then
+  if (!coamingFixingPos neq !owningFixingPos) then
+    !!setRestrictionError(!this.association, !this.component, |Coaming position different from virtual hole position|)
+    return FALSE
+  endif
+endif
+--    4.  Loop through all PosEv results from 2.1
+do !index indices !attas
+--    4.1.  Check atta position matches corresponding fixing position
+  !attaMatchWithFixing = 0
+  do !fixIndex indices !fixis
+    if( !attas[!index].distance(!fixis[!fixIndex]) lt 0.1mm ) then
+      !attaMatchWithFixing = !fixIndex
+      break
+    endif
+  enddo
+  if( !attaMatchWithFixing eq 0 ) then
+    !errStr = |ATTA | + !index.string() + | is more than 0.1mm from a virtual hole fixing|
+    !!setRestrictionError(!this.association, !this.component, !errStr)
+    return false
+  endif
+  -- remove this fixing so that it is not tested again
+  !fixis.deleteFrom(!attaMatchWithFixing,1)
+enddo
+
+-- not errors found
+!!setRestrictionError(!this.association, !this.component, |No Error|)
+return true
+
+endmethod
+-- End of method
+
+----------------------------------------------------------------------
+--
+-- Method:      .getPenetratedFace
+--
+-- Description: Process data from penetrated items pick
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .checkMarkerFaceAlignment(!marker is DBREF) is BOOLEAN
+
+  !virtualHole = !this.hmHole.virtualHole
+  if (badref(!virtualHole)) then
+    !!setRestrictionError(!this.association, !this.component, |Bad reference to virtual hole|)
+    return FALSE
+  endif
+
+  !pv           = object POINTVECTOR(!virtualHole.position, !this.hmHole.zDir())
+  !markerOffset = !marker.pPos[1].distance(!pv.plane().near(!marker.pPos[1]))
+  handle any
+    !!setRestrictionError(!this.association, !this.component, |Unable to get plane of virtual hole|)
+    return FALSE
+  endhandle
+
+  -- check distance between centre flange and hole against hole thickness
+  !gap = abs(!this.hmHole.plateThickness * 0.5 - !markerOffset)
+  if( !gap lt 0.01mm ) then
+    !return = true
+  else
+    !!setRestrictionError(!this.association, !this.component, |Pipe component not correctly aligned with penetration|)
+    !return = false
+  endif
+
+  return !return
+
+endmethod

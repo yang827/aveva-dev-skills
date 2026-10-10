@@ -1,0 +1,669 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            isodimnoverall.pmlfnc
+--   Type:          Function Definition
+--   Group:         ISOADP
+--     Keyword:     Isometric
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         25 March 2001
+--
+-- Description:
+-- Creates overal dimensions in both the horizontal and the vertical
+-- It only dimensions a component when the constrained centreline
+-- changes direction, unless it is a TEE component.
+--
+-- Assumptions:
+-- The ce is the dimension laye
+------------------------------------------------------------------------
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     ARRAY       All components in the drawlist
+--    2    R     ISODEFAULTS The defaults settings
+--    3    R     BOOLEAN     Whether to only display horizontal dimensions
+--
+-------------------------------------------------------------------------
+define function !!isoDimnOverall(!allComp is ARRAY, !data is ISODEFAULTS, !horizontal is BOOLEAN)
+
+  -- Get the settings from the default ISODIMENSION object
+  !dimnDef = !data.hvacDimn
+
+  -- Initialise variables
+  !dter       = !dimnDef.term
+  !dtch       = !dimnDef.cHei.queryString()
+  !tColour    = !dimnDef.tColour
+  !lColour    = !dimnDef.lColour
+  !lStyle     = !dimnDef.lStyle
+  !lThickness = !dimnDef.lThickness
+  !viewRefe   = !!ce.owne
+  !dimnLaye   = !!ce
+  !dimns      = ARRAY()
+
+  -- Set the line style depending on line thickness
+  if (!lThickness.upcase().neq('THIN')) then
+    !lStyle = !lStyle & !lThickness
+  endif
+
+  -- Set the laye colours
+  DLStyle $!lStyle  PLStyle $!lStyle  DLColour $!lColour  PLColour $!lColour
+
+  -- Determine the dimension offset
+  -- If the layer value is not the default then use that
+  if (!dimnLaye.doff.neq(!dimnDef.offset)) then
+
+    !doff = !dimnLaye.doff
+
+  -- Calculate the dimension offset depending on width
+  else
+
+    -- Set the doff relative to the bore size
+    if (!dimnDef.relBore) then
+
+      !bore       = !allComp[1].abor.real()
+      !viewScale  = !viewRefe.vsca
+      !doff       = !dimnDef.offset + ((!bore / 2) * !viewScale)
+      !range      = !!isoedit.doffset.range
+      !units      = !doff.units().shortName()
+
+      -- Check that the value does not exceed the edit form doff gadget limit
+      if (!doff.gt(!range[2])) then
+        !doff = !!comConvertUnknownValue(!range[2],!units)
+      endif
+
+    -- Just use the default offset
+    else
+      !doff = !dimnDef.offset.queryString()
+
+    endif
+
+    -- Store the calculated value at the layer for later reuse
+    DOFF $!doff
+
+  endif
+
+  -- Remove all STIF, SPLR, HACC and any other offline components from the list
+  -- This is because they distort the process as they are mainly positioned within other components
+  do !index ind !allComp
+
+    -- Get type
+    !compRefe = !allComp[!index]
+    !compType = !compRefe.type.upcase()
+
+    -- Remove stif, splr and hacc
+    if (!compType.eq('STIF') or !compType.eq('SPLR') or !compType.eq('HACC')) then
+      !allComp.deleteFrom(!index,1)
+
+    endif
+
+    -- Remove any offline component except brco
+    if (!compType.neq('BRCO') and !!isoOffline(!compRefe)) then
+      !allComp.deleteFrom(!index,1)
+
+    endif
+
+  enddo
+
+  !allComp.compress()
+
+  -- Check for zero components
+  if (!allComp.empty()) then
+    !!isoLog.messages.append('  Cannot build dimensions as the spool does not contain any valid components')
+      handle any
+      endhandle
+  	return
+  endif
+
+  -- Analyse the spool for straights and their associated brcos
+  -- This returns an object ISOBRCO, which holds data on the intersection positions and the pldirs
+  !allBrcosObj = !!isoAnalyseBrco(!allComp)
+
+  -- Get the brco intersections
+  !allBrcoPos = !allBrcosObj.getPoss()
+
+  -- Process each component
+  do !index ind !allComp
+
+    -- Initialise variables
+    !compRefe = !allComp[!index]
+    !compType = !compRefe.type.upcase()
+
+    -- First component
+    if (!index.eq(1)) then
+
+      -- Get the direction from the arr to p0 and p0 to lea
+      !compDir = !!isoDimnDir(!compRefe, !compRefe.arrive, !compRefe, 0, false)
+      !nextDir = !!isoDimnDir(!compRefe, 0, !compRefe, !compRefe.leave, false)
+
+      -- This is the starting dimension direction
+      !dimnDir = !compDir
+
+      -- Create the first dimension
+      NEW LDIM  DIR $!dimnDir  DTCH $!dtch  PTCH $!dtch  DTAN PARA  DTER $!dter  DOFF $!doff  PLDI D
+       DLStyle DEF  PLStyle DEF  DLColour DEF  PLColour DEF  DTColour $!tColour  PTColour $!tColour
+
+      !dimns.append(!!ce)
+
+      -- Start dimensioning from this component arrive ppoint
+      FROM PA OF $!compRefe
+        handle any
+          !!isoLog.messages.append('  Error in dimensioning to ' & !compRefe.flnm)
+            handle any
+            endhandle
+        endhandle
+
+      -- For any change in direction from this to the next, finish the last and start another
+      if (!nextDir.neq(!dimnDir)) then
+
+        -- Dimension this origin
+        TO $!compRefe
+          handle (64,314) (64,313)
+            END
+
+            -- Try finding a pldir orthogonal to this component centreline
+            !plDir = !!isoOrientation(!compRefe.leave, !compRefe)
+            PLDI $!plDir
+              handle any
+                PLDI 90
+              endhandle
+
+          elsehandle any
+            !!isoLog.messages.append('  Error in dimensioning to ' & !nextRefe.flnm)
+              handle any
+              endhandle
+          endhandle
+
+        -- This is now the dimension direction
+        !dimnDir = !nextDir
+
+        -- Create dimension for this component onwards
+        NEW LDIM  DIR $!dimnDir  DTCH $!dtch  PTCH $!dtch  DTAN PARA  DTER $!dter  DOFF $!doff  PLDI D
+         DLStyle DEF  PLStyle DEF  DLColour DEF  PLColour DEF  DTColour $!tColour  PTColour $!tColour
+
+        !dimns.append(!!ce)
+
+        -- Start the dimension
+        FROM $!compRefe
+          handle any
+            !!isoLog.messages.append('  Error in dimensioning to ' & !compRefe.flnm)
+              handle any
+              endhandle
+          endhandle
+
+        -- For a tee or thre dimension to the origin and the third leg
+        if (!compType.eq('TEE') or !compType.eq('THRE')) then
+
+          -- Dimension this origin
+          TO $!compRefe
+            handle (64,314) (64,313)
+              END
+
+              -- Try finding a pldir orthogonal to this component centreline
+              !plDir = !!isoOrientation(!compRefe.arrive, !compRefe)
+              PLDI $!plDir
+                handle any
+                  PLDI 90
+                endhandle
+
+            elsehandle any
+              !!isoLog.messages.append('  Error in dimensioning to ' & !nextRefe.flnm)
+                handle any
+                endhandle
+            endhandle
+
+          -- Remember this place in the hierarchy
+          !currentRefe = !!ce
+
+          -- Find the remaining p-point of three
+          !allPpoints[1] = 1
+          !allPpoints[2] = 2
+          !allPpoints[3] = 3
+          !allPpoints.deleteFrom(!compRefe.arrive,1)
+          !allPpoints.deleteFrom(!compRefe.leave,1)
+          !allPpoints.compress()
+          !thirdPoint = !allPpoints[1]
+
+          -- Get the current direction from this part origin to the remaining ppoint
+          !legDir = !!isoDimnDir(!compRefe, 0, !compRefe, !thirdPoint, false)
+
+          -- Dimension the third leg
+          NEW LDIM  DIR $!legDir  DTCH $!dtch  PTCH $!dtch  DTAN PARA  DTER $!dter  DOFF $!doff  PLDI D
+           DLStyle DEF  PLStyle DEF  DLColour DEF  PLColour DEF  DTColour $!tColour  PTColour $!tColour
+
+          !dimns.append(!!ce)
+
+          -- Start dimensioning from this component
+          FROM $!compRefe
+            handle any
+              !!isoLog.messages.append('  Error in dimensioning to ' & !compRefe.flnm)
+                handle any
+                endhandle
+            endhandle
+
+          -- Dimension the third ppoint
+          TO P$!thirdPoint OF $!compRefe
+            handle (64,314) (64,313)
+              END
+
+              -- Try finding a pldir orthogonal to this component centreline
+              !plDir = !!isoOrientation(!thirdPoint, !compRefe)
+              PLDI $!plDir
+                handle any
+                  PLDI 90
+                endhandle
+
+            elsehandle any
+              !!isoLog.messages.append('  Error in dimensioning to ' & !nextRefe.flnm)
+                handle any
+                endhandle
+            endhandle
+
+          -- Return to the original overal dimension
+          !!ce = !currentRefe
+
+        endif
+
+      endif
+
+      -- For any brco
+      if (!compType.eq('BRCO')) then
+
+        -- Get the intersection of the brco centreline and the strt within which it lies
+        if (defined(!allBrcoPos[!index])) then
+
+          -- Read the dimension position and direction for this component
+          !position = !allBrcoPos[!index]
+
+          TO POS $!position
+            handle (64,314) (64,313)
+              END
+
+              -- Try finding a pldir orthogonal to this component centreline
+              !plDir = !!isoOrientation(!compRefe.leave, !compRefe)
+              PLDI $!plDir
+                handle any
+                  PLDI 90
+                endhandle
+
+            elsehandle any
+              !!isoLog.messages.append('  Error in dimensioning to ' & !compRefe.flnm)
+                handle any
+                endhandle
+            endhandle
+
+          -- Find the BRCO in the tag list
+          VAR !layers COLL ALL LAYE WI SPPURP EQ 'MTOTAG' FOR $!viewRefe
+          VAR !labels COLL ALL (SLAB GLAB) FOR $!layers[1]
+          VAR !elements EVAL REFE OF DDNM FOR ALL FROM !labels
+          !location = !elements.findFirst(!compRefe.string())
+
+          -- For a found label, set the projection line text, using the ATEX value
+          if (!location.set()) then
+
+            !brcoRefe   = !labels[!location].dbref()
+            !textString = '~C Item No. ' & !brcoRefe.atex
+
+            PLTX '$!textString'
+              handle (64,314)(64,313)
+                END
+
+                -- Try finding a pldir orthogonal to this component centreline
+                !plDir = !!isoOrientation(!compRefe.leave, !compRefe)
+                PLDI $!plDir
+                  handle any
+                    PLDI 90
+                  endhandle
+
+              elsehandle any
+                !!isoLog.messages.append('  Error in dimensioning to ' & !compRefe.flnm)
+                  handle any
+                  endhandle
+              endhandle
+
+          endif
+
+        endif
+
+      endif
+
+    endif
+
+    -- For all components other than the first
+    if (!index.neq(1)) then
+
+      -- For any brco
+      if (!compType.eq('BRCO')) then
+
+        -- Get the intersection of the brco centreline and the strt within which it lies
+        if (defined(!allBrcoPos[!index])) then
+
+          -- Read the dimension position and direction for this component
+          !position = !allBrcoPos[!index]
+
+          TO POS $!position
+            handle (64,314) (64,313)
+              END
+
+              -- Try finding a pldir orthogonal to this component centreline
+              !plDir = !!isoOrientation(!compRefe.leave, !compRefe)
+              PLDI $!plDir
+                handle any
+                  PLDI 90
+                endhandle
+
+            elsehandle any
+              !!isoLog.messages.append('  Error in dimensioning to ' & !compRefe.flnm)
+                handle any
+                endhandle
+            endhandle
+
+          -- Find the BRCO in the tag list
+          if (!data.isoContent.mtoT) then
+
+            VAR !layers COLL ALL LAYE WI SPPURP EQ 'MTOTAG' FOR $!viewRefe
+            VAR !labels COLL ALL (SLAB GLAB) FOR $!layers[1]
+            VAR !elements EVAL REFE OF DDNM FOR ALL FROM !labels
+            !location = !elements.findFirst(!compRefe.string())
+
+            -- For a found label, set the projection line text, using the ATEX value
+            if (!location.set()) then
+
+              !brcoRefe   = !labels[!location].dbref()
+              !textString = '~C Item No. ' & !brcoRefe.atex
+
+              PLTX '$!textString'
+                handle (64,314) (64,313)
+                  END
+
+                  -- Try finding a pldir orthogonal to this component centreline
+                  !plDir = !!isoOrientation(!compRefe.leave, !compRefe)
+                  PLDI $!plDir
+                    handle any
+                      PLDI 90
+                    endhandle
+
+                elsehandle any
+                  !!isoLog.messages.append('  Error in dimensioning to ' & !compRefe.flnm)
+                    handle any
+                    endhandle
+                endhandle
+
+            endif
+
+          endif
+
+        endif
+
+      else
+
+        -- For a change in direction, dimension this component
+
+        -- Get the direction from the arr to p0 and p0 to lea
+        !compDir = !!isoDimnDir(!compRefe, !compRefe.arrive, !compRefe, 0, false)
+        !nextDir = !!isoDimnDir(!compRefe, 0, !compRefe, !compRefe.leave, false)
+
+        -- For any change in dimension direction from the previous to this, finish the last and start another
+        if (!compDir.neq(!dimnDir)) then
+
+          -- Finish the previous dimension
+          TO PA OF $!compRefe
+            handle (64,314) (64,313)
+              END
+
+              -- Try finding a pldir orthogonal to this component centreline
+              !plDir = !!isoOrientation(!compRefe.leave, !compRefe)
+              PLDI $!plDir
+                handle any
+                  PLDI 90
+                endhandle
+
+            elsehandle any
+              !!isoLog.messages.append('  Error in dimensioning to ' & !compRefe.flnm)
+                handle any
+                endhandle
+            endhandle
+
+          -- This is now the dimension direction
+          !dimnDir = !compDir
+
+          -- Create dimension for this component onwards
+          NEW LDIM  DIR $!dimnDir  DTCH $!dtch  PTCH $!dtch  DTAN PARA  DTER $!dter  DOFF $!doff  PLDI D
+           DLStyle DEF  PLStyle DEF  DLColour DEF  PLColour DEF  DTColour $!tColour  PTColour $!tColour
+
+          !dimns.append(!!ce)
+
+          -- Start the dimension at this arrive ppoint
+          FROM PA OF $!compRefe
+            handle any
+              !!isoLog.messages.append('  Error in dimensioning to ' & !compRefe.flnm)
+                handle any
+                endhandle
+            endhandle
+
+        endif
+
+        -- For any change in direction from this to the next, finish the last and start another
+        if (!nextDir.neq(!dimnDir)) then
+
+            -- Dimension this origin
+            TO $!compRefe
+              handle (64,314) (64,313)
+                END
+
+                -- Try finding a pldir orthogonal to this component centreline
+                !plDir = !!isoOrientation(!compRefe.leave, !compRefe)
+                PLDI $!plDir
+                  handle any
+                    PLDI 90
+                  endhandle
+
+              elsehandle any
+                !!isoLog.messages.append('  Error in dimensioning to ' & !nextRefe.flnm)
+                  handle any
+                  endhandle
+              endhandle
+
+            -- This is now the dimension direction
+            !dimnDir = !nextDir
+
+            -- Create dimension for this component onwards
+            NEW LDIM  DIR $!dimnDir  DTCH $!dtch  PTCH $!dtch  DTAN PARA  DTER $!dter  DOFF $!doff  PLDI D
+             DLStyle DEF  PLStyle DEF  DLColour DEF  PLColour DEF  DTColour $!tColour  PTColour $!tColour
+
+            !dimns.append(!!ce)
+
+            -- Start the dimension at this arrive ppoint
+            FROM $!compRefe
+              handle any
+                !!isoLog.messages.append('  Error in dimensioning to ' & !compRefe.flnm)
+                  handle any
+                  endhandle
+              endhandle
+
+        -- For a straight through tee or thre, dimension to the origin and the third leg
+        else
+
+          if (!compType.eq('TEE') or !compType.eq('THRE')) then
+
+            -- Dimension this origin
+            TO $!compRefe
+              handle (64,314) (64,313)
+                END
+
+                -- Try finding a pldir orthogonal to this component centreline
+                !plDir = !!isoOrientation(!compRefe.arrive, !compRefe)
+                PLDI $!plDir
+                  handle any
+                    PLDI 90
+                  endhandle
+
+              elsehandle any
+                !!isoLog.messages.append('  Error in dimensioning to ' & !nextRefe.flnm)
+                  handle any
+                  endhandle
+              endhandle
+
+            -- Remember this place in the hierarchy
+            !currentRefe = !!ce
+
+            -- Find the remaining p-point of three
+            !allPpoints[1] = 1
+            !allPpoints[2] = 2
+            !allPpoints[3] = 3
+            !allPpoints.deleteFrom(!compRefe.arrive,1)
+            !allPpoints.deleteFrom(!compRefe.leave,1)
+            !allPpoints.compress()
+            !thirdPoint = !allPpoints[1]
+
+            -- Get the current direction from this part origin to the remaining ppoint
+            !legDir = !!isoDimnDir(!compRefe, 0, !compRefe, !thirdPoint, false)
+
+            -- Dimension the third leg
+            NEW LDIM  DIR $!legDir  DTCH $!dtch  PTCH $!dtch  DTAN PARA  DTER $!dter  DOFF $!doff  PLDI D
+             DLStyle DEF  PLStyle DEF  DLColour DEF  PLColour DEF  DTColour $!tColour  PTColour $!tColour
+
+            !dimns.append(!!ce)
+
+            -- Start dimensioning from this component
+            FROM $!compRefe
+              handle any
+                !!isoLog.messages.append('  Error in dimensioning to ' & !compRefe.flnm)
+                  handle any
+                  endhandle
+              endhandle
+
+            -- Dimension the third ppoint
+            TO P$!thirdPoint OF $!compRefe
+              handle (64,314) (64,313)
+                END
+
+                -- Try finding a pldir orthogonal to this component centreline
+                !plDir = !!isoOrientation(!thirdPoint, !compRefe)
+                PLDI $!plDir
+                  handle any
+                    PLDI 90
+                  endhandle
+
+              elsehandle any
+                !!isoLog.messages.append('  Error in dimensioning to ' & !nextRefe.flnm)
+                  handle any
+                  endhandle
+              endhandle
+
+            -- Return to the original overall dimension
+            !!ce = !currentRefe
+
+          endif
+
+        endif
+
+      endif
+
+    endif
+
+    -- Last component
+    if (!index.eq(!allComp.size())) then
+
+      -- Dimension to the last point
+      TO PL OF $!compRefe
+        handle (64,314) (64,313)
+          END
+
+          -- Try finding a pldir orthogonal to this component centreline
+          !plDir = !!isoOrientation(!compRefe.leave, !compRefe)
+          PLDI $!plDir
+            handle any
+              PLDI 90
+            endhandle
+
+        elsehandle any
+          !!isoLog.messages.append('  Error in dimensioning to ' & !nextRefe.flnm)
+            handle any
+            endhandle
+        endhandle
+
+    endif
+
+  enddo
+
+  -- Sort each dimension and delete any that have a value of zero
+  do !ldimRefe val !dimns
+
+    -- Access the dimension
+    !!ce = !ldimRefe
+
+    -- Sort current dimension
+    SORT DIM
+      handle (64,324)
+        -- Dimension point Sort failed
+      endhandle
+
+    -- Test each dimension leg for a zero value
+    do !dpptRefe val !ldimRefe.mem
+
+      -- Access the dimension point and read the dimension value
+      !!ce = !dpptRefe
+
+      VAR !value EXDMTX
+
+      -- Ignore the first point
+      skip if (!value.upcase().eq('UNSET'))
+
+      -- Look for less than the dimension accuracy
+      if (!value.real().int().eq(0)) then
+
+        -- Delete this point
+        DELETE $!!ce.type
+
+      endif
+
+    enddo
+
+    -- Delete the dimension if contains only a single point
+    if (!ldimRefe.mcount.eq(1)) then
+      DELETE LDIM
+
+    endif
+
+  enddo
+
+  -- Display only horizontal dimensions
+  if (!horizontal) then
+
+    -- Process any compound or vertical dimension
+    do !ldimRefe val !!ce.mem
+
+      -- Get the dimension direction
+      !direction = !ldimRefe.dir
+
+      -- For any direction up or down
+      if (!direction.up.eq(1) or !direction.up.eq(-1)) then
+
+        -- Delete the dimension
+        !!ce = !ldimRefe
+        DELETE LDIM
+
+      -- For any angle set the direction horizontal
+       elseif (!direction.up.neq(0)) then
+
+        -- Calculate the horizontal direction
+        !direction.up = 0
+        !horizDir = !direction.string().before(' WRT')
+
+        !!ce = !ldimRefe
+        DIR $!horizDir
+
+      endif
+
+    enddo
+
+  endif
+
+  -- Return
+  !!ce = !dimnLaye
+
+endfunction

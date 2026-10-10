@@ -1,0 +1,185 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            equipenmodify.pmlfnc
+--   Type:          Function Definition
+--   Group:         HOLE MANAGEMENT
+--     Keyword:     HOLE MANAGEMENT
+--   Module:        design
+--   Replaces:
+--
+-- Author:          Martin Ward
+-- Created:         December 2007
+--
+-- Last modified:
+--
+-- Description:
+-- function to modify an existing equipment penetration
+--
+--
+------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- define function
+define function !!equiPenModify(!data is ARRAY , !hole is HMHOLE)
+
+-- data[1] penetrated item
+-- data[2] penetrating item (EQUI)
+-- data[3] DPCA
+-- data[4] FIXING
+
+!plate = !data[1]
+if (!plate.type eq 'PANE') then
+  !panel = !plate
+elseif (!plate.type eq 'HPLATE') then
+  !panel = !plate.owner
+elseif (!plate.type eq 'CPLATE') then
+  !panel = !plate.hrdprx[1]
+elseif (!plate.type eq 'CTWALL' or !plate.type eq 'BPANEL') then
+  !panel = !plate
+endif
+
+!equip  = !data[2]
+!dpca   = !data[3]
+!fixing = !data[4]
+
+-- Are the fixing and the DPCA in the same position
+!dpcaPos   = !dpca.pos.wrt(worl)
+!fixingPos = !fixing.pos.wrt(worl)
+
+if (!dpcaPos neq !fixingPos ) then
+  -- Fix it by redoing the clash between the panel and the equipment
+  -- Save Clash Data and location
+  !!runSynonym(|CALLSTL DCLADAT SET|)
+  !ce = !!ce
+
+  -- Set Obstructions
+  DESCLASH
+  REMOVE OBST ALL
+    if( !panel.hardType eq 'HPANEL' ) then
+      do !panelMember values !panel.members
+        if( !panelMember.hardType eq 'HPLATE' ) then
+          OBST $!<panelMember>
+        endif
+      enddo
+    elseif( !panel.hardType eq 'CPANEL' ) then
+      do !panelMember values !panel.smembers
+        if( !panelMember.hardType eq 'CPLATE' ) then
+          OBST $!<panelMember>
+        endif
+      enddo
+    else
+      OBST $!<panel>
+    endif
+    MIDPOINT ON
+  EXIT
+
+  DESCLASH CHECK $!<equip> EXIT
+
+  var !ccnt           clash count all
+  var !ccnt           ($!ccnt A A A )
+  !clashCount = !ccnt.real()
+  if(!clashCount eq 0) then
+    -- They don't clash any more
+    !clash = FALSE
+    !answer = !!alert.question('Items no longer clash do you want to delete the hole and its association')
+    if (!answer.boolean()) then
+      !interface = object HMCONTROL()
+      !result = !interface.removeManagedHole(!hole)
+      if (!result.not()) then
+        !!alert.error('Unable to delete the hole and its association')
+      endif
+    endif
+  else
+    !clash = TRUE
+    var !cPos  CLASH 1 POS
+    !clashPosition[1]  = !cPos.position()
+  endif
+
+  DESCLASH MIDPOINT OFF EXIT
+
+  -- Restore Clash Data and location
+  !!runSynonym(|CALLSTL DCLADAT LOAD|)
+  !!ce = !ce
+  if (!clash.not()) then
+    return
+  endif
+
+  -- reset the DPCA and Fixing to the new clash position
+  !dpca.pos   = !clashPosition[1]
+  !fixing.pos = !clashPosition[1]
+endif
+
+
+-- Are the profiles the same
+!finder = object COLLECTION()
+!finder.addtype(|PORI|)
+!finder.filter(object EXPRESSION(|PURP of OWNER eq 'HOLE' and not badref(tarf)|))
+!finder.addScope(!equip)
+!holeExtrusion = !finder.results()
+if (!holeExtrusion.size() eq 0 ) then
+  !errorString = 'No HOLE extrusions located in equipment ' & !equip.namn
+  !!alert.error (!errorString)
+  return FALSE
+else
+  !holeElement = !holeExtrusion[1].tarf
+  if( !holeElement.hardType inset('EXTR', 'NXTR') ) then
+    !profileElement = LOOP 1 OF $!<holeElement>
+    handle any
+      !errorString = 'No HOLE extrusions located in equipment ' & !equip.namn
+      !!alert.error (!errorString)
+      return FALSE
+    endhandle
+  else
+    !errorString = 'No HOLE extrusions located in equipment ' & !equip.namn
+    !!alert.error (!errorString)
+    return FALSE
+  endif
+endif
+
+!finder = object COLLECTION()
+!finder.addtype(|LOOP|)
+!finder.addScope(!fixing)
+!fixingLoop = !finder.results()
+
+if (!fixingLoop.size() eq 0 ) then
+  !errorString = 'No VIRTUAL HOLE extrusions located in fixing ' & !fixing.namn
+  !!alert.error (!errorString)
+  return FALSE
+endif
+
+!equipLoopProfile  = object PROFILE(!profileElement)
+!fixingLoopProfile = object PROFILE(!fixingLoop[1])
+
+if (!equipLoopProfile.area() neq !fixingLoopProfile.area()) then
+  !answer = !!alert.question('The Virtual Hole and the Equipments default hole differ. Do you want to set the set the Virtual hole back to the default hole shape?')
+  if (!answer.boolean()) then
+    !equipLoopProfile.dbWrite(!fixingLoop[1])
+    if (defined(!clashPosition[1])) then
+      !fixing.pos = !clashPosition[1]
+    else
+      !fixing.pos = !fixingPos
+      !distance = !hole.platethickness
+      !zDirection = !panel.ori.zdir().wrt(worl)
+      !ce = !!ce
+      !!ce = !fixingLoop[1].owner
+      AT E 0
+      MOVE $!zDirection dist -$!distance
+    endif
+  endif
+endif
+
+!answer = !!alert.question('Do you want to modify the Virtual Hole manually?')
+if (!answer.boolean()) then
+  !!dbeLoopEdit(!fixingLoop[1],'EXTR')
+endif
+
+endfunction

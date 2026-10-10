@@ -1,0 +1,942 @@
+--------------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            pfConsistencyCheckConfig.pmlfrm
+--   Type:          Form Definition
+--   Group:         Pipe Fabrication
+--     Keyword:     PF
+--   Module:        Design
+--   Replaces:
+--
+-- Author:          HyunJong Roh (Nick)
+--                  DoHyoung Kim (Bright)
+-- Created:         Tuesday 6th December 2012
+--
+-- Description:     Form for consistency check configuration
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  exportToExcel()                  -                   export configuration data to excel file
+--  getBlankRow()                    ARRAY               return new row for the currently selected configuration item
+--  getBoreFromDDAT(DBREF,BORE)      BORE                get bore value from DDAT property
+--  getDistanceFromDDAT(DBREF,REAL)  REAL                get distance value from DDAT property
+--  onClickApply()                   -                   called when 'Apply' button is clicked
+--  onClickDelete()                  -                   delete the selected configuration data
+--  onClickInsert()                  -                   insert a new row before the currently selected row
+--  onClickNew()                     -                   create a new row
+--  onGridConfigurationAfterCellUpdate(ARRAY) -                   refresh the row which is modified by user input
+--  onGridConfigurationAfterSelectChange(ARRAY) -                   enable or disable the 'delete' button according to the selected item
+--  onGridConfigurationBeforeCellUpdate(ARRAY) -                   validate user input value and update associated data element
+--  onInitialize()                   -                   initialize form
+--  onShowPopupMenu(ARRAY)           -                   shows popup menu
+--  pfConsistencyCheckConfig()       -                   constructor
+--  refreshConfiguration()           -                   refresh grid gadget for configuration data
+--  saveConfiguration()              -                   save configuration data to storage
+--  stringToBore(STRING,BOOLEAN)     BORE                convert string to bore
+--  stringToDistance(STRING,BOOLEAN) REAL                convert string to distance
+--
+--------------------------------------------------------------------------------
+import 'GridControl'
+handle (1000, 0)
+endhandle
+
+setup form !!pfConsistencyCheckConfig dialog resizable varchars
+
+  using namespace 'Aveva.Pdms.Presentation'
+
+  !this.formTitle = 'Consistency Check Configuration'
+  !this.initCall = '!this.onInitialize()'
+  --!this.quitCall = '!this.onQuit()'
+
+  path down
+  option .optCheckItems tagwid 9 'Check Items' anchor l+t+r callback '!this.refreshConfiguration()' wid 27.5
+
+  container .gridContainer nobox PMLNETCONTROL 'grid' anchor all at xmin.optCheckItems wid 40 hei 20
+  path right
+  para  .parImage anchor t+r pixmap width 200 height 200
+
+  --button .btnRefresh 'Refresh' anchor l+b at xmin.gridContainer ymax.gridContainer + 0.2 call '!this.refreshConfiguration(' wid 8
+  path right
+  button .btnCreate  'New'     anchor l+b at xmin.gridContainer ymax.gridContainer + 0.2 call '!this.onClickNew()'     wid 8
+  path right
+  button .btnInsert  'Insert'  anchor l+b call '!this.onClickInsert()'  wid 8
+  button .btnDelete  'Delete'  anchor l+b call '!this.onClickDelete()'  wid 8
+
+  button .btnApply   'Apply'   anchor r+b call '!this.onClickApply()' at xmax.parImage - size wid 8
+  path left
+  button .btnCancel  'Cancel'  anchor r+b                               wid 8 CANCEL
+  button .btnOK      'OK'      anchor r+b call '!this.onClickApply()'   wid 8 OK
+
+  member .gridConfiguration   is NETGRIDCONTROL
+
+  member .creationEnabled     is BOOLEAN
+
+  member .deletionEnabled     is BOOLEAN
+
+  member .undo                is UNDOABLE
+
+  member .mode                is STRING
+
+  member .dbWrite             is BOOLEAN
+
+  member .modified            is BOOLEAN
+
+  member .forceToSave         is BOOLEAN
+
+exit
+
+--------------------------------------------------------------------------------
+--
+-- Method:      pfConsistencyCheckConfig
+--
+-- Description: constructor
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .pfConsistencyCheckConfig()
+
+  using namespace 'Aveva.Pdms.Presentation'
+
+  !this.gridConfiguration = object NETGRIDCONTROL()
+  !this.gridConfiguration.fixedHeaders(false)
+  !this.gridConfiguration.outlookGroupStyle(false)
+  !this.gridConfiguration.columnExcelFilter(false)
+  !this.gridConfiguration.allGridEvents(true)
+  !this.gridConfiguration.headerSort(true)
+  !this.gridConfiguration.columnSummaries(false)
+  !this.gridConfiguration.editableGrid(true)
+  !this.gridConfiguration.scrollSelectedRowToView(true)
+  !this.gridContainer.control = !this.gridConfiguration.handle()
+
+  !this.gridConfiguration.addEventHandler('BeforeCellUpdate',  !this, 'onGridConfigurationBeforeCellUpdate')
+  !this.gridConfiguration.addEventHandler('AfterCellUpdate',   !this, 'onGridConfigurationAfterCellUpdate')
+  !this.gridConfiguration.addEventHandler('AfterSelectChange', !this, 'onGridConfigurationAfterSelectChange')
+  !this.gridConfiguration.addEventHandler('OnPopup', !this, 'onShowPopupMenu')
+
+  !this.parImage.addPixmap(!!pml.getPathName('noimage200.png'))
+
+  -- initialize context menu
+  !this.newMenu('popupMenu')
+  !this.popupMenu.add('CALLBACK', 'New',                  '!this.onClickNew()',                       'NEW')
+  !this.popupMenu.add('CALLBACK', 'Insert',               '!this.onClickInsert()',                    'INSERT')
+  !this.popupMenu.add('CALLBACK', 'Delete',               '!this.onClickDelete()',                    'DELETE')
+  !this.popupMenu.add('SEPARATOR')
+  !this.popupMenu.add('CALLBACK', 'Export to Excel...',   '!this.exportToExcel()',                    'EXPORT')
+  !this.popupMenu.add('CALLBACK', 'Print Preview...',     '!this.gridConfiguration.printPreview()',   'PREVIEW')
+  !this.gridContainer.popup = !this.popupMenu
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onInitialize
+--
+-- Description: called when a form is initialized
+--              refresh the option gadget for configuration check item
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onInitialize()
+
+  -- Fix Issue 98926 (SI#58186) 12.1.SP4#DVD RC5 - PF - Config Admin Errors
+  !appldwRefs = !!collectAllFor('APPLDW', |FUNC EQ 'PipeFabrication'|, WORLD)
+  if !appldwRefs.empty() then
+    return error 1 |No APPLDW defined for Pipe Fabrication. Please create one with FUNC = 'PipeFabrication'|
+  endif
+  -- End of Fix Issue 98926
+
+  !this.dbWrite = false
+  !this.modified = false
+  !this.forceToSave = false
+
+  !this.optCheckItems.clear()
+  !this.optCheckItems.add('Minimum Flange Distance (Main)', 'MFDM')
+  !this.optCheckItems.add('Minimum Flange Distance (Branch)', 'MFDB')
+
+  !this.optCheckItems.select('rtext', 'MFDM')
+  !this.refreshConfiguration()
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      refreshConfiguration
+--
+-- Description: populate the grid control with configuration data
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .refreshConfiguration()
+
+  if !this.forceToSave.eq(true) then
+    !this.forceToSave = false
+    return
+  else
+    if !this.mode.empty().not() and !this.modified then
+      !answer = !!alert.confirm('OK to discard changes?')
+      if !answer.neq('YES') then
+        !this.forceToSave = true
+        !this.optCheckItems.select('rtext', !this.mode)
+        return
+      endif
+    endif
+  endif
+
+  !this.btnCreate.active = false
+  !this.btnInsert.active = false
+  !this.btnDelete.active = false
+  !this.btnOK.active = false
+  !this.btnApply.active = false
+
+  !this.mode = !this.optCheckItems.selection()
+
+  !appldwRefs = !!collectAllFor('APPLDW', |FUNC EQ 'PipeFabrication'|, WORLD)
+  if !appldwRefs.empty() then
+    !!alert.error(|No APPLDW defined for Pipe Fabrication. Please create one with FUNC = 'PipeFabrication'|)
+    return
+  endif
+
+  !appldaRefs = !!collectAllFor('APPLDA', |FUNC EQ '$!this.mode' OR PURP EQ '$!this.mode'|, !appldwRefs[1])
+  !ddseRefs = object ARRAY()
+  if !appldaRefs.empty().not() then
+    !ddseRefs = !!collectAllFor('DDSE', |FUNC EQ 'DATA'|, !appldaRefs[1])
+  endif
+
+  !rows = object ARRAY()
+  !headings = object ARRAY()
+  !image = 'noimage200.png'
+  !this.creationEnabled = false
+  !this.deletionEnabled = false
+
+  if !this.mode.eq('MFDM') then
+
+    !image = 'flandistmain.png'
+
+    !headings[1] = 'Bore'
+    !headings[2] = 'Minimum Distance (a)'
+
+    do !ddseRef values !ddseRefs
+
+      !boreString = ''
+      !minimumDistance = ''
+
+      !ddatRefs = !!collectAllFor('DDAT', '', !ddseRef)
+      do !ddatRef values !ddatRefs
+
+        !dkey = !ddatRef.dkey
+        if !dkey.eq('BORE') then
+          !bore = !this.getBoreFromDDAT(!ddatRef, object BORE())
+          !boreString = !bore.string(!!boreFmt)
+        elseif !dkey.eq('MIND') then
+          !distance = !this.getDistanceFromDDAT(!ddatRef, 0mm)
+          !minimumDistance = !distance.string(!!distanceFmt)
+        endif
+
+      enddo
+
+      !row = object ARRAY()
+      !row[1] = !boreString
+      !row[2] = !minimumDistance
+      !rows.append(!row)
+
+    enddo
+
+    !this.creationEnabled = true
+    !this.deletionEnabled = true
+
+  elseif !this.mode.eq('MFDB') then
+
+    !image = 'flandistbran.png'
+
+    !headings[1] = 'Bore'
+    !headings[2] = 'Minimum Distance (a)'
+
+    do !ddseRef values !ddseRefs
+
+      !boreString = ''
+      !minimumDistance = ''
+
+      !ddatRefs = !!collectAllFor('DDAT', '', !ddseRef)
+      do !ddatRef values !ddatRefs
+
+        !dkey = !ddatRef.dkey
+        if !dkey.eq('BORE') then
+          !bore = !this.getBoreFromDDAT(!ddatRef, object BORE())
+          !boreString = !bore.string(!!boreFmt)
+        elseif !dkey.eq('MIND') then
+          !distance = !this.getDistanceFromDDAT(!ddatRef, 0mm)
+          !minimumDistance = !distance.string(!!distanceFmt)
+        endif
+
+      enddo
+
+      !row = object ARRAY()
+      !row[1] = !boreString
+      !row[2] = !minimumDistance
+      !rows.append(!row)
+
+    enddo
+
+    !this.creationEnabled = true
+    !this.deletionEnabled = true
+
+  endif
+
+  using namespace 'Aveva.Pdms.Presentation'
+  !dataSource = object NETDATASOURCE('Configuration Data', !headings, !rows)
+  !this.gridConfiguration.bindToDataSource(!dataSource)
+
+  if !this.mode inset ('MFDM', 'MFDB') then
+    !this.gridConfiguration.setColumnTextAlignment(!headings[1], 'RIGHT')
+    !this.gridConfiguration.setColumnTextAlignment(!headings[2], 'RIGHT')
+  endif
+
+  !this.gridConfiguration.autoFitColumns()
+
+  !this.parImage.addPixmap(!!pml.getPathName(!image))
+
+  -- enable or disable buttons
+  !rowTags = !this.gridConfiguration.getSelectedRowTags()
+
+  !this.dbWrite = !appldwRefs[1].dbWrite
+  !this.gridConfiguration.editableGrid(!this.dbWrite)
+  !this.btnCreate.active = !this.dbWrite and !this.creationEnabled
+  !this.btnInsert.active = !this.dbWrite and !this.creationEnabled and !rowTags.empty().not()
+  !this.btnDelete.active = !this.dbWrite and !this.deletionEnabled and !rowTags.empty().not()
+  !this.btnOK.active = !this.dbWrite
+  !this.btnApply.active = !this.dbWrite
+
+  !this.modified = false
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getBoreFromDDAT
+--
+-- Description: get value from the given DDAT element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       DDAT element
+--    2   R      BORE        default value
+-- Return:
+--   [Data Type] [Description]
+--    BORE        bore value
+--------------------------------------------------------------------------------
+define method .getBoreFromDDAT(!ddatRef is DBREF, !default is BORE) is BORE
+  !block = object BLOCK(!ddatRef.ddproperty)
+  !value = !block.evaluate()
+  handle ANY
+    return !default
+  endhandle
+
+  if !value.objectType().eq('BORE') then
+    !bore = !value
+  else
+    !bore = !value.bore()
+    handle ANY
+      !bore = !default
+    endhandle
+  endif
+
+  return !bore
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getDistanceFromDDAT
+--
+-- Description: get distance value from the given DDAT element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DDAT        DDAT element
+--    2   R      REAL        default value
+-- Return:
+--   [Data Type] [Description]
+--    REAL        distance value
+--------------------------------------------------------------------------------
+define method .getDistanceFromDDAT(!ddatRef is DBREF, !default is REAL) is REAL
+  !block = object BLOCK(!ddatRef.ddproperty)
+  !distance = !block.evaluate()
+  handle ANY
+    return !default
+  endhandle
+
+  if !distance.objectType().neq('REAL') then
+    return !default
+  endif
+
+  return !distance
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onClickNew
+--
+-- Description: called when the 'create' button is clicked
+--              create a new DDSE element for configuration datum
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onClickNew()
+
+  if !this.creationEnabled.not() then
+    !!alert.error('Creation is disabled!')
+    return
+  endif
+
+  !row = !this.getBlankRow()
+
+  !this.gridConfiguration.addRow(!row)
+  !this.gridConfiguration.clearRowSelection()
+  !this.gridConfiguration.selectRow(!this.gridConfiguration.getNumberRows())
+
+  !this.modified = true
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getBlankRow
+--
+-- Description: return new row data for the currently selected check item
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       row data
+--------------------------------------------------------------------------------
+define method .getBlankRow() is ARRAY
+  !row = object ARRAY()
+  if !this.mode inset('MFDM', 'MFDB') then
+    !bore = 0mm
+    !distance = 0mm
+    !row[1] = !bore.string(!!boreFmt)
+    !row[2] = !distance.string(!!distanceFmt)
+  endif
+  return !row
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onClickInsert
+--
+-- Description: called when the 'create' button is clicked
+--              create a new DDSE element for configuration datum
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onClickInsert()
+
+  if !this.creationEnabled.not() then
+    !!alert.error('Creation is disabled!')
+    return
+  endif
+
+  !row = !this.getBlankRow()
+
+  !rowTags = !this.gridConfiguration.getSelectedRowTags()
+  if !rowTags.empty() then
+    !this.gridConfiguration.addRow(!row)
+    !this.gridConfiguration.clearRowSelection()
+    !this.gridConfiguration.selectRow(!this.gridConfiguration.getNumberRows())
+  else
+
+    !rowCount = !this.gridConfiguration.getNumberRows()
+    !index = !rowCount + 1
+    do !i to !rowCount
+      !rowTag = !this.gridConfiguration.getRowTag(!i)
+      if !rowTags.findFirst(!rowTag).set() and !index.gt(!i) then
+        !index = !i
+      endif
+    enddo
+
+    !rows = !this.gridConfiguration.getRows()
+    !rows.insert(!index, !row)
+
+    !this.gridConfiguration.clearGridData()
+    do !i indices !rows
+      !this.gridConfiguration.addRow(!rows[!i])
+    enddo
+
+    !this.gridConfiguration.selectRow(!index)
+
+  endif
+
+  !this.modified = true
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onClickDelete
+--
+-- Description: called when the 'delete' button is clicked
+--              delete the selected configuration data in the grid
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onClickDelete()
+
+  !rowTags = !this.gridConfiguration.getSelectedRowTags()
+  if !rowTags.empty() then
+    !!alert.message('Select items to delete!')
+    return
+  endif
+
+  !answer = !!alert.confirm('OK to delete?')
+  if !answer.neq('YES') then
+    return
+  endif
+
+  !selectedIndices = object ARRAY()
+  !rowCount = !this.gridConfiguration.getNumberRows()
+  do !i to !rowCount
+    !rowTag = !this.gridConfiguration.getRowTag(!i)
+    if !rowTags.findFirst(!rowTag).set() then
+      !selectedIndices.append(!i)
+    endif
+  enddo
+
+  !selectedIndices.sort()
+
+  !firstRow = !selectedIndices.first()
+
+  !this.gridConfiguration.deleteSelectedRows()
+  !rowCount = !this.gridConfiguration.getNumberRows()
+  if !rowCount.lt(!firstRow) then
+    !this.gridConfiguration.selectRow(!rowCount)
+  else
+    !this.gridConfiguration.selectRow(!firstRow)
+  endif
+
+  !this.modified = true
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onGridConfigurationAfterSelectChange
+--
+-- Description: called when the selection in the grid is changed
+--              enable or disable the 'delete' button
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onGridConfigurationAfterSelectChange(!data is ARRAY)
+
+  !rowTags = !this.gridConfiguration.getSelectedRowTags()
+  if !rowTags.empty() then
+    !this.btnDelete.active = false
+    return
+  endif
+
+  if !this.dbWrite.not() then
+    return
+  endif
+
+  !this.btnInsert.active = !this.creationEnabled
+  !this.btnDelete.active = !this.deletionEnabled
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onGridConfigurationBeforeCellUpdate
+--
+-- Description: called when the cell value in the grid is modified
+--              update the related dabacon data element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onGridConfigurationBeforeCellUpdate(!data is ARRAY)
+
+  if !data.unset() then
+    return
+  endif
+
+  !value  = !data[0]
+  !column = !data[2]
+
+  if !this.mode inset ('MFDM', 'MFDB') then
+
+    if !column.eq('Bore') then
+      !bore = !this.stringToBore(!value, false)
+      !data[3] = !bore.set()
+    else
+      !distance = !this.stringToDistance(!value, false)
+      !data[3] = !distance.set()
+    endif
+
+  endif
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      stringToBore
+--
+-- Description: convert string to bore
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      string value
+--    2   R      BOOLEAN     if true, no error message will be displayed
+-- Return:
+--   [Data Type] [Description]
+--    BORE        bore value
+--------------------------------------------------------------------------------
+define method .stringToBore(!stringValue is STRING, !silent is BOOLEAN) is BORE
+
+  if !stringValue.trim().empty() then
+    if !silent.not() then
+      !!alert.message('Input bore value!')
+    endif
+    return object BORE()
+  endif
+
+  !bore = !stringValue.bore()
+  handle ANY
+    if !silent.not() then
+      !!alert.error(!!error.text)
+      return object BORE()
+    endif
+  endhandle
+
+  return !bore
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      stringToDistance
+--
+-- Description: convert string to distance value
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      string value
+--    2   R      BOOLEAN     if true, no error message will be displayed
+-- Return:
+--   [Data Type] [Description]
+--    REAL        distance value
+--------------------------------------------------------------------------------
+define method .stringToDistance(!stringValue is STRING, !silent is BOOLEAN) is REAL
+
+  if !stringValue.trim().empty() then
+    if !silent.not() then
+      !!alert.message('Input distance value!')
+    endif
+    return object REAL()
+  endif
+
+  !distance = !stringValue.real()
+  handle ANY
+    if !silent.not() then
+      !!alert.error(|Cannot convert string '| + !stringValue + |' to real!|)
+    endif
+    return object REAL()
+  endhandle
+
+  if !distance.lt(0) then
+    if !silent.not() then
+      !!alert.error('Distance cannot be negative value!')
+    endif
+    return object REAL()
+  endif
+
+  return !distance
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onGridConfigurationAfterCellUpdate
+--
+-- Description: refresh the row which is modified by user input
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onGridConfigurationAfterCellUpdate(!data is ARRAY)
+
+  if !data.unset() then
+    return
+  endif
+
+  !rowTag = !data[0]
+  !column = !data[1]
+
+  !cellValue = !this.gridConfiguration.getCell(!rowTag, !column)
+
+  if !this.mode inset ('MFDM', 'MFDB') then
+    if !column.eq('Bore') then
+      !bore = !this.stringToBore(!cellValue, true)
+      !cellValue = !bore.string()
+    else
+      !distance = !this.stringToDistance(!cellValue, true)
+      !cellValue = !distance.string(!!distanceFmt)
+    endif
+  endif
+
+  !this.gridConfiguration.allGridEvents(false)
+  !this.gridConfiguration.setCellValue(!rowTag, !column, !cellValue)
+  handle ANY
+    -- ignore
+  endhandle
+  !this.gridConfiguration.allGridEvents(true)
+
+  !this.modified = true
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onClickApply
+--
+-- Description: called when 'Apply button is clicked
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onClickApply()
+
+  !this.undo.description('Save Consistency Check Configuration')
+  !this.undo.add()
+
+  !this.saveConfiguration()
+  handle ANY
+    !!alert.error(!!error.text)
+  endhandle
+
+  !this.undo.endUndoable()
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      saveConfiguration
+--
+-- Description: save configuration data to storage
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .saveConfiguration()
+
+  -- get APPLDW for Pipe Fabrication
+  !appldwRefs = !!collectAllFor('APPLDW', |FUNC EQ 'PipeFabrication'|, /* )
+  if !appldwRefs.empty() then
+    !!alert.error(|No APPLDW defined for Pipe Fabrication. Please create one with FUNC = 'PipeFabrication'|)
+    return
+  endif
+
+  -- get APPDAR for Consistency Check Configuration
+  !appdarRefs = !!collectAllFor('APPDAR', |FUNC EQ 'CCHECK'|, !appldwRefs.first())
+  if !appdarRefs.empty() then
+    !!ce = !appldwRefs.first()
+    NEW APPDAR FUNC 'CCHECK'
+    !appdarRef = !!ce
+  else
+    !appdarRef = !appdarRefs.first()
+  endif
+
+  -- get APPLDA for the current selected check item
+  !appldaRefs = !!collectAllFor('APPLDA', |FUNC EQ '$!this.mode' OR PURP EQ '$!this.mode'|, !appdarRef)
+  if !appldaRefs.empty() then
+    !!ce = !appdarRef
+    NEW APPLDA FUNC '$!this.mode'
+    !appldaRef = !!ce
+  else
+    !appldaRef = !appldaRefs.first()
+  endif
+
+  -- delete old data
+  !!ce = !appldaRef
+  DELETE APPLDA MEM
+
+  -- fix old data (12.1.4)
+  if !appldaRef.func.upCase().neq(!this.mode) then
+    !appldaRef.func = !this.mode.upCase()
+    !appldaRef.purp = ''
+  endif
+
+  !rows = !this.gridConfiguration.getRows()
+
+  -- create new data
+  if !this.mode inset ('MFDM', 'MFDB') then
+
+    !items = object ARRAY()
+
+    do !i indices !rows
+
+      !bore = !this.stringToBore(!rows[!i][1], false)
+      if !bore.unset() then
+        return
+      endif
+
+      !distance = !this.stringToDistance(!rows[!i][2], false)
+      if !distance.unset() then
+        return
+      endif
+
+      !item = object ARRAY()
+      !item[1] = !bore.string(!!boreFmt)
+      !item[2] = !distance.string(!!distanceFmt)
+      !items.append(!item)
+
+    enddo
+
+    do !item values !items
+
+      !boreString = !item[1]
+      !distanceString = !item[2]
+
+      NEW DDSE FUNC 'DATA'
+      NEW DDAT DKEY BORE PTYPE BORE DDPROP $!boreString DESC 'Bore'
+      NEW DDAT DKEY MIND PTYPE DIST DDPROP $!distanceString DESC 'Minimum Distance'
+    enddo
+
+  endif
+
+  !this.modified = false
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onShowPopupMenu
+--
+-- Description: shows a context menu
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onShowPopupMenu(!data is ARRAY)
+
+  !rowTags = !this.gridConfiguration.getSelectedRowTags()
+  !rowCount = !this.gridConfiguration.getNumberRows()
+
+  !this.popupMenu.setFieldProperty('NEW',     'ACTIVE', !this.dbWrite and !this.creationEnabled)
+  !this.popupMenu.setFieldProperty('INSERT',  'ACTIVE', !this.dbWrite and !this.creationEnabled and !rowTags.empty().not())
+  !this.popupMenu.setFieldProperty('DELETE',  'ACTIVE', !this.dbWrite and !this.deletionEnabled and !rowTags.empty().not())
+  !this.popupMenu.setFieldProperty('EXPORT',  'ACTIVE', !rowCount.gt(0))
+  !this.popupMenu.setFieldProperty('PREVIEW', 'ACTIVE', !rowCount.gt(0))
+
+  !this.gridContainer.showPopup(!data[0], !data[1])
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      exportToExcel
+--
+-- Description: save grid data to excel file
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .exportToExcel()
+
+  import 'PMLFileBrowser'
+  handle ANY
+  endhandle
+
+  !excel = !this.optCheckItems.selection('dtext') + '.xls'
+
+  using namespace 'Aveva.Pdms.Presentation'
+  !browser = object PMLFILEBROWSER('SAVE')
+  !browser.show('%PDMSUSER%', !excel, 'Save Consistency Check Configuration', false, 'Excel Documents|*.xls', 1)
+
+  !path = !browser.file().trim()
+  if !path.empty() then
+    return
+  endif
+
+  !this.gridConfiguration.saveGridToExcel(!path)
+  handle ANY
+    !!alert.error(!!error.text)
+  endhandle
+endmethod

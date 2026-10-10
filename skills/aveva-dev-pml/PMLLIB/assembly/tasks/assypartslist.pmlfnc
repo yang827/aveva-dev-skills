@@ -1,0 +1,314 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            assypartslist.pmlfnc
+--   Type:          Function Definition
+--   Group:         Assembly
+--     Keyword:     Drawing
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         12 October 2006
+--
+--
+-- Description:
+-- Build the Parts List on the drawing
+--
+--
+-- ASSUMPTIONS
+-- The current element is the SHEE
+------------------------------------------------------------------------
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type]  [Description]
+--    1   R      ARRAY         [1] SpPurpose of the Label Library containing the symbolic templates
+--                             [2] SpPurpose of the Symbolic Template used for the table title
+--                             [3] SpPurpose of the Symbolic Template used for the table header
+--                             [4] SpPurpose of the Symbolic Template used for the table row
+--                             [5] SpPurpose of the Symbolic Template used for the table overflow
+--                             [6] SpPurpose of the Symbolic Template used for the table cell
+--                             [7] SpPurpose of the Symbolic Template used for the accumulated parts
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define function !!assyPartsList(!arguments is ARRAY)
+
+  -- Initialise variables
+  !sheeRefe          = !!ce
+  !lalbSpPurp        = !arguments[1]
+  !titSytmSpPurp     = !arguments[2]
+  !headerSytmSpPurp  = !arguments[3]
+  !rowSytmSpPurp     = !arguments[4]
+  !overSytmSpPurp    = !arguments[5]
+  !cellSytmSpPurp    = !arguments[6]
+  !sumUp = object STRING()
+  if (!arguments.size() gt 6) then
+    !sumUp = !arguments[7]
+  endif
+
+  !tableEntries      = 0
+
+  WARNINGS OFF
+
+  -- Access last view so that the new one is created below it in the hierarchy
+  LAST VIEW
+    handle (2,113)
+      -- List exhausted
+    endhandle
+
+  -- Get the assembly being detailed from the DRWG IDLN
+  !asmblyRefe = !sheeRefe.owne.idln
+
+  -- Read the starting index for the entries in the parts table
+  !partsStartIndex = !sheeRefe.func.split(':')[1].real()
+
+  -- Read backing sheet reserved area to determine table location
+  !backSheet = object ASSYBACKSHEET()
+  !backSheet.getReserved(!sheeRefe.bsrf)
+
+  -- Set the table limit for the number of rows
+  -- Allowing for the title and header rows
+  !tableLimit = !backSheet.partsEntries - 2
+
+  -- Build view size and position
+  !size     = !backSheet.partsXlen & ' ' & !backSheet.partsYlen
+  !position = 'X ' & !backSheet.partsCentre.east & ' Y ' & !backSheet.partsCentre.north
+
+  -- Get into position in hierarchy by finding an existing view
+  VAR !partsView COLL ALL VIEW WI SPPURP EQ 'PARTVW' FOR $!sheeRefe
+  if (!partsView.empty()) then
+
+    -- Create the view
+   !viewName = !sheeRefe.flnm & '/PartsList'
+    NEW VIEW $!viewName IDLN =0
+      SIZE $!size  XYPO $!position  SPPURP PARTVW
+
+  else
+
+    -- Access the existing view
+    !!ce = !partsView[1].dbref()
+
+  endif
+  !viewRefe = !!ce
+
+  -- Get into position in hierarchy by finding an existing layer
+  VAR !partsLaye COLL ALL LAYE WI SPPURP EQ 'PRTLST' FOR $!viewRefe
+  if (!partsLaye.empty()) then
+
+    -- Create the laye
+    !layeName = !viewRefe.flnm & '/Laye'
+    NEW LAYE $!layeName
+    SPPURP PRTLST  PURP ADPT
+
+  else
+
+    -- Access the existing laye and delete all existing elements
+    !!ce = !partsLaye[1].dbref()
+    DELETE LAYE MEM
+
+  endif
+  !layeRefe = !!ce
+
+  -- Get the label library containing the table definition
+  VAR !allLalb TSEARCH SPPURPOSE $!lalbSpPurp LALB
+
+  -- Get the table data from the lalb
+  !tableObj         = object ASSYPARTTABLE()
+  !tableObj.fillDir = !backSheet.partsFDir
+  !tableObj.setPurp(!titSytmSpPurp, !headerSytmSpPurp, !rowSytmSpPurp, !overSytmSpPurp, !cellSytmSpPurp, !sumUp)
+  !tableObj.readTableData(!allLalb[1].dbref())
+
+  -- Run each cell function to extract the cell value
+  !tableObj.runFunctions(!asmblyRefe)
+
+  -- Get the assembly parts and items
+  !assyParts = !tableObj.assyPartsObj.parts
+
+  -- Initialise the count of the last entry in the table
+  !lastIndex = !assyParts.size()
+
+  -- Calculating starting position
+  !xyPos = 'X' & !backSheet.partsOrigin.east & ' ' & 'Y' & !backSheet.partsOrigin.north
+
+  -- Ensure the location is correct
+  !!ce = !layeRefe
+
+  -- Build the table
+  -- Table Title
+  !titleName = !layeRefe.flnm & '/Title'
+  NEW SLAB $!titleName  ON $!asmblyRefe  TMRF $!<tableObj.titleSytm>  OSET FALS
+    LLEA FALS  FONT TEMP  TXCOLOUR TEMP  LFSTYLE TEMP
+      ON $!asmblyRefe  XYPO $!xyPos
+
+  -- Calculate movement
+  !move = !backSheet.partsFDir & !backSheet.partsRSpa
+
+  -- Header
+  !headerName = !layeRefe.flnm & '/Header'
+  NEW SLAB $!headerName  COPY PREV  BY $!move  TMRF $!<tableObj.headerSytm>
+
+  -- Table entries
+  do !index from !partsStartIndex to !assyParts.size()
+
+    -- If reached the limit of the table, exit and pass the next position for the new sheet
+    if (!tableEntries.eq(!tableLimit) or !tableEntries.gt(!tableLimit)) then
+
+      -- Test if the created row is necessary, if not then delete it and the related slabs
+      -- Unfortunately, we had to create it in order to use the EXTENT command for the overlapping calculation
+      if (!tableEntries.gt(!tableLimit)) then
+
+        -- The row
+        !!ce = !rowSlab
+        DELETE SLAB
+
+        -- The cell and overflow slabs
+        do !slabRefe val !excessSlabs
+          !!ce = !slabRefe
+          DELETE SLAB
+        enddo
+
+      endif
+
+      -- Set the next position
+      if (!tableEntries.gt(!tableLimit)) then
+        !lastIndex = !index - 2
+
+      else
+        !lastIndex = !index - 1
+
+      endif
+
+      -- Done
+      break
+
+    endif
+
+    -- Initialise variables
+    !part        = !assyParts[!index].partRef()
+    !headerName  = !layeRefe.flnm & '/Row' & !index
+    !overFlow    = 0
+    !excessSlabs = ARRAY()
+
+    -- Row
+    -- Determine which part to set as ddnm
+    if (!part.hardType.upCase().eq('SPCO') or !part.hardType.upCase().eq('GPART')) then
+      !partRefe = !asmblyRefe
+
+    elseif (!part.hardType.upCase().eq('PSPOOL')) then
+
+      -- Find the first component in the spool and use this
+      !pipeSpoolManager = object PIPESPOOLMANAGER()
+      !partRefe = !pipeSpoolManager.getBranchElements(!part)[1]
+
+    else
+      !partRefe = !part
+
+    endif
+
+    -- Build row slab
+    NEW SLAB $!headerName  COPY PREV  BY $!move  TMRF $!<tableObj.rowSytm> ON $!partRefe
+    !rowSlab = !!ce
+
+    -- Cells
+    do !count ind !tableObj.cellSytms
+
+      -- Initialise variables
+      !tmrf     = !tableObj.cellSytms[!count]
+      !cellName = !headerName & '/Cell' & !count
+
+      -- Create label
+      NEW SLAB $!cellName  COPY $!rowSlab  ATEX |$!<tableObj.values[$!index][$!count]>|  TMRF $!tmrf  ON $!partRefe
+      !excessSlabs.append(!!ce)
+
+      if (!backSheet.partsFDir.eq('X') or !backSheet.partsFDir.eq('-X')) then
+        !slabPos = !!ce.xypo.north
+      elseif (!backSheet.partsFDir.eq('Y') or !backSheet.partsFDir.eq('-Y')) then
+        !slabPos = !!ce.xypo.east
+      endif
+
+      -- Get limit position on the page
+      -- This is calculated by adding the limit value of the cell to the slab position
+      if (!count.eq(1)) then
+        !limit = !slabPos
+      else
+        !limit = !slabPos + !tableObj.cellLimits[!count]
+      endif
+
+      -- Test for a valid ATEX
+      if (!!ce.atex.eq('')) then
+        !!assyLog.add('  WARNING: The attribute ATEX of ' & !!ce.type & ' ' & !!ce.name & ' is unset')
+        skip
+      endif
+
+      -- Test cell for text wrapping
+      if (!tableObj.cellTextWrap[!count]) then
+
+        -- Test cell value extent and split if required
+        !bits = !!assyTextWrap(!backSheet.partsFDir, !limit)
+
+        -- Reset row tmrf
+        if (!bits.set()) then
+          !!ce = !rowSlab
+          TMRF $!<tableObj.overflowSytm>
+          SAME
+        endif
+
+        -- Create a new slab for the word wrapped text
+        do !number ind !bits
+
+          -- Build name
+          !cellName = !headerName & '/Cell' & !count & '.' & !number
+          NEW SLAB $!cellName  COPY PREV  BY $!move  ATEX |$!bits[$!number]|  TMRF $!tmrf  ON $!partRefe
+          !excessSlabs.append(!!ce)
+
+        enddo
+
+        -- Store the maximum number of overflow lines for this row
+        if (!bits.size().gt(!overFlow)) then
+          !overFlow = !bits.size()
+        endif
+
+      endif
+
+    enddo
+
+    -- Create overflow slabs
+    do !number ind !bits
+
+      -- Initialise variables
+      !slabName  = !layeRefe.flnm & '/Row' & !index & '.' & !number
+
+      -- Choose tmrf
+      if (!number.eq(!bits.size())) then
+        !template = !tableObj.rowSytm
+      else
+        !template = !tableObj.overflowSytm
+      endif
+
+      NEW SLAB $!slabName  COPY $!rowSlab  BY $!move  TMRF $!template  ON $!partRefe
+      !excessSlabs.append(!!ce)
+
+      -- Move it a little more as we positioned the slab from the original only and not relative to one another
+      -- We have to do it this way because we do not know the value of the move variable which is in the format Y-4
+      do from 1 to !number - 1
+        BY $!move
+      enddo
+
+    enddo
+
+    -- Raise number of table rows created for this sheet
+    !tableEntries = !tableEntries + 1 + !overFlow
+
+  enddo
+
+  SHEE
+
+  -- Set sheet function attribute to hold the part list starting and ending indices
+  !funcString = !partsStartIndex & ':' & !lastIndex & ':' & !tableObj.sumUp.string()
+  FUNC '$!funcString'
+
+endfunction
+-- End of function !!assyPartsList

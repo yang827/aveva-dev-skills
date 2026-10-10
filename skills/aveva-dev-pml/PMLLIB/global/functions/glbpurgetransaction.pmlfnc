@@ -1,0 +1,171 @@
+--  Author:          Undefined
+--
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            glbpurgetransaction.pmlfnc
+--   Type:          Function Definition
+--   Group:         PDMS Global Administration Application
+--   Keyword:       GLOBAL
+--   Module:        admin
+--   Replaces:
+--
+-- Created:         Friday November 11, 2006
+--
+-- Description:
+--    Function to purge the transaction database.
+-- Note that this function does not check programmatically if the daemon
+-- is stopped before performing the merge but relies on a correct response
+-- from the user to the initial warning message.
+--
+-- This function may be used in TTY mode to run in Batch
+--
+-- Arguments:
+-- 1 - Number of days to purge previous to
+-- 2 - Purge option is to purge the Transaction DB according to the command (ALL, SUCCESS, FAILURE) passed.
+------------------------------------------------------------------------
+
+define function !!glbPurgeTransaction(!days is REAL, !purgeOption is STRING) is BOOLEAN
+  if ( not (!purgeOption.upCase() inset ('ALL' , 'SUCCESS' , 'FAILURE') ) ) then
+     !errorStr = 'Incorrect action string ' & !purgeOption & '. Use one among ALL , SUCCESS or FAILURE'
+      write !errorStr
+     return  false
+  endif
+  -- Moved alerts to calling form
+  var !device DEVICE
+
+       -- Fetching info again to eliminate the need for an argument
+    !currentLocation = CURLOC
+    !locId           = !currentLocation.locId
+    !command    = |PING | & !locId
+
+    call !!admCommand(!command)
+    handle any
+    elsehandle NONE
+      !text = 'Location ' & !currentLocation.namn & ' is still running, Purging action aborted.'
+      if( !device.upCase() eq 'TTY' ) then
+        write '$!text'
+      else
+        !!alert.error( !text )
+      endif
+      return false
+    endhandle
+
+  !monLengths = '31,28,31,30,31,30,31,31,30,31,30,31'
+  !today = object DATETIME()
+  !year = !today.year()
+  !month = !today.month()
+  !day = !today.date()
+  !hour = !today.hour()
+  !minute = !today.minute()
+  !second = !today.second()
+  !day = !day - !days
+  do !i
+    if (!day lt 1) then
+      !month = !month - 1
+      if (!month lt 1) then
+        !year = !year - 1
+        !month = 12
+      endif
+      if (!month eq 2) then
+        !leapTest = (!year - 2000) / 4
+        if (!leapTest eq !leapTest.int()) then
+          !day = 29 + !day
+        else
+          !day = 28 + !day
+        endif
+      else
+        !day = !monLengths.split(',')[!month].real() + !day
+      endif
+    endif
+    if (not  (!day lt 1)) then
+       break
+    endif
+   enddo
+
+  !date = object DATETIME(!year,!month,!day,!hour,!minute,!second)
+
+  !collection = object COLLECTION()
+  !!ce = FRSTW TRAN
+  !collection.scope(!!ce)
+  !filter = object EXPRESSION('upc(TSTATE) eq |COMPLETE|')
+  !collection.filter(!filter)
+  !collection.type('TRINCO')
+  !trincoList = !collection.results()
+  !promptStr = 'Found ' & !trincoList.size().string() & ' complete transactions...'
+  write !promptStr
+  !promptStr = 'Deleting obsolete transactions more than ' & !days.string() & ' days old...'
+  write !promptStr
+  !numDel  = 0
+  !numHier    = 0
+  !numLoop     = 0
+
+  -- Save transaction DB every 1000 deletions
+  !saveCount = 1000
+
+  do !trinco values !trincoList
+    !datecm = object DATETIME(!trinco.datecm)
+    handle (161,7)
+      -- Invalid date time so the transaction should not be deleted
+      skip
+    endhandle
+    !datend = object DATETIME(!trinco.datend)
+    handle (161,7)
+      -- Invalid date time so the transaction should not be deleted
+      skip
+    endhandle
+    if (!trinco.incsta.upCase() eq 'PROCESSED' and !datecm.lt(!date) or (!trinco.incsta.upCase() inset('TIMED OUT','CANCELLED','REDUNDANT')) and !datend.lt(!date)) then
+      -- Deleted all complete transaction elements.
+      !doIt = false
+      if (!purgeOption.eq('ALL')) then
+        !doIt = true
+
+        -- To delete the Successful Transaction elements.
+      elseif (!purgeOption.eq('SUCCESS') and !trinco.trpass) then
+        !doIt = true
+
+        -- To delete the Failed Transaction elements.
+      elseif (!purgeOption.eq('FAILURE') and !trinco.trpass.not()) then
+        !doIt = true
+      endif
+
+      if( !doIt ) then
+        -- Do the Deletion
+        !numDel = !numDel + 1
+        !!ce = !trinco
+        DELETE TRINCO
+      endif
+      do !i
+          if (!!ce.members.size().eq(0) and  (!!ce.type.eq('TRMSGW').not() ) ) then
+              !type = !!ce.type
+              call !!admCommand( 'DELETE ' & !type )
+              !numHier = !numHier + 1
+          else
+            break
+          endif
+      enddo
+      !numLoop = !numLoop + 1
+      if( !numLoop eq !saveCount ) then
+        !numLoop = 0
+        CLOCK
+        if( !numDel gt 0 ) then
+          write  'Saving Transaction DB after $!numDel obsolete transactions deleted'
+          SAVEWORK 'Transaction DB saved after $!numDel deletions'
+        endif
+      endif
+    endif
+  enddo
+
+    write  '$!numDel obsolete transactions deleted'
+    write  '$!numHier associated hierarchy elements deleted'
+    if( !numLoop gt 0 ) then
+        -- Save the remaining changes
+        !total = !numDel + !numHier
+        SAVEWORK 'Transaction DB saved after $!total deletions'
+    endif
+
+return true
+endfunction
+-- End of function definition for .glbPurgeTransaction()
+----------------------------------------------------------------------------

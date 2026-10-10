@@ -1,0 +1,975 @@
+--------------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            pfThreadEngagementConfig.pmlfrm
+--   Type:          Form Definition
+--   Group:         Pipe Fabrication
+--     Keyword:     PF
+--   Module:        Design
+--   Replaces:
+--
+-- Author:          DoHyoung Kim(Bright)
+-- Created:         Tuesday 6th December 2012
+--
+-- Description:     Form for thread engagement length config
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  apply()                          -                   save the thread engagement data into database
+--  copyRows()                       -                   copy the selected rows into the end of the grid
+--  createRow()                      -                   create a new row in the grid control
+--  deleteRows()                     -                   delete the selected rows
+--  exportToExcel()                  -                   export thread table to excel file
+--  getThreadEngagements()           ARRAY               get all thread engagement data from database
+--  isAlreadyExists(STRING,STRING)   BOOLEAN             check if a thread engagement data of the given connection and bore already exists
+--  moveSelectedRowsDown()           -                   move selected rows down
+--  moveSelectedRowsUp()             -                   move selected rows up
+--  onInitialize()                   -                   initialize this form
+--  onShowPopupMenu(ARRAY)           -                   show popup menu
+--  onThreadEngagementAfterCellUpdate(ARRAY) -                   callback called after cell is updated
+--  onThreadEngagementAfterSelectChange(ARRAY) -                   callback called after the selection of grid is changed
+--  onThreadEngagementBeforeCellUpdate(ARRAY) -                   callback called before updating cell
+--  pfThreadEngagementConfig()       -                   constructor
+--  refreshThreadEngagements()       -                   refresh the grid data
+--  saveThreadEngagements(ARRAY)     -                   save the given thread engagement data into database
+--  stringToBore(STRING,BOOLEAN)     BORE                convert string to bore
+--  stringToDistance(STRING,BOOLEAN) REAL                convert string to distance
+--
+--------------------------------------------------------------------------------
+import 'GridControl'
+handle (1000, 0)
+endhandle
+
+setup form !!pfThreadEngagementConfig resizable
+
+  using namespace 'Aveva.Pdms.Presentation'
+
+  !this.formTitle = 'Threaded Ends'
+  !this.initCall = '!this.onInitialize()'
+
+  path down
+  para .parTitle text 'Threaded End Table'
+  container .netControl nobox PMLNETCONTROL 'grid' at xmin.parTitle ymax.parTitle - 0.25 anchor all wid 42 hei 20
+  path right
+  button .btnNew     'New'     callback '!this.createRow()'  anchor t+r wid 8
+  path down
+  button .btnCopy    'Copy'    callback '!this.copyRows()'   anchor t+r wid 8
+  button .btnDelete  'Delete'  callback '!this.deleteRows()' anchor t+r wid 8
+  button .btnRefresh 'Refresh' callback '!this.refreshThreadEngagements()' anchor t+r wid 8
+
+  button .btnUp      'Up'      callback '!this.moveSelectedRowsUp()' at ymax.btnRefresh + 2 anchor t+r wid 8
+  button .btnDown    'Down'    callback '!this.moveSelectedRowsDown()' anchor t+r wid 8
+
+  button .btnOK      'OK'      callback '!this.apply()' at xmax.btnNew - 28 ymax.netControl anchor b+r wid 8 OK
+  path right
+  button .btnCancel  'Cancel'  anchor b+r wid 8 CANCEL
+  button .btnApply   'Apply'   callback '!this.apply()' anchor b+r wid 8
+
+  member .gridThreadEngagement   is NETGRIDCONTROL
+
+  member .undo                   is UNDOABLE
+
+  member .editable               is BOOLEAN
+
+  member .connections            is ARRAY
+
+exit
+
+--------------------------------------------------------------------------------
+--
+-- Method:      pfConsistencyCheckConfig
+--
+-- Description: constructor
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .pfThreadEngagementConfig()
+
+  using namespace 'Aveva.Pdms.Presentation'
+
+  !this.gridThreadEngagement = object NETGRIDCONTROL()
+  !this.gridThreadEngagement.fixedHeaders(false)
+  !this.gridThreadEngagement.outlookGroupStyle(true)
+  !this.gridThreadEngagement.columnExcelFilter(true)
+  !this.gridThreadEngagement.allGridEvents(true)
+  !this.gridThreadEngagement.headerSort(false)
+  !this.gridThreadEngagement.columnSummaries(false)
+  !this.gridThreadEngagement.editableGrid(true)
+  --!this.gridThreadEngagement.bulkEditableGrid(true)
+  !this.gridThreadEngagement.scrollSelectedRowToView(true)
+  !this.netControl.control = !this.gridThreadEngagement.handle()
+
+  !this.gridThreadEngagement.addEventHandler('BeforeCellUpdate',  !this, 'onThreadEngagementBeforeCellUpdate')
+  !this.gridThreadEngagement.addEventHandler('AfterCellUpdate',   !this, 'onThreadEngagementAfterCellUpdate')
+  !this.gridThreadEngagement.addEventHandler('AfterSelectChange', !this, 'onThreadEngagementAfterSelectChange')
+  !this.gridThreadEngagement.addEventHandler('OnPopup', !this, 'onShowPopupMenu')
+
+  -- initialize context menu
+  !this.newMenu('popupMenu')
+  !this.popupMenu.add('CALLBACK', 'New',                  '!this.createRow()',                        'NEW')
+  !this.popupMenu.add('CALLBACK', 'Copy',                 '!this.copyRows()',                         'INSERT')
+  !this.popupMenu.add('CALLBACK', 'Delete',               '!this.deleteRows()',                       'DELETE')
+  !this.popupMenu.add('CALLBACK', 'Refresh',              '!this.refreshThreadEngagements()',         'REFRESH')
+  !this.popupMenu.add('SEPARATOR')
+  !this.popupMenu.add('CALLBACK', 'Move Up',              '!this.moveSelectedRowsUp()',               'MOVE_UP')
+  !this.popupMenu.add('CALLBACK', 'Move Down',            '!this.moveSelectedRowsDown()',             'MOVE_DOWN')
+  !this.popupMenu.add('SEPARATOR')
+  !this.popupMenu.add('CALLBACK', 'Export to Excel...',   '!this.exportToExcel()',                    'EXPORT')
+  !this.popupMenu.add('CALLBACK', 'Print Preview...',     '!this.gridThreadEngagement.printPreview()','PREVIEW')
+  !this.netControl.popup = !this.popupMenu
+
+  !this.editable = true
+
+  !this.btnCopy.active = false
+  !this.btnDelete.active = false
+  !this.btnOK.active = false
+  !this.btnApply.active = false
+  !this.btnUp.active = false
+  !this.btnDown.active = false
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onInitialize
+--
+-- Description: called when a form is initialized
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onInitialize()
+
+  -- Fix Issue 98926 (SI#58186) 12.1.SP4#DVD RC5 - PF - Config Admin Errors
+  !appldwRefs = !!collectAllFor('APPLDW', |FUNC EQ 'PipeFabrication'|, WORLD)
+  if !appldwRefs.empty() then
+    return error 1 |No APPLDW defined for Pipe Fabrication. Please create one with FUNC = 'PipeFabrication'|
+  endif
+  -- End of Fix Issue 98926
+
+  !this.refreshThreadEngagements()
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      refreshThreadEngagements
+--
+-- Description: populate the grid control with thread engagement data
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .refreshThreadEngagements()
+
+  -- populate thread engagement data
+  !headings = object ARRAY()
+  !headings[1] = 'Connection'
+  !headings[2] = 'Description'
+  !headings[3] = 'Bore'
+  !headings[4] = 'Length'
+
+  !rows = !this.getThreadEngagements()
+
+  using namespace 'Aveva.Pdms.Presentation'
+  !dataSource = object NETDATASOURCE('Thread Engagements', !headings, !rows)
+  !this.gridThreadEngagement.bindToDataSource(!dataSource)
+  !this.gridThreadEngagement.setColumnTextAlignment('Bore', 'RIGHT')
+  !this.gridThreadEngagement.setColumnTextAlignment('Length', 'RIGHT')
+
+  -- create value list for connection types
+  !cocdesRefs = !!collectAllFor('COCDES', '', /* )
+  !connections = object ARRAY()
+  do !cocdesRef values !cocdesRefs
+    !connections.append(!cocdesRef.coconnection)
+  enddo
+
+  !this.gridThreadEngagement.createValueList('Connections', !connections)
+  !this.gridThreadEngagement.assignValueListToColumn('Connections', 1)
+
+  -- enable/disable gadgets
+  !this.gridThreadEngagement.editableGrid(!this.editable)
+  !this.btnNew.active = !this.editable
+  !this.btnCopy.active = false
+  !this.btnDelete.active = false
+  !this.btnOK.active = false
+  !this.btnApply.active = false
+  !this.btnUp.active = false
+  !this.btnDown.active = false
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      createRow
+--
+-- Description: create a new row in the grid control
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .createRow()
+
+  !bore = object BORE(0mm)
+  !length = 0mm
+
+  !row = object ARRAY()
+  !row[1] = ''
+  !row[2] = ''
+  !row[3] = !bore.string(!!boreFmt)
+  !row[4] = !length.string(!!distanceFmt)
+
+  !this.gridThreadEngagement.addRow(!row)
+  !this.gridThreadEngagement.clearRowSelection()
+  !this.gridThreadEngagement.selectRow(!this.gridThreadEngagement.getNumberRows())
+
+  !this.btnOK.active = !this.editable
+  !this.btnApply.active = !this.editable
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      copyRows
+--
+-- Description: copy the selected rows at the end of the grid
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .copyRows()
+  !rowTags = !this.gridThreadEngagement.getSelectedRowTags()
+
+  !indices = object ARRAY()
+  do !rowTag values !rowTags
+    !indices.append(!rowTag.real())
+  enddo
+
+  !rowTags.reindex(!indices.sortedIndices())
+
+  do !rowTag values !rowTags
+    !row = !this.gridThreadEngagement.getRow(!rowTag)
+    !this.gridThreadEngagement.addRow(!row)
+  enddo
+
+  !this.gridThreadEngagement.clearRowSelection()
+  !this.gridThreadEngagement.selectRow(!this.gridThreadEngagement.getNumberRows())
+
+  !this.btnOK.active = !this.editable
+  !this.btnApply.active = !this.editable
+endmethod
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      deleteRows
+--
+-- Description: delete the selected rows
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .deleteRows()
+
+  !rowTags = !this.gridThreadEngagement.getSelectedRowTags()
+
+  !selectedIndices = object ARRAY()
+  !rowCount = !this.gridThreadEngagement.getNumberRows()
+  do !i to !rowCount
+    !rowTag = !this.gridThreadEngagement.getRowTag(!i)
+    if !rowTags.findFirst(!rowTag).set() then
+      !selectedIndices.append(!i)
+    endif
+  enddo
+
+  !this.gridThreadEngagement.deleteSelectedRows()
+
+  !rowCount = !this.gridThreadEngagement.getNumberRows()
+  if !rowCount.gt(0) then
+    if !selectedIndices.empty() then
+      !this.gridThreadEngagement.selectRow(1)
+    else
+      !selectedIndices.sort()
+      !index = !selectedIndices.first()
+      if !rowCount.lt(!index) then
+        !this.gridThreadEngagement.selectRow(!rowCount)
+      else
+        !this.gridThreadEngagement.selectRow(!index)
+      endif
+    endif
+  endif
+
+
+  !this.btnOK.active = !this.editable
+  !this.btnApply.active = !this.editable
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      apply
+--
+-- Description: save the current thread engagement data into the database
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .apply()
+
+  !this.gridThreadEngagement.clearRowSelection()
+
+  !data = object ARRAY()
+
+  !rowCount = !this.gridThreadEngagement.getNumberRows()
+  do !i to !rowCount
+
+    !row = !this.gridThreadEngagement.getRow(!i)
+
+    !dkey         = !row[1].trim().upCase()
+    !cocdesRefs = !!collectAllFor('COCDES', |COCONNECTION EQ '$!dkey'|, /* )
+    if !cocdesRefs.empty() then
+      !!alert.error('Invalid Connection Type : ' + !dkey)
+      !this.gridThreadEngagement.selectCell(!i, 1, true)
+      return
+    endif
+
+    !description  = !row[2]
+    !bore         = !row[3].bore()
+    handle ANY
+      !!alert.error(!!error.text)
+      !this.gridThreadEngagement.selectCell(!i, 3, true)
+      return
+    endhandle
+
+    !threadLength = !row[4].real()
+    handle ANY
+      !threadLength = object REAL()
+    endhandle
+
+    if !threadLength.unset() or !threadLength.lt(0) then
+      !!alert.error(|Invalid Length : | + !row[4])
+      !this.gridThreadEngagement.selectCell(!i, 4, true)
+      return
+    endif
+
+    !datum = object ARRAY()
+    !datum[1] = !dkey
+    !datum[2] = !description
+    !datum[3] = !bore
+    !datum[4] = !threadLength
+
+    !data.append(!datum)
+  enddo
+
+  if !data.empty().not() then
+
+    !this.undo.description('Save Thread Engagements')
+    !this.undo.add()
+
+    !this.saveThreadEngagements(!data)
+    handle ANY
+      !!alert.error(!!error.text)
+    endhandle
+
+    !this.undo.endUndoable()
+
+  endif
+
+  !this.btnOK.active = false
+  !this.btnApply.active = false
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onThreadEngagementAfterSelectChange
+--
+-- Description: called when the selection in the grid is changed
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onThreadEngagementAfterSelectChange(!data is ARRAY)
+
+  !rowTags = !this.gridThreadEngagement.getSelectedRowTags()
+
+  !selected = !rowTags.empty().not()
+
+  !this.btnCopy.active = !this.editable and !selected
+  !this.btnDelete.active = !this.editable and !selected
+  !this.btnUp.active = !this.editable and !selected
+  !this.btnDown.active = !this.editable and !selected
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onThreadEngagementBeforeCellUpdate
+--
+-- Description: called before the cell value in the grid is modified
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onThreadEngagementBeforeCellUpdate(!data is ARRAY)
+
+  if !data.unset() then
+    return
+  endif
+
+--   [0]  <STRING> 'a'
+--   [1]  <STRING> '89'
+--   [2]  <STRING> 'Connection'
+--   [3]  <BOOLEAN> TRUE
+--   [4]  <STRING> ''
+
+  !column = !data[2]
+
+  if !column.eq('Connection') then
+
+    !connection = !data[0].trim().upCase()
+    if !connection.empty() then
+      !!alert.error('Invalid Connection Type : ' + !connection)
+      !data[3] = false
+      return
+    endif
+
+    !cocdesRefs = !!collectAllFor('COCDES', |COCONNECTION EQ '$!connection'|, /* )
+    if !cocdesRefs.empty() then
+      !!alert.error('Invalid Connection Type : ' + !connection)
+      !data[3] = false
+      return
+    endif
+
+    --!boreString = !this.gridThreadEngagement.getCell(!data[1], 'Bore')
+    --!alreadyExists = !this.isAlreadyExists(!connection, !boreString)
+    --if !alreadyExists then
+    --  !!alert.message('Data already exists!')
+    --  !data[3] = false
+    --  return
+    --endif
+
+  elseif !column.eq('Bore') then
+
+    !bore = !this.stringToBore(!data[0], false)
+    if !bore.unset() then
+      !data[3] = false
+      return
+    endif
+
+    !connection = !this.gridThreadEngagement.getCell(!data[1], 'Connection')
+    !alreadyExists = !this.isAlreadyExists(!connection.upCase(), !bore.string(!!boreFmt))
+    if !alreadyExists then
+      !!alert.message('Data already exists!')
+      !data[3] = false
+      return
+    endif
+
+  elseif !column.eq('Length') then
+
+    !threadLength = !this.stringToDistance(!data[0], false)
+    if !threadLength.unset() then
+      !data[3] = false
+      return
+    endif
+
+  endif
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      isAlreadyExists
+--
+-- Description: check if the data with given connection and bore already exists
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      connection
+--    2   R      STRING      bore string
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     true if already exists
+--------------------------------------------------------------------------------
+define method .isAlreadyExists(!connection is STRING, !boreString is STRING) is BOOLEAN
+
+  !rows = !this.gridThreadEngagement.getRows()
+  do !i indices !rows
+    if !connection.eq(!rows[!i][1]) and !boreString.eq(!rows[!i][3]) then
+      return true
+    endif
+  enddo
+
+  return false
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onThreadEngagementAfterCellUpdate
+--
+-- Description: called after the cell value in the grid is modified
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onThreadEngagementAfterCellUpdate(!data is ARRAY)
+if !data.unset() then
+    return
+  endif
+
+  --[0]  <STRING> '89'
+  --[1]  <STRING> 'Bore'
+
+  !rowTag = !data[0]
+  !column = !data[1]
+  !cellValue = !this.gridThreadEngagement.getCell(!rowTag, !column)
+
+  if !column.eq('Bore') then
+
+    !bore = !this.stringToBore(!cellValue, true)
+    !this.gridThreadEngagement.allGridEvents(false)
+    !this.gridThreadEngagement.setCellValue(!rowTag, !column, !bore.string(!!boreFmt))
+    handle ANY
+    endhandle
+    !this.gridThreadEngagement.allGridEvents(true)
+
+  elseif !column.eq('Length') then
+
+    !threadLength = !this.stringToDistance(!cellValue, true)
+
+    !this.gridThreadEngagement.allGridEvents(false)
+    !this.gridThreadEngagement.setCellValue(!rowTag, !column, !threadLength.string(!!distanceFmt))
+    handle ANY
+    endhandle
+    !this.gridThreadEngagement.allGridEvents(true)
+  endif
+
+  !this.btnOK.active = !this.editable
+  !this.btnApply.active = !this.editable
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getThreadEngagements
+--
+-- Description: get thread engagement data from database
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .getThreadEngagements() is ARRAY
+
+  !this.gridThreadEngagement.editableGrid(true)
+
+  !rows = object ARRAY()
+
+  !appldwRefs = !!collectAllFor('APPLDW', |FUNC EQ 'PipeFabrication'|, /* )
+  if !appldwRefs.empty() then
+    !!alert.error('No APPLDW defined for Pipe Fabrication! Please create one with FUNC = PipeFabrication.')
+    return !rows
+  endif
+
+  !this.editable = !appldwRefs.first().dbWrite
+
+  !appdarRefs = !!collectAllFor('APPDAR', |FUNC EQ 'THREAD'|, !appldwRefs.first())
+  if !appdarRefs.empty().not() then
+
+    !appldaRefs = !!collectAllFor('APPLDA', |FUNC EQ 'THREAD'|, !appdarRefs.first())
+    if !appldaRefs.empty().not() then
+
+      !ddseRefs = !!collectAllFor('DDSE', |FUNC EQ 'THREAD'|, !appldaRefs.first())
+      do !ddseRef values !ddseRefs
+        do !ddatRef values !ddseRef.members
+
+          skip if !ddatRef.type.neq('DDAT')
+
+          !connection  = !ddatRef.dkey
+          !description = !ddatRef.description
+
+          !block = object BLOCK(!ddatRef.ddproperty)
+          !bore = !block.evaluate().bore()
+          handle ANY
+            !bore = object BORE(0mm)
+          endhandle
+
+          !block = object BLOCK(!ddatRef.dddfault)
+          !threadLength = !block.evaluate().real()
+          handle ANY
+            !threadLength = 0mm
+          endhandle
+
+          !row = object ARRAY()
+          !row[1] = !connection
+          !row[2] = !description
+          !row[3] = !bore.string(!!boreFmt)
+          !row[4] = !threadLength.string(!!distanceFmt)
+
+          !rows.append(!row)
+        enddo
+      enddo
+    endif
+  endif
+
+  return !rows
+endmethod
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      saveThreadEngagements
+--
+-- Description: save the given thread engagement data to database
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .saveThreadEngagements(!data is ARRAY)
+
+  -- get APPLDW for thread configuration
+  !appldwRefs = !!collectAllFor('APPLDW', |FUNC EQ 'PipeFabrication'|, /* )
+  if !appldwRefs.empty() then
+    !!alert.error('No APPLDW defined for Pipe Fabrication! Please create one with FUNC = PipeFabrication.')
+    return
+  endif
+
+  -- get APPDAR
+  !appdarRefs = !!collectAllFor('APPDAR', |FUNC EQ 'THREAD'|, !appldwRefs.first())
+  if !appdarRefs.empty() then
+
+    !!ce = !appldwRefs.first()
+    NEW APPDAR FUNC 'THREAD'
+    handle ANY
+      !!alert.error(!!error.text)
+      return
+    endhandle
+
+    !appdarRef = !!ce
+  else
+    !appdarRef = !appdarRefs.first()
+  endif
+
+  -- get APPLDA
+  !appldaRefs = !!collectAllFor('APPLDA', |FUNC EQ 'THREAD'|, !appdarRef)
+  if !appldaRefs.empty() then
+
+    !!ce = !appdarRef
+    NEW APPLDA FUNC 'THREAD'
+    handle ANY
+      !!alert.error(!!error.text)
+      return
+    endhandle
+
+    !appldaRef = !!ce
+  else
+    !appldaRef = !appldaRefs.first()
+  endif
+
+  !ddseRefs = !!collectAllFor('DDSE', |FUNC EQ 'THREAD'|, !appldaRef)
+  if !ddseRefs.empty() then
+
+    !!ce = !appldaRef
+    NEW DDSE FUNC 'THREAD'
+    handle ANY
+      !!alert.error(!!error.text)
+      return
+    endhandle
+
+    !ddseRef = !!ce
+  else
+    !ddseRef = !ddseRefs.first()
+  endif
+
+  !!ce = !ddseRef
+  DELETE DDSE MEM
+  handle ANY
+    !!alert.error(!!error.text)
+    return
+  endhandle
+
+  do !i indices !data
+
+    !connection   = !data[!i][1]
+    !description  = !data[!i][2]
+    !bore         = !data[!i][3]
+    !threadLength = !data[!i][4]
+
+    NEW DDAT
+    !!ce.dkey = !connection
+    !!ce.description = !description
+    !!ce.ddproperty = |$!bore|
+    !!ce.dddfault = |$!threadLength|
+
+  enddo
+
+  !this.refreshThreadEngagements()
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      moveSelectedRowsUp
+--
+-- Description: move selected rows up
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .moveSelectedRowsUp()
+  -- Fix for Issue 95222 (SI-56576)
+
+  !rowTags = !this.gridThreadEngagement.getSelectedRowTags()
+  if !rowTags.empty() then
+    return
+  endif
+
+  !this.gridThreadEngagement.moveSelectedRowsUp()
+
+  !this.btnOK.active = !this.editable
+  !this.btnApply.active = !this.editable
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      moveSelectedRowsDown
+--
+-- Description: move selected rows down
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .moveSelectedRowsDown()
+  -- Fix for Issue 95222 (SI-56576)
+
+  !rowTags = !this.gridThreadEngagement.getSelectedRowTags()
+  if !rowTags.empty() then
+    return
+  endif
+
+  !this.gridThreadEngagement.moveSelectedRowsDown()
+
+  !this.btnOK.active = !this.editable
+  !this.btnApply.active = !this.editable
+endmethod
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      stringToBore
+--
+-- Description: convert string to bore
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      string value
+--    2   R      BOOLEAN     if true, no error message will be displayed
+-- Return:
+--   [Data Type] [Description]
+--    BORE        bore value
+--------------------------------------------------------------------------------
+define method .stringToBore(!stringValue is STRING, !silent is BOOLEAN) is BORE
+
+  if !stringValue.trim().empty() then
+    if !silent.not() then
+      !!alert.message('Input bore value!')
+    endif
+    return object BORE()
+  endif
+
+  !bore = !stringValue.bore()
+  handle ANY
+    if !silent.not() then
+      !!alert.error(!!error.text)
+      return object BORE()
+    endif
+  endhandle
+
+  return !bore
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      stringToDistance
+--
+-- Description: convert string to distance value
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      string value
+--    2   R      BOOLEAN     if true, no error message will be displayed
+-- Return:
+--   [Data Type] [Description]
+--    REAL        distance value
+--------------------------------------------------------------------------------
+define method .stringToDistance(!stringValue is STRING, !silent is BOOLEAN) is REAL
+
+  if !stringValue.trim().empty() then
+    if !silent.not() then
+      !!alert.message('Input distance value!')
+    endif
+    return object REAL()
+  endif
+
+  !distance = !stringValue.real()
+  handle ANY
+    if !silent.not() then
+      !!alert.error(|Cannot convert string '| + !stringValue + |' to real!|)
+    endif
+    return object REAL()
+  endhandle
+
+  if !distance.lt(0) then
+    if !silent.not() then
+      !!alert.error('Distance cannot be negative value!')
+    endif
+    return object REAL()
+  endif
+
+  return !distance
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onShowPopupMenu
+--
+-- Description: shows a context menu
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onShowPopupMenu(!data is ARRAY)
+
+  !rowTags = !this.gridThreadEngagement.getSelectedRowTags()
+  !rowCount = !this.gridThreadEngagement.getNumberRows()
+
+  !this.popupMenu.setFieldProperty('NEW',       'ACTIVE', !this.editable)
+  !this.popupMenu.setFieldProperty('INSERT',    'ACTIVE', !this.editable and !rowTags.empty().not())
+  !this.popupMenu.setFieldProperty('DELETE',    'ACTIVE', !this.editable and !rowTags.empty().not())
+  !this.popupMenu.setFieldProperty('MOVE_UP',   'ACTIVE', !this.editable and !rowTags.empty().not())
+  !this.popupMenu.setFieldProperty('MOVE_DOWN', 'ACTIVE', !this.editable and !rowTags.empty().not())
+  !this.popupMenu.setFieldProperty('EXPORT',    'ACTIVE', !rowCount.gt(0))
+  !this.popupMenu.setFieldProperty('PREVIEW',   'ACTIVE', !rowCount.gt(0))
+
+  !this.netControl.showPopup(!data[0], !data[1])
+endmethod
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      exportToExcel
+--
+-- Description: save grid data to excel file
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .exportToExcel()
+
+  import 'PMLFileBrowser'
+  handle ANY
+  endhandle
+
+  using namespace 'Aveva.Pdms.Presentation'
+  !browser = object PMLFILEBROWSER('SAVE')
+  !browser.show('%PDMSUSER%', 'thread.xls', 'Save', false, 'Excel Documents|*.xls', 1)
+
+  !path = !browser.file().trim()
+  if !path.empty() then
+    return
+  endif
+
+  !this.gridThreadEngagement.saveGridToExcel(!path)
+  handle ANY
+    !!alert.error(!!error.text)
+  endhandle
+endmethod

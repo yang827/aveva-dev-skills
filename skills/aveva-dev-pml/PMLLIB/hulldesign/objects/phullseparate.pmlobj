@@ -1,0 +1,633 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            phullseparate.pmlobj
+--    Type:          Object Definition
+--    Group:         Undefined
+--      Keyword:     Undefined
+--    Module:        Undefined
+--  Author:          Undefined
+--  Created:         Wed Jul 16 13:59:11 2008
+
+--
+--  Description:     Undefined
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  generateNotchesAtCornersStatement(ARRAY) STRING              Creates statement for generating notches at corners.
+--  generateNotchesNearSeamsStatements(ARRAY) ARRAY               Creates statement for generating notches at corners.
+--  getCornerNumbers(ANY)            ARRAY               Extracts indexes of panel corners that are inside cutout
+--  getCorners()                     ARRAY               Extracts panel corners
+--  getPanelSide(STRING)             STRING              Extracts side of panel
+--  getSeamRecords(ANY)              ARRAY               Get seam points inside cutout
+--  getStatementDetails()            -                   retrieves cutout statement details
+--  phullSeparate()                  -
+--  replaceCutoutStatements()        -                   Generate selected cutout without slope, separate other cutouts from statement group
+--  selectCutout()                   REAL                Asks user for a cutout in the drawing
+--
+define object PHULLSEPARATE
+
+  -- cutout data
+  member .cutoutPanelName is STRING
+  member .cutoutPartId is REAL
+            member .cutoutGroupNr is REAL
+  member .cutoutTagCode is REAL
+
+            member .cutoutSlope is REAL
+  member .cutoutPanelSide is STRING
+
+            member .seamRecordsFound is ARRAY
+  member .cornerNumbersFound is ARRAY
+
+  member .notchInCornersSize is STRING
+  member .notchNearSurfaceSize is STRING
+  member .notchNearPanelSize is STRING
+
+endobject
+
+define method .phullSeparate()
+
+            using namespace 'Aveva.Marine.Design'
+  using namespace 'Aveva.Marine.Geometry'
+
+  !this.notchInCornersSize = 'R100'
+  !this.notchNearSurfaceSize = ' R75'
+  !this.notchNearPanelSize = ' R50'
+            !this.cutoutSlope = 0
+
+  !result = !this.selectCutout()
+
+            if !result.eq(1) then
+              !this.getStatementDetails()
+            endif
+            if ( !this.cutoutSlope.eq(0) ) then
+                !!alert.error('Cutout cannot be reduced. It has no slope!')
+            else
+                -- get plate contour part cut by cutout
+                !contourPart = object MARCONTOURPLANAR()
+                !objMarHullPan = object MARHULLPAN()
+                --!panelNames = ARRAY()
+                --!panelNames[1] = !this.cutOutPanelName
+                --!objMarHullPan.panRecreate(!panelNames)
+                !objMarHullPan.panModify(!this.cutOutPanelName, 2)
+                !res = !objMarHullPan.getCutoutPoints(!this.cutoutPanelName, !this.cutoutPartId, 0.0, !contourPart)
+                if ( !res eq (-1) ) then
+                    !!alert.error('No cutout contour returned! Try PlanarHull->Panel->Recreate and then separate!')
+                else
+                    !this.seamRecordsFound = !this.getSeamRecords(!contourPart)
+                    !this.cornerNumbersFound = !this.getCornerNumbers(!contourPart)
+                    if ( !this.seamRecordsFound.size().eq(0) ) and ( !this.cornerNumbersFound.size().eq(0) ) then
+                        !!alert.error('No seam or corner detected in cutout range!')
+                    else
+                        !this.cutoutPanelSide = !this.getPanelSide(!this.cutoutPanelName)
+                        !objMarHullPan = object MARHULLPAN()
+                        !objMarHullPan.panActivate(!this.cutoutPanelName)
+                        !newStatements = ARRAY()
+                        !newStatements = !this.generateNotchesNearSeamsStatements(!this.seamRecordsFound)
+                        !statement = !this.generateNotchesAtCornersStatement(!this.cornerNumbersFound)
+                        if !statement.neq('') then
+                            !newStatements.append(!statement)
+                        endif
+                        !this.replaceCutoutStatements()
+                        do !w from 1 to !newStatements.size()
+                            !objMarHullPan.stmtExec( 0, !newStatements[!w])
+                        enddo
+                        --!panels = ARRAY()
+                        --!panels[1] = !this.cutoutPanelName
+                        --!objMarHullPan.panStore(!panels)
+                        !panels = ARRAY()
+                        !panels[1] = !this.cutoutPanelName
+                        !objMarHullPan.panStore(!panels)
+                        !objMarHullPan.panSkipSingle(!this.cutoutPanelName)
+                    endif
+                endif
+            endif
+
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .selectCutout()
+--
+-- Description: Asks user for a cutout in the drawing
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   REAL      1 - selected and data extracted, 0 - error
+--
+------------------------------------------------------------------------
+--
+define method .selectCutout() is REAL
+  using namespace 'Aveva.Marine.Geometry'
+  using namespace 'Aveva.Marine.UI'
+  using namespace 'Aveva.Marine.Drafting'
+  using namespace 'Aveva.Marine.Utility'
+  using namespace 'Aveva.Marine.DataExtraction'
+
+            !objMarUi = object MARUI()
+            !objMarUtil = object MARUTIL()
+            !objMar = object MARDEX()
+  !objMarDrafting = object MARDRAFTING()
+
+  !objModel = object MARMODEL()
+  !objPoint = object MARPOINTPLANAR()
+  !objModelSubView = object MARELEMENTHANDLE()
+  !objModelComponent = object MARELEMENTHANDLE()
+  do
+    !userResponse = !objMarUi.pointPlanarReqPML('Identify Cutout!', !objPoint)
+    !objMarDrafting.modelIdentify(!objPoint, !objModel, !objModelSubView, !objModelComponent)
+    !strPartType = !objModel.partType()
+    if ( !strPartType NEQ 'cutout' ) then
+      !objMarUi.messageNoConfirm('Cutout not identified, try again!')
+    else
+      !this.cutoutPanelName = !objModel.name()
+      !this.cutoutPartId = !objModel.partIdPML()
+
+                                    !extractString = 'HULL.PANEL(' & '''' & !this.cutoutPanelName & '''' & ').CUTOUT(' & !this.cutoutPartId & ').TAG_CODE'
+                                    !dataExtractResult = !objMar.extractPML(!extractString)
+                                    if !dataExtractResult.neq(0) then
+                                                return 0
+                                    endif
+                                    !objMar.nextResultPML()
+                                    !this.cutoutTagCode = !objMar.getIntPML()
+      break
+
+    endif
+
+    break if !userResponse.eq(!objMarUtil.quitPML())
+
+  enddo
+            return 1
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .getStatementDetails()
+--
+-- Description: retrieves cutout statement details
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--
+------------------------------------------------------------------------
+define method .getStatementDetails()
+  using namespace 'Aveva.Marine.DataExtraction'
+            using namespace 'Aveva.Marine.Design'
+
+  !objMarHullPan = object MARHULLPAN()
+            !this.cutoutGroupNr = !objMarHullPan.groupGet(!this.cutoutPanelName, !this.cutoutPartId)
+            !statement = !objMarHullPan.stmtGet(!this.cutoutPanelName, !this.cutoutGroupNr)
+            --get panel or RSO name between ''
+            !subStatement = !statement.before('''')
+            !startPos = !subStatement.length()
+            !subStatementT = !statement.substring((!startPos + 2))
+            !unusedSubStatementTT = !subStatementT.before('''')
+
+
+  --getting the side
+            !compareStr = 'S'
+            !posStr = match(!subStatement, !compareStr)
+  if !posStr.gt(0) then
+              !this.side = !compareStr
+            endif
+  -- skip type statement
+            !compareStrR = 'TYP'
+            !posTyp = match( !subStatement, !compareStrR)
+  if !posTyp.gt(0) then
+              !subStatement = !subStatement.substring( (!posTyp + 3) )
+            endif
+            !compareStr = 'P'
+            !posStr = match(!subStatement, !compareStr)
+            if !posStr.gt(0) then
+              !this.side = !compareStr
+            endif
+
+            -- getting slope
+            -- need to cut spaces
+            !statement = !statement.replace(' ','')
+            !subStatement = !statement.after('C=')
+            if (!subStatement EQ '') then
+              !this.cutoutSlope = 0
+              return
+            endif
+            !posStr = match(!subStatement.substring(!posStr),',')
+            if  (!posStr EQ 0) then
+                !posStr = match(!subStatement.substring(!posStr),';')
+            endif
+            !this.cutoutSlope = !subStatement.substring(1,!posStr - 1).real()
+            handle (2,441)
+                        -- error in syntax
+                        !this.cutoutSlope = 0
+            endhandle
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .getSeamRecords()
+--
+-- Description: Get seam points inside cutout
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   ARRAY  objects of type AVEVA.MARINE.DESIGN.SEAMRECORD
+--
+------------------------------------------------------------------------
+define method .getSeamRecords(!contourPart is ANY) is ARRAY
+    using namespace 'Aveva.Marine.Geometry'
+            using namespace 'Aveva.Marine.UI'
+            using namespace 'Aveva.Marine.Utility'
+            using namespace 'Aveva.Marine.Design'
+
+  !type = !contourPart.objectType()
+  if !type.neq('AVEVA.MARINE.GEOMETRY.MARCONTOURPLANAR') then
+    return
+  endif
+
+            !seamPoint     = object MARPOINTPLANAR()
+            !nearestPoint     = object MARPOINTPLANAR()
+  !objMarHullPan = object MARHULLPAN()
+
+            -- Find seam in cutout (seam point distance to cutout points checked)
+
+            -- Seam Records that are inside cutout
+            !seamRecordsFound = object ARRAY()
+            !si = 1
+
+            !seamRecords = ARRAY()
+            !seamRecords = !objMarHullPan.getNearbySeams(!this.cutoutPanelName)
+            !nrOfSeams = !seamRecords.size()
+
+
+
+
+            if !nrOfSeams.gt(0) then
+              !p = 1
+                        do !p from 1 to !nrOfSeams
+                          !seamPoint.setCoordinates( !seamRecords[!p].uCoord(), !seamRecords[!p].vCoord() )
+                          !nearestPoint = !contourPart.getPointOnContour( !seamPoint )
+                          !seamPoint.setCoordinates( !seamRecords[!p].uCoord(), !seamRecords[!p].vCoord() )
+                          !dist = !nearestPoint.distanceToPoint( !seamPoint )
+                          if !dist.lt(1) then
+                                       !isOn = true
+                          else
+                                       !isOn = false
+                          endif
+                          if ( !isOn ) then
+                                      !seamRecordsFound[!si] = !seamRecords[!p]
+                                                !si = !si + 1
+                                    endif
+                        enddo
+            endif
+  return !seamRecordsFound
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .generateNotchesNearSeamsStatements()
+--
+-- Description: Creates statement for generating notches at corners.
+--
+-- Method Type: Procedure
+-- Arguments:
+--   ARRAY [R]   objects of type AVEVA.MARINE.DESIGN.SEAMRECORD
+-- Return:
+--   ARRAY      statements
+--
+------------------------------------------------------------------------
+define method .generateNotchesNearSeamsStatements(!seamRecords is ARRAY) is ARRAY
+  using namespace 'Aveva.Marine.Design'
+            !statements = ARRAY()
+
+  !startPanel = 'NOT,' & !this.notchNearPanelSize & ','
+            do !p from 1 to !seamRecords.size()
+
+                        if !seamRecords[!p].isSurfaceSeam() then
+                          !statements[!p] = 'NOT,' & !this.notchNearSurfaceSize & ',''' & !seamRecords[!p].panelName() & ''', SEA=' & !seamRecords[!p].seamNo() & ';'
+                        else
+                          -- Gets on which sides panel adjacent to newly created panel is defined.
+                          -- Notches ere created on sides where adjacent panel exist (P, S, SBP)
+                          !adjacentPanelSide = !this.getPanelSide(!seamRecords[!p].panelName())
+                          -- !adjacentPanelSide is chosen by side of intersecting panel(SBP, P, S). Intersecting Panel is one of the boundary panel defined with option "intersecting".
+                        !str = ''
+                                    !cutoutPanelSideP = 'P'
+                                    !cutoutPanelSideS = 'S'
+
+                          if !adjacentPanelSide.eq( !str ) then
+        if !this.cutoutPanelSide.eq( !str ) then
+                                        if !seamRecords[!p].reflected() then
+                                          !statements[!p] = !startPanel & '''' & !seamRecords[!p].panelName() & ''', SEA=' & !seamRecords[!p].seamNo() & ',REF;'
+                              else
+                                          !statements[!p] = !startPanel & '''' & !seamRecords[!p].panelName() & ''', SEA=' & !seamRecords[!p].seamNo() &  ';'
+                                        endif
+                                                endif
+        if !this.cutoutPanelSide.eq( !cutoutPanelSideP ) then
+                                                  if !seamRecords[!p].reflected() then
+                                                    !statements[!p] = !startPanel & !cutoutPanelSideP & ',''' & !seamRecords[!p].panelName() & ''', SEA=' & !seamRecords[!p].seamNo() & ',REF;'
+                                        else
+                                !statements[!p] = !startPanel & !cutoutPanelSideP & ',''' & !seamRecords[!p].panelName() & ''', SEA=' & !seamRecords[!p].seamNo() &  ';'
+                              endif
+                                                endif
+                  if !this.cutoutPanelSide.eq( !cutoutPanelSideS ) then
+                                                  if !seamRecords[!p].reflected() then
+                                                    !statements[!p] = !startPanel & !cutoutPanelSideS & ',''' & !seamRecords[!p].panelName() & ''', SEA=' & !seamRecords[!p].seamNo() & ',REF;'
+                                        else
+                                !statements[!p] = !startPanel & !cutoutPanelSideS & ',''' & !seamRecords[!p].panelName() & ''', SEA=' & !seamRecords[!p].seamNo() &  ';'
+                              endif
+                                                endif
+                                    else
+                                      if !this.cutoutPanelSide.eq( !adjacentPanelSide ) then
+          if !seamRecords[!p].reflected() then
+                                                    !statements[!p] = !startPanel & !adjacentPanelSide & ',''' & !seamRecords[!p].panelName() & ''', SEA=' & !seamRecords[!p].seamNo() & ',REF;'
+                                        else
+                                !statements[!p] = !startPanel & !adjacentPanelSide & ',''' & !seamRecords[!p].panelName() & ''', SEA=' & !seamRecords[!p].seamNo() &  ';'
+                              endif
+                                                endif
+        if !this.cutoutPanelSide.eq( !str ) then
+                                                  if !seamRecords[!p].reflected() then
+                                                    !statements[!p] = !startPanel & !adjacentPanelSide & ',''' & !seamRecords[!p].panelName() & ''', SEA=' & !seamRecords[!p].seamNo() & ',REF;'
+                                        else
+                                !statements[!p] = !startPanel & !adjacentPanelSide & ',''' & !seamRecords[!p].panelName() & ''', SEA=' & !seamRecords[!p].seamNo() &  ';'
+                              endif
+                                                endif
+                endif
+                        endif
+            enddo
+  return !statements
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .generateNotchesAtCornersStatement()
+--
+-- Description: Creates statement for generating notches at corners.
+--
+-- Method Type: Procedure
+-- Arguments:
+--   ARRAY [R]   corner numbers
+-- Return:
+--   STRING      statement or empty string
+--
+------------------------------------------------------------------------
+define method .generateNotchesAtCornersStatement(!cornerNumbers is ARRAY) is STRING
+    if !cornerNumbers.size().eq(0) then
+      return ''
+    endif
+
+    !cornerString = ''
+    do !cornerNumber values !cornerNumbers
+      !cornerString = !cornerString & ',' & $!cornerNumber
+    enddo
+    -- remove first ,
+    !cornerString = !cornerString.after(',')
+
+    !notchesStatement = 'NOT,' & !this.notchInCornersSize & ', COR=' & !cornerString & ';'
+    return !notchesStatement
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .getPanelSide()
+--
+-- Description: Extracts side of panel
+--
+-- Method Type: Procedure
+-- Arguments:
+--   STRING [R]  panel name
+-- Return:
+--   STRING      panel side, possible values: '','S','P'
+--
+------------------------------------------------------------------------
+define method .getPanelSide(!panelName is STRING) is STRING
+            using namespace 'Aveva.Marine.Design'
+  !objMarHullPan = object MARHULLPAN()
+
+            !statement = !objMarHullPan.stmtGet( !panelName, 2)
+            !compareStr = ''''
+            !posStr = match(!statement, !compareStr)
+            !subStatement = !statement.substring(!posStr + 1)
+
+            !compareStr = ','
+            !posStr = match(!subStatement, !compareStr)
+            !subStatementT = !subStatement.substring(!posStr + 1)
+  !side = !subStatementT.before(',')
+            --cut spaces
+            !side = !side.replace(' ','')
+
+  !posStr = match( !side, 'SBP' )
+            if !posStr.gt(0) then
+              return ''
+  elseif !side.eq('P') then
+    return 'P'
+  else
+              return 'S'
+            endif
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .getCornerNumbers()
+--
+-- Description: Extracts indexes of panel corners that are inside cutout
+--
+-- Method Type: Procedure
+-- Arguments:
+--   ANY
+-- Return:
+--   ARRAY      corner indexes
+--
+------------------------------------------------------------------------
+define method .getCornerNumbers(!contourPart is ANY) is ARRAY
+  using namespace 'Aveva.Marine.Geometry'
+  !cornerNumbers = object ARRAY()
+  !cornerPoint = object MARPOINTPLANAR()
+  !nearestPoint = object MARPOINTPLANAR()
+
+  !corners = !this.getCorners()
+  !si = 1
+
+            do !w from 1 to !corners.size()
+                        !cornerPoint.setCoordinates( !corners[!w][1], !corners[!w][2] )
+
+
+                          !nearestPoint = !contourPart.getPointOnContour( !cornerPoint )
+                          !cornerPoint.setCoordinates( !corners[!w][1], !corners[!w][2] )
+                          !dist = !nearestPoint.distanceToPoint( !cornerPoint )
+                          if !dist.lt(1) then
+                                       !isOn = true
+                          else
+                                       !isOn = false
+                          endif
+
+
+
+                        if ( !isOn ) then
+                            !cornerNumbers[!si] = !w
+                                    !si = !si + 1
+                        endif
+            enddo
+
+  return !cornerNumbers
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .getCorners()
+--
+-- Description: Extracts panel corners
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   ARRAY      2-dimensional array of panel corners
+--              (corner - ARRAY with 2 elements)
+--
+------------------------------------------------------------------------
+define method .getCorners() is ARRAY
+  using namespace 'Aveva.Marine.DataExtraction'
+  !objMarDex = object MARDEX()
+  !nBoundaries = 0
+            !corners = object ARRAY()
+
+  !extractString = 'HULL.PANEL(''' & !this.cutoutPanelName & ''').NBOU'
+            !dataExtractResult =  !objMarDex.extractPML(!extractString)
+  if !dataExtractResult.eq(0) then
+    !objMarDex.nextResultPML()
+    !nBoundaries = !objMarDex.getIntPML()
+  endif
+  if !nBoundaries.eq(0) then
+              return !corners
+            endif
+  do !w from 1 to !nBoundaries
+              !corners[!w] = object ARRAY()
+    !extractString = 'HULL.PANEL(''' & !this.cutoutPanelName & ''').BOU(' & !w & ').COR'
+    !dataExtractResult =  !objMarDex.extractPML(!extractString)
+    if !dataExtractResult.eq(0) then
+      !objMarDex.nextResultPML()
+                                    !corners[!w][1] = !objMarDex.getindexedReal(0)
+                                    !corners[!w][2] = !objMarDex.getindexedReal(1)
+    else
+      --Error, return what extracted to this point
+      return !corners
+    endif
+    break if !w.eq(10)
+  enddo
+  return !corners
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .replaceCutoutStatements()
+--
+-- Description: Generate selected cutout without slope, separate other cutouts from statement group
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--
+------------------------------------------------------------------------
+define method .replaceCutoutStatements()
+  using namespace 'Aveva.Marine.DataExtraction'
+  using namespace 'Aveva.Marine.Design'
+
+  !objMarHullPan = object MARHULLPAN()
+  !this.cutoutGroupNr = !objMarHullPan.groupGet(!this.cutoutPanelName, !this.cutoutPartId)
+  !statement = !objMarHullPan.stmtGet(!this.cutoutPanelName, !this.cutoutGroupNr)
+
+  !prefix = ''
+  !arrayStatement = !!phullStiffenerReferenceFind(!statement)
+  if ( !arrayStatement[2].length() eq 0 ) then
+    -- no stiffener reference found
+    return
+  endif
+
+  !stiffenerPositions = !!phullReferenceNumbers(!arrayStatement[2])
+
+  !objMarDex = object MARDEX()
+  !extractString = 'HULL.PANEL(' & '''' & !this.cutoutPanelName & '''' & ').CUTOUT(' & !this.cutoutPartId & ').PROF_REFERENCE'
+            !dataExtractResult = !objMarDex.extractPML(!extractString)
+  if !dataExtractResult.eq(0) then
+    !objMarDex.nextResultPML()
+    !nProfNum = !objMarDex.getIntPML()
+  endif
+
+            if !this.cutoutTagCode.eq(0) then
+              !prefix = 'S'
+            elseif !this.cutoutTagCode.eq(1) then
+              !prefix = 'ST'
+            elseif !this.cutoutTagCode.eq(2) then
+              !prefix = 'SF'
+            elseif !this.cutoutTagCode.eq(3) or !this.cutoutTagCode.eq(4) then
+              !prefix = 'SL'
+            elseif !this.cutoutTagCode.eq(30) then
+              !prefix = 'L'
+    -- check tag code for transversal
+            elseif !this.cutoutTagCode.eq(40) then
+              !prefix = 'T'
+            endif
+
+            if !prefix.eq('SF') or !prefix.eq('SL') then
+              !nProfNum = !nProfNum / 10
+            endif
+            if !this.cutoutTagCode.eq(4) then
+              !nProfNum = !nProfNum * -1
+            endif
+
+  -- remove slope from statement
+  !subStatement = !arrayStatement[3].before('C=')
+  !subStatementT = !arrayStatement[3].after('C=')
+  !subStatementT = !subStatementT.after(',')
+  if ( !subStatementT.length() eq 0 ) then
+    -- if it ends with ; with no coma
+    !endStatement = !subStatement.substring(1, !subStatement.length() - 1)
+    !endStatement = !endStatement & ';'
+  else
+    !endStatement = !subStatement & !subStatementT
+  endif
+
+  !newStatements = ARRAY()
+
+
+  !strOtherTags = ''
+            !newStatement = ''
+  -- construct statements
+  do !prefixAndPosition values !stiffenerPositions
+    if !prefixAndPosition[1].eq(!prefix) and !prefixAndPosition[2].eq(!nProfNum) then
+      !newStatement = !arrayStatement[1] & !prefix & $!nProfNum & !endStatement
+    else
+      !strOtherTags = !strOtherTags & ',' & !prefixAndPosition[1] & $!prefixAndPosition[2]
+    endif
+  enddo
+
+  -- TODO run new statement
+  !otherStatement = ''
+  if (!strOtherTags.length() gt 0 ) then
+    !strOtherTags = !strOtherTags.substring(2)
+    !otherStatement = !arrayStatement[1] & !strOtherTags & !arrayStatement[3]
+    -- TODO replace statement
+  endif
+
+            if ( !newStatement neq ('') ) then
+              !objMarHullPan.stmtExec( !this.cutoutGroupNr, !newStatement)
+                        if ( !otherStatement neq ('') ) then
+                          !objMarHullPan.stmtExec( 0, !otherStatement)
+                        endif
+            endif
+
+endmethod

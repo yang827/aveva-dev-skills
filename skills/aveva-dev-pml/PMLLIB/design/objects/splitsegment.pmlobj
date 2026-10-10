@@ -1,0 +1,1152 @@
+--
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            splitsegment.pmlobj
+--   Type:          Function Definition
+--   Group:         Piping Application
+--
+--     Keyword:
+--   Module:
+--   Replaces:
+--
+-- Author:          Jaideep - DDC
+-- Created:
+--
+--
+--
+-- Description:
+--
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  assignDummy(ARRAY)               -
+--  build()                          -
+--  buildRangeItems()                -
+--  buildTemporary()                 -
+--  convertPositions()               -
+--  displayPositions(REAL,POSITION,ARRAY) -                   debug routine to show where the assembly is being moved to
+--  getAssembly()                    BOOLEAN
+--  getAssemblyLengths(DBREF)        ARRAY
+--  getInsertPositions(ARRAY)        POSITION
+--  getLengths()                     -
+--  getPositions()                   -
+--  moveAssembly(ARRAY,REAL)         ARRAY
+--  moveAssemblyTo(ARRAY,POSITION,REAL) ARRAY
+--  moveBackwards(ARRAY,REAL)        ARRAY
+--  moveForwards(ARRAY,REAL)         ARRAY
+--  segmentFit()                     ARRAY
+--  setStartComp(REAL)               DBREF
+--  setStartPosition()               -
+--  splitPipe (ARRAY)                -
+--  splitSegment(DBREF,DBREF,REAL,REAL) -
+--  splitSegment(PIPINGACTIONS)      -
+--  swapAssembly(BORE,ARRAY)         ARRAY
+--  testLine()                       REAL
+--  tidyRange()                      -
+--  tubeCheck()                      ARRAY
+--
+
+
+-- Define object
+
+------------------------------------------------------------------------
+define object SPLITSEGMENT
+
+  member   .branchItems  is   ARRAY
+  member   .carryOver      is   REAL
+  member   .altered        is   BOOLEAN
+  member   .defaultsegLen  is   REAL
+  member   .assemblies     is   ARRAY
+  member   .assembly       is   PIPEASSEMBLY
+  member   .minFinsegLen   is   REAL
+  member   .splitType      is   BOOLEAN
+  member   .segLen         is   REAL
+  member   .assemblyLength is   REAL
+  member   .startToPrim    is   REAL
+  member   .primToSec      is   REAL
+  member   .secToEnd       is   REAL
+  member   .insertPos      is   POSITION
+  member   .seqStartComp   is   REAL
+  member   .seqEndComp     is   REAL
+  member   .startComp      is   DBREF
+  member   .endComp        is   DBREF
+  member   .buildMode      is   STRING
+  member   .line           is   LINE
+  member   .lines          is   ARRAY
+  member   .startItem      is   DBREF
+  member   .positions      is   ARRAY
+  member   .assemblyLines      is   ARRAY
+  member   .buildList      is   ARRAY
+  member   .currentBore    is   BORE
+  member   .tubeLengths    is   ARRAY
+  member   .assemblyBores  is   ARRAY
+  member   .collGaskets    is   ARRAY
+  member   .rangeBranch    is   DBREF
+  member   .changedAttas   is   ARRAY
+  member   .assemblySizes  is   ARRAY
+  member   .position       is POSITION
+
+endobject
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+--
+-- Method:     .splitSegment
+--
+-- Description: Constructor which uses the result of a the pickelement picks on the form
+-- This is not the main constructor as it is only used in feature picking
+--
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+define method .splitSegment(!startComp is DBREF , !endComp is DBREF , !segmentLen is REAL , !minFinLen is REAL )
+
+  !this.startComp     = !startComp
+  !this.endComp       = !endComp
+  !this.segLen        = !segmentLen
+  !this.minFinsegLen  = !minFinLen
+  !this.rangeBranch   = !this.startComp.owner
+
+  !fromIndex    = !this.startComp.order
+  !toIndex      = !this.endComp.order
+
+  -- Switch order about
+  if(!fromIndex gt !toIndex) then
+    !temp           = !fromIndex
+    !fromIndex      = !toIndex
+    !toIndex        = !temp
+    !this.buildMode = 'back'
+  else
+    !this.buildMode = 'forw'
+  endif
+
+  !from           = int(!fromIndex + 0.5)
+  !to             = int(!toIndex   + 0.4)
+
+  -- Components
+  !range     = !this.rangeBranch.members.from(!from, !to - !from + 1)
+  !rangeBranch = ARRAY()
+  do !a values !range
+    !rangeBranch.append(!a)
+    if !a.ltlen.gt(1) then
+      !rangeBranch.append( il tube of $!a )
+    endif
+  enddo
+  !this.branchItems = !rangeBranch
+
+  if !this.getAssembly().not() then
+    !!alert.error('No assemblies Available.')
+    return
+  endif
+
+  !this.buildRangeItems()
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+--
+-- Method:     .splitSegment(!picked is PIPINGACTIONS)
+--
+-- Description: Constructor which uses the result of a pipingactions pick
+-- to define the start and end points of the section to be split
+--
+------------------------------------------------------------------------
+define method .splitSegment(!picked is PIPINGACTIONS)
+
+  --!splitLength       =  !this.length.val
+  --!lengthOption        =  !!pipeSplitting.lengthOption.selection()
+  !this.segLen         =  !!pipeSplitting.length.val.real()
+  !this.minFinsegLen   =  !!pipeSplitting.minTubeLen.val.real()
+  !this.buildMode      =  !picked.pickMode
+  !this.changedAttas   =  object ARRAY()
+
+  if !this.getAssembly().not() then
+    !!alert.error('No assemblies Available.')
+    return
+  endif
+
+  -- sort out the range of components to be considered
+  !range = !picked.range
+  do !a index !range
+    if !range[!a].type.eq('ATTA') then
+      if !range[!a].spkbrk.eq(FALSE) then
+        !range[!a].spkbrk = TRUE
+        !this.changedAttas.append(!range[!a])
+      endif
+    endif
+  enddo
+  if !picked.hsTube then
+    !x = IL tube of $!range[1].owner
+    handle any
+    elsehandle NONE
+      !range.insert(1, !x)
+    endhandle
+  endif
+
+       if !range[1].order.gt(1) then
+           if !picked.fromElementTube then
+                !first = !range[1].owner.members[!range[1].order - 1]
+                if !first.ltlen.gt(0) then
+                    !x = IL tube of $!first
+                    !range.insert(1, !x)
+                endif
+           endif
+       endif
+
+  if !picked.toElementTube then
+    !element = !range[!range.size()]
+    !x = IL tube of $!element
+    handle any
+    elsehandle NONE
+      !range.append(!x)
+    endhandle
+  endif
+
+  !rangeBranch = ARRAY()
+  -- now get the individual tube lengths
+
+  --Erases any starting and final comps which have 0mm ltlen, performed until a start and final comp is found with ltlen.
+  !isAFlanFor = FALSE
+  !isAFlanBak = FALSE
+  !fstcompwltlen = 1
+  !lstcompwatlen = !range.maxIndex()
+  do !a index !range
+    if !range[!a].type.eq('FLAN') then
+      !isAFlanFor = TRUE
+    endif
+    if !range[!a].ltlen.eq(0) then
+      !fstcompwltlen = !fstcompwltlen + 1
+    else
+      break
+    endif
+  enddo
+
+  !maxIndex = !lstcompwatlen
+  do !a index !range
+    if !range[!maxIndex - !a + 1].type.eq('FLAN') then
+      !isAFlanBak = TRUE
+    endif
+
+    if !range[!maxIndex - !a + 1].atlen.eq(0) then
+      !lstcompwatlen = !lstcompwatlen - 1
+    else
+      break
+    endif
+  enddo
+
+  if !fstcompwltlen.gt(1) then
+    if (!isAFlanFor) then
+      do !a from 0 to (!fstcompwltlen - 2)
+        if !range[!fstcompwltlen - !a].type.eq('FLAN') then
+          !range.removeTo(!fstcompwltlen - !a - 1)
+          break
+        endif
+      enddo
+    else
+      !range.removeTo(!fstcompwltlen - 1)
+    endif
+  endif
+
+  if !lstcompwatlen gt 0 then
+           if !lstcompwatlen.lt(!range.maxIndex()) then
+               if (!isAFlanBak) then
+                   do !a from !lstcompwatlen to (!range.maxIndex() - 1)
+                       if !range[!a].type.eq('FLAN') then
+                            !range.removeFrom(!a + 1)
+                            break
+                       endif
+                   enddo
+               else
+                   !range.removeFrom(!lstcompwatlen + 1)
+               endif
+           endif
+       endif
+  --Now we have the range from first/final flan before the first/final comp with ltlen>0 or
+  --the first/final comp with ltlen if there is no flan before/after it.
+
+  do !a index !range
+    if !range[!a].string().match('TUB').gt(0) then
+      !rangeBranch.append(!range[!a])
+      skip
+    elseif !a.eq(!range.size() )then
+      !rangeBranch.append(!range[!a])
+      break
+    elseif !range[!a].ltlen.gt(1).and(!a.lt(!range.size() )) then
+      !rangeBranch.append(!range[!a])
+      !rangeBranch.append(il tube of $!range[$!a])
+      handle any
+      endhandle
+    else
+      !rangeBranch.append(!range[!a])
+    endif
+  enddo
+  !rangeBranch.unique()
+  if !picked.pickMode eq ('back') then
+    !this.buildMode = 'back'
+  endif
+  -- we now have a list of all the components in forwards mode including the head tube or lst tube of the first and last components
+  -- now we can work out the appropriate tube lengths
+  !this.branchItems = !rangeBranch
+  -- now we have got the range, we are in the same position for both constructor methods
+
+  !this.buildRangeItems()
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+define method .buildRangeItems()
+
+  -- go and get the relevant bits from the list
+  !this.tidyRange()
+  -- make parallel lines along a centreline
+  !this.getLengths()
+  -- now go and get different line sets for the different sizes
+  !this.buildTemporary()
+  if !this.assemblySizes.unset() then
+    !!alert.error('Invalid Cursor Selection')
+    return
+  endif
+
+  -- set the start and end components
+  !this.startComp = !this.setStartComp(0)
+  !this.endComp   = !this.setStartComp(1)
+  -- get the length of a standard assembly at this bore
+  if !this.buildMode.eq('back') then
+    !this.assignDummy(!this.assemblySizes[!this.assemblySizes.size()])
+  else
+    !this.assignDummy(!this.assemblySizes[1])
+  endif
+  -- move the assembly lines so that the secondary origin is on n0
+  -- if we are doing cut pipe lengths we need to move the assembly by its length
+  if !!pipeSplitting.lengthOption.selection().eq('CUTLEN') then
+    !this.assemblyLines = !this.moveAssemblyTo(!this.assemblyLines,N0,5)
+  else
+    !this.assemblyLines = !this.moveAssemblyTo(!this.assemblyLines,N0,1)
+  endif
+
+  -- try to work out the assembly positions along the line
+  !this.getPositions()
+
+
+  -- now calculate the insert points and display the messages
+  !this.convertPositions()
+
+  do !a index !this.changedAttas
+    !this.changedAttas[!a].spkbrk = FALSE
+  enddo
+
+  --- special debug mechanism for looking at the list of splitting positions
+  -- if a variable called !!showSplitting is defined then it will show a form with all the split positions.
+  -- Note: it will not create any splits, so to continue, !!showSplitting needs to be deleted
+  -- !!showSplitting.delete()
+  if defined (!!showSplitting) then
+    if undefined(!!pipeSplitDebug) then
+      pml load form !!pipeSplitDebug
+    endif
+    !!pipeSplitDebug.positions = !this.positions
+    !!pipeSplitDebug.buildList = !this.buildList
+    show !!pipeSplitDebug
+    return
+  endif
+  -- now build the assemblies
+  !this.build()
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+define method .buildTemporary()
+  -- method to build a set of temporary assemblies
+
+  --  !tube[1] = object LINE(!endPos ,!line.endPosition)
+  --  !tube[2] = !element
+  --  !tube[3] = !element.lbore
+  !currentSize = object BORE(0)
+  do !a values !this.tubeLengths
+    if !a[3].neq(!currentSize) then
+      !currentSize = !a[3]
+      handle any
+      endhandle
+      !assembly  = !this.getAssemblyLengths(!a[2])
+      !assembly.append(!currentSize)
+      !this.assemblySizes.append(!assembly)
+    endif
+  enddo
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- method to filter out the components which may or may not be required.
+define method .tidyRange()
+
+  !range = !this.branchItems
+  !rangeBranch = ARRAY()
+  do !a index !range
+    if !range[!a].type.match('TUB').gt(0) then
+      -- always add tube
+      !rangeBranch.append(!range[!a])
+    elseif !range[!a].type inset('BEND','ELBO','TEE','REDU','ATTA') then
+      -- always add in line items
+      !rangeBranch.append(!range[!a])
+    elseif !a.eq(1) then
+      -- its the first item
+      !rangeBranch.append(!range[!a])
+    elseif !range[!a].ltlen.gt(1) then
+      !rangeBranch.append(!range[!a])
+    elseif !range[!a].ltlen.lt(1) then
+      !rangeBranch.append(!range[!a])
+    endif
+  enddo
+  !this.branchItems = !rangeBranch
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- method to get an array of lengths from a list of components
+define method .getLengths()
+
+  !line               = object LINE(n0,n0)
+  !line.startPosition = n0
+  !line.endPosition   = n0
+
+  !lengths = ARRAY()
+  !tubes   = ARRAY()
+
+  do !a values !this.branchItems
+
+    -- loop through the elements described by range
+    if !a.string().match('TUB').gt(0) then $* its tube
+      -- if its a tube we need to get the owning element
+      !element = !a.string().after('OF ').dbref()
+      !length  = !element.ltlen
+      -- if we are at the start of the components then endPos is zero
+      if !line.length().eq(0) then
+        !endPos = n0
+        !line.endPosition = n$!length
+      else
+        !endPos = !line.endPosition
+        !line = !line.extendEnd(!length)
+      endif
+      -- now make a tube entry for the list of tubes
+      !tube[1] = object LINE(!endPos ,!line.endPosition)
+      !tube[2] = !element
+      !tube[3] = !element.lbore
+      handle any
+        !tube[3] = !element.hbore
+      endhandle
+      !tubes.append(!tube )
+      -- if the first item is a tube, !this.startItem will be unset
+      if !this.startItem.unset() then
+        !this.startItem = !element
+        if !element.type.eq('BRAN') then
+          !line.startPosition = N0
+        else
+          -- I think this is wrong and should include the length of the first component if its a flange
+          !line.startPosition =  N $!this.startItem.fitLen
+        endif
+      endif
+    else $* its not tube
+      -- Get the length of the component
+      if (!a.attribute('type').eq('REDU')) then
+        -- Find the inline length of the reducer rather than the fitting length
+        !vectorAtP1 = object POINTVECTOR(!a.ppos[1],!a.pdir[1])
+        !vectorAtP2 = !vectorAtP1
+        !intersection = !vectorAtP2.through(!a.ppos[2])
+        !componentLength = !vectorAtP1.position.distance(!intersection.position)
+      else
+        -- Get the fitting length
+        if !a.eq(!this.branchItems[1]) then
+          --Makes sure start of line is at end of anything other than flan
+          if !this.branchItems[1].type.neq('FLAN') then
+            !componentLength = 0
+          else
+            !componentLength = !a.fitLen
+          endif
+        else
+          !componentLength = !a.fitLen
+        endif
+      endif
+
+      !newLine = object LINE()
+      !newLine.startPosition = !line.endPosition
+
+      --if !a.fitLen is 0 then give it a fitlen of 1 unless it is the first component and is not a flange P-8625
+      if (!componentLength eq 0) then
+        if !a.eq(!this.branchItems[1]) then
+          if !this.branchItems[1].type.neq('FLAN') then
+            !newLine.endPosition   = !line.endPosition.offset(n, 0)
+          endif
+        else
+          !newLine.endPosition   = !line.endPosition.offset(n, 1)
+        endif
+      else
+        !newLine.endPosition   = !line.endPosition.offset(n, !componentLength)
+      endif
+
+      !item[1]  = !newLine
+      !item[2]  = !a
+
+      if !this.startItem.unset() then
+        !this.startItem = !a
+      endif
+
+      --if !a.fitLen is 0 then give it a fitlen of 1
+      if (!componentLength eq 0) then
+        if !a.eq(!this.branchItems[1]) then
+          if !this.branchItems[1].type.neq('FLAN') then
+            !length = 0
+          endif
+        else
+          !length = 1
+        endif
+      else
+        !length = !componentLength
+      endif
+
+      if !line.length().eq(0) then
+        !line.endPosition = n$!length
+      else
+        !line = !line.extendEnd(!length)
+      endif
+      !lengths.append(!item)
+    endif
+  enddo
+
+  !this.lines = !lengths
+  !this.tubeLengths = !tubes
+  !this.line  = !line
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+define method .setStartComp(!end is REAL)is DBREF
+
+  !items = !this.branchItems
+  if !end.eq(0) then
+    -- its the start
+  else
+    -- its the end
+    !items.invert()
+  endif
+  -- don't need to loop here
+  do !a values !items
+    if !a.string().match('TUB').gt(0) then $* its tube
+      !element = !a.string().after('OF ').dbref()
+      !return = !element
+      break
+    else
+      !return = !a
+      break
+    endif
+  enddo
+
+  return !return
+
+endmethod
+
+------------------------------------------------------------------------
+-- split rules
+-- 1 if the whole assembly fits in a length of tube and there is a minimum tube length then fit it in
+-- 2 if the assembly fits in but there is less than the minimum tube then pull the assembly back until
+-- there is the minimum tube
+-- 3 if the assembly start has less that the minimum tube length and its position via a segLen - return an error
+-- 4 if the assembly is after an elbow and has less than the minimum tube, connect it
+-- 5 if the assembly is after a bend lt than the minimum tube then extend to give the minimum tube
+-- 6 if the assembly fits inside a bend then ignore it and start again after the bend
+--
+------------------------------------------------------------------------
+-- method to work out the assembly positions
+define method .getPositions()
+
+  if !this.line.length().lt(!this.segLen) then
+    !!alert.error('Selected length is too short to be Split')
+    return
+  endif
+
+  -- move the origin assembly to the correct position
+  !this.setStartPosition()
+
+  !positions = ARRAY()
+  do !a
+    -- loop alog the main line incrementing the positions until we get past the end of the segment
+    if !a.gt(!this.lines.size() * 5) then
+      break
+    endif
+    -- fit is an array containing the position of an assembly and its insert item
+    !fit = !this.segmentFit()
+    if !fit.set() then
+      !positions.append(!fit)
+      !this.assemblyLines = !fit.removeFrom(1,4)
+    else
+      -- could not find a position so there is no more to do
+      break
+    endif
+  enddo
+  -- now we have a list of positions along the main line, we need to get REAL positions
+  --!this.segmentFit()
+  !this.positions = !positions
+
+  if  !this.buildMode.eq('back') then
+    !this.positions.invert()
+  endif
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+define method .segmentFit()is ARRAY
+
+  if !this.buildMode.eq('back') then
+    if !!pipeSplitting.lengthOption.selection().eq('CUTLEN') then
+      !this.assemblyLines = !this.moveAssembly(!this.assemblyLines, -1 * !this.segLen - !this.assemblyLength)
+    else
+      !this.assemblyLines = !this.moveAssembly(!this.assemblyLines, -1 * !this.segLen - !this.primToSec)
+    endif
+    if !this.assemblyLines[2].startPosition.north.lt(0) then
+      return object ARRAY()
+    endif
+  else
+    if !!pipeSplitting.lengthOption.selection().eq('CUTLEN') then
+      !this.assemblyLines = !this.moveAssembly(!this.assemblyLines, !this.segLen + !this.assemblyLength)
+    else
+      !this.assemblyLines = !this.moveAssembly(!this.assemblyLines,!this.segLen + !this.primToSec)
+    endif
+    if !this.assemblyLines[2].startPosition.north.gt(!this.line.length()) then
+      return object ARRAY()
+    endif
+  endif
+
+  -- we have created some lines where we think the assembly should go
+  -- now we need to test if they hit anything
+  !test = !this.tubeCheck()
+  if !test.eq(!this.assemblyLines) then
+    -- the segment is ok
+    return !this.assemblyLines
+  elseif !test.set() then
+    return !test
+  else
+    return object ARRAY()
+  endif
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- this routine checks if an assembly fits inside tube and adjusts it if necessary
+define method .tubeCheck()is ARRAY
+
+  !clashLine = !this.testLine()
+  -- now check if the overlap is complete or not
+  if !clashLine.eq(0) then
+    --- there is a problem
+    ---!this.assemblyLines = !this.moveForwards(!this.assemblyLines,!clashLine)
+    return !this.assemblyLines
+  elseif !clashLine.gt(800) then
+    !clashLine = !clashLine - 900
+    if !clashLine.gt(0) then
+      !this.assemblyLines = !this.moveBackwards(!this.assemblyLines,!clashLine)
+    else
+      !this.assemblyLines = !this.moveForwards(!this.assemblyLines,!clashLine)
+    endif
+    return !this.assemblyLines
+  else
+    -- it overlaps the tube indicated by !clashLine
+    !test = !this.assemblyLines[1].overlap(!this.tubeLengths[!clashLine][1])
+    handle ANY
+      !length = 0
+    elsehandle NONE
+      !length = !test.length()
+    endhandle
+    if !length.eq( !this.assemblyLines[1].length()) then
+      -- its completely on the line so no problem
+      return !this.assemblyLines
+    elseif !this.tubeLengths[!clashLine][1].onprojected(!this.assemblyLines[1].startPosition) then
+      -- if the start of the assembly is on the line then it means that the end is not
+      !this.assemblyLines = !this.moveBackwards(!this.assemblyLines,!clashLine)
+    else
+      -- the end of the assembly is on the line
+      !this.assemblyLines = !this.moveForwards(!this.assemblyLines,!clashLine)
+    endif
+    return !this.assemblyLines
+  endif
+
+  return object ARRAY()
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+define method .moveForwards(!lines is ARRAY, !index is REAL) is ARRAY
+
+  !dist = !this.tubeLengths[!index][1].startPosition.distance(!lines[1].startPosition)
+  !newLines = !this.moveAssembly(!lines, !dist)
+  return !newLines
+
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+define method .moveBackwards(!lines is ARRAY, !index is REAL ) is ARRAY
+
+  !dist = -1 * !this.tubeLengths[!index][1].endPosition.distance(!lines[1].endPosition)
+  !newLines = !this.moveAssembly(!lines, !dist)
+  return !newLines
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+--- method to test if an assembly hits a line
+define method .testLine()is REAL
+
+  -- loop round all of the tube lines an check to see if we hit
+  do !a index !this.tubeLengths
+
+    !this.swapAssembly(!this.tubeLengths[!a][3],!this.assemblyLines )
+    !overlap = !this.assemblyLines[1].overlap(!this.tubeLengths[!a][1])
+    if !overlap.set() then
+      -- it hits line !a
+      return !a
+    else
+      -- it does not hit line !a
+      if !this.assemblyLines[1].startPosition.north.gt(!this.tubeLengths[!a][1].endPosition.north) then
+        -- it starts after the current line
+        if !a.lt(!this.tubeLengths.size()) then
+          if !this.assemblyLines[1].endPosition.north.lt(!this.tubeLengths[!a + 1][1].startPosition.north) then
+            -- its in between lines
+            !dist1 = !this.assemblyLines[1].startPosition.north - !this.tubeLengths[!a][1].endPosition.north
+            -- dist1 is the distance between the end of the current line and the start of the assembly
+            !dist2 = !this.tubeLengths[!a + 1][1].startPosition.north - !this.assemblyLines[1].endPosition.north
+            -- !dist2 is the distance between the end of the assembly and the start of the next line
+            --!dist3 = !this.assemblyLines[1].startPosition.north - !this.tubeLengths[!a][1].endPosition.north
+            --!dist4 = !this.tubeLengths[!a + 1][1].startPosition.north - !this.assemblyLines[1].endPosition.north
+            if !dist1.lt(!dist2) then
+              -- its nearer to the start line
+              --CW  900 changed to 901--fix 78893
+              return !a + 901
+
+            else
+              -- its nearer to the next line
+              --CW  900 changed to 901---fix 78893
+              return !a - 1 + 901
+            endif
+          else
+            skip
+          endif
+        else
+          return 0
+        endif
+      endif
+    endif
+  enddo
+
+  return 0
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- method to move the current assembly represented by 2 lines and 2 positions
+-- by some increment   + or - North or south
+define method .moveAssembly(!array is ARRAY, !by is REAL)is ARRAY
+  --CW-- fix to split pipes at welds
+  !dist = !by
+  !return[1] = !array[1].offset(n,!dist)
+  if !array[2].length().eq(0) then
+      --!return[2] = !array[1]
+      !return[2] = !return[1]
+    else
+    !return[2] = !array[2].offset(n,!dist)
+  endif
+  --CW end
+  !return[3] = !array[3] + !dist
+  !return[4] = !array[4] + !dist
+
+  return !return
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- method to work out a real 3D position from a position along the line.
+define method .getInsertPositions(!current is ARRAY )is POSITION
+
+  if !current.size().lt(6) then
+    return object POSITION()
+  endif
+  !insertItem  = !current[5]
+  if !insertItem.type.eq('BRAN') then
+    !insertLeave = !insertItem.hpos
+    !insertDir   = !insertItem.hdir
+  else
+    !insertLeave = !insertItem.lpos
+    !insertDir   = !insertItem.ldir
+  endif
+  !position    = !insertLeave.offset(!insertDir,!current[6])
+  return !position
+
+endmethod
+------------------------------------------------------------------------
+
+-----------------------------------------------------------------------------------------------------------
+-- method to finds an appropriate insert component for a position
+define method .convertPositions()
+
+  do !a index !this.positions
+    -- !a is an array of 2 lines and 2 positions
+    do !b index !this.lines
+      if !this.lines[!b].size().eq(3) then
+        skip
+      endif
+      -- !b is a real which roughly points to the lines representing components
+      -- if the position of the first split is before the start of the first component make it the start component
+      if !this.positions[!a][3].lt(!this.lines[1][1].startPosition.north) then
+        !this.positions[!a].append(!this.startComp)
+        !this.positions[!a].append(!this.positions[!a][3])
+        !newPosition = !this.getInsertPositions(!this.positions[!a] )
+        !this.positions[!a].append(!newPosition)
+        !final[1] = !this.positions[!a][5]
+        !final[2] = !this.positions[!a][7]
+        !this.buildList.append(!final)
+      elseif !this.lines.size().eq(1) then
+        !this.positions[!a].append(!this.lines[!b][2])
+        !this.positions[!a].append(!this.positions[!a][3] - !this.lines[!b][1].endPosition.north)
+        !newPosition = !this.getInsertPositions(!this.positions[!a] )
+        !this.positions[!a].append(!newPosition)
+        !final[1] = !this.positions[!a][5]
+        !final[2] = !this.positions[!a][7]
+        !this.buildList.append(!final)
+        -- if the insert position is gt the end of the component
+      elseif !b.eq(!this.lines.size()) then
+        if !this.positions[!a][3].gt(!this.lines[!b][1].endPosition.north) then
+          !this.positions[!a].append(!this.lines[!b][2])
+          !this.positions[!a].append(!this.positions[!a][3] - !this.lines[!b][1].endPosition.north)
+          !newPosition = !this.getInsertPositions(!this.positions[!a] )
+          !this.positions[!a].append(!newPosition)
+          !final[1] = !this.positions[!a][5]
+          !final[2] = !this.positions[!a][7]
+          !this.buildList.append(!final)
+        endif
+      elseif !this.positions[!a][3].gt(!this.lines[!b][1].endPosition.north).and(!this.positions[!a][3].lt(!this.lines[!b + 1][1].startPosition.north)) then
+        !this.positions[!a].append(!this.lines[!b][2])
+        !this.positions[!a].append(!this.positions[!a][3] - !this.lines[!b][1].endPosition.north)
+        !newPosition = !this.getInsertPositions(!this.positions[!a] )
+        !this.positions[!a].append(!newPosition)
+        !final[1] = !this.positions[!a][5]
+        !final[2] = !this.positions[!a][7]
+        !this.buildList.append(!final)
+      endif
+    enddo
+  enddo
+
+endmethod
+-----------------------------------------------------------------------------------------------------------
+
+-----------------------------------------------------------------------------------------------------------
+define method .build()
+
+  !collGaskets = ARRAY()
+
+  if !this.buildList.unset().not() then
+    do !i indices !this.buildList
+
+      !preComp = !this.buildList[!i][1]
+      if !preComp.type.eq('BRAN') then
+        !bore = !preComp.hbore
+      else
+        !bore = !preComp.lbore
+      endif
+      !sphereDia = !bore.real().distance().real() + 100mm
+      !aidpos = !this.buildList[!i][2]
+
+      AID SPHERE NUM 22222 $!aidpos DIA $!sphereDia
+      AID TEXT NUM 22222 '<Split>' at $!aidpos
+    enddo
+  else
+    !!alert.error('Cannot split between the start and end point for this segment length')
+    return
+  endif
+
+  AID CLEAR SPHERE 22222
+  AID CLEAR TEXT   22222
+  -- now build the assemblies
+  do !a index !this.buildList
+    if !a eq 1 then
+      -- the insert item is always the first component
+      !insertItem = !this.buildList[1][1]
+      !insert = !insertItem
+    else
+      -- we are progressing down the list
+      --if the insert item is the same as it was before then we continue from the current element
+      if !this.buildList[!a][1].eq(!insertItem) then
+        !insert = !!ce
+      else
+        -- we have got past the current
+        !insertItem = !this.buildList[!a][1]
+        !insert = !insertItem
+      endif
+    endif
+
+    !pos = !this.buildList[!a][2]
+    !this.assembly.buildSplitAssembly(!pos,!insert,1,FALSE)
+
+    --CW fix P-38174 splitting assemblies at the last gasket --
+
+    if  !this.assembly.builtItems.size() gt 1 then
+      if  !this.assembly.builtItems[!this.assembly.builtItems.size() - 1].type.eq ('GASK') then
+        !testcomponents =  !this.assembly.builtItems[!this.assembly.builtItems.size() - 1]
+        !lastComponents[!a] =  !testcomponents
+      endif
+    else
+
+      !lastComponents[!a] =  !!ce
+    endif
+    --CW end of fix--
+
+    -- append the last item of each assembly
+    !collGaskets.append(!this.assembly.builtItems[!this.assembly.builtItems.size()])
+  enddo
+
+  !this.collGaskets = !collGaskets
+
+  !this.splitPipe(!lastComponents)
+
+endmethod
+------------------------------------------------------------------------------------------------------
+
+-----------------------------------------------------------------------------------------------------------
+define method .getAssemblyLengths(!comp is DBREF) is ARRAY
+
+  if !comp.type.eq('BRAN') then
+    !insertPos       = !comp.hposition
+    !this.currentBore = !comp.hbore
+  else
+    !insertPos        = !comp.lposition
+    !this.currentBore = !comp.lbore
+  endif
+  !assemblyData  = !this.assembly.builddummy(!insertPos,!comp, 1)
+  handle ANY
+    !!alert.error('There was a problem when trying to create the dummy assembly.')
+    !assemblyData = object ARRAY()
+    !assemblyData[1] = 0
+    !assemblyData[2] = 0
+    !assemblyData[3] = 0
+  endhandle
+  if !assemblyData[1].unset() then
+    !assemblyData[1] = 0
+  elseif !assemblyData[2].unset() then
+    !assemblyData[2] = 0
+  elseif !assemblyData[3].unset() then
+    !assemblyData[3] = 0
+  endif
+
+  return !assemblyData
+
+endmethod
+-----------------------------------------------------------------------------------------------------------
+
+-----------------------------------------------------------------------------------------------------------
+define method .swapAssembly(!bore is BORE, !lines is ARRAY)is ARRAY
+
+  if !bore.eq(!this.currentBore) then
+    return
+  endif
+
+  !moveTo = n $!lines[3]
+  -- we need to swap the assembly for another one
+  do !a values !this.assemblySizes
+    if !a[4].eq(!bore) then
+      !this.assignDummy(!a)
+      !this.assemblyLines = !this.moveAssemblyTo(!this.assemblyLines,!moveTo,0)
+      break
+    endif
+  enddo
+
+
+endmethod
+-----------------------------------------------------------------------------------------------------------
+
+-----------------------------------------------------------------------------------------------------------
+define method .assignDummy(!current is ARRAY)
+
+  !this.assemblyLength  = !current[1]
+  -- overall length of the assembly
+  !this.startToPrim     = !current[2]
+  -- dist from start to primary origin
+  !this.primToSec       = !current[3] -  !current[2]
+  -- dist between primary and secondary origins
+  !this.secToEnd        = !this.assemblyLength - !this.startToPrim - !this.primToSec
+  -- dist to the end from the secondary origin
+
+  -- create a line representing the assembly plus two mintube lengths
+  !mainline = object LINE()
+  !mainline.startPosition = N0
+  !length =  !this.assemblyLength + !this.minFinsegLen + !this.minFinsegLen
+  !mainline.endPosition = !mainline.startPosition.offset(n, !length)
+
+  -- create a line representing the assembly as it is positioned in the main line
+  -- ie minimum tube either side of the assembly
+  !assemblyLine = object LINE()
+  !assemblyLine.startPosition = n $!this.minFinsegLen
+  !endPos = !this.assemblyLength + !this.minFinsegLen
+  !assemblyLine.endPosition   = n $!endPos
+
+  -- calculate the distance of the primary origin along the assemblyLine (REAL)
+  !ppos  = !assemblyLine.startPosition.offset(n, !this.startToPrim).north
+  -- calculate the distance of the secondary origin along the assemblyLine (REAL)
+  !sDist = !assemblyLine.startPosition.offset(n, !this.startToPrim + !this.primToSec).north
+
+  -- build the array assemblylines (two LINE objects and two REAL objects)
+  !this.assemblyLines[1] = !mainline
+  !this.assemblyLines[2] = !assemblyLine
+  !this.assemblyLines[3] = !ppos
+  !this.assemblyLines[4] = !sDist
+
+  -- move the assembly lines so that the secondary origin is on n0
+  -- if we are doing cut pipe lengths we need to move the assembly by its length
+  if !!pipeSplitting.lengthOption.selection().eq('CUTLEN') then
+    -- this code does not seem to have any effect later on
+    !this.assemblyLines = !this.moveAssemblyTo(!this.assemblyLines,N0,5)
+  else
+    !this.assemblyLines = !this.moveAssemblyTo(!this.assemblyLines,N0,1)
+  endif
+
+endmethod
+-----------------------------------------------------------------------------------------------------------
+
+-----------------------------------------------------------------------------------------------------------
+define method .moveAssemblyTo(!lines is ARRAY, !position is POSITION, !origin is REAL)is ARRAY
+
+  if !origin eq 0 then
+    -- move the assembly primary origin
+    !dist = !position.north - !this.assemblyLines[3]
+  elseif  !origin eq 1 then
+    -- move the assembly secondary origin
+    !dist = !position.north - !this.assemblyLines[4]
+  elseif  !origin eq 2 then
+    -- move the overall start inc min tube
+    !dist = !position.north - !this.assemblyLines[1].startPosition.north
+  elseif  !origin eq 3 then
+    -- move the overall end inc min tube
+    !dist = !position.north - !this.assemblyLines[1].endPosition.north
+  elseif  !origin eq 4 then
+    -- move the assembly front face excl tube
+    !dist = !position.north - !this.assemblyLines[2].startPosition.north
+  elseif !origin eq 5 then
+    -- move the assembly back face excl tube
+    !dist = !position.north - !this.assemblyLines[2].endPosition.north
+  else
+    !dist = !position.north + !this.startComp.fitLen - !this.assemblyLines[2].endPosition.north
+  endif
+
+  !return = !this.moveAssembly(!lines,!dist)
+  -- !this.displayPositions(!origin,!position,!return)
+  !this.position = !position
+  return !return
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      .displayPositions
+--
+-- Description:debug routine to show where the assembly is being moved to
+-- called by uncommenting line -- !this.displayPositions(!origin,!position,!return)
+-- in the previous method and removing the enclosing comments
+------------------------------------------------------------------------
+define method .displayPositions(!origin is REAL,!position is POSITION,!lines is ARRAY)
+
+  $(
+  $p origin was $!origin
+  pin 1 at $!position
+  $p positioning the assemby at $!position
+  $p assembly start position is at N$!lines[2].startposition.north
+  $p assembly leave position is at N$!lines[2].endposition.north
+  if !origin.eq(6) then
+    $p the start of the assembly components is positioned at the leave of element 1
+  elseif !origin.eq(5) then
+    $p the end of the assembly components is positioned at the passed position
+  elseif   !origin.eq(4) then
+    $p the start of the assembly components is positioned at the passed position
+  elseif !origin.eq(3) then
+    $p the end of the assembly and leave tube is positioned at the passed position
+  elseif !origin.eq(2) then
+    $p the start of the assembly and start tube is positioned at the passed position
+  else
+    $p the assembly primary origin is moved to the passed position
+  endif
+  $)
+
+endmethod
+
+-----------------------------------------------------------------------------------------------------------
+-- method to move the dummy assembly the correct starting position
+define method .setStartPosition()
+
+  if !this.buildMode.eq('back') then
+    -- move the assembly to the back
+    !this.assemblyLines = !this.moveAssemblyTo(!this.assemblyLines,!this.line.endPosition,0)
+  else
+    if !!pipeSplitting.lengthOption.selection().eq('CUTLEN') then
+      !this.assemblyLines = !this.moveAssemblyTo(!this.assemblyLines,!this.line.startPosition,6)
+    endif
+  endif
+
+endmethod
+-----------------------------------------------------------------------------------------------------------
+
+-----------------------------------------------------------------------------------------------------------
+define method .getAssembly() is BOOLEAN
+
+  !return = FALSE
+
+  -- get the assembly selection from the form
+  !assembly = !!pipeSplitting.assemblyList.selection().dbref()
+
+  !assemblyObj = object PIPINGASSEMBLYMGR(TRUE)
+  !this.assemblies = !assemblyObj.assemblies
+
+  do !i indices !this.assemblies
+    if !this.assemblies[!i].appldata.name.dbref().eq(!assembly) then
+      !this.assembly = !this.assemblies[!i]
+      !return = TRUE
+      break
+    endif
+  enddo
+
+  return !return
+
+endmethod
+-----------------------------------------------------------------------------------------------------------
+--
+-- Method:      splitPipe
+--
+-- Description: Split Pipe based on the options selected
+--
+-----------------------------------------------------------------------------------------------------------
+define method .splitPipe (!lastComps is ARRAY)
+
+  do !a index !lastComps
+    if(!!pipeSplitting.moveComp.val neq 1) then
+      if(!!pipeSplitting.moveComp.val eq 2)then
+        !splitType = 'PIPE'
+      elseif(!!pipeSplitting.moveComp.val eq 3)then
+        !splitType = 'BRANCH'
+      endif
+      !lastcomponent = !lastComps[!a]
+      !!pipeSplitting.splitPipe(!lastcomponent,!splitType,1)
+    endif
+  enddo
+
+endmethod
+-----------------------------------------------------------------------------------------------------------

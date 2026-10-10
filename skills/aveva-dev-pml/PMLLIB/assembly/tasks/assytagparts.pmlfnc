@@ -1,0 +1,216 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            assytagparts.pmlfnc
+--   Type:          Function Definition
+--   Group:         Assembly
+--     Keyword:     Drawing
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         12 October 2006
+--
+--
+-- Description:
+-- Tag the Parts on the drawing
+--
+--
+-- ASSUMPTIONS
+-- The current element is the VIEW
+------------------------------------------------------------------------
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type]  [Description]
+--    1   R      ARRAY        [1] SpPurpose of the SYTM to be used to tag the parts
+--                            [2] Leader line terminator OFF, ARR, DOT, or OBL
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define function !!assyTagParts(!arguments is ARRAY)
+
+  -- Initialise variables
+  !viewRefe = !!ce
+  !sheeRefe = !viewRefe.owne
+  !drwgRefe = !sheeRefe.owne
+  !sytmPurp = !arguments[1]
+  !shtSize  = !sheeRefe.size
+  !partRefs = ARRAY()
+  !tags = ARRAY()
+
+  WARNINGS OFF
+
+  -- Get the assembly being detailed from the DRWG IDLN
+  !asmblyRefe = !drwgRefe.idln
+
+  -- Read the starting and ending indices for the entries in the parts table
+  !partsRange = !sheeRefe.func.split(':')
+  !startIndex = !partsRange[1].real()
+  !endIndex   = !partsRange[2].real()
+  !sumUp = false
+  if (!partsRange.size() gt 2) then
+    !sumUp = !partsRange[3].eq('TRUE')
+  endif
+
+  -- Get the assembly parts
+  !assyPartsObj = object ASSYPARTS(!asmblyRefe.smemb, !sumUp)
+  !assyParts = !assyPartsObj.parts
+
+  -- Get the label library containing the tag symbolic template
+  VAR !allLalb COLL ALL LALB WI SPPURPOSE EQ 'ASLABL'
+
+  -- Get the tag symbolic template
+  VAR !allSytm COLL ALL SYTM WI SPPURPOSE EQ '$!sytmPurp' FOR $!allLalb[1]
+
+  -- Get into the correct position in the hierarchy
+  VAR !tagLaye COLL ALL LAYE WI SPPURP EQ 'PRTTAG' FOR $!viewRefe
+  if (!tagLaye.empty()) then
+
+    -- Create the laye
+    !layeName = !viewRefe.flnm & '/PartsTags'
+    NEW LAYE $!layeName
+    SPPURP PRTTAG  PURP ADTG
+
+    -- Switch cascading off
+    REPSTYLE CASCADING OFF
+    LLEA TRUE  LLCOLOUR 2  FONT TEMP  TXCOLOUR TEMP  LFSTYLE TEMP  LTER $!arguments[2]
+
+  else
+
+    -- Access the existing laye
+    !!ce = !tagLaye[1].dbref()
+
+  endif
+  !layeRefe = !!ce
+
+  -- Find all parts to tag
+  do !index from !startIndex to !endIndex
+    !identicalPartRefs = !assyParts[!index].partRefs
+    do !count ind !identicalPartRefs
+      !partRefe = !identicalPartRefs[!count]
+      -- Ignore any non-modelled elements
+      skip if !partRefe.hardType.upCase().eq('SPCO')
+      skip if !partRefe.hardType.upCase().eq('GPART')
+      skip if !partRefe.actType.upCase().eq(':NMPART')
+
+      -- Test for parts without position
+      -- Assembly
+      if (!partRefe.hardType.upCase().eq('ASMBLY')) then
+
+        -- Find a part in an assembly which is not an assembly
+        !partRefe = !!assyFindPart(!partRefe)
+
+      -- Pipe
+      elseif (!partRefe.hardType.upCase().eq('PIPE')) then
+        !partRefe = !partRefe.memb[1].memb[1]
+
+      -- Pipe spool
+      elseif (!partRefe.hardType.upCase().eq('PSPOOL')) then
+
+        !pipeSpoolManager = object PIPESPOOLMANAGER()
+        !partRefe = !pipeSpoolManager.getBranchElements(!partRefe)[1]
+
+      -- HVAC Spool
+      elseif (!partRefe.hardType.upCase().eq('HSPOOL')) then
+
+        !hvacSpoolManager = object HVACSPOOLMANAGER()
+        !partRefe = !hvacSpoolManager.getMtoElementsForSpool(!partRefe)[1]
+
+      endif
+
+      -- For no part
+      skip if (!partRefe.badref())
+
+      -- Use the found part
+      !partRefs.append(!partRefe)
+      !tags.append(!index)
+    enddo
+  enddo
+
+  -- Clean all tags
+  DELETE NULL ANNO
+    handle (64,353)
+      -- Elements with null or illegal DDNM attributes have been deleted.
+    endhandle
+
+  -- Get all existing tagged elements
+  VAR !existingSlabs COLL ALL SLAB WI TMRF EQ $!allSytm[1] FOR CE
+  VAR !existingItems EVAL REFE OF DDNM FOR ALL FROM !existingSlabs
+
+  !wrld = object DBREF('/*')
+
+  -- Tag the parts
+  do !index ind !partRefs
+
+    -- Get the part
+    !partRefe = !partRefs[!index]
+    !tagNumber = !tags[!index]
+
+    -- Look for the element having already been tagged
+    !position = !existingItems.findfirst(!partRefe.string())
+
+    -- Get ddnm pos, if any
+    !posTest = !partRefe.pos
+      handle (2,201)
+        -- Element does not have attribute POS
+        skip
+      endhandle
+    !posDdnm = !partRefe.pos.wrt(!wrld)
+
+    -- Handle Hull elements that may have an unset position e.g. HSTIFF with unset or bad SPRE
+    if (!posDdnm.east.unset()) then
+      !!assyLog.add(|    WARNING: Element | & !partRefe.flnm & | does not have a position. Aborting tag creation...|)
+
+    else
+
+      --For an element already tagged
+      if (!position.set()) then
+
+        -- Access slab and renumber
+        !!ce = !existingSlabs[!position].dbref()
+        ATEX '$!tagNumber'
+
+        -- Ensure that the apoff is reset and the offset is true
+        APOFF 0 0  OSET TRUE
+
+        -- Remove the tag from the arrays
+        !existingSlabs.remove(!position)
+        !existingItems.remove(!position)
+
+      -- Create a new tag
+      else
+        NEW SLAB  ATEX '$!tagNumber'  ON $!partRefe  TMRF $!allSytm[1]  OSET TRUE
+      endif
+
+      -- Find the ddnm position on the paper
+      VAR !shtPos SHPOS OF E $!<posDdnm.east> N $!<posDdnm.north> U $!<posDdnm.up>
+      !pos  = !shtPos.after('X ').before(' Y')
+      !xPos = $!pos
+      !pos  = !shtPos.after('Y ')
+      !yPos = $!pos
+
+      -- Set the apoff when the ddnm position is off the paper
+      if (!xPos.lt(0) or !xPos.gt(!shtSize[1]) or !yPos.lt(0) or !xPos.gt(!shtSize[2])) then
+        !!assyPosPart(!!ce)
+      endif
+
+    endif
+  enddo
+
+  -- Delete excess existing tags
+  do !slab val !existingSlabs
+
+    SLAB $!slab
+      DELETE SLAB
+  enddo
+
+  -- Return to laye for label arranging
+  !!ce = !layeRefe
+
+  WARNINGS ON
+
+endfunction
+-- End of function !!assyPartsList

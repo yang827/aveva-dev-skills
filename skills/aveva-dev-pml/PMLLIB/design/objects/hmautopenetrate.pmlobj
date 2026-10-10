@@ -1,0 +1,696 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            hmautopenetrate.pmlobj
+--    Type:          Object Definition
+--    Group:         Undefined
+--      Keyword:     Undefined
+--    Module:        Undefined
+--  Author:          Undefined
+--  Created:         Fri Jun 25 15:22:44 2010
+--
+-- Description:
+--   Automatic creation of holes in Hole Management system
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  createPenetrations()             -                   create penetrations for established scope
+--  createPenetrations(DBREF)        -                   create penetrations for given structural element
+--  createPenetrations(DBREF,DBREF)  -                   create penetrations between given structural and branch elements
+--  createSingleHoles()              -                   create the required fixing structure for single holes
+--  findPenetrations()               -                   Find penetrations positions
+--  getErrorList()                   COMPROPERROR        Get error log for last automatic penetration
+--  getHoleList()                    ARRAY               Get list of holes created
+--  getNumberOfHoles()               REAL
+--  getPenetrated()                  ARRAY               Get list of penetrated items
+--  hmAutoPenetrate()                -                   Constructor
+--  initialise()                     -                   Initialisation - executed each time the form is shown
+--  initialise(STRING)               -                   Initialisation - executed each time the form is shown
+--  message(STRING,REAL)             -                   update progress messages using message open callback
+--  messageCallback(STRING)          -                   call back for progress messages
+--  readConfigurationFile()          -                   Read system configuration file (if it exists) and store settings
+--  selectStandard()                 ARRAY               Return list of standard hole types
+--  setClearance(REAL)               -                   Set clearance value for pipe OD holes
+--
+------------------------------------------------------------------------
+
+-- Define object
+define object HMAUTOPENETRATE
+
+-- Define member for currently loaded appware
+  -- storage areas
+  member .fixingArea            is DBREF
+  -- true if hole type has coaming
+  member .coaming               is BOOLEAN
+  -- storage area for coaming
+  member .coamingArea           is DBREF
+  -- true if running in marine environment
+  member .marine                is BOOLEAN
+  -- list of applications whose penetrations are managed by this form
+  member .applications          is ARRAY
+  -- list of Selection table purposes corresponding to the .applications list
+  member .applicationPurpose    is ARRAY
+  -- object that calculates the penetration for a given discipline
+  -- [1] contains pipe object
+  -- [2] contains HVAC object
+  member .autoPenetrate         is ARRAY
+  -- index for current penetration driver (PIPE or HVAC)
+  member .autoPenetrateIndex    is REAL
+  -- List of penetrating items
+  member .penetrating           is ARRAY
+  -- List of penetrated items
+  member .penetrated            is ARRAY
+  -- clearance for penetrations
+  member .clearance             is REAL
+  -- hole list: array of HMHOLE elements for new holes
+  member .holeList              is ARRAY
+  -- Array of penetration data objects. One for each penetration being processed
+  member .multiPenetrationData  is ARRAY
+
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+-- Method:      hmAutoPenetrate
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .hmAutoPenetrate()
+
+  -- read configuration if not already loaded
+  !this.readConfigurationFile()
+
+  -- Initialise application list and corresponding Selection Table purposes
+  !this.applications[1]       = 'PIPE'
+  !this.applications[2]       = 'HVACADV'
+  !this.applications[3]       = 'STLWRK'
+  !this.applications[4]       = 'PANEL'
+  !this.applications[5]       = 'CABL'
+  !this.applicationPurpose[1] = 'PPEN'
+  !this.applicationPurpose[2] = 'HPEN'
+  !this.applicationPurpose[3] = 'SPEN'
+  !this.applicationPurpose[4] = 'SPEN'
+  !this.applicationPurpose[5] = 'TPEN'
+  -- CPEN used for cable
+
+  -- Find out if there is an area set up to create the fixing
+  !finder     = object COLLECTION()
+  !finder.type(|STRU|)
+  !finder.filter(object EXPRESSION(|PURP eq 'HOLE' and dbwrite|))
+  !fixingArea = !finder.results()
+  if (!fixingArea.size() eq 0 ) then
+    return error 1 |Unable to find Hole Management storage area: STRU with PURP=HOLE|
+  else
+    !this.fixingArea = !fixingArea[1]
+  endif
+
+  -- If this is a Marine project we need an area for holding the coaming
+  !mm = object AVEVAMODULEMANAGER()
+  !this.marine = (!mm.currentProductName().upcase().eq('HULL & OUTFITTING'))
+  if (!this.marine) then
+    -- Find out if there is an area set up to create the coaming
+    !finder = object COLLECTION()
+    !finder.type(|STRU|)
+    !finder.filter(object EXPRESSION(|PURP eq 'HMCM' and dbwrite|))
+    !coamingArea = !finder.results()
+    if (!coamingArea.empty() ) then
+      !!alert.error(|Unable to find Coaming storage area: STRU with PURP=HMCM. Coaming will not be created|)
+    else
+      !this.coamingArea = !coamingArea[1]
+    endif
+  else
+    !this.coamingArea   = object DBREF()
+  endif
+
+  !this.clearance       = 0
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      readConfigurationFile
+--
+-- Description: Read system configuration file (if it exists) and store settings
+--              (%PDMSDFLTS%\des-holemgt-config)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .readConfigurationFile()
+
+  if(not defined(!!holeManagementConfiguration)) then
+    !tempConfig = object HMCONFIG()
+    if(!tempConfig.loadConfigurationFile().not()) then
+      return error 1 'Error in configuration file. Please Contact your systems administrator'
+    endif
+  endif
+
+endmethod
+-- End of method definition for .readConfigurationFile()
+
+------------------------------------------------------------------------
+-- Method:      initialise
+--
+-- Description: Initialisation for current application
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .initialise()
+
+  -- Initialise hole class for this application
+  !this.initialise(!!appcntrl.currentapp)
+
+endmethod
+------------------------------------------------------------------------
+-- Method:      initialise
+--
+-- Description: Initialisation for given discipline
+--              executed each time new automatic penetration run
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Application (discipline) name
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .initialise(!currentApplication is STRING)
+
+  if( !!isThisHmProj().not() ) then
+    return error 3 |This project is not configured to use Hole Management functions|
+  endif
+
+  -- Initialise hole class for this application
+  !this.autoPenetrateIndex = !this.applications.findFirst(!currentApplication)
+  if( !this.autoPenetrateIndex.unset() ) then
+    return error 2 |Current application $!<currentApplication> is not in the application list|
+  endif
+
+  --Find the fixing area if unset
+  if (!this.fixingArea.unset()) then
+    -- Find out if there is an area set up to create the fixing
+    !finder     = object COLLECTION()
+    !finder.type(|STRU|)
+    !finder.filter(object EXPRESSION(|PURP eq 'HOLE' and dbwrite|))
+    !fixingArea = !finder.results()
+    if (!fixingArea.size() eq 0 ) then
+      return error 1 |Unable to locate STRU to work in (PURP=HOLE)|
+    else
+      !this.fixingArea = !fixingArea[1]
+    endif
+  endif
+
+  if (!this.marine and !this.coamingArea.unset()) then
+    -- Find out if there is an area set up to create the coaming
+    !finder      = object COLLECTION()
+    !finder.type(|STRU|)
+    !finder.filter(object EXPRESSION(|PURP eq 'HMCM' and dbwrite|))
+    !coamingArea = !finder.results()
+    if (!coamingArea.size() neq 0 ) then
+      !this.coamingArea = !coamingArea[1]
+    endif
+  endif
+
+  -- get standard hole types
+  !this.coaming        = false
+  !holeTypes = !this.selectStandard()
+  !this.clearance      = 0
+
+  if( !currentApplication eq 'PIPE' ) then
+    -- initialise the pipe penetration
+    if( not defined(!this.autoPenetrate[1]) ) then
+      -- only define the object when first used
+      !this.autoPenetrate[1] = object HMAUTOPIPEPENETRATION()
+      !this.autoPenetrate[1].setHoleData(!holeTypes)
+    endif
+  elseif( !currentApplication eq 'HVACADV' ) then
+    -- initialise the HVAC penetration
+    if( not defined(!this.autoPenetrate[2]) ) then
+      -- only define the object when first used
+      !this.autoPenetrate[2] = object HMAUTOHVACPENETRATION()
+      !this.autoPenetrate[2].setHoleData(!holeTypes)
+    endif
+  else
+    return error 4 |Automatic penetrations supported only in piping and HVAC applications|
+  endif
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      selectStandard()
+--
+-- Description: Return list of standard hole types
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       of HMHOLETYPE objects defining standard hole types
+------------------------------------------------------------------------
+define method .selectStandard() is ARRAY
+
+  -- get all GPART for standard managed holes
+  !gParts = ARRAY()
+  VAR !partWorlds COLLECT ALL PRTWLD WITH ( PURP EQ 'PENE' OR UNSET(PURP) )
+  do !partWorld values !partWorlds
+    !gPartList = !!collectAllFor(|GPART|, |PURP  eq 'HOLE' and PRITYPE eq 'FIXING'|, !partWorld.dbref())
+    !gParts.appendArray(!gPartList)
+  enddo
+
+  -- get hole data for each GPART
+  !holeTypeData = ARRAY()
+  do !holeType values !gParts
+    !part      = object HMHOLETYPE(!holeType)
+    if( !part.loaded() ) then
+      !holeTypeData.append(!part)
+    endif
+  enddo
+
+  return !holeTypeData
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      createPenetrations()
+--
+-- Description: create penetrations for given structural element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       element in outfit or marine structural hierarchy
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .createPenetrations(!penetrated is DBREF)
+
+  if(!this.autoPenetrateIndex gt 2) then
+    return error 4 |Automatic penetrations supported only in piping and HVAC applications|
+  endif
+
+  -- get all outfit and hull panels within given scope
+  !this.penetrated = !!collectAllFor('HPANEL','',!penetrated)
+  !this.penetrated.appendArray(!!collectAllFor('PANE FLOOR','',!penetrated))
+
+  -- check for nothing to penetrate
+  if( !this.penetrated.empty() ) then
+    return
+  endif
+
+  -- find penetrated volume
+  !volume  = object VOLUME(!penetrated)
+
+  -- find all penetrations for given scope
+  !this.penetrating = !this.autoPenetrate[!this.autoPenetrateIndex].penetratingScope(!volume)
+
+  -- create penetrations for given scope
+  !this.createPenetrations()
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      createPenetrations()
+--
+-- Description: create penetrations between given structural and branch elements
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       structural panel element
+--    2   R      DBREF       penetrating branch
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .createPenetrations(!penetrated is DBREF, !penetrating is DBREF)
+
+  if(!this.autoPenetrateIndex gt 2) then
+    return error 4 |Automatic penetrations supported only in piping and HVAC applications|
+  endif
+
+  !this.penetrated[1] = !penetrated
+  -- find all penetrating element
+  !this.penetrating   = !this.autoPenetrate[!this.autoPenetrateIndex].penetratingScope(!penetrating)
+
+  -- create penetrations for given scope
+  !this.createPenetrations()
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      createPenetrations()
+--
+-- Description: create penetrations for established scope
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .createPenetrations()
+
+  if(!this.autoPenetrateIndex gt 2) then
+    return error 4 |Automatic penetrations supported only in piping and HVAC applications|
+  endif
+
+  -- initialise penetration processing
+  !this.autoPenetrate[!this.autoPenetrateIndex].initialisePenetrationData()
+
+  -- find all penetrations for given scope
+  !this.findPenetrations()
+
+  -- process potential penetration
+  !this.multiPenetrationData = !this.autoPenetrate[!this.autoPenetrateIndex].processPenetrationData(!this.clearance)
+
+  -- create holes for each penetration found
+  !this.createSingleHoles()
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      .findPenetrations()
+--
+-- Description: Find penetration positions using CLASHER
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .findPenetrations()
+
+  -- Save Clash Data
+  !!runSynonym(|CALLSTL DCLADAT SET|)
+
+  -- Perform Clash Check between penetrated and penetrating items
+  !numberOfTests        = !this.penetrated.size() * !this.penetrating.size()
+  !testNumber           = 0
+
+  -- loop through each penetrated item in turn to find the penetration
+  do !penetratedItem values !this.penetrated
+    -- Set Obstructions
+    DESCLASH
+      REMOVE OBST ALL
+      if( !penetratedItem.hardType eq 'HPANEL' ) then
+        do !panelMember values !penetratedItem.members
+          if( !panelMember.hardType eq 'HPLATE' ) then
+            OBST $!<panelMember>
+          endif
+        enddo
+      elseif( !penetratedItem.hardType eq 'CPANEL' ) then
+        do !panelMember values !penetratedItem.smembers
+          if( !panelMember.hardType eq 'CPLATE' ) then
+            OBST $!<panelMember>
+          endif
+        enddo
+      else
+        OBST $!<penetratedItem>
+      endif
+      IGNORE   TOUCH
+      OVERRIDE ON
+      MIDPOINT ON
+    EXIT
+
+    -- find clash position for each penetrating object
+    do !index indices !this.penetrating
+
+      !testNumber = !testNumber + 1
+      !this.message('Searching for penetrations', int( 100 * !testNumber / !numberOfTests))
+
+      !penetratingItem = !this.penetrating[!index]
+
+      DESCLASH CHECK $!<penetratingItem> EXIT
+
+      VAR !ccnt           CLASH COUNT CLASH
+      !clashCount = !ccnt.real()
+      skip if(!clashCount eq 0)
+
+      -- skip if cannot write penetration marker to penetrating object
+      if( !this.penetrating[!index].dbWrite.not() ) then
+        -- handle case where element is badly defined and querying PLeave throws an error
+        !this.autoPenetrate[!this.autoPenetrateIndex].errorLog.addError('WARNING')
+        !this.autoPenetrate[!this.autoPenetrateIndex].errorLog.setErrorContext('Find Penetrations')
+        !this.autoPenetrate[!this.autoPenetrateIndex].errorLog.setErrorText('Cannot process clash component ' + !this.penetrating[!index].fullname + ': Read only element')
+        skip
+      endif
+
+      -- process penetration clash
+      !this.autoPenetrate[!this.autoPenetrateIndex].findPenetrations(!penetratedItem, !clashCount)
+
+    enddo
+    DESCLASH MIDPOINT OFF EXIT
+
+  enddo
+
+  -- Restore Clash Data
+  !!runSynonym(|CALLSTL DCLADAT LOAD|)
+
+endmethod
+
+------------------------------------------------------------------------
+-- Method:      createSingleHoles()
+--
+-- Description: create the required fixing structure for single holes
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--------------------------------------------------------------------------
+define method .createSingleHoles()
+
+  !numberHoles   = !this.multiPenetrationData.size()
+  !this.holeList = ARRAY()
+  -- create the virtual fixings for each penetration
+  do !index indices !this.multiPenetrationData
+
+    -- generate progress message
+    !this.message('Creating penetration ' + !index.string() + ' of ' + !numberHoles.string(), int( 100 * (!index - 1) / !numberHoles ) )
+
+    -- Clean up the position data from clasher if multi-penetration and on the edge of an HPLATE by using penetrating marker position
+    !this.multiPenetrationData[!index].usePenetratingMarkerPosition()
+
+    -- create virtual hole fixing and sub-fixing (We already have the ATTAs)
+    !virtualHole = !this.multiPenetrationData[!index].createVirtualFixing(!this.fixingArea)
+
+    -- get additional penetration component stored as an offset marker element.
+    -- Note that the additional penetration component is not necessarily offset from the marker component
+    !extraComponent = !this.multiPenetrationData[!index].getOffsetPenetratingMarker()
+    if( !extraComponent.set() ) then
+      !this.multiPenetrationData[!index].setOffsetPenetratingMarker(object DBREF())
+    endif
+    !itemList = !this.multiPenetrationData[!index].getItemList()
+    !result = !this.autoPenetrate[!this.autoPenetrateIndex].createHole(!itemList.unique(), !this.multiPenetrationData[!index].getPosition())
+
+    -- store the penetration thickness on the association
+    !thick = !this.multiPenetrationData[!index].thickness
+    !fixi = !this.multiPenetrationData[!index].virtualHoleRef
+    !assos = !fixi.assos[1]
+    !!ce = !assos
+    LnID /HoleOwner
+    realXpr $!thick
+
+    skip if( !result.not() )
+
+   !holeFinder = object HMHOLEFINDER(!virtualHole)
+   !holeArray  = !holeFinder.search()
+   -- should only be one result
+   skip if( !holeArray.empty() )
+
+   -- check hole validity
+   !hole = object HMHOLE(!holeArray[1])
+
+    -- add penetration component (in addition to penetration marker)
+    -- give it a local name to distinguish it from penetration marker elements
+    if( !extraComponent.set() ) then
+      !localName = 'A' + !extraComponent.string()
+      !hmControl = object HMCONTROL()
+      !hmControl.addMemberToHole(!hole, !extraComponent, !localName )
+    endif
+
+    !this.holeList.append(!hole)
+
+  enddo
+
+  -- Try to do a sensible navigate
+  if (!this.penetrated.size() eq 0 or !numberHoles eq 0) then
+  	return
+  elseif (!this.penetrated.size() eq 1) then
+    -- Navigate to Penetrated
+    !!ce = !this.penetrated[1]
+  	return
+  endif
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      setClearance()
+--
+-- Description: Set managed hole clearance value
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      REAL        Clearance value
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .setClearance(!clearance is REAL)
+
+  if(!this.autoPenetrateIndex gt 2) then
+    return error 4 |Automatic penetrations supported only in piping and HVAC applications|
+  endif
+
+  !this.clearance = !clearance
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      getNumberOfHoles()
+--
+-- Description: Get number of holes created
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    REAL        Number of holes created
+------------------------------------------------------------------------
+define method .getNumberOfHoles() is REAL
+
+  return !this.multiPenetrationData.size()
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      getPenetrated()
+--
+-- Description: Get list of penetrated items
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Array of penetrated items
+------------------------------------------------------------------------
+define method .getPenetrated() is ARRAY
+
+  return !this.penetrated
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      getHoleList()
+--
+-- Description: Get list of holes created as HMHOLE objects
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       of HMHOLE objects
+------------------------------------------------------------------------
+define method .getHoleList() is ARRAY
+
+  return !this.holeList
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      getErrorList()
+--
+-- Description: Get error log for last automatic penetration
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    COMPROPERROR  Error object containing error log
+------------------------------------------------------------------------
+define method .getErrorList() is COMPROPERROR
+
+  return !this.autoPenetrate[!this.autoPenetrateIndex].errorLog
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      messageCallback()
+--
+-- Description: call back for progress messages
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Callback message
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .messageCallback(!messageCallback is STRING)
+
+  if(!this.autoPenetrateIndex gt 2) then
+    return error 4 |Automatic penetrations supported only in piping and HVAC applications|
+  endif
+
+  !this.autoPenetrate[!this.autoPenetrateIndex].messageCallback(!messageCallback)
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      message()
+--
+-- Description: update progress messages using message open callback
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Message text
+--    2   R      REAL        progress percentage (0<100)
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .message(!message is STRING, !progress is REAL)
+
+  !this.autoPenetrate[!this.autoPenetrateIndex].message(!message, !progress)
+
+endmethod
+-- End of method definition

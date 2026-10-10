@@ -3,7 +3,7 @@ name: aveva-dev-pml
 description: "Knowledge base for AVEVA PML secondary development (part of the aveva-dev-skills suite). Covers PML 1 and PML 2 macros, functions, forms, gadgets, Event Driven Graphics, Marine Drafting automation, and DABACON database queries."
 metadata:
   suite: aveva-dev-skills
-  version: "0.1.0"
+  version: "0.2.0"
 ---
 
 <!-- argument-hint: [topic, framework name, or chapter number] -->
@@ -44,6 +44,15 @@ PML 2 files are dynamically loaded on-demand across directories listed in the op
   ```pml
   pml reload form !!formname
   ```
+
+### 2b. Bundled Delivered Source (PMLLIB snapshot inside this skill)
+
+A snapshot of the AVEVA-delivered PML source tree ships with this skill at [PMLLIB/](PMLLIB/) (6075 source files: 1380 `.pmlfrm`, 3703 `.pmlfnc`, 988 `.pmlobj`; version.dat + pml.index included). This is real, production-grade official code — the authoritative reference for verified syntax.
+
+- **On AVEVA installs**, runtime PMLLIB directories come from the instance environment (set by `evars.bat`); read env values in PML with `var !x EVAR <name>` or `!!evar()` / `!!evarSplit()`. The bundled snapshot works offline: it is plain text under this skill folder, no environment lookup needed.
+- **Lookup order when official usage is uncertain**: (1) [references/pmllib-idioms.md](references/pmllib-idioms.md) — verified idioms with citations; (2) grep [references/pmllib-index.md](references/pmllib-index.md) (module, gadget, flag, description) to locate candidate files; (3) open the real source under [PMLLIB/](PMLLIB/) via the index path.
+- **Priority**: module order of interest is `common` → `design` → `draft`/`marinedrafting`/`isodraft` → `admin`/`global` → others; treat `mds` (scantling formula library, 2504 files) as low priority unless the task is MDS-specific.
+- **Copyright**: delivered AVEVA source — cite paths in answers, do not bulk-copy large extracts into user deliverables.
 
 ### 3. Copies and References Framework (Value Types vs Reference Types)
 - **Value Types (`REAL`, `STRING`, `BOOLEAN`)**: Assignment (`!a = !b`) copies data by value.
@@ -86,9 +95,35 @@ AVEVA PML provides structured loops with explicit termination:
 - Legacy `ID @` commands are superseded and should only be used in quick command-line macros.
 
 ### 7. Marine Drafting Single-Drawing Contract & MarAPI Dialogs
-- Marine Drafting automation (TM-2401) requires `import 'marapi'` wrapped in `handle (1000, 0) endhandle`.
+- Marine Drafting automation (TM-2401) requires `import 'marapi'` followed **immediately after** by `handle (1000, 0) endhandle` — the `import` stays OUTSIDE the block (see Core Framework 9).
 - Strict Single Document Interface (SDI): Only one drawing sheet can be active at any time. Always test `if (!marDraft.DwgCurrent())` and close (`!marDraft.DwgClose()`) before creating or opening a new drawing.
 - Interactive dialogs use `!marUi.AnswerReqPML('Title', 'Prompt')` with return codes checked against `!marUtil.YesPML()`, `!marUtil.NoPML()`, `!marUtil.CancelPML()`.
+
+### 8. ANY Type — Mandatory Syntax Constraint
+`ANY` in PML is a **signature-position type specifier only**:
+- **Allowed**: formal parameter declarations (`define function !!f(!v is ANY)`, `define method .m(!v is ANY)`); function return type (`is ANY`) only with concrete evidence the signature supports it.
+- **Forbidden**: normal variable declarations (`!value is ANY` is invalid), treating ANY as a universal type at arbitrary positions, and equating it with C# `object`, generic `T`, or dynamic typing. A variable's type is fixed at creation and never changes during its lifetime.
+- **Review rule**: when auditing generated code, judge every `is ANY` by its **syntactic position** — parameter/return declarations are legal and must not be flagged; only a normal-variable declaration is a defect. Never flag ANY on a keyword hit alone.
+- **Rule of Thumb**: to accept mixed input types, use an ANY formal parameter and branch on the actual type inside — never declare an ANY variable. Full rules and examples: [ch05](chapters/ch05-pml2-functions-methods.md) "ANY Type Usage Restrictions (MANDATORY)".
+
+### 9. HANDLE is a POST-ATTACHED Error Trap — NOT a try/catch Block
+`HANDLE ... ENDHANDLE` is **not** a block that encloses risky code. PML has no `try`/`catch`; do not read or write `handle` as if it were one.
+- **Mandatory order**: the risky command comes FIRST, on its own line; the `handle` clause follows IMMEDIATELY after it, with NO intervening statements. Everything between `handle` and `endhandle` is the **recovery code executed only when the preceding command fails**.
+- **Correct**:
+  ```pml
+  !modelNo = !elem.:SPEC        -- risky command FIRST, outside the trap
+  handle any
+    !modelNo = ''               -- recovery: runs only if the line above failed
+  endhandle
+  ```
+- **Wrong (a frequent generation error)** — do NOT move the risky statement inside the trap:
+  ```pml
+  handle any
+    !modelNo = !elem.:SPEC      -- WRONG: this is recovery code, not guarded code
+  endhandle
+  ```
+  Wrapping the assignment inside `handle any` means it only executes on error paths (or is dead code), and the original error is never trapped.
+- **Rule of Thumb**: never describe or generate this as "wrap the command in handle" — the `handle` clause wraps nothing; it **trails** the command it guards, like a postfix error handler. Full syntax: [ch04](chapters/ch04-error-handling-debugging.md).
 
 ---
 
@@ -99,8 +134,8 @@ AVEVA PML provides structured loops with explicit termination:
 | [ch01](chapters/ch01-pml-basics-environment.md) | PML Overview & Environment | PML 1 vs 2, `PMLLIB`, `pml rehash all`, macros, synonyms |
 | [ch02](chapters/ch02-variables-data-types.md) | Variables, Types & Scope | Local (`!`) vs global (`!!`), Value vs Reference types, `.clone()`, `ARRAY` sorting |
 | [ch03](chapters/ch03-flow-control-logic.md) | Control Flow & Logic | `DO ... VALUES`, `BREAK IF`, `SKIP IF`, `$S` synonyms, `OUTPUT` redirection |
-| [ch04](chapters/ch04-error-handling-debugging.md) | Error Handling & Debugging | `HANDLE ... ELSEHANDLE`, `MARK`/`UNDO` rollback, `ALPHA LOG`, `Q PML` |
-| [ch05](chapters/ch05-pml2-functions-methods.md) | PML 2 Functions & Methods | `define function`, return types, chaining, `!!CE` context |
+| [ch04](chapters/ch04-error-handling-debugging.md) | Error Handling & Debugging | Post-attached `HANDLE ... ELSEHANDLE` (never wraps the guarded command), `MARK`/`UNDO` rollback, `ALPHA LOG`, `Q PML` |
+| [ch05](chapters/ch05-pml2-functions-methods.md) | PML 2 Functions & Methods | `define function`, return types, ANY usage restrictions, chaining, `!!CE` context |
 | [ch06](chapters/ch06-user-defined-objects.md) | User-Defined Objects (UDOs) | `define object`, `member .var`, constructors, methods, `!this` |
 | [ch07](chapters/ch07-builtin-system-objects.md) | Core Built-in System Objects | `FILE` I/O, `FORMAT` units, `POSITION`, `DIRECTION`, `ORIENTATION` |
 | [ch08](chapters/ch08-forms-gui-customisation.md) | Forms Architecture & Lifecycle | `setup form`, `initcall`, `okcall`, `pml reload form`, member state |
@@ -123,6 +158,7 @@ AVEVA PML provides structured loops with explicit termination:
 
 - **Alerts (`!!ALERT`)** → [ch04](chapters/ch04-error-handling-debugging.md), [ch07](chapters/ch07-builtin-system-objects.md), [ch17](chapters/ch17-system-objects-catalog.md)
 - **Anchoring & Docking** → [ch09](chapters/ch09-gadgets-layout-system.md)
+- **ANY (`is ANY` type-specifier restrictions)** → [ch02](chapters/ch02-variables-data-types.md), [ch05](chapters/ch05-pml2-functions-methods.md)
 - **Arrays & Indexing** → [ch02](chapters/ch02-variables-data-types.md), [ch03](chapters/ch03-flow-control-logic.md)
 - **Assembly Import (`marapi`)** → [ch14](chapters/ch14-marine-drafting-automation.md), [ch15](chapters/ch15-marapi-dotnet-interop.md)
 - **Clipbox Manipulation** → [ch11](chapters/ch11-view-gadgets-3d.md), [ch19](chapters/ch19-production-exercises-recipes.md)
@@ -135,7 +171,7 @@ AVEVA PML provides structured loops with explicit termination:
 - **DABACON Database Reference (`DBREF`)** → [ch02](chapters/ch02-variables-data-types.md), [ch07](chapters/ch07-builtin-system-objects.md), [ch13](chapters/ch13-collections-database-queries.md), [ch17](chapters/ch17-system-objects-catalog.md)
 - **DO Loops (`VALUES`, `INDEX`, `BREAK IF`)** → [ch03](chapters/ch03-flow-control-logic.md), [ch16](chapters/ch16-pml-migration-best-practices.md)
 - **Drawing Functions (`MarDrafting`)** → [ch14](chapters/ch14-marine-drafting-automation.md), [ch19](chapters/ch19-production-exercises-recipes.md)
-- **Error Handling (`HANDLE`, `MARK`, `UNDO`)** → [ch04](chapters/ch04-error-handling-debugging.md), [ch16](chapters/ch16-pml-migration-best-practices.md)
+- **Error Handling (`HANDLE`, `MARK`, `UNDO`)** → Core Framework 9 (post-attached trap order), [ch04](chapters/ch04-error-handling-debugging.md), [ch16](chapters/ch16-pml-migration-best-practices.md)
 - **Event Driven Graphics (`EDG`, `!!edgCntrl`)** → [ch12](chapters/ch12-event-driven-graphics-edg.md), [ch17](chapters/ch17-system-objects-catalog.md)
 - **File I/O (`FILE`)** → [ch07](chapters/ch07-builtin-system-objects.md), [ch17](chapters/ch17-system-objects-catalog.md)
 - **Forms & Gadgets (`setup form`, `SELECTOR`)** → [ch08](chapters/ch08-forms-gui-customisation.md), [ch09](chapters/ch09-gadgets-layout-system.md), [ch19](chapters/ch19-production-exercises-recipes.md)
@@ -156,6 +192,9 @@ AVEVA PML provides structured loops with explicit termination:
 - [glossary.md](glossary.md) — Alphabetical dictionary of all PML, DABACON, and Marine terms with chapter citations.
 - [patterns.md](patterns.md) — 8 Production architectural patterns: MVC Form, Database Guards, Scoped Queries, EDG Pick Handlers, P-Point Assembly, Marine Drafting guards, Memory Isolation.
 - [cheatsheet.md](cheatsheet.md) — Decision rules ("When X, do Y"), syntax flowcharts, trade-off matrices, thresholds, and diagnostic smells.
+- [references/pmllib-idioms.md](references/pmllib-idioms.md) — Verified idioms mined from the delivered source: form skeleton, menus, selector+navigation, EDG packet API, COLLECTION pipeline, EVAR/evars.bat, marapi import guard, pmlnetcontrol, FILE I/O — every snippet cited to a real PMLLIB file.
+- [references/pmllib-index.md](references/pmllib-index.md) — Machine-generated index of all 6075 bundled source files (module, type, lines, syntax flags, description). Grep this first, then open the source. Regenerate with [tools/regen-pmllib-index.ps1](tools/regen-pmllib-index.ps1).
+- [PMLLIB/](PMLLIB/) — The bundled AVEVA-delivered PML source snapshot (see Core Framework 2b).
 
 ---
 

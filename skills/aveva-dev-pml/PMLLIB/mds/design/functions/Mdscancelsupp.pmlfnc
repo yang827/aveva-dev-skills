@@ -1,0 +1,555 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+------------------------------------------------------------------------------
+--
+-- File: Mdscancelsupp.pmlfnc
+--   Type: Function Definition
+--   Group: Multi Discipline Supports Application
+--     Keyword: MDS
+--   Module: design
+--   Replaces:          MCANSUP
+--
+-- Author: I.osborne
+-- Created: Mon Apr 28
+--
+--
+-- Description:
+-- cancel support creation form
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R          FORM       Name of support form to be cancelled
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsCancelSupp(!form is FORM)
+
+  -- Check if Support is a SPECIAL from Standard Framework Types
+  if (!form.name().eq('MDSSPLFRAME')) then
+    !usrSuppName =  'SPECIAL' & ' ' & 'Structure' & ' ' & !form.strname.val
+  else
+    !usrSuppName = _name
+  endif
+
+  --<kp> 31/05/2012 14:16:43
+  !fromAtta = !form.support.preliminaryStore.set()
+
+  -- Test Decision if datum set
+  if !form.support.datum.badref().not() then
+    !confirmMsg = |Ok to cancel Support "$!usrSuppName"? This will DELETE the Support.|
+    --<kp> 31/05/2012 15:34:46
+    if !fromAtta then
+      !confirmMsg = |Ok to cancel Support "$!usrSuppName"? This will REVERT the Support back to the previous state.|
+    endif
+    if (!!alert.confirm(!confirmMsg) eq 'NO')then
+      return
+    endif
+  endif
+
+  -- Reset model representation if required
+
+  call !!kActionCommands(!form.repre)
+
+  -- Reset any plate refs if set
+  if !form.name.val.match('/').neq(1) then
+    !supName = '/' & !form.name
+  endif
+  var !collAll coll all (ATTA PLAT SCTN REDU) for $!supName
+
+  handle ANY
+    golabel /cont
+  endhandle
+  !x = object MDSBPLATECONN()
+  !x.disconnect(!collAll)
+
+  label /cont
+
+  -- Check if Support is a SPECIAL from Standard Framework Types
+
+  if (!form.name().eq('MDSSPLFRAME')) then
+    golabel /STRUCTURE
+  endif
+
+  if (defined(!form.struBpref)) then
+    if (!form.struBpref.size() gt 0)then
+      !bpRefs  = !form.struBpref
+      !setting = !form.storeBpref
+      !bpRefs.invert()
+      !setting.invert()
+      do !i indices !bpRefs
+        !!ce = !bpRefs[!i]
+        handle ANY
+          break
+        endhandle
+        $!setting[$!i]
+        handle ANY
+          break
+        endhandle
+      enddo
+    endif
+  endif
+
+  -- Activate MDS DAC control variable
+  !!mdsDacControl(true)
+
+  -- added to delete connexion joints if needed
+
+  if (!form.support.stru.unset().not()) then
+    if (!form.support.joints.empty().not()) then
+      !!mdsSelectJoints(!form,'DISCONNECT','')
+    endif
+  endif
+
+  -- Check For Atta's
+
+  !styp = ''
+  !branches = ARRAY()
+
+  -- restore reference attas
+  do !attaRefIdx indices !form.support.attaRefPositionStore
+    !attaRef = !form.support.atta[!attaRefIdx]
+    -- restore position using index in attaRefPositionStore, which is the same as new reference atta in form.support.atta
+    !attaRef.pos = !form.support.attaRefPositionStore[!attaRefIdx]
+    !form.support.atta.deleteFrom(!attaRefIdx, 1)
+  enddo
+
+  if (!form.support.atta.empty().not())then
+    do !i indices !form.support.atta
+      !!ce = !form.support.atta[!i]
+      handle ANY
+        skip
+      endhandle
+
+      -->>>-<sjr>jan2003
+      -- Check if support is a VT19 with four trunnion guide branches
+      !saveRef = !!ce
+      if (!form.name().eq('MDSVT19')) then
+        -- delete the guide trunnions and tees
+        !!ce = !form.support.datum
+        handle ANY
+        elsehandle NONE
+          PIPE
+          !pName = !!ce.name
+          do !ii from 1 to 4
+            !bName = !pName + '/' + !form.name.val + '/' + !ii.string()
+            !!ce = $!bName
+            handle ANY
+            elsehandle NONE
+              GOTO HREF
+              handle ANY
+              elsehandle NONE
+                delete TEE
+              endhandle
+              !!ce = $!bName
+              delete BRAN
+            endhandle
+          enddo
+        endhandle
+      endif
+      $!saveRef
+
+      -->>>-<wd>dec2002
+      -- Check if ATTA is a CRADLE PAD AT23
+      if (!form.name().eq('MDSAT23')) then
+        -- Reset the uda :MDSSREF at the associated SHOE
+        !!ce = :MDSSREF
+        handle ANY
+          -- AT23 could be on an UNINSULATED Pipe and NOT a SHOE
+        elsehandle NONE
+          :MDSSREF unset
+          handle ANY
+          endhandle
+          -- Reset the property PTHK<DKEY> on the associated SHOE to ZERO(0)
+          !pdpNum = !!mdsGetDesp('PTHK')
+          if (!pdpNum.neq(0)) then
+            desp num $!pdpNum 0mm
+          endif
+          -- Reset the SHOE Atta Height Back to its ORIGINAL Value
+          !!ce = !form.shoeref
+          !sdpNum = !!mdsGetDesp('HEI')
+          -- For AN10
+          if !sdpNum.eq(0) then
+            !sdpNum = !!mdsGetDesp('FHEI')
+          endif
+          !!ce.desp[$!sdpNum] = !form.shoehei
+          -- Navigate Back to the AT23 Pad ATTA for deletion
+          !!ce = !form.support.atta[!i]
+        endhandle
+      endif
+      --<<<-<wd>dec2002
+
+      -- If compensation plates had been created, delete them
+      if (!form.name().matchwild('MDSFT*')) then
+        if (not badref(!!ce.cref)) then
+          !!mdsCompplateDflts.deleteCompplate(!!ce)
+        endif
+      endif
+      !!mdsDacControl(TRUE)
+
+      -- If atta is a guide, go to reference and reset the :MDSGuideRef att
+      !!ce = :MDSGuideRef
+      handle NONE
+        -- :MDSGuideRef def
+        :MDSGuideRef unset
+        handle ANY
+        endhandle
+        -- Has the shoe a property called GNOT if so turn it off
+        !dpNum = !!mdsGetDesp('GNOT')
+        if !dpNum.neq(0) then
+          despar n$!dpNum 0mm
+        endif
+        !!ce = !form.support.atta[!i]
+      elsehandle ANY
+      endhandle
+      !styp = styp
+      !nameOfAtta = !!ce.name
+      delete ATTA
+      handle (41,229)
+
+        if !!ce.type.eq('CTSUPP') then
+          delete CTSUPP
+        endif
+        --<wd>oct2003
+        -- Type is NOT an ATTA i,e. As per an AT59/AT68 COLD ISOLATION BLOCK for a Trunnion Base Plate
+        if (!styp.eq('AT59')) or (!styp.eq('AT68')) then
+          delete plat
+        endif
+        --<wd>oct2003
+
+      endhandle
+
+      -- If automatic lugs have been created delete them
+
+      --if (!styp inset('ST19','ST21','ST22','ST23','ST27','ST34')) then
+      do !count from 1 to 4
+        $!nameOfAtta/LUG$!count
+        handle ANY
+        elsehandle NONE
+          delete olet
+        endhandle
+      enddo
+      --endif
+
+      !branches.append(!!ce)
+    enddo
+  endif
+
+  -- For FT61 make sure we delete the olet
+  !supportName = !!mdsGetSuppName(!form.support.stru)
+  handle NONE
+    $!supportName/OLET
+    handle NONE
+      delete tee
+      handle ANY
+        delete olet
+      endhandle
+    elsehandle ANY
+    endhandle
+  elsehandle ANY
+  endhandle
+
+  --<tm>feb2004
+  -- clear the graphical aids used by this FORM - Updated by Richard Martin 03/05/06 to include fr16
+  if ((desc of /MDS/TEMPLATES ) eq ('Framatome Templates')) then
+    if !form.eq(!!mdsfr09) or !form.eq(!!mdsfr16)  then
+      !form.clearaids()
+    endif
+  endif
+  -->>-<ge>nov2003
+  -- Check if support is a TT04 and reset the reducer back to orig spref
+
+  if (!form.name().eq('MDSTT04')) then
+    BRAN
+    handle ANY
+    elsehandle NONE
+      GOTO HREF
+      handle ANY
+      elsehandle NONE
+        !origSpref = !!ce.:MDSComment
+        sel spref $!origSpref
+        handle ANY
+        elsehandle NONE
+          :MDSComment unset
+        endhandle
+      endhandle
+    endhandle
+  endif
+
+  -- get the list of branches to delete
+  !branches.unique()
+
+  -- If the support is a trunnion then delete the branch and associated tee
+  -- but not if its a guide or reinforcing plate
+  if (!form.support.atta.empty().not())then
+    do !bran values !branches
+      !!ce = !bran
+      handle ANY $* branch has been deleted
+        skip
+      endhandle
+      if !!ce.type.neq('BRAN') then
+        skip
+      endif
+      if !!ce.:MdsTrun and not (!styp inset('GT12A','GT27A')) then
+        --<wd>feb2003
+        --if (!styp.upcase() inset('AT29A','AT29B','AT31A','AT31B','ST08','AN05','GT11','ST07')) then
+        -- Do Not DELETE the Owning Trunnion Branch HREF element
+        --<wd>oct2003
+        --<dw>mar2009 dun1119 Dun1052 AT140 - AT142, GT65 - GT84, & ST45 - ST58 added
+        if (!styp.upcase() inset('AN05','AT29A','AT29B','AT31A','AT31B','AT33A','AT33B','AT33C','AT33D','AT33E','AT33F','AT34A','AT34B','AT34C','AT34D','AT34E','AT34F')) then
+        elseif (!styp.upcase() inset('AT35','AT59','AT100A','AT100B','AT105A','AT105B','AT140','AT141','AT144')) then
+        elseif (!styp.upcase() inset('GT11''GT61','GT65','GT66','GT67','GT68','GT69','GT83','GT84')) then
+        elseif (!styp.upcase() inset('ST07','ST08','ST15','ST16','ST45','ST46','ST47','ST48','ST49','ST50','ST57','ST58')) then
+          --<dw>mar2009 dun1119 End of ancillary addition
+          --<wd>oct2003
+          --<wd>feb2003
+        else
+          !hrefSkey = !!ce.href.detref.skey
+          handle ANY
+            skip
+          endhandle
+          goto href
+          if !hrefSkey.eq('TESO') then
+            -- Only delete the tee if the support being cancelled is the same name as the tee cref
+            !teeToDelete = !!ce
+            goto cref
+            handle ANY
+            elsehandle NONE
+              !crefSupportName = !!mdsGetSuppName(!!ce)
+              same
+              !!ce = !form.support.stru
+              handle ANY
+                !!ce = !form.support.datum
+                handle ANY
+                endhandle
+              endhandle
+
+              !!mdsSilent = TRUE
+              !cancelName = !!mdsGetSuppName(!!ce)
+              !!mdsSilent.delete()
+              same
+              if !crefSupportName.eq(!cancelName) then
+                !!ce = !teeToDelete
+                delete tee
+
+                --<wd>20may2004
+              else
+                if (!styp.matchwild('LT08*')) then
+                  !!ce = !teeToDelete
+                  delete tee
+                endif
+                --<wd>20may2004
+
+              endif
+            endhandle
+          elseif !!ce.:mdsCp1.match('=').eq(1) then
+            if !!ce.:mdsCp1.dbref().badref().not() then
+              !spref = !!ce.:mdscp1
+              new tee copy att of prev
+              :MdsCp1 default
+              spref $!spref
+              prev
+              !crosArr = Arr
+              !crosLea = Lea
+              !connectedPoint = 6 - !crosArr - !crosLea
+              !teeCref = crfa num $!connectedPoint
+              if !teeCref.unset() then
+                !tempArray = object ARRAY()
+                do !i from 1 to !!ce.crfa.size()
+                  if !!ce.crfa[!i].set() and !!ce.crfa[!i].type.eq('BRAN') then
+                    !tempArray.append(!!ce.crfa[!i])
+                  endif
+                enddo
+                !teeCref = !tempArray
+              endif
+              next
+              cref $!teeCref[1]
+              goto cref
+              handle NONE
+                href same
+                same
+              elsehandle ANY
+              endhandle
+              prev
+              delete cros
+            endif
+          endif
+          !!ce = !bran
+          goto tref
+          handle ANY
+          elsehandle NONE
+            if !!ce.type.eq('TEE') then
+              delete tee
+            endif
+          endhandle
+          !!ce = !bran
+          -- Check if the item you are deleting is the trunnion and not an ancillary on the trunnion
+          !suppName = !!mdsGetSuppName(!!ce)
+          !suppName = !suppName.after('/')
+          if !suppName.match(!form.name.val).gt(0) then
+            -- if !form.name.val.eq(!suppName) then
+            delete bran
+          endif
+        endif
+      endif
+    enddo
+  endif
+
+
+  label /STRUCTURE
+
+  -- Navigate to support and delete framework
+
+  --<dw>Oct2007 delete bracing ATTAS ---------------------------------------------------------------
+  --<dw>aug2008 Dun979 Updated to check for existence of support
+  !psExists = true
+  !brExists = true
+  !psName   = !form.support.stru
+  !fName    = !psName.fullname
+  handle(2,202)(2,754)
+    !psExists = false
+  endhandle
+  --<dw> delete bracing ATTAS -----------------------------------------------------------------------
+
+  --<kp>jan2012 Delete association if any
+  !!mdsDeleteAssociation(!form.support.stru)
+  !!ce = !form.support.stru
+  handle NONE
+    --<RM> 30/06/11 P-38756 add function call to remove pnod and pjoi rules that are causing errors when delete stru mem is run - start
+    !!mdsRemoveAutoPadRules(!!ce)
+    --<RM> 30/06/11 P-38756 add function call to remove pnod and pjoi rules that are causing errors when delete stru mem is run - end
+    delete STRU
+  elsehandle ANY
+  endhandle
+
+  do !preStoreActions values !form.support.attaRefPrelimStore
+    !!mdsDacControl(true)
+    !orig = !!ce
+    !!mdsDacControl(true)
+    -- First delete old instance if exists (because hierarchy could be changed too)
+    !oldRef = !preStoreActions[3].dbref()
+    handle ANY
+    elsehandle NONE
+      if (not badref(!oldRef)) then
+        !!ce = !oldRef
+        delete atta
+      endif
+    endhandle
+    -- Loop through ACTIONS
+    do !i indices !preStoreActions
+      $!preStoreActions[$!i]
+      handle any
+        skip
+      endhandle
+    enddo
+    !!ce = !orig
+    handle any
+      -- orig was the one deleted
+    endhandle
+    !!mdsDacControl(false)
+  enddo
+  --<dw>Oct2007 delete bracing ATTAS -----------------------------------------------------------------
+  --<dw>aug2008 Dun979 Updated to continue if no bracing found
+  if (!psExists eq true) then
+    !!mdsDacControl(true)
+    $!fName/BR1
+    handle(2,109)
+      !brExists = false
+    endhandle
+    if (!brExists eq true) then
+      bran
+      var !mem mem atta count
+      if ($!mem gt 0) then
+        do !attNum to $!mem
+          $!fName/BR$!attNum
+          handle(2,109)
+            skip
+          endhandle
+          delete atta
+        enddo
+      endif
+    endif
+    !!mdsDacControl(false)
+  endif
+  --<dw> end of delete bracing ATTAS ---------------------------------------------------------------
+
+  -- If any connection to bedplate/anchor plates have been made clear them up
+  if (!form.name().neq('MDSFT69') and !form.name().neq('MDSFT70')) then
+    if !form.support.bedplate1.set() then
+      !!ce = !form.support.bedplate1
+      if !!ce.type.eq('SBFI') then
+        !refs = :MDSAncRef
+        do !clearBad from 1 to !refs.size()
+          if !refs[$!clearBad].badref() then
+            !refs[$!clearBad].delete()
+          endif
+        enddo
+        !refs.compress()
+        if !refs.size().gt(0) then
+          !!ce.:MDSAncRef = !refs
+        elseif !refs.size().eq(0) then
+          :MDSAncRef def
+        endif
+      else
+        if !!ce.:mdsbpref1.badref() then
+          :Mdsbpref1 def
+        endif
+        if !!ce.:mdsbpref2.badref() then
+          :Mdsbpref2 def
+        endif
+      endif
+    endif
+
+    if !form.support.bedplate2.set() then
+      !!ce = !form.support.bedplate2
+      if !!ce.type.eq('SBFI') then
+      else
+        if !!ce.:mdsbpref1.eq(!form.support.stru) then
+          :Mdsbpref1 def
+        endif
+        if !!ce.:mdsbpref2.eq(!form.support.stru) then
+          :Mdsbpref2 def
+        endif
+      endif
+    endif
+  endif
+  --<kp>31/05/2012 14:17:37
+  if !fromAtta then
+    !!mdsRestorePre(!form, false)
+  endif
+  -- run clear aids method for fr10 and fr11
+
+  if !form eq !!mdsfr10 or !form eq !!mdsfr11 then
+    !form.clearaids()
+  endif
+
+  -- Remove field weld text in case it is shown
+
+  $M/%PDMSUI%/DES/CLIB/GAIDTEXT 300
+
+  -- Clear passed form Gadgets
+  if (!form.name().neq('MDSFT69') and !form.name().neq('MDSFT70')) then
+    call !!mdsClearGadgets(!form)
+  endif
+
+  -- If dimensions are displayed the clear them from the display
+
+  !!mdsClearDim()
+
+  -- Hide Form
+
+  !form.hide()
+
+  -- Deactivate MDS DAC control variable
+
+  !!mdsDacControl(false)
+
+  -- End function
+endfunction

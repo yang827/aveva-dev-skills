@@ -1,0 +1,286 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:    mdssetdatat60.pmlfnc
+--   Type:    Function Definition
+--   Group:   Multi Discipline Supports Application
+--     Keyword:   MDS
+--   Module:    design
+--   Replaces:
+--
+-- Author:    N.morris
+-- Created:   Tue Oct 28
+--
+--
+--
+
+-- Description:
+-- Creation function for general ancillary AT60
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsSetDatAT60(!item is DBREF,!offset is REAL)
+
+  -- Find current units and set the distance unit to metric
+
+  !currentUnits = !!kGetSetUnits()
+
+  -- Initialise variables
+  !name     = !!mdsAT60.name.val
+  !alias    = !!mdsAT60.support.alias
+  !!mdsAT60.bedplate.active = true
+
+
+  -- Navigate to the Identified FLANGE
+  !!ce = !item
+  !currcomp = !!ce
+  !leave = !!ce.leave
+  if !leave eq 2 then $* its the back face of the flange
+    !where = ' after '
+  else                $* is leaving at 1 so the atta needs to be before the flange
+    !where = ' before '
+  endif
+  -- Select ancillary
+  if(!!kGetBoreUnits()) then
+    !boreUnits = 'inch bore'
+  else
+    !boreUnits = ''
+  endif
+
+  $!boreUnits
+  !bore = Pl bore
+  handle any
+    !bore = ph bore
+  endhandle
+
+  !!mdsDacControl(true)
+  !currentUnits = !!kGetSetUnits()
+  bran
+
+  -- <sk> 04/06/2012
+  !fromAtta = !!mdsAT60.support.preliminaryStore.set()
+  if !fromAtta then
+    !!ce = object DBREF('/' & !name & '_Pre')
+    :mdssupptype default
+    :mdssuppfunc default
+    -- set datum in the form for distance
+    !!mdsAT60.support.datum = !!ce
+    -- Set distance gadget
+    !!mdsDistance(!!mdsAT60)
+  else
+    new atta $!where $!currcomp
+  endif
+  -- <sk> 04/06/2012
+
+  spkbrk true
+  !choice = SELECT SPEC /MDS WITH STYP '$!alias'
+  handle any
+    !projStandard = !!mdsAT60.support.replace
+    !!alert.error('Unable to select ancillary ' & !projStandard & ' at this bore(' & !bore & ')')
+    -- <sk> 04/06/2012
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsAT60, true)
+      return
+    endif
+    delete atta
+    !!kRestoreUnits(!currentUnits)
+    return
+  elsehandle none
+    -- The element may exist in the specification but the project may not contain the size in the parameters file
+    ------------------------------------------------------------------------------
+    -- mjb >>> 24.04.06 <mds12>
+
+    --if undefined(!!mdspar$!alias[$!bore]) then
+
+    units mm bore
+    spref $!choice[1]
+
+    !atta = !!ce
+    !lbor = !atta.lbor.real().value()
+    !mds12test = !!mdssetdespars(!atta)
+    if (!mds12test.not()) then
+
+      !projStandard = !!mdsAT60.support.replace
+      !!alert.error('Unable to select ancillary ' & !projStandard & ' at this bore(' & !bore & ')')
+      -- <sk> 04/06/2012
+      if !fromAtta then
+        !!mdsRestorePre(!!mdsAT60, true)
+        return
+      endif
+      delete atta
+      !!kRestoreUnits(!currentUnits)
+      return
+    endif
+  endhandle
+
+  !!mdsDacControl(true)
+
+  !mdsattaobj  = object MDSREADPARSDATA()
+  !mdsattadefs = !mdsattaobj.mdsdefsdata(!atta.stype,!lbor)
+  if (!mdsattadefs.not()) then
+    !!alert.error (|ERROR: ABORTING the creation of this MDS ANCILLARY|)
+    !!kRestoreUnits(!currentUnits)
+    -- <sk> 04/06/2012
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsAT60, true)
+      return
+    endif
+    delete atta
+    !!mdsDacControl(FALSE)
+    return
+  endif
+  !check = object MDSCHECKSTD(!mdsattaobj)
+
+  -- find the arrive and leave of the flange
+  -- ori the att the same
+  -- position the atta at the flange
+
+  -- <sk> 04/06/2012
+  -- do not modify POS and ORI in atta from preliminary
+  if !fromAtta.not() then
+    if !leave eq 2 then
+      at prev
+    else
+      at nex
+      arrive 2 leav 1
+    endif
+    ori
+  endif
+
+  -- set the offset
+  despar n8 $!offset
+
+  !matError = STRING()
+
+  if (!check.material(!matError).not()) then
+    !!alert.error (!matError)
+    !!kRestoreUnits(!currentUnits)
+    -- <sk> 04/06/2012
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsAT60, true)
+      return
+    endif
+    delete atta
+    return
+  endif
+
+  -- Check branch temperature is within the limits of the Selected ancillary Standard
+  -- If the MINT (Minimum Temperature) data property does not exist in the ancillary's dataset
+  -- the OBJECT 'Mdscheckstd.temp()' will return 'TRUE' and skip the code shown below
+
+  !tmin = STRING()
+  !tmax = STRING()
+  if (!check.temp(!alias,!tmin,!tmax).not()) then
+    var !temp temp of branch
+    !!alert.message ('The temperature of the identified pipe ($!temp) is not within the minimum/maximum temperatures ($!tmin / $!tmax)')
+    !!kRestoreUnits(!currentUnits)
+    -- <sk> 04/06/2012
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsAT60, true)
+      return
+    endif
+    delete atta
+    return
+  endif
+
+  -- Test if the ancillary is available at this elevation
+
+  if !check.elevation(!alias).not() then
+    !position = !!ce.position.wrt(/* )
+    !selectedElevation = !position.up
+    !minimumElevation = !mdsattaobj.elevation
+    !!alert.message ('The elevation selected is unsuitable for this ancillary. Selected elevation $!selectedElevation Minimum elevation $!minimumElevation')
+    !!kRestoreUnits(!currentUnits)
+    -- <sk> 04/06/2012
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsAT60, true)
+      return
+    endif
+    delete atta
+    return
+  endif
+
+  -- <sk> 06/07/2012 Check user criteria
+  !criteria = !check.criteria()
+  if (!criteria.empty().not()) then
+    !!alert.error (!criteria)
+    !!kRestoreUnits(!currentUnits)
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsAT60, true)
+      return
+    endif
+    delete atta
+    return
+  endif
+  -- <sk> 06/07/2012
+
+  -- Set the ATTA material
+  !!mdssetmatref(!!ce)
+
+
+  !!mdsDacControl(true)
+  -- Name support
+  Name /$!name
+  :MDSSuppType |$!!mdsAT60.support.type|
+
+  !!mdsSetIspe()
+
+  --  Add stex for isometrics
+  -- set stex for atta
+  !sAtta = !!ce
+
+  !!mdsSelLstu(!!ce)
+
+
+  call !!mdsTransport(!sAtta,!name)
+
+
+
+  -- Always add atta to support object
+  !!mdsAT60.support.atta.clear()
+  !!mdsAT60.support.atta.append(!!ce)
+  !!mdsAT60.support.datum  = !!ce
+  !!mdsAT60.support.pADir  = Pa Dir wrt world
+  !!mdsAT60.support.pLDir  = Pl Dir wrt world
+  !!mdsAT60.support.p9Dir  = P9 Dir wrt world
+  -- !!mdsAT60.support.p10Dir = P10 Dir wrt world
+  -- !!mdsAT60.support.p11Dir = P11 Dir wrt world
+
+  -- Add marker text
+  !!mdsaidtext(!!mdsAT60)
+  --VAR !pOS POS WRT WORLD
+  --$M/%PDMSUI%/DES/CLIB/GAIDTEXT 210 Datum $<$!pOS$>
+
+  -- Enhance elements using colour set for highlight
+  !colourList = ARRAY()
+  !colourList.appendarray(!!mdsAT60.support.atta)
+
+  -- Colour Support
+  call !!kEnhanceList(!colourList)
+
+  -- When finished grey out datum gadget and reset height,length and setsteel
+  !!mdsSetGadgets(!!mdsAT60,!!ce,!!mdsAT60.support.type)
+  !!mdsAT60.datum.active = false
+  !!mdsAT60.modatta.active = true
+
+  -- Reset Units
+  !!kRestoreUnits(!currentUnits)
+
+  -- set focus to the distance text gadget
+  !!mdsAT60.dist.setFocus()
+
+  !!mdsDacControl(false)
+
+endfunction

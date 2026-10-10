@@ -1,0 +1,612 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            abaArealib.pmlfrm
+--   Type:          Function Definition
+--   Group:
+--     Keyword:
+--   Module:
+--   Replaces:
+--
+-- Author:          Tony Martin
+-- Created:         5 Dec 2001
+--
+--
+-- Description: Define Area List(s) (idlists).
+--
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  abaAreaLib()                     -                   Constructor method
+--  cancel()                         -                   Cancel the form
+--  checkName()                      -                   Check the input name is valid
+--  clear()                          -                   Clear relevant data arrays
+--  deleteArea()                     -                   Delete the grid selected dllb
+--  init()                           -                   Method to initialize the form
+--  insert(BOOLEAN)                  -                   Create a new dllb
+--  netAfterSelectChange(ARRAY)      -                   Callback on grid control after select change
+--  netPopup(ARRAY)                  -                   Pop-up for grid control
+--  replace()                        -                   Replace the selected dllb with the set name and function
+--  runSearch()                      -                   Run the report
+--  select()                         -                   Set all gadgets to reflect the grid selected dllb
+--  setActive()                      -                   Set gadget active status
+--
+------------------------------------------------------------------------
+import 'GridControl'
+  handle any
+  endhandle
+
+setup form !!abaAreaLib
+
+   title |ABA Area Library Definition|
+   icontitle |AREA LIB|
+   init |!this.init()|
+   cancelcall |!this.cancel()|
+
+   path down
+
+   frame .action |Edit / Create Area Library|
+
+     path down
+     text   .name at x 1 ymax |Name    | width 40 name
+     option .purp             |Function| width 21
+     hdist 4
+     button .insertA  |Add| at x10 ymax+0.5 call |!this.insert(true)|
+     path right
+     button .replace  |Replace| call |!this.replace()|
+     button .delete   |Remove|  call |!this.deleteArea()|
+     hdist 1
+
+  path down
+
+  -- List of libraries
+  frame .outer 'Area Libraries' at x1 ymax+0.2
+
+    container .netFrame nobox pmlNetControl 'NET' width 50 height 8
+
+  exit
+
+  -- Members
+  member .mode      is STRING
+  member .fromHere  is DBREF
+  member .headings  is ARRAY
+  member .libraries is ARRAY
+  member .rowSet    is ARRAY
+
+  -- My .net control
+  using namespace 'Aveva.Pdms.Presentation'
+  member .displayCtrl  is NETGRIDCONTROL
+
+exit
+
+------------------------------------------------------------------------
+--
+-- Method:      .abaAreaLib()
+--
+-- Description: Constructor method
+--
+-- Method Type: Constructor
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .abaAreaLib()
+
+  -- Define pop-up menu
+  !menu = !this.newMenu('defPopUp')
+    !menu.add('callback', 'Remove', '!this.deleteArea()')
+
+  -- Populate the function gadget .purp
+  VAR !exist EXIST /$!!abaDefaults.task.val
+    handle (2,109)
+      --  Undefined name
+      -- No task library exists, create from function call if available
+      !numbers = !!abaNumberingCode()
+      !this.purp.dtext = !numbers[1]
+      !this.purp.rtext = !numbers[2]
+    elsehandle none
+      -- Look in Task Library for AutoNumbering Task/Parameters.
+      VAR !num COLL ALL TKPARA FOR $!!abaDefaults.autoNumber
+       handle (2,109)
+         -- Does not exist
+         !purpd[1] = 'MultiDiscipline (Z)'
+         !purpr[1] = 'Z'
+       elsehandle none
+          do !x index !num
+             !funcd[!x] = function of $!num[$!x]
+             if (!funcd[!x].match(';') eq 0) then
+                 !purpd[!x] = !funcd[!x]
+             else
+                 !purpd[!x] = !funcd[!x].split(';')[1]
+             endif
+             !tkPara = tkpara of $!num[$!x]
+             !purpr[!x] = !tkPara.string()
+          enddo
+          !purpd.insert(1,'unset')
+          !purpr.insert(1,'')
+       endhandle
+      !this.purp.dtext = !purpd
+      !this.purp.rtext = !purpr
+    endhandle
+
+  -- Create instance of .net control
+  using namespace 'Aveva.Pdms.Presentation'
+  !this.displayCtrl = object NETGRIDCONTROL()
+
+  -- Add PML event handlers to .net control
+  !this.displayCtrl.addEventHandler('afterSelectChange', !this, 'netAfterSelectChange')
+  !this.displayCtrl.addEventHandler('onPopup', !this, 'netPopup')
+
+  -- Add .net control to PML container
+  !this.netFrame.control = !this.displayCtrl.handle()
+
+  -- Set grid visual attributes
+  !this.displayCtrl.columnExcelFilter(false)
+  !this.displayCtrl.outlookGroupStyle(false)
+  !this.displayCtrl.fixedRows(false)
+  !this.displayCtrl.gridHeight(1000.0)
+  !this.displayCtrl.editableGrid(false)
+  !this.displayCtrl.singleRowSelection(true)
+  !this.displayCtrl.columnExcelFilter(false)
+  !this.displayCtrl.fixedHeaders(false)
+  !this.displayCtrl.headerSort(true)
+  !this.displayCtrl.columnSummaries(false)
+
+  -- Set grid control headings
+  !this.headings.append('Name')
+  !this.headings.append('Discipline')
+
+  -- Form callbacks
+  !this.name.callback = '!this.checkName()'
+
+endmethod
+-- End of method definition for .abaAreaLib()
+
+-----------------------------------------------------------------------
+--
+-- Method:      init
+--
+-- Description: Method to initialize the form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .init()
+
+  !!abaProcess.visible(FALSE)
+
+  !this.fromHere   = !!ce
+
+  -- Clear any grid selection
+  !this.displayCtrl.clearRowSelection()
+
+  -- Initialise gadgets
+  !this.name.val = ''
+  !this.purp.val = 1
+
+  -- Find all Libraries and populate the grid control
+  !this.runSearch()
+
+  -- Populate the remaining gadgets
+  !this.displayCtrl.selectRow(1)
+
+  -- Set gadget active status
+  !this.setActive()
+
+endmethod
+-- End of method definition for .init()
+
+------------------------------------------------------------------------
+--
+-- Method:      .cancel()
+--
+-- Description: Cancel the form
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+-------------------------------------------------------------
+define method .cancel()
+
+  !!abaArealib.hide()
+  !!abaProcess.visible(TRUE)
+
+  !!ce = !this.fromHere
+
+  -- Savework, and unclaim all that's been claimed during use.
+  SAVEWORK
+  UNCLAIM ALL
+
+endmethod
+-- End of method definition for .cancel()
+
+------------------------------------------------------------------------
+--
+-- Method:      .clear()
+--
+-- Description: Clear relevant data arrays
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .clear()
+
+  -- Clear the grid
+  !this.displayCtrl.clearGrid()
+
+  -- Clear all data
+  !this.libraries.clear()
+  !this.rowSet.clear()
+
+endmethod
+-- End of method definition for .clear()
+
+------------------------------------------------------------------------
+--
+-- Method:      .checkName()
+--
+-- Description: Check the input name is valid
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .checkName()
+
+  -- Trim any leading or trailing blanks
+  !entered = !this.name.val.trim('LR')
+
+  -- Test for nothing entered
+  if (!entered.eq('')) then
+    !!alert.error('You have not entered a valid name. Please try again.')
+    !this.name.setFocus()
+    return
+  endif
+
+  -- Check for leading slash character
+  if (!entered.substring(1,1).eq('/')) then
+    !fullName    = !entered
+
+  -- Add a leading slash character
+  else
+    !fullName    = '/' & !entered
+    !this.name.val = !fullName
+  endif
+
+  -- Check name exists
+  VAR !exists EXIST $!fullName
+  if (!exists.eq('TRUEA')) then
+    !!alert.error('An element of this name already exists. Please try again.')
+    !this.name.setFocus()
+    return
+  endif
+
+endmethod
+-- End of method definition for .checkName()
+
+------------------------------------------------------------------------
+--
+-- Method:      .deleteArea()
+--
+-- Description: Delete the grid selected dllb
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+-------------------------------------------------------------
+define method .deleteArea()
+
+  -- Get selected dllb
+  !dllbRefe = !this.libraries[!this.displayCtrl.getSelectedRowTags()[1].real()]
+
+  -- Check with the user
+  !answer = !!alert.confirm('Are you sure you want to delete ' & !dllbRefe.name & '?')
+  if (!answer.eq ('YES')) then
+    !!ce = !dllbRefe
+    DELETE DLLB
+  endif
+
+  -- Reinitialise the form
+  !this.init()
+
+endmethod
+-- End of method definition for .deleteArea()
+
+------------------------------------------------------------------------
+--
+-- Method:      .insert(BOOLEAN)
+--
+-- Description: Create a new dllb
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+-------------------------------------------------------------
+define method .insert(!mode is BOOLEAN)
+
+  -- Access the main library
+  !!ce = !!abadefaults.alib.val.dbref()
+
+  -- Create a new dllb
+  NEW DLLB $!this.name.val
+    handle(41,12)
+      !!alert.error('An element of this name already exists. Please rename and try again.')
+      DELETE DLLB
+      return
+    endhandle
+
+  !!ce.function = !this.purp.selection('DTEXT')
+  SpPURP ABAR
+
+  !newRefe = !!ce
+
+  -- Reinitialise the form
+  !this.init()
+
+  -- Select the newly created dllb
+  !this.displayCtrl.selectRow(!this.libraries.findFirst(!newRefe))
+
+endmethod
+-- End of method definition for .insert(BOOLEAN)
+
+------------------------------------------------------------------------
+--
+-- Method:      .netAfterSelectChange()
+--
+-- Description: Callback on grid control after select change
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .netAfterSelectChange(!array is ARRAY)
+
+  -- Select the library function
+  if (!this.displayCtrl.getSelectedRowTags().set()) then
+    !this.select()
+  endif
+
+endmethod
+-- End of method definition for .netAfterSelectChange()
+
+------------------------------------------------------------------------
+--
+-- Method:      .netPopup()
+--
+-- Description: Pop-up for grid control
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    0   R      REAL      Cursor position X
+--    1   R      REAL      Cursor position Y
+--    2   R      ARRAY     Array of selected row tags
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .netPopup(!array is ARRAY)
+
+  -- Show the pop-up
+   !this.netFrame.popup = !this.defPopUp
+   !this.netFrame.showPopup(!array[0], !array[1])
+
+endmethod
+-- End of method definition for .netPopup()
+
+------------------------------------------------------------------------
+--
+-- Method:      .replace()
+--
+-- Description: Replace the selected dllb with the set name and function
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+-------------------------------------------------------------
+define method .replace()
+
+  -- Check for anything to replace
+  if (!this.displayCtrl.getselectedrows().unset()) then
+    return
+  endif
+
+  -- Access the selected dllb
+  !!ce = !this.libraries[!this.displayCtrl.getSelectedRowTags()[1].real()]
+
+  -- Rename the dllb & set the attributes
+  if (!this.name.val.substring(1,1).eq('/')) then
+    NAME  $!<this.name.val>
+  endif
+
+  SPPURP ABAR
+
+  -- Function
+  !!ce.function = !this.purp.selection('DTEXT')
+
+  !dllbRefe = !!ce
+
+  -- Find all Libraries and populate the grid control
+  !this.runSearch()
+
+  -- Select the modified dllb
+  !this.displayCtrl.selectRow(!this.libraries.findFirst(!dllbRefe))
+
+endmethod
+-- End of method definition for .replace()
+
+-----------------------------------------------------------------------
+--
+-- Method:      .runSearch()
+--
+-- Description: Run the report
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .runSearch()
+
+  -- Initialise variables
+  !libyRefe = !!abadefaults.alib.val.dbref()
+  !names    = ARRAY()
+
+  -- Clear the grid and data object
+  !this.clear()
+
+  -- Get all dllb
+  VAR !allDllb COLL ALL DLLB FOR $!libyRefe
+
+  -- Build grid data
+  do !dllb val !allDllb
+
+    -- Initialise variables
+    !dllbRefe = !dllb.dbref()
+    !dllbName = !dllbRefe.flnm
+    !dllbFunc = !dllbRefe.func
+    !rowData  = ARRAY()
+
+    -- Build row data
+    !rowData.append(!dllbName)
+    !rowData.append(!dllbFunc)
+
+    -- Store data
+    !this.libraries.append(!dllbRefe)
+    !names.append(!dllbName)
+
+    -- Add row data to row set array
+    !this.rowSet.append(!rowData)
+
+  enddo
+
+  -- Sort the drawings by name
+  !sorted = !names.sortedIndices()
+  !this.libraries.reindex(!sorted)
+  !this.rowSet.reindex(!sorted)
+
+  -- Set list
+  using namespace 'Aveva.Pdms.Presentation'
+  !this.displayCtrl.bindToDataSource(object NETDATASOURCE('Area Libraries', !this.headings, !this.rowSet, '^Name'))
+
+endmethod
+-- End of method .runSearch()
+
+------------------------------------------------------------------------
+--
+-- Method:      .select()
+--
+-- Description: Set all gadgets to reflect the grid selected dllb
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+-------------------------------------------------------------
+define method .select()
+
+  -- Test for any selected
+  if (!this.displayCtrl.getRows().set()) then
+
+    -- Get the selected area dllb
+    !dllbRefe = !this.libraries[!this.displayCtrl.getSelectedRowTags()[1].real()]
+
+    -- Populate the name gadget
+    !this.name.val = !dllbRefe.flnm
+
+    -- Select the corresponding function
+    if (!dllbRefe.func.eq('')) then
+      !this.purp.val = 1
+    else
+      !this.purp.select('DTEXT',!dllbRefe.func)
+    endif
+
+  endif
+
+endmethod
+-- End of method definition for .select()
+
+------------------------------------------------------------------------
+--
+-- Method:      .setActive()
+--
+-- Description: Set gadget active status
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+-------------------------------------------------------------
+define method .setActive()
+
+  -- Test for any selected area libraries
+  if (!this.displayCtrl.getRows().set()) then
+    !this.replace.active = true
+    !this.delete.active  = true
+  else
+    !this.replace.active = false
+    !this.delete.active  = false
+  endif
+
+endmethod
+-- End of method definition for .setActive()

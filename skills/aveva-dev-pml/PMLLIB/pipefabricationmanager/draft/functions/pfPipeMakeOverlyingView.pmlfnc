@@ -1,0 +1,274 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            pfPipeMakeOverlyingView.pmlfnc
+--    Type:          Function Definition
+--    Group:         Pipe Fabrication
+--      Keyword:     PF
+--    Module:        Design
+--  Author:          Jaehun Choi(Daniel)
+--  Created:         11 January 2013
+--
+--  Description:     make overlaying view for pipe spool drawing
+--                   This creates an isoDraft spool drawing which is added to the sheet in DRAFT - Marine Drafting
+--
+----------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     STRING      iso option file path
+--    2    R     STRING      pdms user path
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+-- Define function
+define function !!pfPipeMakeOverlyingView(!isoOptionFilePath is STRING, !pdmsUserPath is STRING)
+
+
+  var !spooldebug evar 'TRACE_SPOOLDRAWINGS'
+  if !spooldebug.neq('') then
+    $r101/c:\temp\pfPipeMakeOverlyingView.pmldat
+  endif
+   --$P $!isoOptionFilePath
+  !spoolListFile = object FILE('$!pdmsUserPath\isospllist.dat')
+  if (!spoolListFile.exists().not()) then
+    return
+  endif
+
+  !creationErrorFile = object FILE('$!pdmsUserPath\isocreateerror.dat')
+  !creationErrorFile.open('OVER')
+
+  !isoOptionFile = object FILE(!isoOptionFilePath)
+  -- load iso option file
+  !readData = !isoOptionFile.readFile()
+  handle any
+    !errorMessage = !isoOptionFilePath & '@' & 'Error creating overlay drawing - Error loading iso option file $!isoOptionFile'
+    !creationErrorFile.writeRecord(!errorMessage)
+    !creationErrorFile.close()
+    return
+  endhandle
+
+  -- load iso option file which used te be based when create iso picture file
+--  var !projCode proj code
+--  !isoFile = |%| + !projCode + |iso| + |%| + |\STD\pipespool.met|
+
+  !optionFileName = 'pfpipespool.pmldat'
+  !isoFile = !!pml.getPathName(!optionFileName)
+
+  !checkIsoOptFile = object FILE(!isoFile)
+  if (!checkIsoOptFile.exists().not()) then
+    !errorMessage = !isoFile & '@' & 'Error creating overlay drawing - ISO Option file does not exist.'
+    !creationErrorFile.writeRecord(!errorMessage)
+    !creationErrorFile.close()
+    return
+  endif
+
+  -- initialise iso option default
+  !isoExportPath  = '$!pdmsUserPath'
+  !isoMargin      = object ARRAY()
+  !isoViewType    = 'ISO3'
+  !isoCharCheight = 2.4
+  !dwgRegiName    = ''
+
+  if(!!module().productfamily.upcase() eq 'MARINE') then
+    !convertPltFlag = true
+  else
+    !convertPltFlag = false
+  endif
+
+  var !convertPltFlagStr evar 'PF_CONVERT_PLT'
+  handle any
+  elsehandle none
+    if (!convertPltFlagStr.empty().not()) then
+      !convertPltFlag = !convertPltFlagStr.boolean()
+    endif
+  endhandle
+
+  -- read iso option default
+  do !data values !readData
+    !splitData = !data.split(',')
+    if (!data.upcase().occurs('DWGTYPE') gt 0) then
+--      !dwgTemplName = !splitData[2]
+
+    elseif (!data.upcase().occurs('DWGREGINAME') gt 0) then
+      !dwgRegiName = !splitData[2]
+      if (substring(!dwgRegiName,1,1) eq '/') then
+        !dwgRegiName = substring(!dwgRegiName,2)
+      endif
+
+    elseif (!data.upcase().occurs('ISOVIEWTYPE') gt 0) then
+      !isoViewType = !splitData[2]
+
+    elseif (!data.upcase().occurs('ISOCHARCHEIGHT') gt 0) then
+      if (!splitData.size() eq 2) then
+        !isoCharCheight = !splitData[2].real()
+        handle any
+          !isoCharCheight = 2.4
+        elsehandle none
+          if (!isoCharCheight.unset()) then
+            !isoCharCheight = 2.4
+          endif
+        endhandle
+      endif
+
+    elseif (!data.upcase().occurs('ISOFILEPATH') gt 0) then
+      if (!splitData[2].trim().upcase() eq '%PDMSUSER%') then
+        !isoExportPath = !!evarSplit('PDMSUSER')[1]
+      else
+        !isoExportPath = !splitData[2]
+      endif
+
+    elseif (!data.upcase().occurs('OUTPUTUNITS') gt 0) then
+      !outputUnits = !splitData[2]
+    elseif (!data.upcase().occurs('ISOSIZE') gt 0) then
+      !isoSize = !splitData[2]
+    elseif (!data.upcase().occurs('ISOMARGIN1') gt 0) then
+      !isoMargin1 = !splitData[2].real()
+    elseif (!data.upcase().occurs('ISOMARGIN2') gt 0) then
+      !isoMargin2 = !splitData[2].real()
+    elseif (!data.upcase().occurs('ISOMARGIN3') gt 0) then
+      !isoMargin3 = !splitData[2].real()
+    elseif (!data.upcase().occurs('ISOMARGIN4') gt 0) then
+      !isoMargin4 = !splitData[2].real()
+    endif
+  enddo
+
+  var !oldUnits units
+
+  $m /$!isoFile
+  handle any
+    if !!error.text.match('in use').gt(0) then
+      --one of the many files is in use
+       !errorMessage = !isoFile & '@' & 'Error creating overlay drawing - ' & !!error.text
+    else
+       !errorMessage = !isoFile & '@' & 'Error creating overlay drawing - Problem with iso option file.'
+    endif
+    !creationErrorFile.writeRecord(!errorMessage)
+    !creationErrorFile.close()
+    return
+  endhandle
+
+  if (undefined(!outputUnits)) then
+    !outputUnits = 'METRIC'
+  endif
+
+  if (!outputUnits.occurs('IMPERIAL') gt 0) then
+    Units IMPERIAL
+  endif
+
+  !spoolListFile.open('READ')
+  !spoolNameList = !spoolListFile.readFile()
+
+  if (!spoolNameList.unset()) then
+    return
+  endif
+
+ -- this bit loops through the individual spools
+  do !spoolName values !spoolNameList
+    !spoolRef   = !spoolName.dbRef()
+    handle any
+      skip
+    endhandle
+
+    skip if (!spoolRef.badRef())
+    !fileManager = object PFFILEMANAGER(!spoolRef, !isoExportPath, !dwgRegiName, '' )
+
+    -- check spool type
+    if (!spoolRef.pstyp.upcase() eq 'SITE') then
+      Dimension OFF
+    elseif (!spoolRef.pstyp.upcase() eq 'FITT') then
+      Dimension ON
+    else
+      Dimension ON
+    endif
+
+    if (!convertPltFlag.not()) then
+      File "$!fileManager.isoPlotName" SINGLE
+      !fileManager.overlayFileName = !fileManager.isoPlotName
+    else
+      if(!!module().productfamily.upcase() eq 'MARINE') then
+        File AND DXF "$!fileManager.isoPlotName" SINGLE
+        -- detailing in dxf mode produces a plot file nad a dxf file
+        !fileManager.overlayFileName = !fileManager.dxfName
+      endif
+    endif
+
+
+    MatlistFile "$!fileManager.materialFile" PERPLOTFILE OVERWRITE with 55 lines
+
+    -- modify iso options
+    Charheight      $!isoCharCheight
+    Size            $!isoSize
+
+    -- modify iso options
+    Charheight      $!isoCharCheight
+    Size            $!isoSize
+
+    $!isoViewType
+
+    Reserve  $!<isoMargin4>
+    Margin  LEFT   $!<isoMargin1>
+    Margin  TOP     $!<isoMargin3>
+    Margin  RIGHT   $!<isoMargin2>
+
+    MessageFile "mess_temp" OVERWRITE
+    handle any
+      !errorMessage = !spoolRef.name & '@' & 'Cannot Create Mess file : File mess_temp in use' & !!error.text
+      !creationErrorFile.writeRecord(!errorMessage)
+    endhandle
+
+    -- P34083 force a material file to be written
+    MaterialList TableDefinition Column 1 PARTNUMBER with Width 3
+    Column 2 DESCRIPTION with Width 41
+    Column 3 BORE with Width 8
+    Column 4 ITEMCODE with Width 12
+    Column 5 QUANTITY in Millimetres with Width 8
+    Column 6 REMARKS and ANGL  on ELBO with Width 12
+    Column 7 OTHER Heading 'SPOOLNAME' PCRFA  with Width 50
+
+    detail $!spoolRef
+    handle any
+      !errorMessage = !spoolName & '@' & 'Error creating overlay drawing' & !!error.text
+      !creationErrorFile.writeRecord(!errorMessage)
+      skip
+    endhandle
+
+    -- get rid of the 001 from the plotfile name
+    !fileManager.renameIsoPlotFile()
+
+    if (!checkIsoOptFile.exists().not()) then
+      !errorMessage = !spoolName & '@' & 'Failed to create Isoview'
+      !creationErrorFile.writeRecord(!errorMessage)
+      skip
+    endif
+
+  if (!convertPltFlag) then
+     -- This file should contain the isodirectoryname and the U- Name
+     !isoDxfFile = object FILE('$!pdmsUserPath\isoviewname.log')
+     !isoDxfFile.open('OVER')
+     !isoDxfFile.writeRecord(!fileManager.isoDirectory.string())
+     if(!!module().productfamily.upcase() eq 'MARINE') then
+       !isoDxfFile.writeRecord(!fileManager.dxfName & '.iso.dxf')
+     else
+        !isoDxfFile.writeRecord(!fileManager.isoPlotName)
+     endif
+     !isoDxfFile.close()
+  endif
+
+ enddo
+
+  var !unusedStatus isodraw status
+  handle any
+    !creationErrorFile.writeRecord(|Isodraw was unable to draw - Please review the message file|)
+  endhandle
+
+  $!oldUnits
+
+  !creationErrorFile.close()
+  return
+
+endfunction
+-- End of function definition

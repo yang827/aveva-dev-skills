@@ -1,0 +1,1154 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File: MdsAbaDimStl.pmlobj
+--   Type: Object Definition
+--   Group: Multi Discipline Supports Application
+--     Keyword: MDS
+--   Module: Draft MDS using ABA for Drawing production
+--   Replaces:
+--
+-- Author: Steve Robinson
+-- Created: 25 June 2002
+--
+--
+-- Description:
+-- ------------
+-- This object generates dimensions for MDS ABA support steelwork.
+-- The object has methods to collect and classify design data and
+-- to generate the dimensions.
+--
+-- The dimensions are created and positioned around the view frame.
+-- There are upto 4 LDIMs created:
+--
+--   LR-PLATE & UD-PLATE - are the dimensions to base plates or stiffeners
+--   these dimensions are located to the right and upper sides of the view frame.
+--   This dimension is generated for all subs boxes with the subs purpose set to
+--   'S' for stiffener and 'B' for baseplate.
+--
+--   LR-SCTN * UD-SCTN - are dimensions to the frame SCTN members. These dims
+--   are located to the left and lower sides of the view frame. The logic used
+--   in the creation of these dimension points is described in the in-line
+--   comments of the body of the .dimension() object.
+--
+-- Using this object:
+-- ------------------
+-- For each view to be annotated make an instance of this object and pass the
+-- STRU and VIEW DBREFs as arguments to the constructor. Once the object is
+-- created all of the initialisation should be complete and the view can be
+-- dimensioned. To generate the dimensions use the .dimension() method.
+--
+-- Before calling the .dimension() method make sure the STEEL_Dims layer
+-- exists and had the relevant UCODE, PCODE and other text defaults set. This
+-- allows you to control the appearance of the annotation before is it generated.
+-- Note: If the dim layer does not exist then the method will create it and
+-- and atts cascaded from view level will take effect.
+--
+-- After the object is initialised it's worth checking the .constOK member
+-- if this is set to FALSE then something went wrong during initialisation and
+-- the dimensioning method will probably not work. An example of a bad constructor
+-- result is if there are NO SCTNS in the STRU - in which case NO dimensions would be
+-- be created anyway.
+--
+-- IMPERIAL UNITS:
+-- ---------------
+-- The code should work in both metric and imperial units...
+--
+--
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  mdsabadimstl(DBREF,DBREF)        -
+--
+--------------------------------------------
+--
+--
+--
+--------------------------------------------------------------------------------
+-- Define Object
+define object MDSABADIMSTL
+
+  member .stru     is DBREF        $* Support structure
+  member .view     is DBREF        $* VIEW where dimensions are to be created
+  member .constOK  is BOOLEAN      $* TRUE if object constructor executed with
+--                                  no errors
+  member .sctns    is ARRAY        $* Array of all support sctns (DBREFs)
+  member .sctnData is ARRAY        $* Array of sctn data (MDSABASCTNDATA)
+  member .oppDir   is DIRECTION    $* Main operational direction of support
+  member .datumPos is POSITION     $* Position of support origin
+
+--------------------------------------------------------------------------------
+endobject
+
+----------------------------------------------------------
+-- Constructor to get design data and populate this object
+----------------------------------------------------------
+-- Arguments:
+-- stru = DBREF of support stru to be dimensioned
+-- view = DBREF of view where stru will be dimensioned
+----------------------------------------------------------
+
+define method .mdsabadimstl(!stru is DBREF, !view is DBREF)
+
+  !saveRef = !!ce
+
+  !this.constOK = TRUE
+
+-- check we have been passed a valid stru
+  if (!stru.type.neq('STRU')) then
+    !this.constOK = FALSE
+    return
+  endif
+
+  !this.stru = !stru
+  !this.view = !view
+
+-- get datum position
+  $!stru
+  set
+--*/DATUM
+    handle any
+    elsehandle none
+      !this.datumPos = !!ce.:mdsadploc.wrt(world)
+        handle any $* UDA may not set
+--<kp>jan07
+          if !stru.:mdssupptype.eq(!!mdslsuppdefs.type) then
+          -- lighting support
+             !lsuppobj = object MDSLSUPPORT(!stru)
+             !this.datumPos = !lsuppobj.origin.wrt(worl)
+          else
+             !this.datumPos = !!ce.:mdsadploc
+          endif
+--<kp>jan07
+        endhandle
+    endhandle
+
+-- get all sctns for this stru
+  var !sctns coll all sctn for $!this.stru
+  if (!sctns.size().eq(0)) then
+    !this.constOK = FALSE
+    return
+  endif
+
+-- Get the dbref for all sctns
+  !dbrefs = ARRAY()
+  do !sctn values !sctns
+    !dbrefs.append(!sctn.dbref() )
+  enddo
+  !this.sctns = !dbrefs
+
+-- Process all sctns and create sctn data objects for each
+  do !sctn values !this.sctns
+-- Add the sctn data object to the array
+    !this.sctnData.append(object MDSABASCTNDATA(!sctn,!this.view))
+  enddo
+
+  $!saveRef
+
+endmethod
+
+  ------------------------------------------------------
+  -- Method to generate dimensions for support steelwork
+  ------------------------------------------------------
+  define method .dimension(!params is STRING)
+
+    -- If the default constructor failed then return
+
+    if !this.constOK.not() then
+      return
+    endif
+
+--------------------------------------------
+--<wd>29feb2008 - DUN824 - Defect No. P-4405
+-- Determine if COORD XYZ or COORD ENU is being used
+    var !coord coord
+--<wd>29feb2008 - DUN824 - Defect No. P-4405
+--------------------------------------------
+
+--------------------------------------------
+--<wd>27mar2008 - DUN824 - Defect No. P-4526
+-- CODE modified to use the NEW 12.0 version DRAFT PEN, COLOUR and LINESTYLE attributes
+--
+-- Obsolete Parameter Nos and Some Pen Attributes    -- Params passed as string
+-- Obsolete Parameter Nos and Some Pen Attributes    -- 1  Projection Line Pen  PLPN
+-- Obsolete Parameter Nos and Some Pen Attributes    -- 2  Dimension Line Pen   DLPN
+-- Obsolete Parameter Nos and Some Pen Attributes    -- 3  Dimension Text Pen   DTPN
+-- Obsolete Parameter Nos and Some Pen Attributes    -- 4  Projection Text Pen  PTPN
+-- Obsolete Parameter Nos and Some Pen Attributes    -- 5  Dimension Text Font  DFONT
+-- Obsolete Parameter Nos and Some Pen Attributes    -- 6  Projection Text Font PFONT
+-- Obsolete Parameter Nos and Some Pen Attributes    -- 7  Dimension Text Size  DTCH
+-- Obsolete Parameter Nos and Some Pen Attributes    -- 8  Projection Text Size PTCH
+-- Obsolete Parameter Nos and Some Pen Attributes    -- 9  Terminator Size      TSIZE
+-- Obsolete Parameter Nos and Some Pen Attributes    -- 10 Terminator           DTERM
+
+-- NEW 12.0 version Parameters (Pen Attributes etc...) passed as a STRING
+-- *** IMPORTANT NOTE ***
+-- ONLY 12 parameters are passed here as the ORIGINAL 1st parameter value (TRUE or FALSE ) in the STRING of 13 Parameters
+-- has been REMOVED in the MDS ABA MAIN VIEW calling ABA TASK FUNCTION "mdsabaviewtask.pmlfnc"
+-- Projection Line Attributes
+    -- 1  Projection Line Style       = PLSTYLE
+    -- 2  Projection Line Colour      = PLCOLOUR
+    -- 3  Projection Line Font        = PFONT
+    -- 4  Projection Line Font Size   = PTCHEIGHT
+    -- 5  Projection Line Font Colour = PTCOLOUR
+
+-- Dimension Line Attributes
+    -- 6  Dimension Line Style           = DLSTYLE
+    -- 7  Dimension Line Colour          = DLCOLOUR
+    -- 8  Dimension Line Font            = DFONT
+    -- 9  Dimension Line Font Size       = DTCHEIGHT
+    -- 10 Dimension Line Font Colour     = DTCOLOUR
+    -- 11 Dimension Line Terminator Size = TSIZE
+    -- 12 Dimension Line Terminator Type = DTERM
+--
+--<wd>27mar2008 - DUN824 - Defect No. P-4526
+--------------------------------------------
+
+    !passedparams = !params.split(',')
+
+    -- dimension layer suffix
+    !dimLayer = 'STEEL_Dims'
+
+    -- navigate to view
+    $!this.view
+
+    -- get view region for dimension positioning
+    !vreg = !!ce.vreg
+
+    -- get direction of view
+--    !vdir = !!ce.dir
+
+    -- check dimension layer exists
+    set
+    */$!dimLayer
+    handle any
+      new layer */$!dimLayer
+    endhandle
+    !layer = !!ce
+
+
+--------------------------------------------
+--<wd>27mar2008 - DUN824 - Defect No. P-4526
+-- CODE modified to use the NEW 12.0 version DRAFT PEN, COLOUR and LINESTYLE attributes
+--
+--    PLPN $!passedparams[1]
+--    DLPN $!passedparams[2]
+--    TSIZE $!passedparams[9]
+--    DTERM $!passedparams[10]
+--
+-- All of the 'handle any' lines etc.. have been added to ensure that the MDS ABA default value is USED if an ERROR occurs
+--
+-- Projection Line Attributes
+    PLSTYLE $!passedparams[1]
+    handle ANY
+      PLSTYLE Solid
+    endhandle
+    PLCOLOUR $!passedparams[2]
+    handle ANY
+      PLCOLOUR 4
+    endhandle
+
+-- Dimension Line Attributes
+    DLSTYLE $!passedparams[6]
+    handle ANY
+      DLSTYLE Solid
+    endhandle
+    DLCOLOUR $!passedparams[7]
+    handle ANY
+      DLCOLOUR 6
+    endhandle
+    TSIZE $!passedparams[11]
+    handle ANY
+      TSIZE 3
+    endhandle
+    DTERM $!passedparams[12]
+    handle ANY
+      DTERM Arrows
+    endhandle
+--
+--<wd>27mar2008 - DUN824 - Defect No. P-4526
+--------------------------------------------
+
+
+    -- clear any existing dimensions
+    $!layer
+    DELETE LAYER MEMBERS
+    handle any
+    endhandle
+
+--------------------------------------------
+--<wd>10mar2008 - DUN824 - Defect No. P-4405
+-- Now caters for XYZ co-ordinates
+--
+    -- get view direction and determine dimension direction up and to right of
+    -- view
+    var !rdir viewdir right
+--    !rdirection = $!rdir
+    !rdirection = !rdir.direction()
+    var !udir viewdir up
+--    !udirection = $!udir
+    !udirection = !udir.direction()
+--
+--<wd>10mar2008 - DUN824 - Defect No. P-4405
+--------------------------------------------
+
+    -- collect all stiffeners and base plate subs for stru
+    -- base plates will be dimensioned to TR corner on views
+    -- stiffeners will be dimensioned to centre of box on views
+    var !subs coll all subs with (purp eq 'S' or purp eq 'B') for $!this.stru
+
+    -- create new ldims
+    ---------------------------------------------------------------------------
+    -- L/R DIMENSION -- For stiffeners and baseplates
+    ---------------------------------------------------------------------------
+    $!layer
+    NEW LDIM */$!dimLayer/LR-PLATE
+
+--------------------------------------------
+--<wd>27mar2008 - DUN824 - Defect No. P-4526
+-- CODE modified to use the NEW 12.0 version DRAFT PEN, COLOUR and LINESTYLE attributes
+--
+--    DTPN $!passedparams[3]
+--    PTPN $!passedparams[4]
+--    DFONT $!passedparams[5]
+--    PFONT $!passedparams[6]
+--    DTCH $!passedparams[7]
+--    PTCH $!passedparams[8]
+
+-- Projection Line FONT Attributes
+    PFONT $!passedparams[3]
+    handle ANY
+      PFONT 3
+    endhandle
+    PTCHEIGHT $!passedparams[4]
+    handle ANY
+      PTCHEIGHT 3
+    endhandle
+    PTCOLOUR $!passedparams[5]
+    handle ANY
+      PTCOLOUR 7
+    endhandle
+
+-- Dimension Line FONT Attributes
+    DFONT $!passedparams[8]
+    handle ANY
+      DFONT 3
+    endhandle
+    DTCHEIGHT $!passedparams[9]
+    handle ANY
+      DTCHEIGHT 3
+    endhandle
+    DTCOLOUR $!passedparams[10]
+    handle ANY
+      DTCOLOUR 6
+    endhandle
+--
+--<wd>27mar2008 - DUN824 - Defect No. P-4526
+--------------------------------------------
+
+    !ldimref = !!ce
+    DIR $!rdir
+    do !sub values !subs
+      $!sub
+      var !boxes coll all box for ce
+      -- dimension stiffeners
+      if (purp eq 'S') then
+        do !box values !boxes
+          -- only dimension the stiffener if its primary direction
+          -- is the same as the dimension direction
+          !boxref = $!box
+          !boxdir = !this.boxdir(!boxref)
+          -- skip if (!boxdir.neq(!rdirection) and $
+             --       !boxdir.neq(!rdirection.opposite()))
+          $!ldimref
+          new dppt on $!box
+        enddo
+      -- dimension baseplates
+      elseif (purp eq 'B') then
+        do !box values !boxes
+          -- only dimension the baseplate if its primary direction
+          -- is the same as the view direction
+          !boxref = $!box
+          !boxdir = !this.boxdir(!boxref)
+          -- skip if (!boxdir.neq(!vdir) and $
+             --       !boxdir.neq(!vdir.opposite()))
+          $!ldimref
+          new dpba on $!box baind after
+        enddo
+      endif
+    enddo
+    -- check if user has specified a datum position otherwise dimension to stru
+    -- origin
+    $!ldimref
+    if (!this.datumPos.up.unset()) then
+      new dppt on $!this.stru
+    else
+      !dp = !this.datumPos.string().before('WRT')
+      new dpoi position $!dp
+    endif
+    LDIM
+    SORT DIM
+    handle any
+    endhandle
+    -- remove any zero length dimensions
+    var !dppts coll all (DPPT DPOI) for ce
+    do !dppt values !dppts
+      $!dppt
+      var !dmtx expanded DMTX
+      handle (2,235) $* expanded text not available
+        !t = !!ce.type
+        delete $!t
+      elsehandle none
+        skip if (!dmtx.eq('unset'))
+        if (!dmtx.eq('0')) then
+          !t = !!ce.type
+          delete $!t
+        endif
+      endhandle
+    enddo
+    LDIM
+    !dimref = !!ce
+    SORT DIM
+    handle any
+    endhandle
+    !y = !vreg[4] - 10
+    DPOS X $!vreg[3] Y $!y
+
+    ---------------------------------------------------------------------------
+    -- U/D DIMENSION -- For stiffeners and baseplates
+    ---------------------------------------------------------------------------
+    $!layer
+    NEW LDIM */$!dimLayer/UD-PLATE
+
+--------------------------------------------
+--<wd>27mar2008 - DUN824 - Defect No. P-4526
+-- CODE modified to use the NEW 12.0 version DRAFT PEN, COLOUR and LINESTYLE attributes
+--
+--    DTPN $!passedparams[3]
+--    PTPN $!passedparams[4]
+--    DFONT $!passedparams[5]
+--    PFONT $!passedparams[6]
+--    DTCH $!passedparams[7]
+--    PTCH $!passedparams[8]
+
+-- Projection Line FONT Attributes
+    PFONT $!passedparams[3]
+    handle ANY
+      PFONT 3
+    endhandle
+    PTCHEIGHT $!passedparams[4]
+    handle ANY
+      PTCHEIGHT 3
+    endhandle
+    PTCOLOUR $!passedparams[5]
+    handle ANY
+      PTCOLOUR 7
+    endhandle
+
+-- Dimension Line FONT Attributes
+    DFONT $!passedparams[8]
+    handle ANY
+      DFONT 3
+    endhandle
+    DTCHEIGHT $!passedparams[9]
+    handle ANY
+      DTCHEIGHT 3
+    endhandle
+    DTCOLOUR $!passedparams[10]
+    handle ANY
+      DTCOLOUR 6
+    endhandle
+--
+--<wd>27mar2008 - DUN824 - Defect No. P-4526
+--------------------------------------------
+
+    !ldimref = !!ce
+    DIR $!udir
+    do !sub values !subs
+      $!sub
+      var !boxes coll all box for ce
+      -- dimension stiffeners
+      if (purp eq 'S') then
+        do !box values !boxes
+          -- only dimension the stiffener if its primary direction
+          -- is the same as the dimension direction
+          !boxref = $!box
+          !boxdir = !this.boxdir(!boxref)
+          -- skip if (!boxdir.neq(!udirection) and $
+             --       !boxdir.neq(!udirection.opposite()))
+          $!ldimref
+          new dppt on $!box
+        enddo
+      -- dimension baseplates
+      elseif (purp eq 'B') then
+        do !box values !boxes
+          -- only dimension the baseplate if its primary direction
+          -- is the same as the view direction
+          !boxref = $!box
+          !boxdir = !this.boxdir(!boxref)
+          -- skip if (!boxdir.neq(!vdir) and $
+             --       !boxdir.neq(!vdir.opposite()))
+          $!ldimref
+          new dpba on $!box baind after
+        enddo
+      endif
+    enddo
+    -- check if user has specified a datum position otherwise dimension to stru
+    -- origin
+    $!ldimref
+    if (!this.datumPos.up.unset()) then
+      new dppt on $!this.stru
+    else
+      !dp = !this.datumPos.string().before('WRT')
+      new dpoi position $!dp
+    endif
+    LDIM
+    SORT DIM
+    handle any
+    endhandle
+    -- remove any zero length dimensions
+    var !dppts coll all (DPPT DPOI) for ce
+    do !dppt values !dppts
+      $!dppt
+      var !dmtx expanded DMTX
+      handle (2,235) $* expanded text not available
+        !t = !!ce.type
+        delete $!t
+      elsehandle none
+        skip if (!dmtx.eq('unset'))
+        if (!dmtx.eq('0')) then
+          !t = !!ce.type
+          delete $!t
+        endif
+      endhandle
+    enddo
+    LDIM
+    !dimref = !!ce
+    SORT DIM
+    handle any
+    endhandle
+    !x = !vreg[3] - 10
+    DPOS X $!x Y $!vreg[4]
+
+
+    ---------------------------------------------------------------------------
+    -- L/R DIMENSION -- FOR SCTNS
+    ---------------------------------------------------------------------------
+    $!layer
+    NEW LDIM */$!dimLayer/LR-STEEL
+
+--------------------------------------------
+--<wd>27mar2008 - DUN824 - Defect No. P-4526
+-- CODE modified to use the NEW 12.0 version DRAFT PEN, COLOUR and LINESTYLE attributes
+--
+--    DTPN $!passedparams[3]
+--    PTPN $!passedparams[4]
+--    DFONT $!passedparams[5]
+--    PFONT $!passedparams[6]
+--    DTCH $!passedparams[7]
+--    PTCH $!passedparams[8]
+
+-- Projection Line FONT Attributes
+    PFONT $!passedparams[3]
+    handle ANY
+      PFONT 3
+    endhandle
+    PTCHEIGHT $!passedparams[4]
+    handle ANY
+      PTCHEIGHT 3
+    endhandle
+    PTCOLOUR $!passedparams[5]
+    handle ANY
+      PTCOLOUR 7
+    endhandle
+
+-- Dimension Line FONT Attributes
+    DFONT $!passedparams[8]
+    handle ANY
+      DFONT 3
+    endhandle
+    DTCHEIGHT $!passedparams[9]
+    handle ANY
+      DTCHEIGHT 3
+    endhandle
+    DTCOLOUR $!passedparams[10]
+    handle ANY
+      DTCOLOUR 6
+    endhandle
+--
+--<wd>27mar2008 - DUN824 - Defect No. P-4526
+--------------------------------------------
+
+    !ldimref = !!ce
+    DIR $!rdir
+    do !sctn values !this.sctnData
+      -- skip sctn if direction same as or opposite to view direction and more
+      -- than ONE sctn in stru
+      skip if ((!sctn.dir.eq(!this.view.dir) or $
+                !sctn.dir.opposite().eq(!this.view.dir)) and $
+                !this.sctns.size().gt(1))
+      -- To avoid problems with cutback plines (e.g. TOAX on ANGLES where joints
+      -- are used)
+      -- swap to NA if dimension direction is parallel to dimension direction
+      if (!sctn.dir.eq(!rdirection) or !sctn.dir.eq(!rdirection.opposite())) $
+      then
+        !pkey = 'NA'
+      elseif !sctn.sctn.gtyp.eq('PLAT') then
+         !pkey = 'BOS'
+      else
+        !pkey = !sctn.dimkey
+      endif
+      !ddnm = !sctn.sctn
+      skip if (!pkey.eq(''))
+      -- dimension both ends of sctn and clear up any zero length dim points
+      -- later!
+      new dppt on $!ddnm pkey $!pkey pkdi 0
+      new dppt on $!ddnm pkey $!pkey pkdi 1
+    enddo
+    -- check if user has specified a datum position otherwise dimension to stru
+    -- origin
+    if (!this.datumPos.up.unset()) then
+      new dppt on $!this.stru
+    else
+      !dp = !this.datumPos.string().before('WRT')
+      new dpoi position $!dp
+    endif
+
+-- If the ATTAS have a nudge position set we need to dimension these as well
+
+    !supportstru = !this.stru
+--<kp>jan07
+--    if !supportstru.badref().not() then
+    if !supportstru.badref().not().and(!supportstru.:mdssupptype.eq(!!mdslsuppdefs.type).not()) then
+    -- must not be lighting support
+      !supportname = !supportstru.name
+      !dname = !supportname + '/DATUM'
+      if !dname.dbref().:mdsnudgedist.neq(0) then
+        new dppt ddnm $!dname
+        nppt 9
+      endif
+      do !loopthrough from 1 to 50
+        !attaname = !supportname + '.$!loopthrough'
+        !mdsnudgedist = !attaname.dbref().:mdsnudgedist
+          handle ANY
+            break
+          endhandle
+        if !mdsnudgedist.neq(0) then
+          new dppt ddnm $!attaname
+          nppt 9
+        endif
+      enddo
+    endif
+
+    LDIM
+    SORT DIM
+    handle any
+    endhandle
+    -- remove any zero length dimensions
+    var !dppts coll all (DPPT DPOI) for ce
+    do !dppt values !dppts
+      $!dppt
+      var !dmtx expanded DMTX
+      handle (2,235) $* expanded text not available
+        !t = !!ce.type
+        delete $!t
+      elsehandle none
+        skip if (!dmtx.eq('unset'))
+        if (!dmtx.eq('0')) then
+          !t = !!ce.type
+          delete $!t
+        endif
+      endhandle
+    enddo
+    LDIM
+    !dimref = !!ce
+    SORT DIM
+    handle any
+    endhandle
+    DPOS X $!vreg[1] Y $!vreg[2]
+
+    -- Call the method to move any dmtx that may hit projection lines.
+    -- Wrap this call in a handle - if anything goes wrong don't let it
+    -- bomb the whole dimensioning routine
+    LAYE
+    var !ucode UCODE
+    !units = object COMUNITS(TRUE)
+    $!dimref
+    !this.fixdims(!dimref,'R')
+    handle any
+      LAYE
+      UCODE $!ucode
+      !units.restoreSavedBoreDist()
+      update anno
+      handle any
+      endhandle
+    endhandle
+
+
+    ---------------------------------------------------------------------------
+    -- U/D DIMENSION -- U/D DIMENSION -- U/D DIMENSION -- U/D DIMENSION
+    ---------------------------------------------------------------------------
+    $!layer
+    NEW LDIM */$!dimLayer/UD-STEEL
+
+--------------------------------------------
+--<wd>27mar2008 - DUN824 - Defect No. P-4526
+-- CODE modified to use the NEW 12.0 version DRAFT PEN, COLOUR and LINESTYLE attributes
+--
+--    DTPN $!passedparams[3]
+--    PTPN $!passedparams[4]
+--    DFONT $!passedparams[5]
+--    PFONT $!passedparams[6]
+--    DTCH $!passedparams[7]
+--    PTCH $!passedparams[8]
+
+-- Projection Line FONT Attributes
+    PFONT $!passedparams[3]
+    handle ANY
+      PFONT 3
+    endhandle
+    PTCHEIGHT $!passedparams[4]
+    handle ANY
+      PTCHEIGHT 3
+    endhandle
+    PTCOLOUR $!passedparams[5]
+    handle ANY
+      PTCOLOUR 7
+    endhandle
+
+-- Dimension Line FONT Attributes
+    DFONT $!passedparams[8]
+    handle ANY
+      DFONT 3
+    endhandle
+    DTCHEIGHT $!passedparams[9]
+    handle ANY
+      DTCHEIGHT 3
+    endhandle
+    DTCOLOUR $!passedparams[10]
+    handle ANY
+      DTCOLOUR 6
+    endhandle
+--
+--<wd>27mar2008 - DUN824 - Defect No. P-4526
+--------------------------------------------
+
+    PJUST AWAY
+    !ldimref = !!ce
+    dir $!udir
+    do !sctn values !this.sctnData
+      -- skip sctn if direction same as or opposite to view direction and more
+      -- than ONE sctn in stru
+      skip if ((!sctn.dir.eq(!this.view.dir) or $
+                !sctn.dir.opposite().eq(!this.view.dir)) and $
+                !this.sctns.size().gt(1))
+      -- To avoid problems with cutback plines (e.g. TOAX on ANGLES where
+      -- joints are used) swap to NA if dimension direction is parallel to
+      -- dimension direction
+
+      if (!sctn.dir.eq(!udirection) or !sctn.dir.eq(!udirection.opposite())) $
+      then
+       !pkey = 'NA'
+      elseif !sctn.sctn.gtyp.eq('PLAT') then
+         !pkey = 'BOS'
+      else
+        !pkey = !sctn.dimkey
+      endif
+      !ddnm = !sctn.sctn
+      skip if (!pkey.eq(''))
+      -- dim both ends of sctn and clear up any zero length dim points later!
+      new dppt on $!ddnm pkey $!pkey pkdi 0
+      -- add elevation PLTX if necessary
+      if (!sctn.elev) then
+--<wd>18dec2008 - Defect No. P-13975 -- Determine if SCTN is vertical and ADD PLTX if TRUE
+        if (!sctn.dir.up.eq(-1)) or (!sctn.dir.up.eq(1)) then
+
+--<wd>29feb2008 - DUN824 - Defect No. P4405
+-- Determine the current COORD system, XYZ or ENU????
+--       PLTX 'EL. #PK^POSSU+'
+       if (!coord.upcase().trim().eq('ENU')) then
+         PLTX 'EL. #PK^POSSU+'
+       elseif (!coord.upcase().trim().eq('XYZ')) then
+         PLTX '#PK^POSSU'
+       endif
+--<wd>29feb2008
+
+      endif
+--<wd>18dec2008 - Defect No. P-13975
+
+      endif
+
+      new dppt on $!ddnm pkey $!pkey pkdi 1
+-- add elevation PLTX if necessary
+      if (!sctn.elev) then
+--<wd>18dec2008 - Defect No. P-13975 -- Determine if SCTN is vertical and ADD PLTX if TRUE
+        if (!sctn.dir.up.eq(-1)) or (!sctn.dir.up.eq(1)) then
+
+--<wd>29feb2008 - DUN824 - Defect No. P4405
+-- Determine the current COORD system, XYZ or ENU????
+--       PLTX 'EL. #PK^POSSU+'
+         if (!coord.upcase().trim().eq('ENU')) then
+           PLTX 'EL. #PK^POSSU+'
+         elseif (!coord.upcase().trim().eq('XYZ')) then
+           PLTX '#PK^POSSU'
+         endif
+--<wd>29feb2008
+        endif
+
+--<wd>18dec2008 - Defect No. P-13975
+
+      endif
+
+    enddo
+    -- check if user has specified a datum position otherwise dimension to stru
+    -- origin
+    if (!this.datumPos.up.unset()) then
+       new dppt on $!this.stru
+    else
+      !dp = !this.datumPos.string().before('WRT')
+      new dpoi position $!dp
+    endif
+    LDIM
+    SORT DIM
+    handle any
+    endhandle
+    -- remove any zero length dimensions
+    var !dppts coll all (DPPT DPOI) for ce
+    do !dppt values !dppts
+      $!dppt
+      var !dmtx expanded DMTX
+      handle (2,235) $* expanded text not available
+        !t = !!ce.type
+        delete $!t
+      elsehandle none
+        skip if (!dmtx.eq('unset'))
+        if (!dmtx.eq('0')) then
+          !t = !!ce.type
+          delete $!t
+        endif
+      endhandle
+    enddo
+    LDIM
+    SORT DIM
+    handle any
+    endhandle
+    -- If the dimension has only one remaining dim point and
+    -- the pltx is set (elevation) then switch DLFG to projection.
+    -- This will display any single elevation point
+    if (!!ce.mcount.eq(1)) then
+      1
+      if (!!ce.pltx.neq('#DEF')) then
+        LDIM
+        DLFG PROJ
+      endif
+    endif
+    LDIM
+    !dimref = !!ce
+    DPOS X $!vreg[1] Y $!vreg[2]
+
+    -- Call the method to move any dmtx that may hit projection lines.
+    -- Wrap this call in a handle - if anything goes wrong don't let it
+    -- bomb the whole dimensioning routine
+    LAYE
+    var !ucode UCODE
+    !units = object COMUNITS(TRUE)
+    $!dimref
+    !this.fixdims(!dimref,'U')
+    handle any
+      LAYE
+      UCODE $!ucode
+      !units.restoreSavedBoreDist()
+      update anno
+      handle any
+      endhandle
+    endhandle
+
+-- We need to dimension the eccentricity any connections to plates
+-- We only need to dimension the view that is perpendicular to the plate face
+-- The P1 of the plate will either point into or out of the view direction
+
+    view
+    !viewdirection = dir
+    !viewdirectionS = !viewdirection.string().before('WRT').trim()
+    !plates = ARRAY()
+    !sections = ARRAY()
+    do !sctn values !this.sctnData
+      !mdsancref = !sctn.sctn.:MdsAncRef
+      do !loop from 1 to !mdsancref.size()
+        if (!mdsancref[$!loop].badref().not()) then
+
+          -- TEST FIX COMMENTED OUT BY RM ON 15/03/06
+          -- added by Richard Martin 10/03/06 FT22 bedplates are not dimensioned correctly
+          -- HPD0031691
+          --if !mdsancref[$!loop].:MDSSuppType neq 'FT22' then
+            !p1dir = !mdsancref[$!loop].pdir[1].wrt(/* ).string().before('WRT').trim()
+            !p1diro = !p1dir.direction().opposite().string().before('WRT').trim()
+            !pno = 1
+          --else
+          --  !!ce = !mdsancref[$!loop]
+          --  subs 1
+          --  1
+          --  !mdsancref[$!loop] = !!ce
+          --  !pno = 3
+          --endif
+
+          !p1dir = !mdsancref[$!loop].pdir[!pno].wrt(/* ).string().before('WRT').trim()
+          !p1diro = !p1dir.direction().opposite().string().before('WRT').trim()
+
+          if !p1dir.string().eq(!viewdirectionS) or !p1diro.string().eq(!viewdirectionS) then
+            !plates.append(!mdsancref[$!loop])
+            !sections.append(!sctn.sctn)
+          endif
+        endif
+      enddo
+    enddo
+
+-- The above loop could have found us a sctn and plate if so dimension them
+
+    !dimcounter = 1
+    if !sections.size().gt(0) then
+    do !dimconn from 1 to !sections.size()
+      $!layer
+      !dim1num = !dimcounter
+      !dim2num = !dimcounter + 1
+      NEW LDIM */$!dimLayer/CONNECTIONS/$!dim1Num
+
+--------------------------------------------
+--<wd>27mar2008 - DUN824 - Defect No. P-4526
+-- CODE modified to use the NEW 12.0 version DRAFT PEN, COLOUR and LINESTYLE attributes
+--
+--      DTPN $!passedparams[3]
+--      PTPN $!passedparams[4]
+--      DFONT $!passedparams[5]
+--      PFONT $!passedparams[6]
+--      DTCH $!passedparams[7]
+--      PTCH $!passedparams[8]
+
+-- Projection Line FONT Attributes
+      PFONT $!passedparams[3]
+      handle ANY
+        PFONT 3
+      endhandle
+      PTCHEIGHT $!passedparams[4]
+      handle ANY
+        PTCHEIGHT 3
+      endhandle
+      PTCOLOUR $!passedparams[5]
+      handle ANY
+        PTCOLOUR 7
+      endhandle
+
+-- Dimension Line FONT Attributes
+      DFONT $!passedparams[8]
+      handle ANY
+        DFONT 3
+      endhandle
+      DTCHEIGHT $!passedparams[9]
+      handle ANY
+        DTCHEIGHT 3
+      endhandle
+      DTCOLOUR $!passedparams[10]
+      handle ANY
+        DTCOLOUR 6
+      endhandle
+--
+--<wd>27mar2008 - DUN824 - Defect No. P-4526
+--------------------------------------------
+
+      PJUST AWAY
+      !ldimref = !!ce
+      dir $!udir
+      from p1 of $!plates[$!dimconn]
+      to $!sections[$!dimconn]
+      !dimDist = exdmtx
+      if !dimDist.eq('0') then
+        ldim
+        delete ldim
+        !dim2Num = !dim1Num
+      else
+        !dimcounter = !dimcounter + 1
+      endif
+      NEW LDIM */$!dimLayer/CONNECTIONS/$!dim2Num
+
+--------------------------------------------
+--<wd>27mar2008 - DUN824 - Defect No. P-4526
+-- CODE modified to use the NEW 12.0 version DRAFT PEN, COLOUR and LINESTYLE attributes
+--
+--      DTPN $!passedparams[3]
+--      PTPN $!passedparams[4]
+--      DFONT $!passedparams[5]
+--      PFONT $!passedparams[6]
+--      DTCH $!passedparams[7]
+--      PTCH $!passedparams[8]
+
+-- Projection Line FONT Attributes
+      PFONT $!passedparams[3]
+      handle ANY
+        PFONT 3
+      endhandle
+      PTCHEIGHT $!passedparams[4]
+      handle ANY
+        PTCHEIGHT 3
+      endhandle
+      PTCOLOUR $!passedparams[5]
+      handle ANY
+        PTCOLOUR 7
+      endhandle
+
+-- Dimension Line FONT Attributes
+      DFONT $!passedparams[8]
+      handle ANY
+        DFONT 3
+      endhandle
+      DTCHEIGHT $!passedparams[9]
+      handle ANY
+        DTCHEIGHT 3
+      endhandle
+      DTCOLOUR $!passedparams[10]
+      handle ANY
+        DTCOLOUR 6
+      endhandle
+--
+--<wd>27mar2008 - DUN824 - Defect No. P-4526
+--------------------------------------------
+
+      PJUST AWAY
+      !ldimref = !!ce
+      dir $!rdir
+      from p1 of $!plates[$!dimconn]
+      to $!sections[$!dimconn]
+      !dimDist = exdmtx
+      if !dimDist.eq('0') then
+        ldim
+        delete ldim
+      else
+        !dimcounter = !dimcounter + 1
+      endif
+    enddo
+  endif
+
+-- Find out if any dimensions have only 2 elements and the second is 0
+-- Delete the dimensions
+
+  $!layer
+  var !memldims coll all ldim for ce
+  do !loopLdims from 1 to !memldims.size()
+    !!ce = !memldims[$!loopLdims].dbref()
+    if !!ce.mcount.eq(2) then
+      2
+      !expandeddmtx = exdmtx
+      if !expandeddmtx.eq('0') then
+        ldim
+        delete ldim
+      endif
+    endif
+  enddo
+
+  VIEW
+
+endmethod
+
+  -----------------------------------------------------------------------------
+  -- Method to determine if a dppt or dpos DMTX will fit within the
+  -- projection lines. If text is too large the dpoi or dppt has dtang set
+  -- to parallel. This will force the dimension text to appear outside the
+  -- projection lines.
+  -----------------------------------------------------------------------------
+  -- Arguments:
+  -- ldim = LDIM to be processed
+  -- !shtdir = direction of ldim on sheet U or R
+  -----------------------------------------------------------------------------
+  define method .fixdims(!ldim is DBREF, !shtdir is STRING)
+    $!ldim
+    !units = object COMUNITS(TRUE)
+    UNITS MM DIST
+    -- get the letter height
+    !chei = !!ce.dtch
+    !yoff = !chei * 2
+    laye
+    -- check for imperial units - switch to mm for this procedure and then
+    -- switch back at end
+    var !ucode ucode
+    if (!ucode.upcase().match('MM DIST').eq(0)) then
+      UCODE MM DIST
+      UPDATE ANNO
+      handle any
+      endhandle
+    endif
+    VIEW
+    !vsca = !!ce.vscale
+    $!ldim
+    var !points coll all ldim members for ce
+    -- check each points dimension value
+    -- and determine if the dmtx need moving
+    do !point values !points
+      $!point
+      var !dim expa dmtx
+      handle any
+        skip
+      endhandle
+      skip if (!dim.upcase().eq('UNSET'))
+      -- convert the design distance to a sheet distance
+      !sdist = $!dim * $!vsca
+      skip if (!dim.trim().length().eq(0))
+      -- check if the letter height will fit inside the projection lines
+      if (!sdist.lt(!chei)) then
+        -- move the text
+        -- if the dimension goes up the sheet then simply set the DTANG
+        if (!shtdir.eq('U')) then
+          DTANG PARALLEL
+        else
+          DTANG PARALLEL
+          DTOF 0 -$!yoff
+        endif
+      -- if the text width will not fit in between the projection
+      -- lines move the text away from the dimension line
+      elseif ((!dim.trim().length() * !chei) gt !sdist) then
+        !offset = !dim.trim().length() * !chei / 2
+        -- move the text
+        if (!shtdir.eq('U')) then
+          DTOF 0 $!offset
+        else
+          DTOF 0 -$!offset
+        endif
+      endif
+    enddo
+    LAYER
+    -- reset the ucode and units
+    UCODE $!ucode
+    UPDATE ANNO
+    handle any
+    endhandle
+    !units.restoreSavedUnitsByPtype('DIST')
+  endmethod
+
+  -----------------------------------------------------------------
+  -- Method to return direction of flat side of box:
+  --  base plate direction
+  --  stiffener direction
+  -- This is used during dimensioning of baseplates and stiffeners.
+  -----------------------------------------------------------------
+  define method .boxdir(!box is DBREF) is DIRECTION
+    if (!box.xlen.lt(!box.ylen) and !box.xlen.lt(!box.zlen)) then
+      -- xlen is the smallest
+      return (!box.pdir[1])
+    elseif (!box.ylen.lt(!box.xlen) and !box.ylen.lt(!box.zlen)) then
+      -- ylen is the smallest
+      return (!box.pdir[2])
+    elseif (!box.zlen.lt(!box.xlen) and !box.zlen.lt(!box.ylen)) then
+      -- zlen is the smallest
+      return (!box.pdir[3])
+    else
+      -- oh crap - they are all the same size use zlen as direction
+      return (!box.pdir[3])
+    endif
+  endmethod
+
+-- End of Object - mdsabadimstl

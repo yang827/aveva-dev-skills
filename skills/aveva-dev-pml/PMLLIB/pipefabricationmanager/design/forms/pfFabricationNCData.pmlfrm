@@ -1,0 +1,1575 @@
+--------------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            pfFabricationNCData.pmlfrm
+--   Type:          Form Definition
+--   Group:         Pipe Fabrication
+--     Keyword:     PF
+--   Module:        Design
+--   Replaces:
+--
+-- Author:          DoHyoung Kim (Bright)
+-- Created:         Tuesday 6th December 2012
+--
+-- Description:     Form for Creating Pipe Piece NC Reports
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  addPipePieces()                  -                   populate the grid for pipe pieces with the given scope element
+--  browseFolder()                   -                   select a folder for the output files
+--  exportNCData(ARRAY,STRING)       -                   export the NC data files
+--  exportNCDataBenFormat(ARRAY,STRING) -
+--  exportToExcel()                  -                   save grid data to excel file
+--  getDateTimeString()              STRING              return the current date & time string
+--  getFileExtension()               STRING
+--  getFileNameFromElementName(STRING,STRING) STRING              return a safe file name string from the given element name
+--  getUniqueFileName(STRING,REAL)   STRING              return a unique file name
+--  getWallThickness(DBREF)          REAL                get tube wall thickness of the given pipe piece element
+--  loadDefaults()                   -                   load default values from storage
+--  navigateTo()                     -                   navigate to the selected pipe piece in the design explorer
+--  onClickExportNCData()            -                   validate all form values and execute exporting NC data files
+--  onGridPipePiecesAfterSelectChange(ARRAY) -                   show nc file output of the selected pipe piece
+--  onInitialize()                   -                   initialize this form
+--  onShowPopupMenu(ARRAY)           -                   show context menu
+--  pfFabricationNCData()            -                   constructor
+--  saveDefaults()                   -                   save default values to storage
+--  viewNCData(BOOLEAN,BOOLEAN)      -                   show nc file output
+--
+--------------------------------------------------------------------------------
+import 'GridControl'
+handle any
+endhandle
+
+import 'PMLFileBrowser'
+handle any
+endhandle
+
+-- Define form
+setup form !!pfFabricationNCData dialog dock
+
+  using namespace 'Aveva.Pdms.Presentation'
+
+  !this.formTitle  = 'Fabrication NC Data'
+  !this.initCall   = '!this.onInitialize()'
+
+  path right
+  button .btnAddPipePieces 'CE' callback '!this.addPipePieces()' wid 10
+  para   .parCE text '<none>' wid 25
+
+  path down
+  para .paraGridTitle at xmin.btnAddPipePieces text 'Pipe Pieces:'
+  container .netControlPipePieces PMLNETCONTROL 'PipePieces' at ymax.paraGridTitle anchor all wid 70 hei 20
+  toggle .togViewNCData 'View NC Data when selected' anchor l+b callback '!this.viewNCData(false, false)'
+  path right
+  toggle .togExportBen  'Create .ben data files' anchor l+b
+  path down
+
+  frame .frmOption 'Options' anchor l+b+r at x0 wid.netControlPipePieces
+    option .optSaveOption 'File' tagwid 6 wid 15
+    option .optNameOption 'Name' tagwid 6 wid 15
+    text   .txtTarget     'Folder' at xmin.optNameOption anchor l+r tagwid 6 wid 38 is STRING
+    path right
+    button .btnFolder     'Browse...' pixmap width 16 height 16 anchor r callback '!this.browseFolder()'
+    path down
+
+    --toggle .togXYZ        'XYZ Bending Table' at x 6
+    button .btnSaveOptions 'Save Options' at x 6 callback '!this.saveDefaults()'
+  exit
+
+  button .btnStop   'Stop'   anchor b+r at xmax.netControlPipePieces - size wid 8
+  path left
+  button .btnExport 'Export' anchor b+r callback '!this.onClickExportNCData()' wid 8
+
+  member .gridPipePieces    is NETGRIDCONTROL
+
+  member .scopeRef          is DBREF
+
+  member .currentFile       is STRING
+
+  -- variables for displaying progress bar
+  member .progressStep      is REAL
+
+exit
+
+--------------------------------------------------------------------------------
+--
+-- Method:      pfFabricationNCData
+--
+-- Description: constructor
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .pfFabricationNCData()
+
+  -- initialise grid controls
+  using namespace 'Aveva.Pdms.Presentation'
+
+  !this.gridPipePieces  = object NETGRIDCONTROL()
+  !this.netControlPipePieces.control = !this.gridPipePieces.handle()
+  -- Fix for Issue 95171 (SI-56530), filter added
+  !this.gridPipePieces.columnExcelFilter(true)
+  !this.gridPipePieces.outlookGroupStyle(false)
+  !this.gridPipePieces.fixedHeaders(false)
+  !this.gridPipePieces.fixedRows(false)
+  !this.gridPipePieces.allGridEvents(true)
+  !this.gridPipePieces.extendLastColumn(true)
+
+  --!this.frmOption.expanded = false
+
+  !saveOptionsDtext = 'One File,By Pipe,By Pipe Spool,By Pipe Piece'
+  !saveOptionsRtext = 'BY_ONE,BY_PIPE,BY_PIPE_SPOOL,BY_PIPE_PIECE'
+  !this.optSaveOption.dtext = !saveOptionsDtext.split(',')
+  !this.optSaveOption.rtext = !saveOptionsRtext.split(',')
+
+  !nameOptionsDtext = 'Element Name,Date & Sequence'
+  !nameOptionsRtext = 'ELEMENT_NAME,DATE_SEQUENCE'
+  !this.optNameOption.dtext = !nameOptionsDtext.split(',')
+  !this.optNameOption.rtext = !nameOptionsRtext.split(',')
+
+  var !pdmsUser evar pdmsUser
+
+  !this.txtTarget.val = !pdmsUser
+
+  !this.btnFolder.addPixmap(!!pml.getPathname('fileopen16.png'))
+
+  -- initialize grid control
+  !headings = object ARRAY()
+  !headings[1] = 'PPIECE'
+  !headings[2] = 'PSPOOL'
+  !headings[3] = 'Pipe Piece'
+  !headings[4] = 'Pipe Spool'
+  !headings[5] = 'Valid'
+  -- Fix for Issue 95171 (SI-56530), bore column added
+  !headings[6] = 'Bore'
+  --//
+  !headings[7] = 'Bending Machine'
+
+  -- Fix For Issue 97279 (SI-57610) 12.1.SP4#DVD RC1 - PF - Bending Machine NC Data - File Viewing
+  !headings[8] = 'NC File'
+  !headings[9] = 'NC_FILE'
+  --//
+
+  using namespace 'Aveva.Pdms.Presentation'
+  !dataSource = object NETDATASOURCE('Pipe Pieces', !headings, object ARRAY())
+  !this.gridPipePieces.bindToDataSource(!dataSource)
+  !this.gridPipePieces.setColumnVisibility(1, false)
+  !this.gridPipePieces.setColumnVisibility(2, false)
+  !this.gridPipePieces.setColumnVisibility(9, false)
+  !this.gridPipePieces.setColumnTextAlignment('Bore', 'RIGHT')
+  !this.gridPipePieces.autoFitColumns()
+
+  !this.gridPipePieces.addEventHandler('AfterSelectChange', !this, 'onGridPipePiecesAfterSelectChange')
+  !this.gridPipePieces.addEventHandler('OnPopup', !this, 'onShowPopupMenu')
+
+  -- initialize context menu
+  !this.newMenu('popupMenu')
+  !this.popupMenu.add('CALLBACK', 'View NC Data',         '!this.viewNCData(true, false)',              'VIEW_NC')
+  !this.popupMenu.add('SEPARATOR')
+  !this.popupMenu.add('CALLBACK', 'Select All',           '!this.gridPipePieces.selectAllRows()',       'SELECT_ALL')
+  !this.popupMenu.add('CALLBACK', 'Unselect All',         '!this.gridPipePieces.clearRowSelection()',   'UNSELECT_ALL')
+  !this.popupMenu.add('SEPARATOR')
+  !this.popupMenu.add('CALLBACK', 'Navigate To',          '!this.navigateTo()',                         'NAVIGATE_TO')
+  !this.popupMenu.add('SEPARATOR')
+  !this.popupMenu.add('CALLBACK', 'Export to Excel...',   '!this.exportToExcel()',                      'EXPORT_TO_EXCEL')
+  !this.popupMenu.add('CALLBACK', 'Print Preview...',     '!this.gridPipePieces.printPreview()',        'PRINT_PREVIEW')
+  !this.netControlPipePieces.popup = !this.popupMenu
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onInitialize
+--
+-- Description: initialize this form
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onInitialize()
+  --217792
+  import 'PipeFabricationAddin'
+  handle ANY
+  endhandle
+  --/217792
+  -- reload context data
+  if defined(!!pfContext) then
+    !!pfContext.delete()
+  endif
+
+  !context = object PFCONTEXT()
+  !context.globalInstance()
+
+  !this.loadDefaults()
+
+  !this.addPipePieces()
+
+  !this.btnStop.active = false
+
+endmethod
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      addPipePieces
+--
+-- Description: search and add the results to the grid with the given scope
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .addPipePieces()
+
+  if !!ce.type.eq('SITE') then
+    !answer = !!alert.confirm('Are you sure to add all pipe pieces from SITE level?')
+    if !answer.neq('YES') then
+      return
+    endif
+  endif
+
+  !data = object ARRAY()
+
+  if !!ce.type.eq('PPIECE') then
+
+    -- add selected pipe piece only
+
+    !ppieceRef = !!ce
+    !pspoolRefs = !!collectAllFor('PSPOOL', '', !ppieceRef.owner.owner)
+    do !pspoolRef values !pspoolRefs
+      if !pspoolRef.pprfa.findFirst(!ppieceRef).set() then
+
+        !datum = object ARRAY()
+        !datum[1] = !ppieceRef
+        !datum[2] = !pspoolRef
+        !data.append(!datum)
+
+        break
+      endif
+    enddo
+
+  else
+
+    -- add all pipe pieces under CE
+    if !!ce.type.eq('PSPOOL') then
+      !scopeRef = !!ce
+    else
+      !pipeRef = PIPE OF CE
+      handle ANY
+        !scopeRef = !!ce
+      elsehandle NONE
+        !scopeRef = !pipeRef
+      endhandle
+    endif
+
+    !this.parCE.val = !scopeRef.flnm
+
+    !pspoolRefs = !!collectAllFor('PSPOOL', '', !scopeRef)
+    do !pspoolRef values !pspoolRefs
+      do !ppieceRef values !pspoolRef.pprfa
+
+        !datum = object ARRAY()
+        !datum[1] = !ppieceRef
+        !datum[2] = !pspoolRef
+        !data.append(!datum)
+      enddo
+    enddo
+
+  endif
+
+  !this.gridPipePieces.clearGridData()
+--217792
+ !folderLocation  = !this.txtTarget.val
+ using namespace 'Aveva.Pdms.PipeFabrication.Xml'
+ !dir = object PMLXmlDocument()
+ !newAr = !dir.GetFileName(!folderLocation)
+--/217792
+  do !datum values !data
+
+    !ppieceRef = !datum[1]
+    !pspoolRef = !datum[2]
+
+    !row = object ARRAY()
+    !row[1] = !ppieceRef.refno.string()
+    !row[2] = !pspoolRef.refno.string()
+    !row[3] = !ppieceRef.namn
+    !row[4] = !pspoolRef.namn
+    !row[5] = !ppieceRef.ppfmcv.string()
+
+    -- Fix for Issue 95171 (SI-56530), bore column added
+    !row[6] = !ppieceRef.abore.string()
+
+    if !ppieceRef.bendmc.badref().not() then
+      !row[7] = !ppieceRef.bendmc.namn
+    else
+      !row[7] = ''
+    endif
+    --217792
+    do !storedFiles values !newAr
+    !errorFile = object FILE(!storedFiles)
+    if (!errorFile.exists()) then
+      !errorFile.open('READ')
+      !errorContents = !errorFile.readFile()
+      do !i values !errorContents
+         if (!i.match(!datum[1].namn.string()).neq(0)) then
+          !row[8] = !storedFiles.split('\').last()
+          break
+        else
+          !row[8] = ''
+        endif
+      enddo
+    else
+      !row[8] = ''
+    endif
+      if (!row[8].eq('').not()) then
+        break
+      endif
+    enddo
+   --/217792
+    !row[9] = ''
+
+    !this.gridPipePieces.addRow(!row)
+
+    if !ppieceRef.ppfmcv then
+      !image = !!pml.getPathname('greenball12.png')
+    else
+      !image = !!pml.getPathname('redball12.png')
+    endif
+
+    !count = !this.gridPipePieces.getNumberRows()
+    !this.gridPipePieces.setCellImage(!count, 5, !image)
+
+  enddo
+
+  !this.gridPipePieces.autoFitColumns()
+
+endmethod
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getDateTimeString
+--
+-- Description: return the current data & time string
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--    STRING      the current date & time string
+--------------------------------------------------------------------------------
+define method .getDateTimeString() is STRING
+
+  !dateTime = object DATETIME()
+  !prefix = !dateTime.year().string()
+  if !dateTime.month().lt(10) then
+    !prefix = !prefix + '0'
+  endif
+  !prefix = !prefix & !dateTime.month()
+  if !dateTime.date().lt(10) then
+    !prefix = !prefix + '0'
+  endif
+  !prefix = !prefix & !dateTime.date()
+  if !dateTime.hour().lt(10) then
+    !prefix = !prefix + '0'
+  endif
+  !prefix = !prefix & !dateTime.hour()
+  if !dateTime.minute().lt(10) then
+    !prefix = !prefix + '0'
+  endif
+  !prefix = !prefix & !dateTime.minute()
+  if !dateTime.second().lt(10) then
+    !prefix = !prefix + '0'
+  endif
+  !prefix = !prefix & !dateTime.second()
+  !prefix = !prefix + '-'
+  return !prefix
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getUniqueFileName
+--
+-- Description: return a unique file name for NC data file.
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      file name
+--    2   R      REAL        start number for sequence
+-- Return:
+--   [Data Type] [Description]
+--    STRING      unique file name
+--------------------------------------------------------------------------------
+define method .getUniqueFileName(!filePath is STRING, !next is REAL) is STRING
+
+  !sequence = !next
+  do
+    --!fileName = !filePath & !sequence & '.xml'
+    !fileName = !filePath & !sequence & !this.getFileExtension()
+
+    !file = object FILE(!fileName)
+    if !file.exists().not() then
+      !next = !sequence + 1
+      return !fileName
+    endif
+    !sequence = !sequence + 1
+  enddo
+
+  return ''
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getFileNameFromElementName
+--
+-- Description: return a save file name from the given element name
+--              All invalid characters are replaced with '_'
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      folder
+--    2   R      STRING      element name
+-- Return:
+--   [Data Type] [Description]
+--    STRING      safe file name
+--------------------------------------------------------------------------------
+define method .getFileNameFromElementName(!folderPath is STRING, !elementName is STRING) is STRING
+
+  !fileName = !elementName.replace('\', '_')
+  !fileName = !fileName.replace('/', '_')
+  !fileName = !fileName.replace(':', '_')
+  !fileName = !fileName.replace('*', '_')
+  !fileName = !fileName.replace('?', '_')
+  !fileName = !fileName.replace('"', '_')
+  !fileName = !fileName.replace('<', '_')
+  !fileName = !fileName.replace('>', '_')
+  !fileName = !fileName.replace('|', '_')
+
+  -- Fix Issue 98099, 12.1.SP4#RC4- All files are not exported when PSPOOLS have same name with different cases.
+  -- return !folderPath + !fileName + '.xml'
+
+  !fileName = !folderPath + !fileName
+  !fullPath = !fileName + !this.getFileExtension()
+  !file = object FILE(!fullPath)
+  if !file.exists().not() then
+    return !fullPath
+  endif
+
+  !sequence = 1
+  return !this.getUniqueFileName(!fileName & '-', !sequence)
+  --//
+endmethod
+
+define method .getFileExtension() is STRING
+  if (!this.togExportBen.val) then
+    !extension = '.ben'
+  else
+    !extension = '.xml'
+  endif
+
+  return !extension
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onClickExportNCData
+--
+-- Description: validate all input form values and execute exporting NC data files.
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onClickExportNCData()
+
+  using namespace 'Aveva.Pdms.Presentation'
+
+  !rowTags = !this.gridPipePieces.getSelectedRowTags()
+  if !rowTags.empty() then
+    !!alert.message('Select pipe pieces!')
+    return
+  endif
+
+  !selectedItems = object ARRAY()
+
+  -- validate PSPOOL & PPIECE
+  do !rowTag values !rowTags
+
+    !row = !this.gridPipePieces.getRow(!rowTag)
+
+    -- PPIECE
+    !ppieceRef = !row[1].dbref()
+    handle ANY
+      !this.gridPipePieces.clearRowSelection()
+      !selection = object ARRAY()
+      !selection.append(!rowTag)
+      !this.gridPipePieces.setSelectedRowTags(!selection)
+      !!alert.error('Cannot get PPIECE ' + !row[6])
+      return
+    endhandle
+
+    -- PSPOOL
+    !pspoolRef = !row[2].dbref()
+    handle ANY
+      !this.gridPipePieces.clearRowSelection()
+      !selection = object ARRAY()
+      !selection.append(!rowTag)
+      !this.gridPipePieces.setSelectedRowTags(!selection)
+      !!alert.error('Cannot get PSPOOL ' + !row[7])
+      return
+    endhandle
+
+    if !ppieceRef.ppfmcv.not() then
+      !!alert.error('Select only valid pipe pieces!')
+      return
+    endif
+
+    !item = object ARRAY()
+    !item[1] = !ppieceRef
+    !item[2] = !pspoolRef
+    !item[3] = !rowTag
+    !selectedItems.append(!item)
+
+  enddo
+  --//
+
+  -- validate folder
+  !folderPath = !this.txtTarget.val.trim()
+  if !folderPath.empty() then
+    !!alert.message('Input target folder!')
+    !this.frmOption.expanded = true
+    !this.txtTarget.setFocus()
+    return
+  endif
+
+  !folder = object FILE(!folderPath)
+  if !folder.exists().not() then
+    !!alert.message(|'| + !folderPath + |' does not exist!|)
+    return
+  endif
+
+  if !folder.type().neq('DIRECTORY') then
+    !!alert.message(|'| + !folderPath + |' is not directory!|)
+    return
+  endif
+
+  !folderPath = !folder.fullName() + '\'
+
+  !saveOption = !this.optSaveOption.selection('rtext')
+  !nameOption = !this.optNameOption.selection('rtext')
+
+  !filePath = ''
+  if !nameOption.eq('DATE_SEQUENCE') then
+    !filePath = !folderPath + !this.getDateTimeString()
+  endif
+  --//
+
+
+  -- initialize progress
+  !processed = 0
+  !this.btnStop.active = true
+  !this.progressStep = 100 / !selectedItems.size()
+  !!fmSys.setInterrupt(!!pfFabricationNCData.btnStop)
+  !!fmSys.setProgress(0)
+
+  !sequence = 1
+
+  if !saveOption.eq('BY_PIPE_PIECE') then
+
+    -- export all pipe pieces selected
+
+    do !item values !selectedItems
+
+      !items = object ARRAY()
+      !items.append(!item)
+
+      -- get file name
+      if !nameOption.eq('ELEMENT_NAME') then
+        !fileName = !this.getFileNameFromElementName(!folderPath , !item[1].namn)
+      else
+        !fileName = !this.getUniqueFileName(!filePath, !sequence)
+      endif
+
+      -- export
+      !this.exportNCData(!items, !fileName)
+      handle ANY
+        !!alert.error(!!error.text)
+      endhandle
+
+      break if !!fmSys.interrupt()
+
+      !processed = !processed + 1
+      !!fmSys.setProgress(!processed * !this.progressStep)
+
+    enddo
+
+  elseif !saveOption.eq('BY_PIPE_SPOOL') then
+
+    -- group pipe pieces by spool
+
+    !pspoolRefs = object ARRAY()
+    !itemsBySpool = object ARRAY()
+
+    do !item values !selectedItems
+
+      !index = !pspoolRefs.findFirst(!item[2])
+      if !index.unset() then
+        !items = object ARRAY()
+        !items.append(!item)
+        !pspoolRefs.append(!item[2])
+        !itemsBySpool.append(!items)
+      else
+        !itemsBySpool[!index].append(!item)
+      endif
+    enddo
+
+    -- export data
+    do !i indices !itemsBySpool
+
+      -- get file name
+      if !nameOption.eq('ELEMENT_NAME') then
+        !fileName = !this.getFileNameFromElementName(!folderPath , !pspoolRefs[!i].namn)
+      else
+        !fileName = !this.getUniqueFileName(!filePath, !sequence)
+      endif
+
+      -- export
+      !this.exportNCData(!itemsBySpool[!i], !fileName)
+      handle ANY
+        !!alert.error(!!error.text)
+      endhandle
+
+      break if !!fmSys.interrupt()
+
+      !processed = !processed + !itemsBySpool[!i].size()
+      !!fmSys.setProgress(!processed * !this.progressStep)
+
+    enddo
+  elseif !saveOption.eq('BY_PIPE') then
+
+    -- group pipe pieces by pipe
+    !pipeRefs = object ARRAY()
+    !itemsByPipe = object ARRAY()
+
+    do !item values !selectedItems
+
+      !pipeRef = !item[2].owner.owner
+      !index = !pipeRefs.findFirst(!pipeRef)
+      if !index.unset() then
+        !items = object ARRAY()
+        !items.append(!item)
+        !pipeRefs.append(!pipeRef)
+        !itemsByPipe.append(!items)
+      else
+        !itemsByPipe[!index].append(!item)
+      endif
+    enddo
+
+    -- export data
+    do !i indices !itemsByPipe
+
+      -- get file name
+      if !nameOption.eq('ELEMENT_NAME') then
+        !fileName = !this.getFileNameFromElementName(!folderPath , !pipeRefs[!i].namn)
+      else
+        !fileName = !this.getUniqueFileName(!filePath, !sequence)
+      endif
+
+      -- export
+      !this.exportNCData(!itemsByPipe[!i], !fileName)
+      handle ANY
+        !!alert.error(!!error.text)
+      endhandle
+
+      break if !!fmSys.interrupt()
+
+      !processed = !processed + !itemsByPipe[!i].size()
+      !!fmSys.setProgress(!processed * !this.progressStep)
+
+    enddo
+
+  else
+
+    -- export all pipe pieces in one file
+    if !nameOption.eq('ELEMENT_NAME') then
+      !fileBrowser = object PMLFILEBROWSER('SAVE')
+      if (!this.togExportBen.val) then
+        !fileBrowser.show(!folderPath, 'nc.ben', 'Save as', false, 'BEN files (*.ben)|*.ben|All files (*.*)|*.*', 1)
+      else
+        !fileBrowser.show(!folderPath, 'nc.xml', 'Save as', false, 'XML files (*.xml)|*.xml|All files (*.*)|*.*', 1)
+      endif
+      !fileName = !fileBrowser.file()
+      if !fileName.empty() then
+        return
+      endif
+    else
+      !fileName = !this.getUniqueFileName(!filePath, !sequence)
+    endif
+
+    -- export
+    !this.exportNCData(!selectedItems, !fileName)
+    handle ANY
+      !!alert.error(!!error.text)
+    endhandle
+
+  endif
+
+  !!fmSys.setProgress(0)
+  !this.btnStop.active = false
+
+  --!!alert.message('Completed!')
+
+  !this.viewNCData(false, true)
+
+endmethod
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      exportNCData
+--
+-- Description: export NC data files in XML.
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       target items
+--    2   R      STRING      NC data file name
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .exportNCData(!items is ARRAY, !fileName is STRING)
+  if (!this.togExportBen.val) then
+    !this.exportNCDataBenFormat(!items, !fileName)
+    return
+  endif
+
+  using namespace 'Aveva.Pdms.PipeFabrication.Xml'
+
+  -- reset old value in 'NC File' column
+  do !item values !items
+    !this.gridPipePieces.setCellValue(!item[3], 'NC File', '')
+    !this.gridPipePieces.setCellValue(!item[3], 'NC_FILE', '')
+  enddo
+
+  -- export NC data
+  !spoolManager = object PFPIPESPOOLMANAGER()
+
+  !xml = object PMLXMLWRITER()
+  !xml.create(!fileName, 'utf-8')
+
+  !xml.writeStartDocument()
+  !xml.writeStartElement('NCData')
+
+  -- write envelope data
+  !dateTime = object DATETIME()
+  !session  = CURRENT SESSION
+  !module = !!module()
+  !xml.writeAttribute('CreatedBy', !module.name + ' ' + !module.version + ' (' + !module.compileOs + ') (' + !module.compileDate + ')')
+  !xml.writeAttribute('DateTime', !dateTime.string())
+  !xml.writeAttribute('ComputerName', !session.host)
+  !xml.writeAttribute('UserName', !session.name)
+
+  do !i indices !items
+
+    if !!fmSys.interrupt() then
+       return
+    endif
+
+    !ppieceRef = !items[!i][1]
+    !pspoolRef = !items[!i][2]
+
+    !xml.writeStartElement('PipePiece')
+    !xml.writeAttribute('Name', !ppieceRef.namn)
+    !xml.writeAttribute('PipeSpool', !pspoolRef.namn)
+    !xml.writeAttribute('Pipe', !ppieceRef.owner.owner.namn)
+
+    !bendingMachine = ''
+    if !ppieceRef.bendmc.badref().not() then
+      !bendingMachine = !ppieceRef.bendmc.namn
+    endif
+    !xml.writeAttribute('BendingMachine', !bendingMachine)
+
+    !weldingMachine = ''
+    if !ppieceRef.weldmc.badref().not() then
+      !weldingMachine = !ppieceRef.weldmc.namn
+    endif
+    !xml.writeAttribute('WeldingMachine', !weldingMachine)
+
+    !xml.writeAttribute('CutLength', !ppieceRef.:PFCutLength.string(!!distanceFmt))
+
+    !outDiameter = !ppieceRef.aodiam
+    !bore = !ppieceRef.abore
+
+    !wallThickness = !this.getWallThickness(!ppieceRef)
+
+    !xml.writeAttribute('Bore', !bore.string())
+    !xml.writeAttribute('OD', !outDiameter.string(!!distanceFmt))
+    !xml.writeAttribute('WallThickness', !wallThickness.string(!!distanceFmt))
+
+    -- get material
+    !material = ''
+    !tubeSpco = !ppieceRef.spref
+    if !tubeSpco.badref().not() then
+      if !tubeSpco.matxt.badref().not() then
+        !material = !tubeSpco.matxt.xtext
+      elseif !tubeSpco.matref.badref().not() then
+        !material = !tubeSpco.matref.description
+      endif
+    endif
+
+    !xml.writeAttribute('Material', !material)
+
+    if !ppieceRef.ppfmcv and !ppieceRef.ppmodi.not() then
+      -- valid for fabrication
+
+      -- find bend component
+      !bendRef = object DBREF()
+      do !partRef values !ppieceRef.cmprfa
+        if !partRef.type.eq('BEND') then
+          !bendRef = !partRef
+          break
+        endif
+      enddo
+
+      if !bendRef.badref().not() then
+        -- bending needed
+
+        if !ppieceRef.mcbent then
+          -- machine bent
+          !xml.writeAttribute('BendRadius', !bendRef.radius.string(!!distanceFmt))
+        else
+          !xml.writeAttribute('BendRadius', '')
+        endif
+
+        -- write bending activities
+        !bendingTable = !spoolManager.getBendingTable(!ppieceRef, !!pfContext.xyzBendingTable)
+        if !bendingTable.set() then
+
+          !xml.writeAttribute('LengthInsideMachine', !bendingTable.lengthInsideMachine.string(!!distanceFmt))
+          !xml.writeAttribute('LengthOutsideMachine', !bendingTable.lengthOutsideMachine.string(!!distanceFmt))
+
+          if !!pfContext.xyzBendingTable then
+            !xml.writeStartElement('BendingTable')
+            do !activity values !bendingTable.activities
+              !xml.writeStartElement('Vertex')
+              !xml.writeAttribute('X', !activity.feed.string(!!distanceFmt))
+              !xml.writeAttribute('Y', !activity.rotate.string(!!distanceFmt))
+              !xml.writeAttribute('Z', !activity.bend.string(!!distanceFmt))
+              !xml.writeEndElement()
+            enddo
+            !xml.writeEndElement()
+          else
+            !xml.writeStartElement('BendingTable')
+
+            do !j indices !bendingTable.activities
+
+              !xml.writeStartElement('BendingActivity')
+
+              !activity = !bendingTable.activities[!j]
+
+              !xml.writeAttribute('Feed', !activity.feed.string(!!distanceFmt))
+              !xml.writeAttribute('Rotate', !activity.rotate.string(!!angleFmt))
+              !xml.writeAttribute('Bend',  !activity.bend.string(!!angleFmt))
+
+              !xml.writeEndElement()
+            enddo
+            !xml.writeEndElement()
+          endif
+        endif
+      else
+        -- straight pipe
+        !xml.writeAttribute('BendRadius', '')
+        !xml.writeAttribute('LengthInsideMachine', '')
+        !xml.writeAttribute('LengthOutsideMachine', '')
+        !xml.writeComment('Straight Pipe Piece! - No Bending Table')
+      endif
+
+    else
+      -- requires validation
+      !xml.writeAttribute('BendRadius', '')
+      !xml.writeAttribute('LengthInsideMachine', '')
+      !xml.writeAttribute('LengthOutsideMachine', '')
+      !xml.writeComment('INVALID Pipe Piece! - No Bending Table (The Spool needs a successful validation)')
+    endif
+
+    !xml.writeEndElement()
+
+    !!fmSys.setProgress(!!fmSys.progress() + !this.progressStep)
+
+  enddo
+
+  !xml.writeEndElement()
+  !xml.writeEndDocument()
+  !xml.close()
+
+  -- set value to 'NC File' column
+  !file = object FILE(!fileName)
+  if !file.exists() then
+    do !item values !items
+      !this.gridPipePieces.setCellValue(!item[3], 'NC File', !file.entry())
+      !this.gridPipePieces.setCellValue(!item[3], 'NC_FILE', !file.fullName())
+    enddo
+  endif
+
+endmethod
+
+define method .exportNCDataBenFormat(!items is ARRAY, !fileName is STRING)
+  !header = '    Mach NoA Dir     B.Rad    Ch.sum    B_Length      O.D.     Thk     '
+--                101   3   1  266.700     891       688    88.900   5.490
+--           1234567812341234123456789123456781234567890123456789012345678
+  !widths = split('8,4,4,10,10,12,10,8',',')
+--!widths = split('8,4,7,10,10,16,9',',')
+
+  !bendActivityHeader = '                     ACT      ACTION     OPE'
+--                                              1        (Feed)      -543.509
+--                                            1231234567890124512345678901234
+  !bendActivityWidths = split('24,15,14',',')
+
+  -- reset old value in 'NC File' column
+  do !item values !items
+    !this.gridPipePieces.setCellValue(!item[3], 'NC File', '')
+    !this.gridPipePieces.setCellValue(!item[3], 'NC_FILE', '')
+  enddo
+
+  !file = object FILE(!fileName)
+--  !file.open('OVERWRITE')
+
+  !spoolManager = object PFPIPESPOOLMANAGER()
+
+  !table = object ARRAY()
+
+  do !i indices !items
+    if !!fmSys.interrupt() then
+       return
+    endif
+
+    !ppieceRef = !items[!i][1]
+    !pspoolRef = !items[!i][2]
+
+    !table.append('Pipe: ' &!pspoolRef.owner.owner.flnm)
+    !table.append('PipeSpool: ' &!pspoolRef.flnm)
+    !table.append('Name: ' &!ppieceRef.name)
+    !table.append('')
+
+    !bendingMachine = ' '
+    if !ppieceRef.bendmc.badref().not() then
+      !bendingMachine = !ppieceRef.bendmc.namn
+    endif
+
+    !noa = ' '
+
+    if (!ppieceRef.bWithF.not()) then
+      !bendingClutch =  '0'
+    else
+      !bendingClutch =  '1'
+    endif
+
+    !cutLength = !ppieceRef.:PFCutLength.string(!!distanceFmt).real().value()
+
+    !outDiameter   = !ppieceRef.aodiam.string(!!boreFmt).real().value()
+    !wallThickness = !this.getWallThickness(!ppieceRef).real().value()
+
+    -- get material
+    !material = ''
+    !tubeSpco = !ppieceRef.spref
+    if !tubeSpco.badref().not() then
+      if !tubeSpco.matxt.badref().not() then
+        !material = !tubeSpco.matxt.xtext
+      elseif !tubeSpco.matref.badref().not() then
+        !material = !tubeSpco.matref.description
+      endif
+    endif
+
+    !bendRadius = '0'
+    !checkSum   = ' '
+
+    !checkSumValue = !outDiameter.value() * 2
+
+--    !bendLength = ' '
+
+    !aelrfa = !ppieceRef.aelrfa
+    if (!ppieceRef.weldmc.badref().not() and !aelrfa.set()) then
+      if (!aelrfa.first().hardType eq 'FLAN' or !aelrfa.last().hardType eq 'FLAN') then
+        !boltHole1 = 0
+        !boltHole2 = 0
+
+        !flangeUtility = object PFFLANGEUTILITY()
+        if (!aelrfa.first().hardType eq 'FLAN') then
+          !boltHole1   = !flangeUtility.getBoltNumber(!aelrfa.first(),0)
+        endif
+
+        if (!aelrfa.last().hardType eq 'FLAN') then
+          !boltHole2   = !flangeUtility.getBoltNumber(!aelrfa.last(),0)
+        endif
+
+        !boltHole = max(!boltHole1, !boltHole2)
+        !checkSumValue = !checkSumValue + 10 * !boltHole
+      endif
+    endif
+
+    !bendActivityResult = object ARRAY()
+
+    if !ppieceRef.ppfmcv and !ppieceRef.ppmodi.not() then
+      -- valid for fabrication
+
+      !bendCount = 0
+      do !partRef values !ppieceRef.cmprfa
+        skip if (!partRef.type ne 'BEND')
+
+        !bendCount = !bendCount + 1
+      enddo
+
+      if (!bendCount / 2 eq 0) then
+        !factor = 2
+      else
+        !factor = 1
+      endif
+
+      -- find bend component
+      !bendRef = object DBREF()
+      do !partRef values !ppieceRef.cmprfa
+        if !partRef.type.eq('BEND') then
+          !bendRef = !partRef
+          break
+        endif
+      enddo
+
+      if !bendRef.badref().not() then
+        -- bending needed
+        if !ppieceRef.mcbent then
+          !bendRadius = !bendRef.radius.string(!!distanceFmt).real().value().string()
+        endif
+
+        !bendingTable = !spoolManager.getBendingTable(!ppieceRef, !!pfContext.xyzBendingTable)
+        --!bendingTable = !spoolManager.getBendingTable(!ppieceRef, true)
+
+        if !bendingTable.set() then
+          !noa = !bendingTable.activities.size().string()
+
+--          !bendLength = !bendingTable.lengthInsideMachine.string(!!distanceFmt)
+--          !bendLength = !bendingTable.lengthOutsideMachine.string(!!distanceFmt)
+
+          !feed       = ' '
+          !rotate     = ' '
+          !bend       = ' '
+
+          !bendActivityResult.append(!bendActivityHeader)
+
+          do !j indices !bendingTable.activities
+            !activity = !bendingTable.activities[!j]
+
+            !feed   = !activity.feed.string(!!distanceFmt).real().value().string()
+            if (!!pfContext.xyzBendingTable) then
+              !exportFmt = !!distanceFmt
+              !feedKey   = '(X)'
+              !rotateKey = '(Y)'
+              !bendKey   = '(Z)'
+            else
+              !exportFmt = !!angleFmt
+              !feedKey   = '(feed)'
+              !rotateKey = '(rotate)'
+              !bendKey   = '(bend)'
+            endif
+            !rotate = !activity.rotate.string(!exportFmt).real().value().string()
+            !bend   = !activity.bend.string(!exportFmt).real().value().string()
+
+            var !insAct     compose |1|       width $!bendActivityWidths[1] R
+            var !insAction  compose |$!feedKey|  width $!bendActivityWidths[2] R
+            var !insOper    compose |$!feed|  width $!bendActivityWidths[3] R
+
+            !insBendActivity = !insAct[1] & !insAction[1] & !insOper[1]
+            !bendActivityResult.append(!insBendActivity)
+
+            var !insAct     compose |2|         width $!bendActivityWidths[1] R
+            var !insAction  compose |$!rotateKey|  width $!bendActivityWidths[2] R
+            var !insOper    compose |$!rotate|  width $!bendActivityWidths[3] R
+
+            !insBendActivity = !insAct[1] & !insAction[1] & !insOper[1]
+            !bendActivityResult.append(!insBendActivity)
+
+            var !insAct     compose |3|         width $!bendActivityWidths[1] R
+            var !insAction  compose |$!bendKey|    width $!bendActivityWidths[2] R
+            var !insOper    compose |$!bend|    width $!bendActivityWidths[3] R
+
+            !insBendActivity = !insAct[1] & !insAction[1] & !insOper[1]
+            !bendActivityResult.append(!insBendActivity)
+
+            !checkSumValue = !checkSumValue + !factor * !activity.feed.value() + (3 - !factor ) * !activity.rotate.value() + !factor * !activity.bend.value()
+          enddo
+        endif
+
+      else
+        !bendActivityResult.append('<Straight Pipe Piece! - No Bending Table>')
+      endif
+    else
+      !bendActivityResult.append('<INVALID Pipe Piece! - No Bending Table (The Spool needs a successful validation)>')
+    endif
+
+    !checkSumValue = !checkSumValue.abs()
+    if (!checkSumValue gt 10000) then
+      !checkSumValue = !checkSumValue - 10000
+    endif
+
+    !checkSum = !checkSumValue.string(!!distanceFmt).real().value().string()
+    !table.append(!header)
+
+    var !insMach compose |$!bendingMachine| width $!widths[1] R
+    var !insNoa  compose |$!noa|            width $!widths[2] R
+    var !insDir  compose |$!bendingClutch|  width $!widths[3] R
+    var !insBrad compose |$!bendRadius|     width $!widths[4] R
+    var !insCS   compose |$!checkSum|       width $!widths[5] R
+    var !insBlen compose |$!cutLength|      width $!widths[6] R
+    var !insOd   compose |$!outDiameter|    width $!widths[7] R
+    var !insThk  compose |$!wallThickness|  width $!widths[8] R
+
+    !insertString = !insMach[1] & !insNoa[1] & !insDir[1] & !insBrad[1] & !insCS[1] & !insBlen[1] & !insOd[1] &  !insThk[1]
+    !table.append(!insertString)
+
+    if (!bendActivityResult.set()) then
+      !table.append('')
+      !table.append('')
+
+      do !insetStr values !bendActivityResult
+        !table.append(!insetStr)
+      enddo
+    endif
+
+    !table.append('')
+
+    !!fmSys.setProgress(!!fmSys.progress() + !this.progressStep)
+  enddo
+
+  !file.writeFile('OVER', !table)
+  !file.close()
+
+  -- set value to 'NC File' column
+  !file = object FILE(!fileName)
+  if !file.exists() then
+    do !item values !items
+      !this.gridPipePieces.setCellValue(!item[3], 'NC File', !file.entry())
+      !this.gridPipePieces.setCellValue(!item[3], 'NC_FILE', !file.fullName())
+    enddo
+  endif
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      saveDefaults
+--
+-- Description: save default values to storage
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .saveDefaults()
+
+
+  !lines = object ARRAY()
+  !lines[1] = 'NC_SAVE=' + !this.optSaveOption.selection('rtext')
+  !lines[2] = 'NC_FILENAME=' + !this.optNameOption.selection('rtext')
+  !lines[3] = 'NC_TARGET=' + !this.txtTarget.val
+  !lines[4] = 'NC_FORMAT=' + !this.togExportBen.val.string()
+
+  !pdmsUsers = !!evarSplit('PDMSUSER')
+  if !pdmsUsers.empty() then
+    return
+  endif
+
+  !pdmsUser = !pdmsUsers[1]
+  if !pdmsUser.subString(!pdmsUser.length()).neq('\') then
+    !pdmsUser = !pdmsUser + '\'
+  endif
+
+  !file = object FILE(!pdmsUser + 'pf-nc-defaults.dat')
+  !file.writeFile('OVERWRITE', !lines)
+  handle ANY
+    --!!alert.error('Cannot save defaults! (' + !!error.text + ')')
+  endhandle
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      loadDefaults
+--
+-- Description: load default values from storage
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .loadDefaults()
+
+  !file = object FILE('%PDMSUSER%' + 'pf-nc-defaults.dat')
+  !lines = !file.readFile()
+  handle ANY
+    --!!alert.error('Cannot load defaults! (' + !!error.text + ')')
+    return
+  endhandle
+
+  do !line values !lines
+    !fields = !line.split('=')
+    if !fields.size().gt(1) then
+
+      !key = !fields[1].trim().upCase()
+      !value = !fields[2].trim()
+
+      if !key.eq('NC_SAVE') then
+        !this.optSaveOption.select('rtext', !value)
+        handle ANY
+          !this.optSaveOption.val = 1
+        endhandle
+      elseif !key.eq('NC_FILENAME') then
+        !this.optNameOption.select('rtext', !value)
+        handle ANY
+          !this.optNameOption.val = 1
+        endhandle
+      --elseif !key.eq('NC_OVERWRITE') then
+      --  !this.togOverwrite.val = !value.boolean()
+      --  handle ANY
+      --    !this.togOverwrite.val = false
+      --  endhandle
+      elseif !key.eq('NC_TARGET') then
+        !this.txtTarget.val = !value.trim()
+      --elseif !key.eq('XYZ_BENDING_TABLE') then
+      --  !this.togXYZ.val = !value.boolean()
+      --  handle ANY
+      --    !this.togOverwrite.val = false
+      --  endhandle
+      elseif !key.eq('NC_FORMAT') then
+        !this.togExportBen.val = !value.boolean()
+        handle any
+          !this.togExportBen.val = false
+        endhandle
+      endif
+    endif
+  enddo
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      browseFolder
+--
+-- Description: select a folder in which the output files are saved
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .browseFolder()
+
+  using namespace 'Aveva.Pdms.Presentation'
+
+  -- Initialise variables
+  !folderBrowser = object PMLFOLDERBROWSER()
+
+  -- Show the folder browser
+  !folderBrowser.show('Select Output Folder',true)
+  !path = !folderBrowser.selectedPath()
+  if !path.empty() then
+    return
+  endif
+
+  -- Use the selected folder
+  !this.txtTarget.val = !path
+  handle any
+    !!alert.error(!!error.text)
+  endhandle
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getWallThickness
+--
+-- Description: get tube wall thickness of the given pipe piece element
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       pipe piece element
+-- Return:
+--   [Data Type] [Description]
+--    REAL        wall thickness
+--------------------------------------------------------------------------------
+define method .getWallThickness(!ppieceRef is DBREF) is REAL
+
+  !firstRef = !ppieceRef.pparef
+  !lastRef = !ppieceRef.pplref
+
+  if !firstRef.type.eq('BRAN') then
+    !wallThickness = !firstRef.hwallt
+    handle ANY
+    elsehandle NONE
+      return !wallThickness
+    endhandle
+  else
+    !wallThickness = !firstRef.lwallt
+    handle ANY
+    elsehandle NONE
+      return !wallThickness
+    endhandle
+  endif
+
+  do !memberRef values !ppieceRef.aelrfa
+    skip if (!memberRef.eq(!firstRef) or !memberRef.eq(!lastRef))
+
+    !wallThickness = !memberRef.atwall
+    handle ANY
+    elsehandle NONE
+      return !wallThickness
+    endhandle
+
+    !wallThickness = !memberRef.ltwall
+    handle ANY
+    elsehandle NONE
+      return !wallThickness
+    endhandle
+  enddo
+
+  return 0mm
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onShowPopupMenu
+--
+-- Description: shows a context menu
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onShowPopupMenu(!data is ARRAY)
+
+  !rowTags = !this.gridPipePieces.getSelectedRowTags()
+  !rowCount = !this.gridPipePieces.getNumberRows()
+
+  !enableViewNC = false
+  if !rowTags.empty().not() then
+    !row = !this.gridPipePieces.getRow(!rowTags.last())
+    !enableViewNC = !row[8].empty().not()
+  endif
+
+  !this.popupMenu.setFieldProperty('NAVIGATE_TO',     'ACTIVE', !rowTags.empty().not())
+  !this.popupMenu.setFieldProperty('EXPORT_TO_EXCEL', 'ACTIVE', !rowCount.gt(0))
+  !this.popupMenu.setFieldProperty('PRINT_PREVIEW',   'ACTIVE', !rowCount.gt(0))
+  !this.popupMenu.setFieldProperty('SELECT_ALL',      'ACTIVE', !rowCount.gt(0))
+  !this.popupMenu.setFieldProperty('UNSELECT_ALL',    'ACTIVE', !rowCount.gt(0))
+  !this.popupMenu.setFieldProperty('VIEW_NC',         'ACTIVE', !enableViewNC)
+
+  !this.netControlPipePieces.showPopup(!data[0], !data[1])
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      exportToExcel
+--
+-- Description: save grid data to excel file
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .exportToExcel()
+
+  import 'PMLFileBrowser'
+  handle ANY
+  endhandle
+
+  using namespace 'Aveva.Pdms.Presentation'
+  !browser = object PMLFILEBROWSER('SAVE')
+  !browser.show('%PDMSUSER%', 'PipePieces.xls', 'Export To Excel', false, 'Excel Documents|*.xls', 1)
+
+  !path = !browser.file().trim()
+  if !path.empty() then
+    return
+  endif
+
+  !this.gridPipePieces.saveGridToExcel(!path)
+  handle ANY
+    !!alert.error(!!error.text)
+  endhandle
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      navigateTo
+--
+-- Description: navigate to the selected pipe piece in the design explorer
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .navigateTo()
+
+  !rowTags = !this.gridPipePieces.getSelectedRowTags()
+  if !rowTags.empty() then
+    return
+  endif
+
+  !rowTag = !rowTags.last()
+  !ppieceRef = !this.gridPipePieces.getCell(!rowTag, 'PPIECE').dbref()
+  handle ANY
+    !name = !this.gridPipePieces.getCell(!rowTag, 'Pipe Piece')
+    !!alert.error('Cannot get the selected PPIECE ' + !name)
+    return
+  endhandle
+
+  !!ce = !ppieceRef
+endmethod
+
+-- Fix For Issue 97279 (SI-57610) 12.1.SP4#DVD RC1 - PF - Bending Machine NC Data - File Viewing
+--------------------------------------------------------------------------------
+--
+-- Method:      onGridPipePiecesAfterSelectChange
+--
+-- Description: called when the selection of the grid control for pipe pieces is changed
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onGridPipePiecesAfterSelectChange(!dummyArgs is ARRAY)
+  !rowTags = !this.gridPipePieces.getSelectedRowTags()
+  if !rowTags.empty() then
+    return
+  endif
+  !this.viewNCData(false, false)
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      viewNCData
+--
+-- Description: view NC data of the selected pipe piece
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      BOOLEAN     if true, NC data will be displayed always regardless of togViewNCData selection
+--    2   R      BOOLEAN     if true, the first data in the selected pipe piece is displayed
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .viewNCData(!alwaysShow is BOOLEAN, !first is BOOLEAN)
+
+  if !alwaysShow.not() and !this.togViewNCData.val.not() then
+    return
+  endif
+
+  !rowTags = !this.gridPipePieces.getSelectedRowTags()
+  if !rowTags.empty() then
+    !!alert.message('Select pipe piece!')
+    return
+  endif
+
+  if !first then
+    !rowTag = !rowTags.first()
+  else
+    !rowTag = !rowTags.last()
+  endif
+
+  !row = !this.gridPipePieces.getRow(!rowTag)
+  !path = !row[9]
+  if !path.trim().empty() then
+    return
+  endif
+
+  if !path.eq(!this.currentFile) then
+    return
+  endif
+
+  !file = object FILE(!row[9])
+  if !file.exists().not() then
+    !!alert.error('File is not exist!')
+    return
+  endif
+  handle ANY
+    !!alert.error(!!error.text)
+    return
+  endhandle
+
+  !allLines = !file.readFile()
+  handle ANY
+    !!alert.error(!!error.text)
+    return
+  endhandle
+
+  if not(defined(!!cadcReq)) or !!cadcReq.shown().not() then
+    show !!cadcReq
+  endif
+
+  !!cadcReq.cadcReq.clear()
+  do !i indices !allLines
+    write |$!allLines[$!i]|
+  enddo
+
+  !this.currentFile = !path
+
+endmethod
+
+--// End of Fix For Issue 97279

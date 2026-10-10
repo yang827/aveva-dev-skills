@@ -1,0 +1,657 @@
+--------------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            pfWeldGapCheck.pmlobj
+--   Type:          Object Definition
+--   Group:         Pipe Fabrication
+--     Keyword:     PF
+--   Module:        Design
+--   Replaces:
+--
+-- Author:          HyunJong ROH (Nick)
+--                  DoHyoung Kim (Bright)
+-- Created:         Monday 11st June 2012
+--
+-- Description:     object for checking minimum weld gap
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  check(DBREF,ARRAY)               -                   check the minimum weld gap
+--  checkBranchDistance(DBREF,DBREF,REAL,ARRAY) -                   check weld gap between branch components (TEE, OLET) and flanges on main branch
+--  checkMainDistance(DBREF,DBREF,REAL,ARRAY) -                   check weld gap between branch components (TEE, OLET) and flanges on branch
+--  getFlangeWidth(DBREF)            REAL                return the width of the specified flange
+--  initialize()                     -                   initialize this object with configuration data
+--
+--------------------------------------------------------------------------------
+define object PFWELDGAPCHECK
+
+  member  .mainBores      is ARRAY
+
+  member  .mainMinimums   is ARRAY
+
+  member  .branBores      is ARRAY
+
+  member  .branMinimums   is ARRAY
+
+  member  .branchMessageDisplayed is BOOLEAN
+
+  member .mainMessageDisplayed is BOOLEAN
+
+endobject
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      initialize
+--
+-- Description: initialize member variables with configuration data
+--
+-- Method Type: Function
+-- Arguments:
+--   [#]  [R/RW] [Data Type]                  [Description]
+--
+-- Return:
+--   [Data Type]             [Description]
+--
+--------------------------------------------------------------------------------
+define method .initialize()
+
+  !this.branchMessageDisplayed = false
+  !this.mainMessageDisplayed = false
+  !this.mainBores.clear()
+  !this.mainMinimums.clear()
+  !this.branBores.clear()
+  !this.branMinimums.clear()
+
+  !appldwRefs = !!collectAllFor('APPLDW', |FUNC EQ 'PipeFabrication'|, WORLD)
+  if !appldwRefs.empty().not() then
+
+    !appdarRefs = !!collectAllFor('APPDAR', |FUNC EQ 'CCHECK'|, !appldwRefs.first())
+    if !appdarRefs.empty().not() then
+      -- load configuration for main branch
+      !appldaRefs = !!collectAllFor('APPLDA', |FUNC EQ 'MFDM' OR PURP EQ 'MFDM'|, !appldwRefs[1])
+      if !appldaRefs.empty().not() then
+        !ddseRefs = !!collectAllFor('DDSE', |FUNC EQ 'DATA'|, !appldaRefs[1])
+        do !ddseRef values !ddseRefs
+
+          !bore = object REAL()
+          !distance = object REAL()
+
+          do !ddatRef values !ddseRef.members
+            if !ddatRef.type.eq('DDAT') then
+              !dkey = !ddatRef.dkey
+              if !dkey.eq('BORE') then
+                !block = object BLOCK(!ddatRef.ddproperty)
+                !bore = !block.evaluate()
+                handle ANY
+                  !bore = object BORE()
+                endhandle
+              elseif !dkey.eq('MIND') then
+                !block = object BLOCK(!ddatRef.ddproperty)
+                !distance = !block.evaluate()
+                handle ANY
+                  !distance = object REAL()
+                endhandle
+              endif
+            endif
+          enddo
+
+          if !bore.set() and !distance.set() then
+            !this.mainBores.append(!bore)
+            !this.mainMinimums.append(!distance)
+          endif
+        enddo
+      endif
+
+      -- load configuration for branch
+      !appldaRefs = !!collectAllFor('APPLDA', |FUNC EQ 'MFDB' OR PURP EQ 'MFDB'|, !appldwRefs[1])
+      if !appldaRefs.empty().not() then
+        !ddseRefs = !!collectAllFor('DDSE', |FUNC EQ 'DATA'|, !appldaRefs[1])
+        do !ddseRef values !ddseRefs
+
+          !bore = object REAL()
+          !distance = object REAL()
+
+          do !ddatRef values !ddseRef.members
+            if !ddatRef.type.eq('DDAT') then
+              !dkey = !ddatRef.dkey
+              if !dkey.eq('BORE') then
+                !block = object BLOCK(!ddatRef.ddproperty)
+                !bore = !block.evaluate()
+                handle ANY
+                  !bore = object BORE()
+                endhandle
+              elseif !dkey.eq('MIND') then
+                !block = object BLOCK(!ddatRef.ddproperty)
+                !distance = !block.evaluate()
+                handle ANY
+                  !distance = object REAL()
+                endhandle
+              endif
+            endif
+          enddo
+
+          if !bore.set() and !distance.set() then
+            !this.branBores.append(!bore)
+            !this.branMinimums.append(!distance)
+          endif
+        enddo
+      endif
+
+    endif
+  endif
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      check
+--
+-- Description: do the minimum weld gap check
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type]                  [Description]
+--    1    R      DBREF                        target branch reference
+--    2    RW     ARRAY                        results
+-- Return:
+--   [Data Type]             [Description]
+--
+--------------------------------------------------------------------------------
+define method .check(!targetRef is DBREF, !results is ARRAY )
+
+  -- check head
+  !href = !targetRef.href
+  if !href.badref().not() then
+
+    !hardType = !href.hardType
+    if !hardType.eq('TEE') or !hardType.eq('OLET') then
+
+      if !href.nvol.eq(0) then
+
+        -- find the first flange in the branch
+        !flanRef = object DBREF()
+        do !partRef values !targetRef.members
+          !partType = !partRef.type
+
+          if !partType.eq('WELD') or !partType.eq('ATTA') then
+            -- ignore
+          elseif !partRef.type.eq('FLAN') then
+            !flanRef = !partRef
+            break
+          else
+            break
+          endif
+        enddo
+
+        if !flanRef.set() then
+          --222589
+          if (!href.arrive.eq(3) or !href.leave.eq(3)) then
+            !this.checkMainDistance(!href, !flanRef, 4, !results)
+          else
+          --/222589
+            !this.checkBranchDistance(!href, !flanRef, 1, !results)
+          endif
+        endif
+
+      endif
+
+    endif
+
+  endif
+  --//
+
+  -- check tail
+  !tref = !targetRef.tref
+  if !tref.badref().not() then
+    !hardType = !tref.hardType
+    if !hardType.eq('TEE') or !hardType.eq('OLET') then
+
+      if !tref.nvol.eq(0) then
+
+        -- find the last flange in the branch
+        !flanRef = object DBREF()
+        !mcount = !targetRef.mcount()
+        do !i from !mcount to 1 by -1
+          !partRef = !targetRef.members[!i]
+          !partType = !partRef.type
+          if !partType.eq('WELD') or !partType.eq('ATTA') then
+            -- ignore
+          elseif !partType.eq('FLAN') then
+            !flanRef = !partRef
+            break
+          else
+            break
+          endif
+        enddo
+        if !flanRef.set() then
+          if (!tref.arrive.eq(3) or !tref.leave.eq(3)) then
+            !this.checkMainDistance(!tref, !flanRef, 4, !results)
+          else
+            !this.checkBranchDistance(!tref, !flanRef, 2, !results)
+          endif
+        endif
+
+      endif
+    endif
+  endif
+  --//
+
+  -- 2. check main weld gap
+
+  !mcount = !targetRef.mcount()
+  do !i indices !targetRef.members
+
+    !partRef = !targetRef.members[!i]
+    !hardType = !partRef.hardType
+    if !hardType.eq('TEE') or !hardType.eq('OLET') then
+
+      if !partRef.nvol.eq(0) then
+
+        -- find previous flange
+        !flanRef = object DBREF()
+        if !i.gt(2) then
+          do !j from !i - 1 to 1 by -1
+            !prevRef = !targetRef.members[!j]
+            !prevType = !prevRef.type
+            if !prevType.eq('WELD') or !prevType.eq('ATTA') then
+              -- continue
+            elseif !prevType.eq('FLAN') then
+              !flanRef = !prevRef
+              break
+            else
+              break
+            endif
+          enddo
+        endif
+        if !flanRef.set() then
+          -- flange found, let's check distance
+          if (!partRef.arrive.eq(3)) then
+            !this.checkBranchDistance(!partRef, !flanRef, 2, !results)
+          else
+            !this.checkMainDistance(!partRef, !flanRef, 3, !results)
+          endif
+        endif
+
+        -- find next flange
+        !flanRef = object DBREF()
+        if !i.lt(!mcount - 1) then
+          do !j from !i + 1 to !mcount
+            !nextRef = !targetRef.members[!j]
+            !nextType = !nextRef.type
+            if !nextType.eq('WELD') or !nextType.eq('ATTA') then
+              -- continue
+            elseif !nextType.eq('FLAN') then
+              !flanRef = !nextRef
+              break
+            else
+              break
+            endif
+          enddo
+        endif
+
+        if !flanRef.set() then
+          if (!partRef.leave.eq(3)) then
+            !this.checkBranchDistance(!partRef, !flanRef, 1, !results)
+          else
+            !this.checkMainDistance(!partRef, !flanRef, 4, !results)
+          endif
+        endif
+
+      endif
+    endif
+  enddo
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      checkMainDistance
+--
+-- Description: check weld gap between branch components and flanges on main branch
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type]                  [Description]
+--    1    R      DBREF                        branch component (TEE, OLET)
+--    2    R      DBREF                        flange component
+--    3    R      REAL                         3 : arrive, 4 : leave
+--    2    RW     ARRAY                        results
+-- Return:
+--   [Data Type]             [Description]
+--
+--------------------------------------------------------------------------------
+define method .checkMainDistance(!branchComponent is DBREF, !flanRef is DBREF, !type is REAL, !results is ARRAY)
+  !result = object PFWELDGAPCHECKRESULT()
+  !result.branchComponent = !branchComponent
+  !result.flangeComponent = !flanRef
+  if !type.eq(4) then
+    !mainBore = !flanRef.abore
+  else
+    !mainBore = !flanRef.lbore
+  endif
+  !result.missingBore = false
+  -- get minimum distance
+  !index = !this.mainBores.findFirst(!mainBore)
+  if !index.unset() then
+    if !this.mainMessageDisplayed.not() then
+      -- no minimum distance defined
+      !!alert.warning('This Main branch includes nominal bores that have not been included on the Consistency Check Configuration form. Please inform your Administrator' )
+      !this.mainMessageDisplayed = true
+    endif
+    !result.missingBore = true
+    !result.missingBoreSize  = !mainBore.real()
+    !result.missingBoreMessage = !result.branchComponent.flnm + ' and ' + !result.flangeComponent.flnm + ' includes a nominal bore of ' + !result.missingBoreSize.string() + ' that has not been included on the Consistency Check Configuration form'
+    !results.append(!result)
+    return
+  endif
+
+  !minDistance = !this.mainMinimums[!index]
+
+  if (!branchComponent.spref.badref() or !flanRef.spref.badref()) then
+    !result.minimum  = !minDistance
+    !result.distance = -1
+    !result.type = 3
+    !result.nearPosition    = object POSITION()
+    !result.surfacePosition = object POSITION()
+    !result.flangePosition  = object POSITION()
+
+    !results.append(!result)
+    return
+  endif
+
+  -- get flange direction, od and position
+    --222589
+    if !flanRef.owner eq !branchComponent.owner then
+    --/222589
+      if !flanRef.seq.lt(!branchComponent.seq) then
+        !flangeDirection = !flanRef.adir
+        !flangePosition = !flanRef.apos
+        !mainOD = !flanRef.aodiam
+      else
+        !flangeDirection = !flanRef.ldir
+        !flangePosition = !flanRef.lpos
+        !mainOD = !flanRef.lodiam
+      endif
+    --222589
+    else
+      if !branchComponent.cend eq 'TAIL' then
+        !flangeDirection = !flanRef.adir
+        !flangePosition = !flanRef.apos
+        !mainOD = !flanRef.aodiam
+      else
+        !flangeDirection = !flanRef.ldir
+        !flangePosition = !flanRef.lpos
+        !mainOD = !flanRef.lodiam
+      endif
+    endif
+    --/222589
+
+  !branchOD = !branchComponent.pod[3]
+
+  -- get main & branch lines
+   var !arrivePart arrive of $!branchComponent
+  if (!arrivePart eq '3') then
+    !branchPosition = !branchComponent.ppos[2]
+    !branchDirection = !branchComponent.pDir[2]
+
+    if (!branchComponent.pDir[2].dot(!flangeDirection).abs() gt 0) then
+     !branchDirection = !branchComponent.pDir[3]
+    endif
+  else
+    !branchPosition = !branchComponent.ppos[3]
+    !branchDirection = !branchComponent.pDir[3]
+  endif
+
+
+  !direction = !branchDirection.cross(!flangeDirection)
+  !branchNormal = !direction.cross(!branchDirection)
+  if !branchNormal.dot(!flangeDirection).lt(0) then
+    !branchNormal = !branchNormal.opposite()
+  endif
+
+  !angle = !flangeDirection.angle(!branchDirection)
+  !branchOffset = !branchOD / 2.0 / SIN(!angle)
+
+  !pointVector = object POINTVECTOR(!branchPosition, !direction)
+  !branchPlane = !pointVector.plane()
+
+  !pointVector = object POINTVECTOR(!branchPosition.offset(!flangeDirection, !branchOffset), !branchNormal)
+  !plane = !pointVector.plane()
+
+  !surfacePosition = !plane.intersection(object POINTVECTOR(!flangePosition, !flangeDirection))
+  !surfacePosition = !surfacePosition.offset(!branchDirection, !mainOD / 2 / SIN(!angle))
+  !surfacePosition = !branchPlane.near(!surfacePosition)
+
+  !pointVector = object POINTVECTOR(!flangePosition, !flangeDirection)
+  !nearPosition = !pointVector.plane().near(!surfacePosition)
+
+  !distance = !nearPosition.distance(!surfacePosition)
+
+  if !distance.lt(!minDistance) then
+    !result.minimum = !minDistance
+    !result.distance = !distance
+    !result.type = !type
+    !result.nearPosition = !nearPosition
+    !result.surfacePosition = !surfacePosition
+    !result.flangePosition = !flangePosition
+    !results.append(!result)
+
+  endif
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      checkBranchDistance
+--
+-- Description: check weld gap between branch components and flanges on branch
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type]                  [Description]
+--    1    R      DBREF                        branch component (TEE, OLET)
+--    2    R      DBREF                        flange component
+--    3    R      REAL                         1 : head, 2 : tail
+--    2    RW     ARRAY                        results
+-- Return:
+--   [Data Type]             [Description]
+--
+--------------------------------------------------------------------------------
+define method .checkBranchDistance(!branchComponent is DBREF, !flanRef is DBREF, !type is REAL, !results is ARRAY)
+  -- get minimum distance
+  !branchBore = !flanRef.abore
+  !index = !this.branBores.findFirst(!branchBore)
+  !result = object PFWELDGAPCHECKRESULT()
+  !result.branchComponent = !branchComponent
+  !result.flangeComponent = !flanRef
+  !result.missingBore = false
+  if !index.unset() then
+    if !this.branchMessageDisplayed.not() then
+    -- no minimum weld distance defined
+    !!alert.warning('This branch includes nominal bores that have not been included on the Consistency Check Configuration form. Please inform your Administrator' )
+    !this.branchMessageDisplayed = true
+    endif
+    !result.missingBore = true
+    !result.missingBoreSize  = !branchBore.real()
+    !result.missingBoreMessage = !result.branchComponent.flnm + ' and ' + !result.flangeComponent.flnm + ' includes a nominal bore of ' + !result.missingBoreSize.string() + ' that has not been included on the Consistency Check Configuration form'
+    !results.append(!result)
+    return
+  endif
+  !minDistance = !this.branMinimums[!index]
+  if (!branchComponent.spref.badref() or !flanRef.spref.badref()) then
+    !result.minimum  = !minDistance
+    !result.distance = -1
+    !result.type = 3
+    !result.nearPosition    = object POSITION()
+    !result.surfacePosition = object POSITION()
+    !result.flangePosition  = object POSITION()
+
+    !results.append(!result)
+    return
+  endif
+
+  !mainOD = !branchComponent.pod[1]
+
+  if !type.eq(1) then
+    !flangeEnd = !flanRef.lpos
+    !flangeDirection = !flanRef.ldir
+  else
+    !flangeEnd = !flanRef.apos
+    !flangeDirection = !flanRef.adir
+  endif
+
+  -- calculate flange diameter
+  !localVolume = object LOCALVOLUME(!flanRef, !flanRef)
+
+  !direction = !flanRef.adir
+  !orientation = !flanRef.ori
+
+  !xdir = !orientation.xdir()
+  !ydir = !orientation.ydir()
+  !zdir = !orientation.zdir()
+
+  !dotX = !direction.dot(!xdir).abs()
+  !dotY = !direction.dot(!ydir).abs()
+  !dotZ = !direction.dot(!zdir).abs()
+
+  if !dotX.leq(!dotY) and !dotX.leq(!dotZ) then
+    !crossDirection = !xdir
+  elseif !dotY.leq(!dotX) and !dotY.leq(!dotZ) then
+    !crossDirection = !ydir
+  else
+    !crossDirection = !zdir
+  endif
+
+  !diameterVector = object POINTVECTOR(!flangeEnd, !crossDirection)
+  !diameterLine = !diameterVector.line(1000mm)
+
+  !pos1 = !diameterLine.near(!localVolume.from)
+  !pos2 = !diameterLine.near(!localVolume.to)
+
+  !diameter = !pos1.distance(!pos2)
+  -- end of get diameter
+
+  !mainDirection = !branchComponent.pdir[1]
+  !mainVector = object POINTVECTOR(!branchComponent.position, !mainDirection)
+  !mainLine = !mainVector.line(1000mm)
+
+  -- get nearest position on flange
+  !flangeVector = object POINTVECTOR(!flangeEnd, !flangeDirection)
+  !flangePlane = !flangeVector.plane()
+
+  -- get edge position along main branch direction
+  !mainProjected = !mainDirection.projected(!flangePlane)
+  !nearPosition1 = !flangeEnd.offset(!mainProjected,  !diameter / 2.0)
+  !nearPosition2 = !flangeEnd.offset(!mainProjected, -!diameter / 2.0)
+
+  !mainPosition1 = !mainLine.near(!nearPosition1)
+  !mainPosition2 = !mainLine.near(!nearPosition2)
+
+  !dist1 = !mainPosition1.distance(!nearPosition1)
+  !dist2 = !mainPosition2.distance(!nearPosition2)
+
+  !locatedInMain = false
+  !mainPosition = object POSITION()
+  !nearPosition = object POSITION()
+
+  if !dist1.leq(!mainOD / 2) or !dist2.leq(!mainOD / 2) then
+    -- flange is located in main tube
+    !locatedInMain = true
+  else
+
+    if !dist1.lt(!dist2) then
+      !dist = !dist1
+      !nearPosition = !nearPosition1
+      !mainPosition = !mainPosition1
+    else
+      !dist = !dist2
+      !nearPosition = !nearPosition2
+      !mainPosition = !mainPosition2
+    endif
+
+    -- get edge position along inclined direction
+    !onMainPosition = !mainLine.near(!flangeEnd)
+    if !onMainPosition.distance(!flangeEnd).leq(!mainOD / 2) then
+      !locatedInMain = true
+    else
+      !slopeDirection = !flangeEnd.direction(!onMainPosition).projected(!flangePlane)
+      handle ANY
+        -- flange is normal against main branch
+      elsehandle NONE
+        -- branch is not normal against main branch
+
+        !nearPosition3 = !flangeEnd.offset(!slopeDirection, !diameter / 2.0)
+        !mainPosition3 = !mainLine.near(!nearPosition3)
+        !dist3 = !nearPosition3.distance(!mainPosition3)
+        if !dist3.leq(!mainOD / 2.0) then
+          !locatedInMain = true
+        else
+          if !dist3.lt(!dist) then
+            !dist = !dist3
+            !nearPosition = !nearPosition3
+            !mainPosition = !mainPosition3
+          endif
+        endif
+      endhandle
+    endif
+  endif
+
+
+  if !locatedInMain.not() then
+    !surfacePosition = !mainPosition.offset(!mainPosition.direction(!nearPosition), !mainOD / 2.0)
+    if !flangeDirection.dot(!surfacePosition.direction(!nearPosition)).leq(0) then
+      !locatedInMain = true
+    else
+
+      !distance = !surfacePosition.distance(!nearPosition)
+      if !distance.lt(!minDistance) then
+        !result.minimum = !minDistance
+        !result.distance = !distance
+        !result.type = !type
+        !result.nearPosition = !nearPosition
+        !result.surfacePosition = !surfacePosition
+        !result.flangePosition = !flangeEnd
+        !results.append(!result)
+      endif
+    endif
+  endif
+
+  if !locatedInMain then
+
+    !result = object PFWELDGAPCHECKRESULT()
+    !result.branchComponent = !branchComponent
+    !result.flangeComponent = !flanRef
+    !result.minimum = !minDistance
+    !result.distance = -1
+    !result.type = !type
+    !results.append(!result)
+  endif
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getFlangeWidth
+--
+-- Description: return the width of the given flange
+--
+-- Method Type: Function
+-- Arguments:
+--   [#]  [R/RW] [Data Type]                  [Description]
+--    1    R      DBREF                        flange
+-- Return:
+--   [Data Type]             [Description]
+--    REAL                    flange width
+--------------------------------------------------------------------------------
+define method .getFlangeWidth(!flanRef is DBREF) is REAL
+  !line = object LINE(!flanRef.position, !flanRef.position.offset(!flanRef.adir, 1000mm))
+  !volume = object LOCALVOLUME(!flanRef, !flanRef)
+  !p1 = !line.near(!volume.from)
+  !p2 = !line.near(!volume.to)
+  return !p1.distance(!p2)
+endmethod

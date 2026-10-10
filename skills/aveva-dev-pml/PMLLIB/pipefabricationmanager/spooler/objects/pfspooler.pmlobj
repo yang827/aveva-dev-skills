@@ -1,0 +1,854 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            pfspooler.pmlobj
+--    Type:          Object Definition
+--    Group:         Pipe Fabrication
+--      Keyword:     PF
+--    Module:        Design
+--  Author:          Jaehun Choi(Daniel)
+--  Created:         11 January 2013
+--
+--  Description:     spooler object for PF
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  checkSpoolPosition(DBREF)        BOOLEAN             check spool position
+--  checkWasteComponent()            -                   check waste component
+--  checkWithin()                    BOOLEAN             check components within search
+--  createDoneFile()                 -                   create done file
+--  createFinishFile()               -                   create finish file
+--  deleteAllMembers()               -
+--  getSourceDrawing()               DBREF               get source drawing
+--  mergeSpools(STRING)              -                   merge spools
+--  pfspooler()                      -                   constructor
+--  pickElements(BOOLEAN)            -                   pick elements
+--  stockSpools(DBREF,STRING)        -                   stock spools
+--  updatePartNumber()               -                   update part number
+--
+------------------------------------------------------------------------
+-- Define object
+define object PFSPOOLER
+  member .pickElements     is ARRAY
+  member .ownerForm        is FORM
+  member .sourceDrawingRef is DBREF
+  member .doneFile         is FILE
+  member .isMergeMode      is BOOLEAN
+  member .isPickMode       is BOOLEAN
+  member .edgPacket        is EDGPACKET
+  member .evalSpoolMember  is PFEVALUATESPOOLMEMBER
+  member .checkDBwrite     is COMCHECKDBWRITE
+  member .tempMacroPath    is STRING
+  member .branRef          is DBREF
+  member .pipeRef          is DBREF
+  member .zoneRef          is DBREF
+  member .siteRef          is DBREF
+  member .worldRef          is DBREF
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:      pfspooler
+-- Description: constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pfspooler()
+  !pdmsUserPath = !!evarSplit('PDMSUSER')[1]
+  !this.doneFile = object FILE(|$!pdmsUserPath\pfmergespools.log|)
+
+  !this.isPickMode = false
+  !this.checkDBwrite.showAlert = false
+
+
+  !this.tempMacroPath = !pdmsUserPath & |\| & 'pfmergespoolscmd.mac'
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      getSourceDrawing
+-- Description: get source drawing
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       return to source drawing reference
+--
+------------------------------------------------------------------------
+define method .getSourceDrawing() is DBREF
+  !result = object DBREF()
+
+  !elementName = !this.ownerForm.activeSplDrg.val
+  if (!elementName.empty()) then
+    return !result
+  endif
+
+  if (!elementName.subString(1,1) ne '/') then
+    if (!!comIsValidElement(!elementName).not()) then
+      !elementName = '/' & !elementName
+    endif
+
+    !this.ownerForm.activeSplDrg.val = !elementName
+  endif
+
+  if (!!comIsValidElement(!elementName).not()) then
+    return !result
+  endif
+
+  !result = !elementName.dbRef()
+
+  return !result
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      pickElements
+-- Description: pick elements
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     BOOLEAN     is merge mode
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pickElements(!isMergeMode is BOOLEAN)
+
+  !this.isMergeMode = !isMergeMode
+
+  !this.sourceDrawingRef = !this.getSourceDrawing()
+  if (!this.sourceDrawingRef.badRef()) then
+    !!alert.message('Please check activated SPLDRG name.')
+    !this.ownerForm.activeSplDrg.setFocus()
+    return
+  endif
+
+  if (!this.checkDBwrite.checkDBwrite(!this.sourceDrawingRef).not()) then
+    return
+  endif
+
+  if (!!ce.hardType eq 'SPLDRG' or !!ce.hardType eq 'SPOOL') then
+    !this.ownerForm.showSpoolLimit()
+  endif
+
+  -- remove edg packets if not done so by the user
+  !this.pickElements.clear()
+
+  if (!isMergeMode) then
+    !taskMode = 'Add to'
+    !this.ownerForm.addElement.active    = true
+    !this.ownerForm.removeElement.active = false
+  else
+    !taskMode = 'Remove from'
+    !this.ownerForm.addElement.active    = false
+    !this.ownerForm.removeElement.active = true
+  endif
+
+  !this.ownerForm.searchOption.active = false
+  !this.ownerForm.deleteAllMembers.active = false
+  !this.ownerForm.updatePartNumber.active = false
+
+  !this.isPickMode = true
+
+--  if (!isMergeMode) then
+--    unenhance all
+--  endif
+
+  -- define packet for group elements
+  !packet                = object EDGPACKET()
+  !packet.description    = !taskMode & ' to active SPLDRG'
+  !packet.priority       = 0
+  !packet.action         = |!!pfsplitmergespools.spoolManager.stockSpools(!this.return[1].item, !this.return[1].type)|
+  !packet.remove         = false
+
+  !packet.pickPacket.stdElement('Pick a Piping Component to ' & !taskMode & ' SPLDRG or <ESC> to finish ')
+
+  if (!isMergeMode) then
+    !packet.pickPacket.picks[1].pick.input[3]   = '((type of owner) eq |BRAN| AND (unset(sfref)))'
+    !packet.pickPacket.picks[1].pick.input[5]   = '(unset(sfref))'
+  else
+    !packet.pickPacket.picks[1].pick.input[3]   = '((type of owner) eq |BRAN| and not(unset(sfref)) and (ref of owner of sfref) eq $!!<pfsplitmergespools.spoolManager.sourceDrawingRef> )'
+    !packet.pickPacket.picks[1].pick.input[5]   = '(not(unset(sfref)) and (ref of owner of sfref of ileav tube) eq $!!<pfsplitmergespools.spoolManager.sourceDrawingRef> )'
+  endif
+
+  !packet.pickPacket.picks[1].pick.modifiable = false
+  !packet.escape         = |!!pfsplitmergespools.spoolManager.mergeSpools('$!taskMode')|
+
+  !this.edgPacket = !packet
+
+  -- Add to system
+  !!edgCntrl.add(!packet)
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      checkSpoolPosition
+-- Description: check spool position
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       element
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN    return to check result
+--
+------------------------------------------------------------------------
+define method .checkSpoolPosition(!element is DBREF) is BOOLEAN
+  -- check sequence
+
+  !spoolMemberRef = !element.sfRef
+  handle (2,201)
+    return true
+  endhandle
+
+  -- check spool member reference is spool
+  if (!spoolMemberRef.badRef() or !spoolMemberRef.hardType ne 'SPOOL') then
+    return true
+  endif
+
+  !spoolDrawingRef = !spoolMemberRef.owner
+  !firstMember = first member of $!spoolDrawingRef
+  !lastMember  = last  member of $!spoolDrawingRef
+
+  -- check waste entries in the spool drawing
+  !wasteEntries = object ARRAY()
+  if (!firstMember.hardType eq 'FIELD') then
+    !wasteEntries.append(!firstMember)
+  endif
+
+  if (!lastMember.hardType eq 'FIELD') then
+    !wasteEntries.append(!lastMember)
+  endif
+
+  -- remove waste entries
+  if (!wasteEntries.set()) then
+    input begin
+    !saveCe = !!ce
+
+    do !removeEntry values !wasteEntries
+      !!ce = !removeEntry
+      !type = !removeEntry.type
+      delete $!<type>
+      handle any
+      endhandle
+    enddo
+
+    !!ce = !saveCe
+    handle any
+    endhandle
+
+    input finish
+  endif
+
+  !memberSize = !spoolDrawingRef.mCount
+  !canDelete  = !spoolMemberRef.sequ eq 1 or !spoolMemberRef.sequ eq !memberSize
+
+  if (!canDelete.not()) then
+    !!alert.error('Cannot Removing ' & !spoolMemberRef.flnm & '. In order to remove this spool, it need to remove adjacent spools first' )
+    return false
+  endif
+
+  return true
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      checkWasteComponent
+-- Description: check waste component
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .checkWasteComponent()
+  !spoolMembers = !this.sourceDrawingRef.members
+  if (!spoolMembers.size() gt 1) then
+    return
+  endif
+
+  if (!spoolMembers[1].hardType eq 'FIELD') then
+    !saveCe = !!ce
+    input begin
+      !!ce = !spoolMembers[1]
+      delete FIELD
+      handle any
+      endhandle
+    input finish
+
+    savework
+    handle any
+    endhandle
+
+    uncl all
+    !!ce = !saveCe
+    handle any
+    endhandle
+  endif
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      stockSpools
+-- Description: stock spools
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       element
+--    2    R     STRING      pick type
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .stockSpools(!element is DBREF, !pickType is STRING)
+
+   if (!pickType eq 'TUBING') then
+    !entry = iLeave tube of $!<element>
+  else
+    !entry = !element
+  endif
+
+  !pipeRef = pipe of $!<entry>
+
+  --217507
+  !eleName = !element.flnm
+  if(!!pfsplitmergespools.createType.val eq 3) then
+  !splDrgval = !!pfsplitmergespools.activeSplDrg.val
+  !splDrg =  !splDrgval.dbref()
+  !sfLimitVal = !splDrg
+  !splmemberlist = !splDrg.members
+  if(!splmemberlist.size() gt 0) then
+    !spldrglist = !splmemberlist[1].spltbl
+    !firstPipeEle = '=' & !spldrglist[1].string() & '/' & !spldrglist[2].string()
+    !firstPipeEleDbRef = !firstPipeEle.dbref()
+
+
+   if(!sfLimitVal.sFLimit eq 'PIPE') then
+     !pipeRefoffirstEle = pipe of $!<firstPipeEleDbRef>
+     !pipeRef = pipe of $!<entry>
+      if(!pipeRefoffirstEle.name neq !pipeRef.name) then
+        !errorMessage = '(83,4) Cannot find network from '& !eleName & ' to '& 'SPLDRG ' & !!pfsplitmergespools.activeSplDrg.val.string() & ' with search constraint PIPE'
+        !!alert.error(!errorMessage)
+
+        return
+      endif
+   endif
+
+      if(!sfLimitVal.sFLimit eq 'BRANCH') then
+      !branRefoffirstEle = BRAN of $!<firstPipeEleDbRef>
+      !branRef = BRAN of $!<entry>
+      if(!branRefoffirstEle.name neq !branRef.name) then
+       !errorMessage = '(83,4) Cannot find network from '& !eleName & ' to '& 'SPLDRG ' & !!pfsplitmergespools.activeSplDrg.val.string() & ' with search constraint BRANCH'
+       !!alert.error(!errorMessage)
+
+        return
+      endif
+   endif
+
+    if(!sfLimitVal.sFLimit eq 'ZONE') then
+      !zoneRefoffirstEle = ZONE of $!<firstPipeEleDbRef>
+      !zoneRef = ZONE of $!<entry>
+      if(!zoneRefoffirstEle.name neq !zoneRef.name) then
+       !errorMessage = '(83,4) Cannot find network from '& !eleName & ' to '& 'SPLDRG ' & !!pfsplitmergespools.activeSplDrg.val.string() & ' with search constraint ZONE'
+       !!alert.error(!errorMessage)
+        return
+      endif
+   endif
+
+   if(!sfLimitVal.sFLimit eq 'SITE') then
+      !siteRefoffirstEle = SITE of $!<firstPipeEleDbRef>
+      !siteRef = ZONE of $!<entry>
+      if(!siteRefoffirstEle.name neq !siteRef.name) then
+       !errorMessage = '(83,4) Cannot find network from '& !eleName & ' to '& 'SPLDRG ' & !!pfsplitmergespools.activeSplDrg.val.string() & ' with search constraint SITE'
+       !!alert.error(!errorMessage)
+        return
+      endif
+   endif
+  endif
+ endif
+  --/217507
+
+
+
+--  if (!this.isMergeMode.not()) then
+--    if (!this.checkSpoolPosition(!entry).not()) then
+--      return
+--    endif
+--  endif
+
+  if (defined(!!pfModifySpool) and !!pfModifySpool.shown()) then
+    !pipeRef = pipe of $!<entry>
+    handle (2,111)
+      !pipeRef = object DBREF()
+    endhandle
+
+    !branRef = bran of $!<entry>
+    handle (2,111)
+      !branRef = object DBREF()
+    endhandle
+
+    !zoneRef = zone of $!<entry>
+    handle (2,111)
+      !zoneRef = object DBREF()
+    endhandle
+
+    !siteRef = site of $!<entry>
+    handle (2,111)
+      !siteRef = object DBREF()
+    endhandle
+
+    !worldRef = world of $!<entry>
+    handle (2,111)
+      !worldRef = object DBREF()
+    endhandle
+
+    if (!branRef.badRef().not()) then
+      !!pfModifySpool.branRef = !branRef
+    endif
+
+    if (!zoneRef.badRef().not()) then
+      !!pfModifySpool.zoneRef = !zoneRef
+    endif
+
+    if (!siteRef.badRef().not()) then
+      !!pfModifySpool.siteRef = !siteRef
+    endif
+
+    if (!worldRef.badRef().not()) then
+      !!pfModifySpool.worldRef = !worldRef
+    endif
+
+    if (!pipeRef.badRef().not()) then
+      !!pfModifySpool.pipeRef = !pipeRef
+      !!pfModifySpool.paraCurrentPipe.val = 'Pipe: ' + !pipeRef.namn
+    endif
+
+  endif
+
+  if(!this.checkwithin()) then
+    return
+  endif
+
+  !this.evalSpoolMember.evaluate(!entry)
+
+  if (!element.hardType eq 'BRAN') then
+    if (!element.tGeom and !element.mCount gt 0 and !entry.type.neq(|TUBI|)) then
+      !element = first mem of $!element
+      !entry = !element
+    endif
+  endif
+
+  !this.pickElements.append(!entry)
+  !this.pickElements.sort()
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      createDoneFile
+-- Description: create done file
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createDoneFile()
+  !this.doneFile.open('OVER')
+  !this.doneFile.writeRecord('IN-PROGRESS')
+  !this.doneFile.close()
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      createFinishFile
+-- Description: create finish file
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createFinishFile()
+  !this.doneFile.open('OVER')
+  !this.doneFile.writeRecord('DONE')
+  !this.doneFile.close()
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      mergeSpools
+-- Description: merge spools
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     STRING      dummy task type
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .mergeSpools(!dummyTaskType is STRING)
+  !this.isPickMode = false
+
+  var !device device
+  if (!device.upCase() eq 'GRAPHICS') then
+    !isGraphicalMode = true
+  else
+    !isGraphicalMode = false
+  endif
+
+  !this.ownerForm.addElement.active    = true
+  !this.ownerForm.removeElement.active = true
+  !this.ownerForm.searchOption.active = true
+
+  unenhance all
+
+  if (!this.pickElements.unset()) then
+    !activeButtonFlag = !this.sourceDrawingRef.mCount gt 0
+    !this.ownerForm.deleteAllMembers.active = !activeButtonFlag
+    !this.ownerForm.updatePartNumber.active = !activeButtonFlag
+    return
+  endif
+
+--  if (!isGraphicalMode) then
+--    PROMPT 'Merging Spools. Please wait ...'
+--  endif
+
+  !!edgCntrl.remove(!this.edgPacket)
+
+  savework
+  handle any
+  endhandle
+
+  uncl ALL
+  handle any
+  endhandle
+
+  !this.pickElements.unique()
+
+  !this.createDoneFile()
+
+  if (!this.ownerForm.includeFields.val) then
+    !includeFieldComp = 'TRUE'
+  else
+    !includeFieldComp = 'FALSE'
+  endif
+
+  !saveCe = !!ce
+
+  !!pfmergespools(!this.sourceDrawingRef, !this.pickElements, !this.isMergeMode, !includeFieldComp)
+
+  !count = 0
+  do
+    !this.doneFile.open('READ')
+    !stopFlag =  !this.doneFile.readRecord()
+    break if (!stopFlag EQ 'DONE')
+  enddo
+
+--  PROTECTION OFF
+--  DELETE SPLDRG MEM
+--  PROTECTION ON
+
+  savework
+  handle any
+  endhandle
+
+  uncl ALL
+  handle any
+  endhandle
+  pause 0.1
+  $M /$!this.tempMacroPath
+  handle (47,15)
+    -- syntax error will be skipped
+  elsehandle any
+    !!alert.message(!!error.text)
+  endhandle
+--  $.
+--  GETWORK
+
+--  if (!this.isMergeMode.not()) then
+--    !this.checkWasteComponent()
+--  endif
+
+  !!ce = !saveCe
+  handle any
+  endhandle
+
+  if (!isGraphicalMode) then
+--    PROMPT DISMISS
+--    handle any
+--    endhandle
+
+    !this.ownerForm.showSpoolLimit()
+
+    !activeButtonFlag = !this.sourceDrawingRef.mCount gt 0
+    !this.ownerForm.deleteAllMembers.active = !activeButtonFlag
+    !this.ownerForm.updatePartNumber.active = !activeButtonFlag
+
+    -- check errors
+    !pdmsUserPath  = !!evarSplit('PDMSUSER')[1]
+    !errorFile     = object FILE('$!pdmsUserPath\pfmergespools.err')
+
+    if (!errorFile.exists()) then
+      !errorFile.open('READ')
+      !errorContents = !errorFile.readFile()
+
+        !newLine='
+'
+      !errorMessages = ''
+
+      !errorContents.unique()
+
+      do !error values !errorContents
+        !checkError = !error.string()
+        !lastword =  !checkError.split().last()
+        if(!!pfsplitmergespools.searchOption.val eq 1) then
+           !checkError= !checkError.replace(!lastword,'PIPE')
+        elseif(!!pfsplitmergespools.searchOption.val eq 2) then
+           !checkError= !checkError.replace(!lastword,'BRANCH')
+        elseif(!!pfsplitmergespools.searchOption.val eq 3) then
+           !checkError= !checkError.replace(!lastword,'ZONE')
+        elseif(!!pfsplitmergespools.searchOption.val eq 4) then
+         !checkError= !checkError.replace(!lastword,'SITE')
+        endif
+        skip if (!checkError.empty())
+        !errorMessages = !errorMessages & !checkError & !newLine
+      enddo
+
+      if (!errorMessages.empty().not()) then
+        !!alert.message(!errorMessages)
+      endif
+    endif
+  endif
+
+  -- need to null the dbrefs which were created at
+  -- the starting of Pickelements
+
+  !this.pipeRef = OBJECT dbref()
+  !this.branRef = OBJECT dbref()
+  !this.zoneRef = OBJECT dbref()
+  !this.siteRef = OBJECT dbref()
+  !this.worldRef = OBJECT dbref()
+
+  --kill !!pfsplitmergespools
+  --show !!pfsplitmergespools
+
+--  !this.ownerForm.isPickMode = false
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      updatePartNumber
+-- Description: update part number
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .updatePartNumber()
+  !this.sourceDrawingRef = !this.getSourceDrawing()
+  if (!this.sourceDrawingRef.badRef()) then
+    !!alert.message('Please check activated SPLDRG name.')
+    !this.ownerForm.activeSplDrg.setFocus()
+    return
+  endif
+
+  !saveCe = !!ce
+  !!ce = !this.sourceDrawingRef
+  partno create ce
+  handle any
+    !!alert.message(!!error.text)
+    return
+  endhandle
+
+--  !attachedItems = !!collectAllFor('AITEMS','',ce)
+--  input begin
+--  do !entry values !attachedItems
+--    !!ce = !entry
+--    delete AITEMS
+--    handle any
+--    endhandle
+--  enddo
+
+  !spoolList = !!collectAllFor('SPOOL','', !this.sourceDrawingRef)
+  !count = 1
+  do !spoolRef values !spoolList
+    !!ce = !spoolRef
+    !spoolRef.splnumber = $!count
+    handle any
+    endhandle
+
+    !splMembers = !spoolRef.splMem
+    do !entry values !splMembers
+      skip if (!entry.hardType ne 'FTUB')
+
+      !!ce = !entry
+      PARTNU $!count
+
+      if (!entry.tGeom) then
+        !tubeRef = il tube of $!entry
+        !!ce = !tubeRef
+        PARTNU $!count
+      endif
+
+    enddo
+    !count = !count + 1
+  enddo
+
+  !!ce = !this.sourceDrawingRef
+
+  input finish
+
+  savework
+  handle any
+  endhandle
+
+  uncl all
+
+  !!ce = !saveCe
+  handle any
+  endhandle
+endmethod
+-- End of method
+
+define method .deleteAllMembers()
+  !this.sourceDrawingRef = !this.getSourceDrawing()
+
+  if (!this.sourceDrawingRef.badRef()) then
+    return
+  endif
+
+  if (!this.checkDBwrite.checkDBwrite(!this.sourceDrawingRef).not()) then
+    return
+  endif
+
+  !answer = !!alert.confirm('Are you sure you want to delete all members?')
+  if (!answer ne 'YES') then
+    return
+  endif
+
+  if (!this.sourceDrawingRef.badRef()) then
+    !!alert.message('Please check activated SPLDRG name.')
+    !this.ownerForm.activeSplDrg.setFocus()
+    return
+  endif
+
+  !saveCe = !!ce
+  !!ce = !this.sourceDrawingRef
+
+  input begin
+  delete SPLDRG members
+  handle any
+    !!alert.error(!!error.text)
+  endhandle
+  input finish
+
+  !this.ownerForm.track()
+
+  !!ce = !saveCe
+  handle any
+  endhandle
+
+endmethod
+
+
+------------------------------------------------------------------------
+--
+-- Method:      checkWithin
+-- Description: check components within search
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN    return to check within search
+--
+------------------------------------------------------------------------
+define method .checkWithin() is BOOLEAN
+
+  !level    = !this.sourceDrawingRef.sFLimit
+
+  !branref  = !!pfModifySpool.branRef
+  !piperef  = !!pfModifySpool.pipeRef
+  !zoneref  = !!pfModifySpool.zoneRef
+  !siteref  = !!pfModifySpool.siteRef
+  !worldref = !!pfModifySpool.worldRef
+
+  if(!level eq 'BRAN') then
+    if(!this.branRef.unset() OR !this.branRef eq !branref) then
+      !this.branRef = !branref
+      return false
+    else
+      !!alert.warning('Picked component is not within same Branch')
+      return true
+    endif
+  elseif(!level eq 'PIPE') then
+    if(!this.pipeRef.unset() OR !this.pipeRef eq !piperef) then
+      !this.pipeRef = !piperef
+      return false
+    else
+      !!alert.warning('Picked component is not within same Pipe')
+      return true
+    endif
+  elseif(!level eq 'ZONE') then
+    if(!this.zoneRef.unset() OR !this.zoneRef eq !zoneref) then
+      !this.zoneRef = !zoneref
+      return false
+    else
+      !!alert.warning('Picked component is not within same Zone')
+      return true
+    endif
+  elseif(!level eq 'SITE') then
+    if(!this.siteRef.unset() OR !this.siteRef eq !siteref) then
+      !this.siteRef = !siteref
+      return false
+    else
+      !!alert.warning('Picked component is not within same Site')
+      return true
+    endif
+  else
+    if(!this.worldRef.unset() OR !this.worldRef eq !worldref) then
+      !this.worldRef = !worldref
+      return false
+    else
+      !!alert.warning('Picked component is not within same World')
+      return true
+    endif
+  endif
+
+  endmethod

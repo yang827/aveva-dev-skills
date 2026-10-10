@@ -1,0 +1,771 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            saverestoreview.pmlfrm
+--    Type:          Form Definition
+--    Group:         Common
+--      Keyword:     SaveRestore
+--    Module:        common
+--  Author:          Daniel(Jaehun.Choi)
+--  Created:
+--
+--  Description:     Save & Restore Graphical View
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  buttonState(BOOLEAN)             -                   Sets buttons active or inactive
+--  changeViewList()                 -                   change view list on combo box including view List
+--  checkName()                      -                   Checks the entered name for invalid characters
+--  getNonSignificantElement(ARRAY)  ARRAY               get non-significant element
+--  initialise()                     -                   Initialise form
+--  loadDefault()                    -                   Load definition views from default file
+--  mdbWithViews()                   -                   Finds MDB's with saved views
+--  populateList(STRING)             -                   Update saved view list
+--  removeView(BOOLEAN)              -                   Remove definition views
+--  restoreView(STRING)              -                   Restore saved view
+--  saveDefault()                    -                   Save definition views to file
+--  saveRestoreView()                -
+--  saveView()                       -                   Save definition views
+--  setCE()                          -                   Set the current element as storage area
+--  setDirectory()                   -                   Sets the directory for reading / writing files
+--  showPreview(STRING)              -                   show preview image
+--
+------------------------------------------------------------------------
+import 'PMLNetUtilities'
+handle any
+endhandle
+
+-- Define form
+setup form !!saveRestoreView
+
+  !this.formTitle = 'Save & Restore View'
+  !this.initcall  = '!this.initialise()'
+
+  -- Icons
+  !openBrowserIcon   = !!pml.getPathName('openbrowser.png')
+  !saveViewIcon      = !!pml.getPathName('saveview16.png')
+  !restoreViewIcon   = !!pml.getPathName('restore16.png')
+  !addDrawlistIcon   = !!pml.getPathName('draft_t_023.png')
+  !replaceViewIcon   = !!pml.getPathName('back.png')
+  !deleteViewIcon    = !!pml.getPathName('deletece16.png')
+  !deleteAllViewIcon = !!pml.getPathName('alldelete16.png')
+
+  frame .frDir |Current Directory| at xmin ymin anchor L + T + R
+    button    .setDir  tooltip 'Select Directory'  pixmap "$!<openBrowserIcon>" width 16 height 16 anchor T + L  at x0.5 ymax  width 10 callback |!this.setDirectory()|
+    paragraph .workingDirectory    at xmax+1 ymin anchor L + T + R width 45 lines 1
+  exit
+
+  frame .frView |Saved Views|  at xmin ymax anchor T + L + B + R
+    combo  .mdbList  'MDB:'   tagwidth 4 anchor t + l at x0.5   ymax       callback |!this.loadDefault()|    anchor T + L + R width 20
+    combo  .viewList 'View:'  tagwidth 4 anchor t + l at x0.5   ymax+0.25  callback |!this.changeViewList()| anchor T + L + R width 20
+
+    !menu = !this.newMenu(|mdbListPopup|)
+    !menu.add(|CALLBACK|,|Current MDB|,|!this.mdbList.val = 1 !this.loadDefault()|)
+
+    button .restoreView   tooltip 'Restore View'           pixmap "$!<restoreViewIcon>"   width 16 height 16 at xmax+4   ymin anchor T + R callback |!this.restoreView('ALL')|
+    button .addModels     tooltip 'Add To Drawlist'        pixmap "$!<addDrawlistIcon>"   width 16 height 16 at xmax+0.2 ymin anchor T + R callback |!this.restoreView('ADD')|
+    button .replaceView   tooltip 'Replace Drawlist'       pixmap "$!<replaceViewIcon>"   width 16 height 16 at xmax+0.2 ymin anchor T + R callback |!this.restoreView('REPLACE')|
+    button .deleteView    tooltip 'Delete Saved View'      pixmap "$!<deleteViewIcon>"    width 16 height 16 at xmax+0.2 ymin anchor T + R callback |!this.removeView(false)|
+    button .deleteAllView tooltip 'Delete All Saved Views' pixmap "$!<deleteAllViewIcon>" width 16 height 16 at xmax+0.2 ymin anchor T + R callback |!this.removeView(true)|
+
+    -- image viewer container
+    frame .fraImageViewerControl panel at x1 ymax+0.4 anchor L + T + R + B width 47 hei 12
+      container .netImageViewerFrame PMLNetCONTROL 'NET' dock fill
+    exit
+
+    paragraph .pgDefCreatedDate at x0.5     ymax+0.25 anchor L + B width 25   lines 1
+    paragraph .pgUnloaded       at xmax + 2 ymin      anchor R + B width 20.8 lines 1
+  exit
+
+  frame .frSave |Save Current View| at xmin ymax anchor L + B + R
+    text   .saveName  'New View:'  tagwidth 7  anchor L + B + R at x0.5 ymax   callback |!this.checkName()| width 37 is STRING
+    button .saveView  tooltip  'Save Current View'  pixmap "$!<saveViewIcon>" at xmax+0.2 ymin anchor B + R width 16 height 16 callback |!this.saveView()|
+  exit
+
+  button .close |Close| tooltip 'Close' at xmax form-size ymax+0.25 anchor  B + R width 8 CANCEL
+
+  -- Form Members
+  member .viewManagement is VIEWMANAGEMENT
+  member .viewItems      is ARRAY
+  member .defaultFile    is FILE
+  member .currentMDB     is STRING
+  member .selectedMDB    is STRING
+
+  using namespace 'Aveva.Pdms.PMLNet'
+  member .imageViewer    is PMLIMAGEVIEWERCONTROL
+
+exit
+-- End of form definition for !!saveRestoreView
+
+------------------------------------------------------------------------
+--
+-- Method:      initialise
+--
+-- Description: Initialise form.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .initialise()
+
+  !this.viewManagement.calledView = !!fmsys.currentDocument().view
+
+  -- set killing call on parent form as parent form may get unset and this form
+  -- should be hidden when parent form is killed
+  if !this.owner().unset().not() then
+    !this.owner().killingcall = '!!saveRestoreView.hide()'
+  endif
+
+  using namespace 'Aveva.Pdms.PMLNet'
+  !this.imageViewer = object PMLIMAGEVIEWERCONTROL()
+  !this.netImageViewerFrame.control  = !this.imageViewer.handle()
+
+  var !mdb mdb
+  !this.currentMDB = !mdb.after('/')
+
+  -- Find which MDB's in project have saved Views
+  !this.mdbWithViews()
+
+  -- Initialise form gadgets
+  !this.workingDirectory.val = !this.viewManagement.datFileDir
+  !this.mdbList.val = 1
+  !this.viewList.editable  = False
+  !this.mdbList.editable   = False
+  !this.mdbList.setPopup(!this.mdbListPopup)
+
+  -- Sets the form for the selected MDB
+  !this.loadDefault()
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      saverestoreview
+--
+-- Description: Form Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .saveRestoreView()
+
+  -- Default directory = PDMSUSER Only default here when form is created
+  -- Current Directory is kept within session
+  !this.viewManagement.datFileDir = !!evar('PDMSUSER')
+
+endmethod
+-- End of Method
+------------------------------------------------------------------------
+--
+-- Method:      setCE
+--
+-- Description: Set the current element as storage area
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setCE()
+  !this.txtCE.val = !this.transCEName()
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      populateList
+--
+-- Description: update saved view list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .populateList(!insertStr is STRING)
+  if (!this.viewItems.findfirst(!insertStr).set()) then
+    return
+  endif
+
+  !this.viewItems.append(!insertStr)
+
+  !this.viewList.dText = !this.viewItems
+
+  !this.saveDefault()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      changeViewList
+--
+-- Description: change view list on combo box including view List
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .changeViewList()
+  !this.showPreview(!this.viewList.displayText().trim())
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      saveView
+--
+-- Description: Save definition views
+--
+-- Method Type: Function/Procedure
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .saveView()
+
+  !postName = !this.saveName.val.trim()
+
+  if (!postName eq '') then
+    return
+  endif
+
+  !this.checkName()
+
+  -- check if there is same post name on the default file
+  if (!this.viewItems.findfirst(!this.saveName.val).set()) then
+    if (!!alert.confirm(|A view has already been saved using the name '| & !postName & |' Do you want to overwrite it?|) neq 'YES') then
+      return
+    endif
+  endif
+
+
+  !this.defaultFile.close()
+
+  -- Check if the element in the drawlist has any element to show in the 3D view.
+  -- Remove the element with no volume in the drawlist as it may cause a problem when restoring the drawlist.
+  !token = !!gphDrawlists.token(!this.viewManagement.calledView)
+  !drawlistMem = !!gphDrawlists.drawlists[!token].members()
+
+  --If the elements in the drawlist don't have any volume, remove them.
+  !elementList = ARRAY()
+  !elementWithNoVol = ARRAY()
+
+  do !i indices !drawlistMem
+    -- eliminate high level elements that cause problems when the drawlist is reinstated
+    -- It is not possible to remove them from the drawlist
+    skip if( !drawlistMem[!i].type INSET(|BLOCK|,|CPANEL|,|HIBLO|,|HICPAN|))
+    !elementVol = !drawlistMem[!i].wvol
+    if  Set(!elementVol) then
+      !elementList.append(!drawlistMem[!i])
+    else
+      !elementWithNoVol.append(!drawlistMem[!i])
+    endif
+  enddo
+  !!gphDrawlists.drawlists[!token].removemembers(!elementWithNoVol)
+
+
+  -- This part only applies to the structure elements in the drawlist.
+  -- Search the structure elements in the drawlist.
+  !collStr = object COLLECTION()
+  !collStr.type('STRU')
+  !collStr.scope(!elementList)
+  !strList = ARRAY()
+  !strList = !collStr.results()
+
+  -- Sort out the structure element in the drawlist as it may cause a problem when restoring the drawlist.
+  if !strList.size().neq(0) then
+
+    !strMember = ARRAY()
+    -- check if the structure level has non-significant element. If it has, add it to the strMember list.
+    do !k indices !strList
+      !nonSignificantElement = !this.getNonSignificantElement(!strList[!k].member)
+      if !nonSignificantElement.empty().not()then
+        !strMember.append(!strList[!k])
+      endif
+    enddo
+
+    do !j indices !elementList
+      if !elementList[!j].owner.type inset(|STRU|, |FRMW|, |SBFR|)then
+        !strMember.append(!elementList[!j])
+      else
+        !grandParentType = !elementList[!j].owner.owner.type
+        handle any
+          skip
+        endhandle
+        if !grandParentType inset(|STRU|, |FRMW|, |SBFR|)then
+          !strMember.append(!elementList[!j])
+        endif
+      endif
+    enddo
+
+    --Remove the structure names first and restore its members.
+    !!gphDrawlists.drawlists[!token].removemembers(!strList)
+    !!gphDrawlists.drawlists[!token].addmembers(!strMember)
+
+  endif
+
+  !current3DView = !this.viewManagement.calledView
+
+  !this.viewManagement.actionType = 'SAVEVIEW'
+  !this.viewManagement.saveViewStatus(!current3DView, !postName)
+  !this.viewManagement.saveDrawLists(!current3DView, !postName)
+
+  !this.populateList(!postName)
+  !this.showPreview(!postName)
+  !this.viewList.val   = !postName
+  !this.saveName.val = ''
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      restoreView
+--
+-- Description: restore saved view
+--
+-- Method Type: Function/Procedure
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .restoreView(!actType is STRING)
+  -- !!unloaded is a global variable built into the saved drawlist macro
+  -- It counts the number of elements that could not be re-loaded
+  !!unloaded = 0
+
+  !postName = !this.viewList.displayText().trim()
+  !this.viewManagement.restoreView(!postName, !actType)
+  !this.viewList.select('DTEXT',!postName)
+
+  -- Set form gadget to display result if some elements failed to load
+  if ( !!unloaded.eq(0) ) then
+    !this.pgUnloaded.val = 'All elements were added'
+  else
+    !this.pgUnloaded.val = 'Not all elements could be added'
+  endif
+
+  -- Tidy global variable
+  !!unloaded.delete()
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      removeView
+--
+-- Description: remove definition views
+--
+-- Method Type: Function/Procedure
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .removeView(!removeAllFlag is BOOLEAN)
+
+  if (!this.viewItems.size() eq 0 or !this.viewList.displayText().trim().empty()) then
+    return
+  endif
+
+  if (!removeAllFlag) then
+    -- remove all saved view
+
+    if (!!alert.confirm('Are you sure that you want to delete all saved views?') neq 'YES') then
+      return
+    endif
+
+    do !i indices !this.viewItems
+      !this.viewManagement.deleteDefFile(!this.viewItems[!i])
+    enddo
+
+    !this.viewItems.clear()
+    !this.viewList.dText = !this.viewItems
+
+    if (!this.defaultFile.exists()) then
+      !this.defaultFile.deleteFile()
+      handle any
+        return error 1 |Failed to delete save / restore default file|
+      endhandle
+    endif
+
+    -- clear preview
+    !this.imageViewer.clearImage()
+    !this.pgDefCreatedDate.val = ''
+
+    !this.buttonState(False)
+
+  else
+    -- remove current selected view
+    !selectItem = !this.viewList.displayText().trim()
+
+    if (!!alert.confirm('Are you sure you want to delete view ' + !selectItem +'?') neq 'YES') then
+      return
+    endif
+
+    !this.viewManagement.deleteDefFile(!selectItem)
+
+    if( !this.viewItems.findfirst(!selectItem).set() ) then
+      !this.viewItems.remove(!this.viewItems.findfirst(!selectItem))
+      !this.viewList.dText = !this.viewItems
+    endif
+
+    if (!this.viewItems.size() gt 0) then
+      !this.showPreview(!this.viewItems[1])
+    else
+      !this.imageViewer.clearImage()
+
+      if (!this.defaultFile.exists()) then
+        !this.defaultFile.deleteFile()
+        handle any
+          return error 1 |Failed to delete save / restore default file|
+        endhandle
+      endif
+    endif
+
+    !this.saveDefault()
+
+    if (!this.viewList.dText.unset()) then
+      !this.pgDefCreatedDate.val = ''
+      !this.pgUnloaded.val       = ''
+      !this.buttonState(False)
+    endif
+  endif
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      saveDefault
+--
+-- Description: save definition views to file
+--
+-- Method Type: Function/Procedure
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .saveDefault()
+  if (!this.viewItems.set()) then
+    !this.viewItems.unique()
+  endif
+
+  !this.viewManagement.selectFilePath()
+  !defPath  =  !this.viewManagement.datFilePath & '-Views.dat'
+  !this.defaultFile = object FILE(!defPath)
+
+  !this.defaultFile.writeFile('overwrite',!this.viewItems)
+  !this.defaultFile.close()
+  !this.buttonState(True)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      loadDefault
+--
+-- Description: load definition views from file
+--
+-- Method Type: Function/Procedure
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .loadDefault()
+
+  -- clear preview
+  !this.imageViewer.clearImage()
+  !this.pgDefCreatedDate.val = ''
+  !this.pgUnloaded.val       = ''
+
+  -- Get the current MDB selection
+  !this.selectedMDB = !this.mdbList.displayText()
+
+  -- Get file path from viewManagement object
+  !this.viewManagement.selectFilePath()
+  !defPath  =  !this.viewManagement.datFilePath & '-Views.dat'
+  !this.defaultFile = object FILE(!defPath)
+
+  !this.viewItems.clear()
+  !this.viewList.dText = !this.viewItems
+
+  if (!this.defaultFile.exists().not()) then
+    !this.buttonState(False)
+    return
+  endif
+
+  !readData = !this.defaultFile.readFile()
+  handle (41,319)
+    write |$!!error.text|
+    return
+  endhandle
+
+  if ( !readData.unset() )then
+    !this.buttonState(False)
+  endif
+
+  do !data values !readData
+    break if (!data.unset())
+
+    if (!this.viewItems.findfirst(!data).set()) then
+      skip
+    endif
+
+    !this.viewItems.append(!data)
+
+    !this.buttonState(True)
+  enddo
+
+  !this.defaultFile.close()
+
+  if (!this.viewItems.unset()) then
+    return
+  endif
+
+  !this.showPreview(!this.viewItems[1])
+  !this.viewList.dText = !this.viewItems
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      showPreview
+--
+-- Description: show preview image
+--
+-- Method Type: Function/Procedure
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .showPreview(!viewName is STRING)
+
+  !this.pgUnloaded.val = ''
+
+  !imgFilePath = !this.viewManagement.datFilePath + '-viewimg-' + !viewName + '.png'
+
+  !file = object FILE(!imgFilePath)
+  if (!file.exists().not()) then
+    !this.imageViewer.clearImage()
+    !this.pgDefCreatedDate.val = ' '
+    return
+  endif
+
+  !dtm  = !file.dtm().string()
+
+  !this.pgDefCreatedDate.val = 'Created : ' & !dtm
+  !file.close()
+
+  !this.imageViewer.showImage(!imgFilePath)
+  handle any
+    !this.imageViewer.clearImage()
+  endhandle
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      getNonSignificantElement
+--
+-- Description: get non-significant element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--   1     R            ARRAY          Members of each STRU element
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       List of the non-significant element types
+------------------------------------------------------------------------
+define method .getNonSignificantElement(!elementList is ARRAY) is ARRAY
+
+  !nonSignificantElement = ARRAY()
+
+  do !i indices !elementList
+    !isSignificant = !elementList[!i].signif
+    skip if (!isSignificant)
+    !nonSignificantElement.append(!elementList[!i].type)
+  enddo
+
+  return !nonSignificantElement.unique()
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      buttonState
+--
+-- Description: sets buttons active or inactive
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--   1     R     BOOLEAN     Required button state
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+
+define method .buttonState(!active is BOOLEAN)
+
+  -- Set restore/replace/add button state based on situation when called
+  !this.restoreView.active   = !active
+  !this.addModels.active     = !active
+  !this.replaceView.active   = !active
+
+  -- Set state for save/delete buttons, depends whether current MDB is selected
+  if ( !this.currentMDB.eq(!this.selectedMDB) ) then
+    !this.saveView.active      = True
+    !this.deleteView.active    = True
+    !this.deleteAllView.active = True
+    !this.saveName.active      = True
+  else
+    !this.saveView.active      = False
+    !this.deleteView.active    = False
+    !this.deleteAllView.active = False
+    !this.saveName.active      = false
+
+  endif
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      mdbWithViews
+--
+-- Description: finds which MDB's have saved views
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .mdbWithViews()
+
+  -- Gather required prefixes for file name
+  !module   = !!module().appkey
+  !project  = current project
+  !projCode = !project.code().lowcase()
+
+  -- collect MDB's for project
+  var !mdbList collect all MDB
+  var !mdbName eval namn for all from !mdbList
+
+  !mdbViews = object ARRAY()
+  -- Current MDB is always available and first in list
+  !mdbViews.append(!this.currentMDB)
+
+  do !mdb values !mdbName
+
+    -- Current MDB is always in the list
+    if ( !mdb.eq(!this.currentMDB) )then
+      skip
+    endif
+
+    -- Build the required filename
+    !defPath  =  !this.viewManagement.datFileDir & !module & '-' & !projCode & '-' & !mdb & '-Views.dat'
+    !this.defaultFile = object FILE(!defPath)
+
+    -- Exclude the MDB from the list if no view exists
+    if (!this.defaultFile.exists().not()) then
+      skip
+    endif
+
+    !mdbViews.append(!mdb)
+  enddo
+
+  !this.mdbList.dText = !mdbViews
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      checkName
+--
+-- Description: Checks the validity of the entered name
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .checkName()
+
+  !postName = !this.saveName.val.trim()
+
+  if ( !this.viewManagement.checkPostName(!postName).not() ) then
+    return error 1 | $!postName has an invalid character for saving the file.|
+  endif
+
+endmethod
+
+-- End of Method
+------------------------------------------------------------------------
+--
+-- Method:      setDirectory
+--
+-- Description: sets the current working directory
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .setDirectory()
+
+  -- Use .NET folder browser
+  Import 'pmlfilebrowser'
+  handle (1000,0)
+    -- check for file browser already loaded
+  endhandle
+  using namespace 'Aveva.Pdms.Presentation'
+  !folderBrowser = object PMLFOLDERBROWSER()
+  !folderBrowser.selectedPath(!this.viewManagement.datFileDir)
+  !folderBrowser.show('Select folder for view storage', false)
+  !folder = !folderBrowser.selectedPath()
+
+  -- abandon if form browser cancelled
+  if( !folder.empty() ) then
+    return
+  endif
+
+  -- Return selected folder to the viewManagement object
+  !this.viewManagement.datFileDir = !folder & '\'
+
+  !this.workingDirectory.val = !this.viewManagement.datFileDir
+
+  -- Re-set form for the new directory
+  !this.mdbWithViews()
+  !this.loadDefault()
+
+endmethod
+-- End of method

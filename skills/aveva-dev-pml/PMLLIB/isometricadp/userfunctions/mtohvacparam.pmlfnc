@@ -1,0 +1,280 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            mtohvacparam.pmlfnc
+--   Type:          Function Definition
+--   Group:         ISOADP
+--     Keyword:     Isometric
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         25 March 2001
+--
+--
+-- Description:
+-- Adds to the array of mto table entry objects the data for the parameters
+-- THIS IS SPECIFICALLY FOR HVAC ONLY
+--
+-- Assumptions:
+-- The current element is the main view
+------------------------------------------------------------------------
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     ARRAY       Array of ISOMTOENTRY objects holding data for a table row
+--    2    R     ARRAY       Al the components in the drawlist
+--    3    R     DBREF       The reference of SYTM used for this cell in the row
+--    4    R     BOOLEAN     Whether or not the data is to be sorted
+--
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       The modified array passed as argument 1
+--
+------------------------------------------------------------------------
+define function !!mtoHvacParam(!entries is ARRAY,!allComp is ARRAY,!cellRefe is DBREF,!toBeSorted is BOOLEAN) is ARRAY
+
+  -- Initialise variables
+  !showKey    = !!isoMain.isoAdpApp.data.hvacmtogen.key
+  !showSym    = !!isoMain.isoAdpApp.data.hvacmtogen.symbol
+  !replace    = !!isoMain.isoAdpApp.data.hvacmtogen.replace
+  !viewRefe   = !!ce
+  !allTypes   = ARRAY()
+  !allEntries = ARRAY()
+  !groupSize  = ARRAY()
+
+  -- Ensure separator does not have extra spaces (to reduce output)
+  !separ = !!isoMain.isoAdpApp.data.hvacmtogen.separator.trim('LR').replace(|'|,||)
+
+  -- Read parameter switch defaults file
+  !file     = object FILE('%PDMSDFLTS%\IsoADP\DRA-ISO-MTO-PARAMS')
+  !switches = !file.readFile()
+
+  -- Load the switches as global variables
+  -- This was chosen since reading & testing the file is too slow
+  $M "%PDMSDFLTS%\IsoADP\DRA-ISO-MTO-PARAMS"
+
+  -- For each component get the parameters
+  do !count ind !allComp
+
+    -- Initialise variables
+    !compRef = !allComp[!count]
+
+    -- Get switches using the hvac catref (which is the type)
+    !type = !compRef.catref.flnn
+
+    -- The variables RTHOLE ,CTHOLE (test points) and RSTIF (stiffeners) have 8 and 2 different
+    -- sprefs i.e CTHOLE1 and CTHOLE2. If this is the spref strip off the trailing
+    -- number. Also the LHCENTRIFAN and RHCENTRIFAN needs the LH or RH removing
+    if !type.match('CTHOLE').eq(1) or !type.match('RTHOLE').eq(1) then
+      !type = !type.substring(1,6)
+    elseif !type.match('RSTIF').eq(1) then
+      !type = !type.substring(1,5)
+    elseif !type.match('CENTRIFAN').eq(3) then
+      !type = !type.substring(3,9)
+    elseif !type.match('PFLVTER').eq(1) then
+      !type = !type.substring(1,7)
+    elseif !type.match('PCBCIRO').eq(1) then
+      !type = !type.substring(1,7)
+    endif
+
+    !allTypes.append(!type)
+
+    -- Check if the type actually exists
+    if (undefined(!!$!type)) then
+
+      -- Log the error
+     !!isoLog.add(|   WARNING: There was an error when attempting to extract the parameters for | & !type)
+     !!isoLog.add(|            The file %PDMSDFLTS%\IsoADP\DRA-ISO-MTO-PARAMS does not contain a matching entry|)
+
+     -- Set a suitable parameter message
+     !allDisplay[!count] = 'ERROR'
+
+     -- We are done here
+     skip
+
+    endif
+
+    -- Get the switches from the type global variable
+    !variable = !!$!type
+    !switches = !variable.split(',')
+
+    -- Get the data set that defines the parameters
+    VAR !dtse COLL ALL DTSE WI FUNC EQ '$!type' FOR /AVEVAHVACMTO
+    handle any
+    VAR !dtse COLL ALL DTSE WI FUNC EQ '$!type' FOR /CADCHVACMTO
+    endhandle
+
+    -- For a missing component type, use the HVAC defaults properties
+    if (!dtse.empty()) then
+
+      -- Get parameters string from the detref stex
+      !allDisplay[!count] = !compRef.dtxs
+
+      -- Test for empty string
+      if (!allDisplay[!count].trim().eq('')) then
+
+      	-- Attempt to get the full detail text
+      	!allDisplay[!count] = !compRef.prop.deta
+    	    handle (2,207)
+    	      -- Required property not found for element
+            !allDisplay[!count] = !compRef.prop.duct
+
+    	    endhandle
+
+      endif
+
+    	-- We are done for this component
+      skip
+
+    endif
+
+    -- Read all parameters
+    VAR !allParam COLL ALL DATA FOR $!dtse[1]
+
+    -- Extract the switched on values and build the display string
+    do !index ind !allParam
+
+      -- For a switch on parameter
+      if (!switches[!index].eq('On')) then
+
+        -- Initialise variables
+        !property = !allParam[!index].dbref().ppro
+        !key      = !allParam[!index].dbref().dkey.lowCase()
+        !symbol   = !allParam[!index].dbref().dtit.lowCase()
+
+        -- Read parameter value
+        VAR !evaluate EVAL $!property FOR $!compRef
+
+        -- Test value for a real number and output zero decimal places
+        !test = !evaluate[1].real()
+          handle any
+            !value = !evaluate[1]
+          elsehandle none
+            !value = !test.string('D0')
+          endhandle
+
+        -- Build string
+        if (undefined(!allDisplay[!count])) then
+
+          if (!showKey and !showSym and !replace) then
+            if (!symbol.neq('')) then
+              !allDisplay[!count] = !value & !symbol & !separ
+            else
+              !allDisplay[!count] = !value & !key & !separ
+            endif
+          elseif (!showKey and !showSym and !replace.not()) then
+            !allDisplay[!count] = !value & !symbol & !key & !separ
+          elseif (!showKey and !showSym.not() and !replace.not()) then
+            !allDisplay[!count] = !value & !key & !separ
+          elseif (!showKey.not() and !showSym and !replace.not()) then
+            if (!symbol.neq('')) then
+              !allDisplay[!count] = !value & !symbol & !separ
+            else
+              !allDisplay[!count] = !value & !separ
+            endif
+          else
+            !allDisplay[!count] = !value & !separ
+          endif
+
+        else
+
+          if (!showKey and !showSym and !replace) then
+            if (!symbol.neq('')) then
+              !allDisplay[!count] = !allDisplay[!count] & !value & !symbol & !separ
+            else
+              !allDisplay[!count] = !allDisplay[!count] & !value & !key & !separ
+            endif
+          elseif (!showKey and !showSym and !replace.not()) then
+            !allDisplay[!count] = !allDisplay[!count] & !value & !symbol & !key & !separ
+          elseif (!showKey and !showSym.not() and !replace.not()) then
+            !allDisplay[!count] = !allDisplay[!count] & !value & !key & !separ
+          elseif (!showKey.not() and !showSym and !replace.not()) then
+            if (!symbol.neq('')) then
+              !allDisplay[!count] = !allDisplay[!count] & !value & !symbol & !separ
+            else
+              !allDisplay[!count] = !allDisplay[!count] & !value & !separ
+            endif
+          else
+            !allDisplay[!count] = !allDisplay[!count] & !value & !separ
+          endif
+
+        endif
+
+      endif
+
+    enddo
+
+    -- Remove trailing separator & space from the display string
+    !length = !separ.length() + 1
+    !allDisplay[!count] = !allDisplay[!count].substring(1,!allDisplay[!count].length() - !length)
+
+  enddo
+
+  -- Sort the components if required
+  if (!toBeSorted) then
+
+    -- Sort the components by type and display string
+    VAR !sort SORT !allTypes ASCII !allDisplay ASCII FIRSTINGROUP !first
+
+    -- Get groups
+    do !count ind !sort
+
+      -- Initialise variables
+      !index = !sort[!count].real()
+
+      if (defined(!first[!count])) then
+
+        -- Initialise variables
+        !firstCount = !first[!count].real()
+
+        -- Build entry object
+        !allEntries[!firstCount] = object ISOMTOENTRY(!allComp[!index],!allTypes[!index],!allDisplay[!index],!cellRefe)
+
+        if (!count.eq(1)) then
+          !prevCount = 1
+        else
+          -- Count group size
+          !groupSize.append(!count - !prevCount)
+          !prevCount = !count
+
+        endif
+
+     else
+
+        -- Add the other components (that are the equal to the first) to the object
+        !allEntries[!firstCount].dbRefes.append(!allComp[!index])
+
+      endif
+
+    enddo
+
+    -- Last group
+    !groupSize.append(!allComp.size() - !prevCount + 1)
+
+    -- Add group size to entry objects
+    do !index ind !allEntries
+      !allEntries[!index].number = !groupSize[!index]
+    enddo
+
+  else
+
+    -- Add data to the passed entry objects
+    !allEntries = !entries
+    do !index ind !allComp
+
+      !allEntries[!index].isoMtoEntry(!allComp[!index],!allTypes[!index],!allDisplay[!index],!cellRefe)
+      !allEntries[!index].number = 1
+
+    enddo
+
+  endif
+
+  -- Return to the view
+  !!ce = !viewRefe
+
+  -- Return the table entry object array
+  return  !allEntries
+
+endfunction

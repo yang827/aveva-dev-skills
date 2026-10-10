@@ -1,0 +1,1004 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            stlcreatepanelusingsctn.pmlfrm
+--   Type:          Form Definition
+--   Group:         Structural
+--     Keyword:     STL
+--   Module:        design
+--  Created:         Min Oct 4 2010
+--  Author:          M.Barlow
+--
+-- Description:
+-- GUI to trace a panel boundary around selected SCTN elements
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  apply()                          -                   OK callback. Creates panel
+--  buildProfile(BOOLEAN)            ARRAY               Return an array of LINE edges for current picked items
+--  changePLine()                    -                   Callback for P-line change
+--  clearInteraction()               -                   Clear graphical aids and EDG
+--  close()                          -                   Close form
+--  closeProfile()                   -                   Complete panel definition and close the profile
+--  display()                        -                   Draw panel edges as a series of aid boxes
+--  display(PROFILE)                 -                   Draw given panel edges as a series of aid boxes
+--  drawEdges(ARRAY,DIRECTION)       -                   Draw given LINE objects as a series of aid boxes
+--  edgPickFirstEdge()               -                   Setup EDG mode to pick first SCTN
+--  edgPickNextEdge()                -                   Setup EDG mode to pick subsequent SCTN
+--  initialise()                     -                   Initialise the form
+--  pickFirstEdge(EDGPICKDATA)       -                   pick event for first SCTN
+--  pickNextEdge(EDGPICKDATA)        -                   pick event for second and subsequent SCTN elements
+--  removeLast()                     -                   Remove last selected edge
+--  stlCreatePanelUsingSCTN()        -                   Constructor
+--  tagVertices(ARRAY)               -                   Draw vertex number as aid text at each vertex
+--  updateForm()                     -                   Update form information and user feedback
+--  updateHighlight()                -                   Update picked item highlight
+--  writePanel(DBREF)                DBREF               Create PANEL element for current trace profile
+--
+------------------------------------------------------------------------
+
+setup form !!stlCreatePanelUsingSCTN
+
+  -- Name Option
+  option .autoName      at x0.5 y0.5       width 7
+
+  -- Element Name
+  text   .name ' '      at xmax ymin       width 32 is STRING
+
+  -- Description
+  path down
+  halign right
+  text   .description   'Description'      width 32 is STRING
+
+  -- Thickness, panel justification, P-line names
+  text   .txtPlateThickness          tooltip 'Panel Thickness'           'Panel Thickness'            tagwidth 16   at xmin ymax+0.3 width 10  is REAL FORMAT !!distanceFmt
+  option .opSurfaceJustificationList tooltip 'Surface Justification'     'Surface Justification'      tagwidth 16   at xmin ymax+0.3 width 8
+
+  frame  .fBend           'Define Edges'     at xmin         ymax+0.2 width 38
+    combo  .cboSourceJustLineList    tooltip 'Source Justification Line' 'Section Justification Line' tagwidth 18   at x1   ymax width 8
+    button .bRemove       'Remove Last Edge' at xmin         ymax+0.2 width 13
+    para   .pPickNext                        at xmax+1       ymin     width 28
+    button .bCloseProfile 'Close Profile'    at xmin.bRemove ymax+0.2 width 13
+  exit
+
+  -- Bottom Line
+  button .dismiss         'Cancel'           at xmax form-size ymax+0.3
+  button .apply           '  OK  '           at xmin form+0.2    ymin
+
+  -- Form members
+  -- Current Active bent panel object
+  member .panelProfile    is PROFILE
+  -- list of available P-line names
+  member .sourceJustLineList  is ARRAY
+  -- list of panel justification codes
+  member .sourceSctnList      is ARRAY
+
+  -- EDG
+  member .edgDescription      is STRING
+
+  -- Store picked elements in an array
+  member .pickedItems         is ARRAY
+  -- Store enhanced elements in an array
+  member .enhanceList         is ARRAY
+  -- true if boundary has been closed
+  member .closed              is BOOLEAN
+  -- Aid Tag
+  member .aidTag              is REAL
+  -- Undo event handlers
+  member .undoCreate          is UNDOABLE
+
+exit
+-- End of form definition
+
+------------------------------------------------------------------------
+--
+-- Method:      stlCreatePanelUsingSCTN
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .stlCreatePanelUsingSCTN()
+
+  !this.formTitle     = 'Create Plate'
+  !this.iconTitle     = 'Trace Panel'
+  !this.callback      = '!this.initialise()'
+
+  -- callbacks
+  !this.name.callback          = '!this.name.val = !!checkName(!this.name.val, |NEW|)'
+  !this.bRemove.callback       = '!this.removeLast()'
+  !this.cancelCall             = '!this.close()'
+  !this.dismiss.callback       = '!this.close()'
+  !this.apply.callback         = '!this.apply()'
+  !this.bCloseProfile.callback = '!this.closeProfile()'
+  !this.pPickNext.val          = 'Pick first section'
+  !this.cboSourceJustLineList.callback = '!this.changePLine()'
+
+  -- Naming method
+  !dText    = ARRAY()
+  !rText    = ARRAY()
+  !dText.append('Name')
+  !rText.append('false')
+  !dText.append('Autoname')
+  !rText.append('true')
+  !this.autoName.dText = !dText
+  !this.autoName.rText = !rText
+
+  -- EDG
+  !this.edgDescription = 'Trace panel: Next Section'
+
+  -- Initialise UNDO
+  !this.undoCreate.description('Create traced panel')
+  !this.apply.setUndoable(!this.undoCreate)
+
+  -- initialise panel justification list
+  !pJust[1] = 'UTOP'
+  !pJust[2] = 'DTOP'
+  !pJust[3] = 'UCEN'
+  !pJust[4] = 'DCEN'
+  !pJust[5] = 'UBOT'
+  !pJust[6] = 'DBOT'
+  !this.opSurfaceJustificationList.dText = !pJust
+
+  -- initialise P-line list
+  !dText[1] = 'NA'
+  !this.cboSourceJustLineList.dText      = !dText
+  !this.cboSourceJustLineList.val        = 1
+
+  -- set a default panel thickness and justification value to start
+  !this.txtPlateThickness.val            = 15mm
+  !this.opSurfaceJustificationList.val   = 5
+
+  -- Aid Tags
+  !this.aidTag = !!aidNumbers.add('stlCreatePanelUsingSCTN')
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      initialise
+--
+-- Description: Initialise the form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .initialise()
+
+  -- initialise form gadgets for first pick
+  !this.bRemove.active       = false
+  !this.bCloseProfile.active = false
+  !this.apply.active         = false
+  !this.pickedItems.clear()
+  !this.enhanceList.clear()
+  !this.cboSourceJustLineList.active  = false
+
+  -- Initialise form members
+  !this.closed               = false
+  !this.name.val             = STRING()
+  !this.description.val      = STRING()
+  !this.panelProfile         = object PROFILE()
+  !this.updateForm()
+
+  -- initialise EDG pick
+  !this.edgPickFirstEdge()
+
+endmethod
+-- End of method definition for .initialise()
+
+------------------------------------------------------------------------
+--
+-- Method:      closeProfile
+--
+-- Description: Complete panel definition and close the profile
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .closeProfile()
+
+  -- construct profile from selected edges, and close the profile
+  !edges = !this.buildProfile(true)
+  handle any
+    !!alert.error('Error building Profile: ' + !!error.text)
+    !this.clearInteraction()
+    return error 2 'Invalid profile'
+  endhandle
+
+  -- calculate plane for panel
+  !plane = !edges[1].startPosition.plane(!edges[1].endPosition,!edges[2].endPosition)
+  handle any
+    -- problem with first two edges - cannot make profile
+    !!alert.error('Error building Profile: Cannot define a plane from the first two edges')
+    return error 2 'Invalid profile'
+  endhandle
+
+  -- build profile from edges
+  !profile = object PROFILE(!edges[1].startPosition, !plane.orientation, !edges)
+  !profile = !profile.mergePoints().mergeLines()
+  handle(2,785)
+    -- Invalid profile cannot be drawn
+    return error 2 'Invalid profile'
+  endhandle
+  !this.panelProfile = !profile
+  !this.closed       = true
+  !this.updateForm()
+
+  -- show aid graphics for this profile
+  !this.display()
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      buildProfile
+--
+-- Description: Return an array of LINE edges for current picked items
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      BOOLEAN     True to close profile, false to leave it open
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY of LINE   Edges of current profile
+--
+------------------------------------------------------------------------
+
+define method .buildProfile(!closeProfile is BOOLEAN) is ARRAY
+
+  if( !this.pickedItems.size() lt 2 ) then
+    return object ARRAY()
+  endif
+
+  -- Get P Line selected to trace edge
+  !pLine        = !this.cboSourceJustLineList.selection()
+  !firstSection = !this.pickedItems[1]
+  -- create line for the selected P-line, or use justification line if P-line not found on this SCTN
+  !lines[1]     = object LINE( !firstSection.plStart.attribute(!pLine), !firstSection.plEnd.attribute(!pLine) )
+  handle any
+    !lines[1]   = object LINE( !firstSection.poss, !firstSection.pose )
+  endhandle
+  !lineIndex    = 1
+
+  -- loop through sections to find lines
+  do !index from 2 to !this.pickedItems.size()
+
+    -- create line for the selected P-line, or use justification line if P-line not found on this SCTN
+    !section    = !this.pickedItems[!index]
+    !newLine    = object LINE( !section.plStart.attribute(!pLine), !section.plEnd.attribute(!pLine) )
+    handle any
+      !newLine  = object LINE( !section.poss, !section.pose )
+    endhandle
+    -- check for co-linear lines
+    if( !newLine.direction().isParallel(!lines.last().direction()) ) then
+      if( !lines.last().near(!newLine.startPosition).near(!newLine.startPosition,0.1mm) ) then
+        -- Co-linear case - combine lines
+        !lines[!lineIndex] = !lines[!lineIndex].union(!newLine)
+      else
+        return error 1 'Parallel edges selected'
+      endif
+    else
+      -- non-parallel lines: add new line
+      !lineIndex         = !lineIndex + 1
+      !lines[!lineIndex] = !newLine
+    endif
+
+  enddo
+
+  -- find vertices at line intersections
+  !vertex    = ARRAY()
+  do !index from 2 to !lines.size()
+    !vertex[!index - 1] = !lines[!index - 1].intersection(!lines[!index])
+  enddo
+
+  if( !closeProfile ) then
+    -- when closing profile, if first and last edge are parallel just join
+    -- the first and last vertex, otherwise join at intersection
+    if( !lines[1].direction().isParallel(!lines.last().direction()).not() ) then
+      !vertex.append(!lines.last().intersection(!lines[1]))
+    endif
+    !vertex.append(!vertex[1])
+  endif
+
+  -- create array of edge LINE objects from the vertices
+  !edges = ARRAY()
+  do !index from 2 to !vertex.size()
+    -- do not allow zero length edge
+    skip if( !vertex[!index - 1].near(!vertex[!index],0.001mm) )
+    !edges.append(object LINE(!vertex[!index - 1], !vertex[!index]))
+  enddo
+
+  return !edges
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      display
+--
+-- Description: Draw panel edges as a series of aid boxes
+--              to give a thick line, tag vertices and draw axes
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .display()
+
+  !!aidNumbers.hide(!this.aidTag)
+  !profile  = !this.panelProfile
+  if(!profile.unset()) then
+    return
+  endif
+  -- draw one edge of bent panel
+  !this.display(!profile)
+
+  -- display arrow normal to profile at its origin
+  !arrow             = object GPHAXES(!profile.position, !profile.orientation)
+  !arrow.height      = min( 50mm, !this.txtPlateThickness.val * 3 )
+  !arrow.draw(!this.aidTag, false)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      display
+--
+-- Description: Draw given panel edges as a series of aid boxes
+--              and tag vertices
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      PROFILE     Profile to draw
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .display(!drawProfile is PROFILE)
+
+  if( !drawProfile.unset() ) then
+    return
+  endif
+
+  -- clean and test profile
+  !profile         = !drawProfile.mergePoints().mergeLines()
+  handle(2,785)
+    -- Invalid profile cannot be drawn
+    return
+  endhandle
+
+  !this.drawEdges(!profile.edges(),!profile.orientation.zDir())
+  !this.tagVertices(!profile.edges())
+
+endmethod
+-- End of function definition
+
+------------------------------------------------------------------------
+--
+-- Method:      drawEdges
+--
+-- Description: Draw given LINE objects as a series of aid boxes
+--              to give a thick line
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY      Array of LINE objects to draw
+--    2   R      DIRECTION  Direction of normal to profile to
+--                          orientate boxes
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .drawEdges(!edges is ARRAY, !profileZDir is DIRECTION)
+
+  -- calculate box size from panel thickness
+  !thickness       = !this.txtPlateThickness.val
+  !boxSize         = !thickness / 3
+  !boxSize         = !boxSize.min(6mm)
+  -- for each edge, show an aid box
+  !gBox            = object GMFBOX()
+  !gBox.xLength    = !boxSize
+  !gBox.yLength    = !boxSize
+  do !edge values !edges
+    !length        = !edge.length()
+    skip if(!length lt 0.1mm)
+    !midPoint      = !edge.proportion(0.5)
+    !boxDir        = !edge.direction()
+    !orientation   = object ORIENTATION('Y IS $!<profileZDir> AND Z IS $!<boxDir>')
+    !gBox.zLength  = !length
+    !gBox.position = !midPoint
+    !gBox.orientation = !orientation
+    !graphBox      = object GPHBOX(!gBox)
+    !graphBox.filled(true)
+    !graphBox.draw(!this.aidTag, false)
+  enddo
+
+endmethod
+-- End of function definition
+
+------------------------------------------------------------------------
+--
+-- Method:      tagVertices
+--
+-- Description: Draw vertex number as aid text at each vertex
+--              to give a thick line
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY      Array of LINE objects
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .tagVertices(!edges is ARRAY)
+
+  if( !edges.empty() ) then
+    return
+  endif
+
+  -- put aid text <n> at each vertex
+  do !index indices !edges
+    !edge          = !edges[!index]
+    -- Translate XY position into model co-ordinates
+    !start         = !edge.startPosition
+    AID TEXT  NUMBER $!<this.aidTag> '-$!index-' AT $!<start>
+  enddo
+
+  -- put aid text <n> at last vertex
+  !number = !edges.size() + 1
+  !end    = !edges.last().endPosition
+  AID TEXT  NUMBER $!<this.aidTag> '-$!number-' AT $!<end>
+
+endmethod
+-- End of function definition
+
+------------------------------------------------------------------------
+--
+-- Method:      apply
+--
+-- Description: OK callback. Creates panel
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .apply()
+
+  !profile = !this.panelProfile
+  if( !profile.unset() ) then
+    !!alert.error('Unable to generate a valid shape from the selected items')
+    return
+  endif
+
+  if( !profile.isValidClosed().not() ) then
+    !!alert.error('Cannot create a valid closed shape from the selected items')
+    return
+  endif
+
+  -- Check we can create a panel at this point
+  !store = !!getStorageArea('PANDP', 'PANEL')
+
+  -- If store is unset, can we create the panel at the current DB location
+  if(!store.unset()) then
+    !store = !!dtbOwnerOfType(!!ce, 'PANE')
+    if(!store.unset()) then
+      !!alert.warning('Unable to create panel in this hierarchy. Set a storage area or move to an element that can own a PANEL')
+      return
+    endif
+  endif
+
+  -- create traced panel element
+  !newPanel = !this.writePanel(!store)
+  handle any
+    !!alert.error('Cannot create panel: ' + !!error.text)
+    return
+  endhandle
+  if( !newPanel.unset() ) then
+    !!alert.error('Unable to generate a traced panel from the selected items')
+    return
+  endif
+
+  -- Apply data to panel
+  if( !this.description.val.set() ) then
+    !newPanel.description = !this.description.val
+  endif
+
+  -- Autoname
+  if(!this.autoName.selection().boolean()) then
+    !name = !!namOpt.nameString(!newPanel, '', false, false)
+  -- Use specified
+  else
+    !name = !this.name.val
+  endif
+
+  -- Set panel name
+  if(!name.set()) then
+    !!ce = !newPanel
+    NAME $!<name>
+    handle ANY
+      NAME /$!<name>
+      handle ANY
+      endhandle
+    endhandle
+  endif
+
+  -- Close
+  !this.close()
+
+endmethod
+-- End of method definition for .apply()
+
+------------------------------------------------------------------------
+--
+-- Method:      writePanel
+--
+-- Description: Create PANEL element for current trace profile
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Storage are for new panel
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       Reference to new panel, or null reference if failed
+--
+------------------------------------------------------------------------
+
+define method .writePanel(!store is DBREF) is DBREF
+
+  -- Create PANEL element for bent panel
+  !!ce = !store
+  NEW PANEL
+  !newPanel = !!ce
+  NEW PLOOP
+  !loop     = !!ce
+  -- height is the width (y) of the bent panel
+  !!ce.height         = !this.txtPlateThickness.val
+  !!ce.sJustification = !this.opSurfaceJustificationList.selection()
+  !this.panelProfile.mergePoints().mergeLines().dbWrite(!!ce)
+  -- remove duplicate last point
+  !vertices = !loop.members
+  if( !vertices[1].position eq !vertices.last().position ) then
+    -- remove last vertex
+    !!ce = !vertices.last()
+    DELETE PAVE
+    handle any
+    endhandle
+  endif
+  !!ce = !newPanel
+
+  return !newPanel
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      clearInteraction
+--
+-- Description: Clear graphical aids and EDG
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .clearInteraction()
+
+  -- Remove EDG
+  !!edgCntrl.remove(!this.edgDescription)
+  !!edgCntrl.remove('Trace panel: First Section')
+
+  !this.pickedItems = ARRAY()
+  !this.updateHighlight()
+  !!aidNumbers.hide(!this.aidTag)
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      close
+--
+-- Description: Close form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .close()
+
+  -- clear aids and EDG
+  !this.clearInteraction()
+
+  -- Hide form
+  !this.hide()
+
+endmethod
+-- End of method definition for .close()
+
+------------------------------------------------------------------------
+--
+-- Method:      changePLine
+--
+-- Description: Callback for P-line change
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .changePLine()
+
+  -- if profile is closed the saved panel must be recalculated
+  if( !this.closed ) then
+    !this.closeProfile()
+  else
+    !this.updateForm()
+  endif
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      updateForm
+--
+-- Description: Update form information and user feedback
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .updateForm()
+
+  -- disable remove if not previous edge
+  !this.bRemove.active       = !this.pickedItems.size().gt(0)
+
+  -- update highlight on selected sections
+  !this.updateHighlight()
+  !!aidNumbers.hide(!this.aidTag)
+  !edges = !this.buildProfile(!this.closed)
+  !edgeNumber                = !edges.size()
+  !this.bCloseProfile.active = !this.pickedItems.size().gt(2)
+  !this.apply.active         = !edgeNumber.gt(1).and(!this.closed)
+
+  -- mark vertices
+  !this.tagVertices(!edges)
+  -- mark edges
+  !zDirection = !edges[1].direction().orthogonal(!edges[2].direction())
+  handle any
+  elsehandle none
+    !this.drawEdges(!edges,!zDirection)
+  endhandle
+
+  if( !this.pickedItems.size() eq 0 ) then
+    !this.pPickNext.val        = 'Pick first Section'
+  else
+    !nextEdgeNumber            = !edges.size() + 1
+    !this.pPickNext.val        = 'Pick Section for edge ' + !nextEdgeNumber.string()
+  endif
+
+endmethod
+-- End of method definition
+
+-----------------------------------------------------------------------
+--
+-- Method:      updateHighlight
+--
+-- Description: Update picked item highlight
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA Pick data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .updateHighlight()
+
+  -- clear highlight on previous enhanced items
+  do !item values !this.enhanceList
+    UNENHANCE $!item
+    handle any
+    endhandle
+  enddo
+
+  if( !this.pickedItems.size() eq 0 ) then
+    return
+  endif
+
+  -- highlight list of previously selected items
+  do !item values !this.pickedItems
+    ENHANCE $!item COLOUR PINK
+    handle any
+    endhandle
+  enddo
+
+  -- special highlight for current selected item
+  !colour = !!gphColOpt.highlight.code
+  !item   = !this.pickedItems.last()
+  ENHANCE $!item COLOUR $!colour
+
+  -- update list of currently enhanced items
+  !this.enhanceList = !this.pickedItems
+
+endmethod
+-- End of method definition for .updateForm()
+
+-----------------------------------------------------------------------
+--
+-- Method:      pickFirstEdge
+--
+-- Description: pick event for first SCTN
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA Pick data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .pickFirstEdge(!pickData is EDGPICKDATA)
+
+  !pickedEdge = !pickData.item
+  -- Append if the item is picked for the first time
+  !this.pickedItems.clear()
+  !this.pickedItems[1]     = !pickedEdge
+
+  -- initialise P-line list
+  -- try to keep current selection
+  !currentLine = !this.cboSourceJustLineList.selection()
+  !this.cboSourceJustLineList.dText = !pickedEdge.plna
+  !index       = !this.cboSourceJustLineList.dText.findFirst(!currentLine)
+  if( !index.unset() ) then
+    !index     = !this.cboSourceJustLineList.dText.findFirst('NA')
+    if( !index.unset() ) then
+      !index = 1
+    endif
+  endif
+  !this.cboSourceJustLineList.val    = !index
+  !this.cboSourceJustLineList.active = true
+
+  -- invoke subsequent picks
+  !this.edgPickNextEdge()
+
+  !this.updateForm()
+
+endmethod
+-- End of method definition for .pickFirstEdge()
+
+-----------------------------------------------------------------------
+--
+-- Method:      pickNextEdge
+--
+-- Description: pick event for second and subsequent SCTN elements
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA Pick data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .pickNextEdge(!pickData is EDGPICKDATA)
+
+  !pickedElement      = !pickData.item
+
+  -- this pick cannot be the same as the last pick
+  if( !pickedElement eq !this.pickedItems.last() ) then
+    !!alert.error('Section element picked twice. Please pick another element or remove last edge')
+    return
+  endif
+
+  -- test for parallel edges picked. No intersection can be found
+  !last     = !this.pickedItems.last()
+  !lastLine = object LINE(!last.poss, !last.pose)
+  !newLine  = object LINE(!pickedElement.poss, !pickedElement.pose)
+  if( !lastLine.direction().isParallel(!newLine.direction()) ) then
+    !!alert.error('Selected section is parallel to previous edge. Please pick another element or remove last edge')
+    return
+  endif
+
+  if( !pickedElement eq !this.pickedItems.last() ) then
+    !!alert.error('Section element picked twice. Please pick another element or remove last edge')
+    return
+  endif
+
+  -- cannot pick last but one item because this will give a null edge
+  if( !this.pickedItems.size() gt 2 ) then
+    if( !pickedElement eq !this.pickedItems[!this.pickedItems.size() - 1] ) then
+      !!alert.error('Picking this Section will create a null edge. Please pick another element or remove last edge')
+      return
+    endif
+  endif
+
+  -- Append to picked items list
+  !this.pickedItems.append(!pickedElement)
+
+  -- check that edges lie in the same plane
+  !edges = !this.buildProfile(false)
+  if( !edges.size() gt 1 ) then
+    !zDir = !edges[1].direction().orthogonal(!edges[2].direction())
+    if( !zDir.dot(!newLine.direction()).abs() eq 1 ) then
+      !this.pickedItems.removeLast()
+      !!alert.error('Selected section is orthogonal to the plane of the panel. Please pick another element or remove last edge')
+      return
+    endif
+  endif
+
+  -- clear closed in case profile had been closed before this pick
+  !this.closed = false
+
+  -- update form and feedback
+  !this.updateForm()
+  handle any
+  endhandle
+
+  -- invoke subsequent picks
+  !this.edgPickNextEdge()
+
+endmethod
+-- End of method definition for .pickNextEdge()
+
+------------------------------------------------------------------------
+--
+-- Method:      removeLast
+--
+-- Description: Remove last selected edge
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .removeLast()
+
+  -- profile cannot be closed if edge removed
+  !this.closed = false
+  if( !this.pickedItems.size() lt 2 ) then
+    -- restart from first SCTN
+    !this.clearInteraction()
+    !this.initialise()
+  else
+    -- remove last leg
+    !this.pickedItems.removeLast()
+    !this.updateForm()
+  endif
+
+endmethod
+-- End of method definition for .removeLast()
+
+------------------------------------------------------------------------
+--
+-- Method:      edgPickFirstEdge
+--
+-- Description: Setup EDG mode to pick first SCTN
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .edgPickFirstEdge()
+
+  -- Clean the object members
+  !this.pickedItems.clear()
+
+  -- Define edg packet for picking elements to be split
+  !packet              =   object EDGPACKET()
+  !packet.elementPick('Pick Section')
+  !packet.description  =   'Trace panel: First Section'
+
+   -- Add filter for Pick
+  !packet.pickPacket.picks[1].pick.input[3]   = |HARDTYPE eq 'SCTN'|
+  !packet.pickPacket.picks[1].pick.modifiable = false
+  !packet.action          =   '!!stlCreatePanelUsingSCTN.pickFirstEdge(!this.return[1])'
+  !packet.escape          = '!!stlCreatePanelUsingSCTN.close()'
+
+  !packet.priority        =   1
+  !packet.remove          =   false
+
+  !!edgCntrl.add(!packet)
+
+endmethod
+-- End of method definition for .edgPickFirstEdge()
+
+------------------------------------------------------------------------
+--
+-- Method:      edgPickNextEdge
+--
+-- Description: Setup EDG mode to pick subsequent SCTN
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .edgPickNextEdge()
+
+  -- Define the graphics pick to derive as much geometric information as possible
+  !packet = object EDGPACKET()
+  !packet.elementPick('Pick Next Section')
+  !this.edgDescription    = 'Trace panel: Next Section'
+  !packet.pickPacket.picks[1].pick.input[3]   = |HARDTYPE eq 'SCTN'|
+  !packet.pickPacket.picks[1].pick.modifiable = false
+  !packet.description     = !this.edgDescription
+  !packet.action          = '!!stlCreatePanelUsingSCTN.pickNextEdge(!this.return[1])'
+  !packet.escape          = '!!stlCreatePanelUsingSCTN.close()'
+  !packet.priority        = 1
+  !packet.remove          = false
+
+  !!edgCntrl.add(!packet)
+
+endmethod
+-- End of method definition

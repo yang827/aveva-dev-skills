@@ -1,0 +1,853 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:    Mdsinterfaceposthro.pmlfnc
+--   Type:    Function Definition
+--   Group:   Multi Discipline Supports Application
+--     Keyword:   MDS
+--   Module:    design
+--   Replaces:          MPOSTHRO
+--
+-- Author:    I.osborne
+-- Created:   Thu Mar 01
+--
+--
+-- Description:
+-- function to position support
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R          FORM        Support Form
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsInterfacePosThro(!form is FORM)
+
+  -- Can we move all components of the support
+
+  if !!mdsCheckAccess(!form,'DACMOD','POS').not() then
+    return
+  endif
+
+  -- Find current units and set the distance unit to metric
+
+  !currentUnits  = !!kGetSetUnits()
+
+  ------------ *** Connexion Warnings *** -------------
+  !errorMessage = STRING()
+
+  if(!!mdsCheckConns(!form, !errorMessage).eq('UNJOINTED')) then
+    -- nothing to do
+  elseif(!!mdsCheckConns(!form, !errorMessage).eq('WARNING')) then
+    !continue = !!alert.confirm(!errorMessage)
+    if(!continue.eq('NO')) then
+      !!kRestoreUnits(!currentUnits)
+      return
+    else
+      !!mdsSelectJoints(!form,'DISCONNECT','')
+      !form.support.soints.clear()
+    endif
+  elseif(!!mdsCheckConns(!form, !errorMessage).eq('ERROR')) then
+    !!alert.error(!errorMessage)
+    !!kRestoreUnits(!currentUnits)
+    return
+  else
+    -- continue after deleting the existing joints
+    !!mdsSelectJoints(!form,'DISCONNECT','')
+    !form.support.joints.clear()
+  endif
+
+  ---------------------------------------------
+
+  -- Initialise variables
+  !selection = !form.select.selection('Rtext')
+  !datum     = !form.support.datum
+  !name      = !form.support.stru.name
+  handle ANY
+    -- in case support is just an atta
+    !name = !form.support.datum.name
+    handle any
+      !!alert.message('Datum support atta has not been created')
+      !!kRestoreUnits(!currentUnits)
+      return
+    endhandle
+  endhandle
+  !alias     = !form.support.alias
+
+  !origin = !!ce
+
+  -- Check that Datum atta has been created
+  if (!datum.set().not())then
+    !!alert.message('Datum support atta has not been created')
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+  !!ce = !datum
+
+  ---------------------------------------------------------------------------------
+  --> Added by <ab> to handle lugs and trunnion 24th June 2002
+
+  -- default - the drag command is not needed
+  !drag = ''
+  -- Handling welded elbo lug & trunnion.
+  -- the have a separate branch which is connected to a tee in the main branch
+  -- check if this is a welded elbo lug or trunnion.
+  if(!!ce.owner.name.match(!!ce.name) gt 0) then
+    -- name of datum is contained in the name of the branch
+    !href = !!ce.owner.href
+    var !paToPl const dist pa of $!href to pl of $!href
+
+    if(!href.type.eq('TEE') and !href.styp.upcase().eq('STUB') and !paToPl.real() eq 0) then
+      -- connected to a set-on tee
+      -- tee is made Current Element and all Datum branch will be dragged with it.
+      !!ce = !href
+      !drag = 'DRAG '
+    endif
+  endif
+
+  --< Added by <ab> to handle lugs and trunnion 24th June 2002
+  ---------------------------------------------------------------------------------
+
+  -- Get plane direction to move
+  --> Replaced by <ab> to handle lugs and trunnion 24th June 2002
+  -- !pldir = PL DIR of $!datum wrt /*
+  !pldir = PL DIR of $!!ce wrt /*
+  --< Replaced by <ab> to hande lugs and trunnion 24th June 2002
+
+  -- Plane direction is nearest value to 1
+  !up = (abs(!pldir.up))
+  !east = (abs(!pldir.east))
+  !north = (abs(!pldir.north))
+  !max = max((abs(!up)), (abs(!east)), (abs(!north)))
+  if (!max eq !up)then
+    !planeDir = U wrt /*
+  elseif (!max eq !east)then
+    !planeDir = E wrt /*
+  else
+    !planeDir = N wrt /*
+  endif
+
+  -- Check if Structure Exists on the MDS Support for Individual Ancillary Nudge Distances
+  if (!form.support.stru.set()) then
+    -- Check If DATUM ATTA offset from STRUCTURE Origin
+    !unusedcheck = object MDSCHECKDATUM()
+    !nudge = !!ce.:mdsnudgedist
+    if (!nudge.abs().neq(0)) then
+      -- Temporarily Move Stru Origin back through the DATUM ATTA and
+      -- if required Offset the STRU at Bottom of this function
+      --<wd>12oct2004
+      !xce = !!ce
+      --<wd>12oct2004
+
+      !!ce = !form.support.stru
+      move $!planeDir thro $!datum
+
+      --<wd>12oct2004
+      !!ce = !xce
+      --<wd>12oct2004
+    endif
+  endif
+
+  -- Current Element
+  !cecomp = !!ce
+
+  -- Moving the Datum Atta Thro the Selected Object
+  --    !!ce = !datum
+
+  VAR !mode MODE
+  PIN 9 AT CE
+  PIN 9 OFF
+
+  !!mdsDacControl(true)
+
+  ------------------------------------------------------------------------
+  -->>>-<wd>oct2002
+
+  -- Pin 9 has to be REPOSITIONED at the !cecomp before each of the $!drag PLANE Commands etc... is executed.
+  -- This is because PIN 9 has been used/moved in the function MDSCHECKTHRO and used in the MDSCHECKWITHIN function
+  --
+  --
+  if (!selection eq |NAME|)then
+    -- The !!cdnname.name  form gadget callback always returns the PDMS Name complete with the leading '/' character
+    -- e.g. /NAME. So None of the above tests are required, ONLY test for 'unset'
+    -- If the Selected Element is NOT Named, then the PDMS REFERENCE Number is used, e.g. '=22384/4910'
+    !gname = !!cdnname.name.val
+    if ( (!gname.unset()) or (!gname.lowcase().eq('unset')) ) then
+      !!kRestoreUnits(!currentUnits)
+      !!mdsDacControl(false)
+      return
+    endif
+
+    -- Selected Element Name Exists, so proceed
+    pin 10 at $!gname
+    pin 10 dir $!planeDir
+    var !pin10pos pin 10 pos wrt /*
+    !pospin10 = !pin10pos.position()
+    !idcomp = !pospin10
+    !!ce    = !cecomp
+    if (!!mdscheckthro(!form, !cecomp, !idcomp, !planeDir).not()) then
+      !!kRestoreUnits(!currentUnits)
+      !!mdsDacControl(false)
+      return
+    else
+      pin 9 at ce
+      $!drag plane $!planeDir thro $!idcomp
+    endif
+
+    ------------------------------------------------------------------------
+  elseif (!selection eq |COORD|)then
+    pin 10 copy pl of $!cecomp
+    !throcoord = !form.p.val.replace(' ','')
+    pin 10 plane $!planeDir thro $!throcoord wrt /*
+    pin 10 dir $!planeDir
+    var !pin10pos pin 10 pos wrt /*
+    !pospin10 = !pin10pos.position()
+    !idcomp = !pospin10
+    !!ce    = !cecomp
+    if (!!mdscheckthro(!form, !cecomp, !idcomp, !planeDir).not()) then
+      !!kRestoreUnits(!currentUnits)
+      !!mdsDacControl(false)
+      return
+    else
+      pin 9 at ce
+      $!drag plane $!planeDir thro $!idcomp
+    endif
+
+    ------------------------------------------------------------------------
+  elseif (!selection eq |PIN|)then
+    pin 10 at pin $!form.p.val
+    pin 10 dir $!planeDir
+    var !pin10pos pin 10 pos wrt /*
+    !pospin10 = !pin10pos.position()
+    !idcomp = !pospin10
+    !!ce    = !cecomp
+    if (!!mdscheckthro(!form, !cecomp, !idcomp, !planeDir).not()) then
+      !!kRestoreUnits(!currentUnits)
+      !!mdsDacControl(false)
+      return
+    else
+      pin 9 at ce
+      $!drag plane $!planeDir thro $!idcomp
+    endif
+
+    ------------------------------------------------------------------------
+  elseif (!selection eq |PLANE|)then
+
+    -- Check that Gadget in NOT unset
+    if (!form.p.val eq '')then
+      !!alert.error('Create Plane first')
+      !!kRestoreUnits(!currentUnits)
+      !!mdsDacControl(false)
+      return
+    endif
+
+    -- Check 'Through...' Selection
+    if (!form.p.val.match('CURSOR').gt(0)) then
+      !direction = !form.p.val.before('THRO')
+      pin 10 at @
+      handle (61,528)
+        !!kRestoreUnits(!currentUnits)
+        !!mdsDacControl(false)
+        return
+      endhandle
+    else
+      --<wd>apr2003
+      --!direction = ''
+      !direction = !form.p.val.before(' THRO')
+      !idelement = !form.p.val.after('THRO ')
+      pin 10 at $!idelement
+      --<wd>apr2003
+      pin 10 plane $!form.p.val
+    endif
+
+    -- Common code for Both of the Above Conditions
+    pin 10 dir $!planeDir
+    var !pin10pos pin 10 pos wrt /*
+    !pospin10 = !pin10pos.position()
+    !idcomp = !pospin10
+    !!ce    = !cecomp
+    --<wd>apr2003
+    pin 9 at ce
+    --<wd>apr2003
+    if (!!mdscheckthro(!form, !cecomp, !idcomp, !planeDir).not()) then
+      !!kRestoreUnits(!currentUnits)
+      !!mdsDacControl(false)
+      return
+    else
+      pin 9 at ce
+      $!drag plane $!direction thro $!idcomp
+    endif
+
+    ------------------------------------------------------------------------
+  elseif (!selection eq |CUR|)then
+    pin 10 at @
+    handle (61,528)
+      !!kRestoreUnits(!currentUnits)
+      !!mdsDacControl(false)
+      return
+    elsehandle none
+      pin 10 dir $!planeDir
+      var !pin10pos pin 10 pos wrt /*
+      !pospin10 = !pin10pos.position()
+      !idcomp = !pospin10
+      !!ce    = !cecomp
+      if (!!mdscheckthro(!form, !cecomp, !idcomp, !planeDir).not()) then
+        !!kRestoreUnits(!currentUnits)
+        !!mdsDacControl(false)
+        return
+      else
+        pin 9 at ce
+        $!drag plane $!planeDir thro $!idcomp
+      endif
+    endhandle
+
+    ------------------------------------------------------------------------
+  elseif (!selection eq |IDCUR|)then
+    -- pin 10 at ID@
+    var !idname name of ID@
+    handle (61,528)
+      !!kRestoreUnits(!currentUnits)
+      !!mdsDacControl(false)
+      return
+    elsehandle none
+      pin 10 at $!idname
+      pin 10 dir $!planeDir
+
+      -- Zimmer standards added ge 05/12/05
+      if (!alias inset('AT120','AT121','AT122','AT123','AT124','AT125')) then
+        !planeDir = D wrt /*
+        pin 10 dir $!planeDir
+        pin 10 behind $!idname
+      endif
+
+      var !pin10pos pin 10 pos wrt /*
+      !pospin10 = !pin10pos.position()
+      !idcomp = !pospin10
+      --        !idcomp = !!ce
+      !!ce    = !cecomp
+
+      if (!!mdscheckthro(!form, !cecomp, !idcomp, !planeDir).not()) then
+        !!kRestoreUnits(!currentUnits)
+        !!mdsDacControl(false)
+        return
+      else
+        pin 9 at ce
+        $!drag plane $!planeDir thro $!idcomp
+      endif
+    endhandle
+
+    ------------------------------------------------------------------------
+  elseif (!selection eq |IDP|)then
+    pin 10 at IDP@
+    handle (61,528)
+      !!kRestoreUnits(!currentUnits)
+      !!mdsDacControl(false)
+      return
+    elsehandle none
+      pin 10 dir $!planeDir
+      var !pin10pos pin 10 pos wrt /*
+      !pospin10 = !pin10pos.position()
+      !idcomp = !pospin10
+      !!ce    = !cecomp
+      if (!!mdscheckthro(!form, !cecomp, !idcomp, !planeDir).not()) then
+        !!kRestoreUnits(!currentUnits)
+        !!mdsDacControl(false)
+        return
+      else
+        pin 9 at ce
+        $!drag plane $!planeDir thro $!idcomp
+      endif
+    endhandle
+
+    ------------------------------------------------------------------------
+  elseif (!selection eq |NEXT|)then
+    pin 10 at NEXT
+    handle (41,66) (2,113) (2,113)
+      if (!mode eq |Forwards|)then
+        pin 10 at PT
+      else
+        pin 10 at PH
+      endif
+    endhandle
+    pin 10 dir $!planeDir
+    var !pin10pos pin 10 pos wrt /*
+    !pospin10 = !pin10pos.position()
+    !idcomp = !pospin10
+    !!ce    = !cecomp
+    if (!!mdscheckthro(!form, !cecomp, !idcomp, !planeDir).not()) then
+      !!kRestoreUnits(!currentUnits)
+      !!mdsDacControl(false)
+      return
+    else
+      pin 9 at ce
+      $!drag plane $!planeDir thro $!idcomp
+    endif
+
+    ------------------------------------------------------------------------
+  elseif (!selection eq |TAIL|)then
+    pin 10 at PT
+    pin 10 dir $!planeDir
+    var !pin10pos pin 10 pos wrt /*
+    !pospin10 = !pin10pos.position()
+    !idcomp = !pospin10
+    !!ce    = !cecomp
+    if (!!mdscheckthro(!form, !cecomp, !idcomp, !planeDir).not()) then
+      !!kRestoreUnits(!currentUnits)
+      !!mdsDacControl(false)
+      return
+    else
+      pin 9 at ce
+      $!drag plane $!planeDir thro $!idcomp
+    endif
+
+    ------------------------------------------------------------------------
+  elseif (!selection eq |PREV|)then
+    pin 10 at PREV
+    handle (41,66) (2,113) (2,113)
+      if (!mode eq |Forwards|)then
+        pin 10 at PH
+      else
+        pin 10 at PT
+      endif
+    endhandle
+    pin 10 dir $!planeDir
+    var !pin10pos pin 10 pos wrt /*
+    !pospin10 = !pin10pos.position()
+    !idcomp = !pospin10
+    !!ce    = !cecomp
+    if (!!mdscheckthro(!form, !cecomp, !idcomp, !planeDir).not()) then
+      !!kRestoreUnits(!currentUnits)
+      !!mdsDacControl(false)
+      return
+    else
+      pin 9 at ce
+      $!drag plane $!planeDir thro $!idcomp
+    endif
+
+    ------------------------------------------------------------------------
+  elseif (!selection eq |HEAD|)then
+    pin 10 at PH
+    pin 10 dir $!planeDir
+    var !pin10pos pin 10 pos wrt /*
+    !pospin10 = !pin10pos.position()
+    !idcomp = !pospin10
+    !!ce    = !cecomp
+    if (!!mdscheckthro(!form, !cecomp, !idcomp, !planeDir).not()) then
+      !!kRestoreUnits(!currentUnits)
+      !!mdsDacControl(false)
+      return
+    else
+      pin 9 at ce
+      $!drag plane $!planeDir thro $!idcomp
+    endif
+
+    ------------------------------------------------------------------------
+  elseif (!selection eq |CE|)then
+    pin 10 at $!origin
+    pin 10 dir $!planeDir
+    var !pin10pos pin 10 pos wrt /*
+    !pospin10 = !pin10pos.position()
+    !idcomp = !pospin10
+    !!ce    = !cecomp
+    if (!!mdscheckthro(!form, !cecomp, !idcomp, !planeDir).not()) then
+      !!kRestoreUnits(!currentUnits)
+      !!mdsDacControl(false)
+      return
+    else
+      pin 9 at ce
+      $!drag plane $!planeDir thro $!idcomp
+    endif
+
+    ------------------------------------------------------------------------
+  elseif (!selection eq |PLINE START|)then
+    pin 10 at IDPLINE @ START
+    handle (61,528)
+      !!kRestoreUnits(!currentUnits)
+      !!mdsDacControl(false)
+      return
+    elsehandle none
+      pin 10 dir $!planeDir
+      var !pin10pos pin 10 pos wrt /*
+      !pospin10 = !pin10pos.position()
+      !idcomp = !pospin10
+      !!ce    = !cecomp
+      if (!!mdscheckthro(!form, !cecomp, !idcomp, !planeDir).not()) then
+        !!kRestoreUnits(!currentUnits)
+        !!mdsDacControl(false)
+        return
+      else
+        pin 9 at ce
+        $!drag plane $!planeDir thro $!idcomp
+      endif
+    endhandle
+
+    ------------------------------------------------------------------------
+  elseif (!selection eq |PLINE END|)then
+    pin 10 at IDPLINE @ END
+    handle (61,528)
+      !!kRestoreUnits(!currentUnits)
+      !!mdsDacControl(false)
+      return
+    elsehandle none
+      pin 10 dir $!planeDir
+      var !pin10pos pin 10 pos wrt /*
+      !pospin10 = !pin10pos.position()
+      !idcomp   = !pospin10
+      !!ce      = !cecomp
+      if (!!mdscheckthro(!form, !cecomp, !idcomp, !planeDir).not()) then
+        !!kRestoreUnits(!currentUnits)
+        !!mdsDacControl(false)
+        return
+      else
+        pin 9 at ce
+        $!drag plane $!planeDir thro $!idcomp
+      endif
+    endhandle
+
+    ------------------------------------------------------------------------
+  elseif (!selection eq |PLINE INTERSECTION|)then
+    var !pline idpline@
+    handle (61,528)
+      !!kRestoreUnits(!currentUnits)
+      !!mdsDacControl(false)
+      return
+    elsehandle none
+      !sctn = !pline.after(' of ').dbref()
+      !plin = !pline.before(' of ').after('Pline ').trim()
+      !plst = !sctn.plst.$!<plin>.wrt(/* )
+      !plen = !sctn.plen.$!<plin>.wrt(/* )
+      var !linea cons line join $!plst to $!plen
+      var !lineb cons line pleave of $!cecomp
+      var !inter cons pos int $!linea $!lineb wrt /*
+      pin 10 at $!inter wrt /*
+      pin 10 dir $!planeDir
+      var !pin10pos pin 10 pos wrt /*
+      !pospin10 = !pin10pos.position()
+      !idcomp   = !pospin10
+      !!ce      = !cecomp
+      if (!!mdscheckthro(!form, !cecomp, !idcomp, !planeDir).not()) then
+        !!kRestoreUnits(!currentUnits)
+        !!mdsDacControl(false)
+        return
+      else
+        pin 9 at ce
+        $!drag plane $!planeDir thro $!idcomp
+      endif
+    endhandle
+
+    ------------------------------------------------------------------------
+  elseif (!selection eq |BMA|)then
+    var !pick pick pline with (purp eq 'B')
+    handle (61,528)
+      !!kRestoreUnits(!currentUnits)
+      !!mdsDacControl(false)
+      return
+    elsehandle none
+      pin 10 at $!pick[1] start
+      pin 10 dir $!planeDir
+      var !pin10pos pin 10 pos wrt /*
+      !pospin10 = !pin10pos.position()
+      !idcomp   = !pospin10
+      !!ce      = !cecomp
+      if (!!mdscheckthro(!form, !cecomp, !idcomp, !planeDir).not()) then
+        !!kRestoreUnits(!currentUnits)
+        !!mdsDacControl(false)
+        return
+      else
+        pin 9 at ce
+        $!drag plane $!planeDir thro $!idcomp
+      endif
+    endhandle
+
+    ------------------------------------------------------------------------
+  endif
+
+  --<<<-<wd>oct2002
+  ------------------------------------------------------------------------
+
+  -- Set form data to say that the support has been positioned
+  !form.support.position = true
+
+  $!name/SREF
+  handle (2,109)
+  elsehandle none
+    --<dw>feb2009 dun1081 - 'fconn' changed to 'fconn to prev' in forwards mode - HPD0038695
+    -- for required positioning at datum atta.
+    if (purp of pspe of bran eq 'TRAY') then
+      forwards
+      fconn to prev and p30 is p30 of $!datum
+    else
+      !!mdsMConn('ORI','ORI')
+      POS PA AT $!datum
+    endif
+  endhandle
+
+  -- Navigate to Datum Atta
+  !!ce = !datum
+  PIN 8 AT CE
+
+  -- Move everything that is connected
+  VAR !dir CONST DIR PIN 9 TO PIN 8
+  !dist = !!kStrReal('CONST DIST PIN 9 TO PIN 8')
+
+  if (!dist.neq(0))then
+    if (!form.support.stru.set()) then
+      !!ce = !form.support.stru
+      MOVE $!dir DIST $!dist mm
+
+      -- <RM> 05/07/07 -- implemented this check for FT61 because it includes an olet which
+      -- needs to be moved with the rest of the support
+      if !!ce.:mdssupptype.eq('FT61') then
+        $!<name>/OLET
+        handle ANY
+          !!ce = !form.support.stru
+        elsehandle NONE
+          MOVE $!dir wrt world DIST $!dist mm
+          !!ce = !form.support.stru
+        endhandle
+      endif
+      -- <RM> 05/07/07
+    endif
+
+    do !count from 1
+      !!ce = $!<name>.$!count
+      handle any
+        break
+      endhandle
+      MOVE $!dir DIST $!dist mm
+      plane $!pldir thro ce
+    enddo
+
+    --<wd>nov2000
+    -- Move ANY :MDSGuideRef referenced ATTAs associated with the Attas on the Current MDS Support
+    -- In order to improve the performance add all atta with the Support Name rather than use the
+    -- collect syntax which is  too slow.
+    !guides = ARRAY()
+    do !count from 1
+      $!name$n.$!count
+      handle any
+        break
+      elsehandle none
+        !guides.append(!!ce.string())
+      endhandle
+    enddo
+
+    -- $!name$n/DATUM
+    !!ce = !datum
+    handle any
+    elsehandle none
+      !guides.append(!!ce.string())
+    endhandle
+
+    $!name$n/SREF
+    handle any
+    elsehandle none
+      !guides.append(!!ce.string())
+    endhandle
+
+    -- var !guides coll all atta  where (matchwild(name,|$!name$N.*|))
+    -- var !guides append coll all atta where (matchwild(name,|$!name$N/*|))
+    do !indx index !guides
+      !dbatta = !guides[!indx].dbref()
+      skip if !dbatta.:MDSGuideRef.badref()
+      if (!dbatta.:MDSGuideRef.unset().not()) then
+        !!ce = !dbatta.:MDSGuideRef
+        handle any
+          skip
+        endhandle
+        move $!dir wrt world dist $!dist mm
+        plane $!pldir thro $!dbatta
+        !!ce = !dbatta
+      endif
+    enddo
+  endif
+
+  !!ce = !datum
+
+  ------------------------------------------------------------------------
+  -->>>-<wd>oct2002
+  -- Check for Trunnion Branches
+  if (!!ce.owner.:mdstrun) then
+    if !!ce.owner.href.badref().not() then
+      if (!!ce.owner.href.type.eq('TEE')) then
+        -- Goto connected element i.e. the TEE
+        branch
+        goto href
+      endif
+    endif
+  endif
+  --<<<-<wd>oct2002
+  ------------------------------------------------------------------------
+
+  -- If the support is owned by a trunnion then we may need to reorder the attas
+
+  !!ce = !datum
+  bran
+  if (!!ce.:Mdstrun) then
+    !!mdsReoAtta(!!ce)
+    !!ce = !datum
+    !!mdsInterfaceDistance(!form)
+  endif
+  !!ce = !datum
+
+
+  -- Set distance gadget on form
+  Call !!mdsInterfaceDistance(!form)
+
+  ------------------------------------------------------------------------
+  --> Added <ab> March 19 2002
+  !styp = styp
+  if(!styp.match('FH') gt 0 or !styp.match('VH') gt 0 or !styp.match('MH') gt 0) then
+    -- This is an Hanger support
+    -- need to move hanger and steel fitting
+    Call !!mdsInterfaceAlignHanger(!datum, !form)
+  endif
+  --< Added <ab> March 19 2002
+  ------------------------------------------------------------------------
+
+  -----------------------***** connexions *******-----------------------
+  if(!form.support.joints.unset().not()) then
+
+    do !ind values !form.support.joints
+      !mainstl = !ind.owner.owner
+      !upright = !ind.cref
+      !snodePos =    !!mdsPosInterSctn(!mainstl,!upright)
+      !!ce = !ind.owner
+      ZDIST THRO $!snodePos
+    enddo
+
+  endif
+
+  ---------------------------------------------------------------------------------
+  -- Move the STRU to the Offset Position relative to the value in the UDA
+  -- :MdsNudgeDist of the DATUM ATTA only.
+  if (!form.support.stru.set()) then
+    !checkdat = object MDSCHECKDATUM()
+    !checkdat.offset(!form)
+  endif
+
+  -- Add the Aid Text to P9 of each Support Atta on the Framework
+  !!mdsaidtext(!form)
+  ---------------------------------------------------------------------------------
+  -- Reset Pins
+  Call !!mdsResetPins(8,10)
+
+  !!ce = !origin
+
+  -- Show dimensions if required
+  if !form.graphicalDim.set() then
+    if !form.graphicalDim then
+      !!mdsShowDim(!form)
+    endif
+  endif
+
+  if defined(!!mdsInterfaceDynOffset) then
+    if !!mdsInterfaceDynOffset.shown() then
+      !!mdsInterfaceDynOffset.init(!form)
+    endif
+  endif
+
+  !supportname = !form.support.datum.string()
+
+  -- get the connected sctn ref
+  var !stref owner of tref of cref of $!supportname
+  handle ANY
+    --<RM 06/08/08> included this handle block in case current object is not a hanger connected to steelwork
+    !stref = object DBREF()
+  endhandle
+  !sctn = !stref.dbref()
+  handle ANY
+    !sctn = object DBREF()
+  endhandle
+  -- get the atta ref
+  !comp = !supportname.dbref()
+
+  !hardtype = !sctn.hardtype
+  handle ANY
+    !hardtype = ''
+  endhandle
+
+  if !hardtype.eq('SCTN') then
+
+    --<RM 06/08/08> included this check and call to reconnecthtail.pmlfnc which will
+    --update the tpos of the hanger and the posl of the connected steelwork fitting
+    --if the altered position of the atta is such that the hanger should now connect to
+    -- another pline on the steelwork
+    if !!mdshangif.eq('LISEGA') then
+      !currentpline = !datum.cref.tref.posl
+      !!reconnecthtail(!datum, !sctn, !datum.cref , !currentpline )
+    endif
+
+    -- run parallel check to see if we have a sloping section and sloping line that are parallel
+    -- if this check is true then we don't need to reposition the hanger tail
+    -- Richard Martin 05/07/06
+    !check = !!mdsistubeslopeparallel2sctn(!comp, !sctn)
+    if !check neq TRUE then
+      !!mdsInterfaceReposHTail(!datum, !form)
+    else
+      if !comp.cref.members.size().gt(0) then
+        !lpos = !comp.cref.members[!comp.cref.members.size()].lpos.wrt( /* )
+        !comp.cref.tposition = !lpos
+      else
+        !!mdsInterfaceReposHTail(!datum, !form)
+      endif
+    endif
+  else
+    -- dtf 12.12.05 check if pipe parallel to support and adjust tail
+    if !!mdsInterfaceHanger.confignumber.string().neq('6') and !!mdsInterfaceHanger.confignumber.string().neq('600') then
+      !!mdsInterfaceReposHTail(!datum, !form)
+    endif
+  endif
+
+  if !form.fullname().upcase().match('MDSHANGERTYPE').gt(0) and !form.shown() then
+    !tpos = !datum.cref.tposition
+    handle ANY
+      -- just incase form is displayed but not called from this support
+    elsehandle NONE
+      !form.support.tposition  = !tpos
+    endhandle
+  endif
+
+  --the tail of the hanger needs to be offset in x and y directions following the move for all dynamic types i.e. 7,21,20 and 25
+  !type = !form.name().upcase().after('MDSHANGERTYPE')
+  if !type inset('7', '20', '21', '25') then
+    if defined(!!mdsInterfaceDynOffset) then
+      !!mdsInterfaceDynOffset.init(!form)
+      !!mdsInterfaceDynOffset.hide()
+    else
+      pml load form !!mdsInterfaceDynOffset
+      !!mdsInterfaceDynOffset.init(!form)
+      !!mdsInterfaceDynOffset.hide()
+    endif
+  endif
+
+  -- Because of a bug with rules we need to reexecute all rules below a stru
+  !washere = !!ce
+  !!ce = !form.support.stru
+  handle NONE
+    var !pnod coll all pnod for ce
+    do !resetPnod values !pnod
+      !!ce = !resetPnod.dbref()
+      rule execute all
+      handle ANY
+      endhandle
+    enddo
+  elsehandle ANY
+  endhandle
+  !!ce = !washere
+
+  !!mdsDacControl(false)
+
+  -- Reset Units
+  !!kRestoreUnits(!currentUnits)
+
+  -- End function
+endfunction

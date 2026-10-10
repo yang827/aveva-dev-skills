@@ -46,7 +46,7 @@
 * **DABACON 数据检索管道**: `DBREF` 引用语义、`COLLECTION` 查询引擎、表达式过滤器与事务撤销（`MARK`/`UNDO`）。
 * **GUI 界面与交互系统**: 现代表单生命周期、全套 Gadget 布局器、Event Driven Graphics (EDG) 异步拾取交互。
 * **Marine Drafting 出图自动化**: `MarDrafting` 单文档接口（SDI）控制、图纸坐标投影、文字与尺寸标注自动化。
-* **配套文件**: [速查字典 (glossary.md)](skills/aveva-dev-pml/glossary.md) · [八大生产级设计模式 (patterns.md)](skills/aveva-dev-pml/patterns.md) · [诊断决策树 (cheatsheet.md)](skills/aveva-dev-pml/cheatsheet.md)。
+* **配套文件**: [速查字典 (glossary.md)](skills/aveva-dev-pml/glossary.md) · [八大生产级设计模式 (patterns.md)](skills/aveva-dev-pml/patterns.md) · [诊断决策树 (cheatsheet.md)](skills/aveva-dev-pml/cheatsheet.md) · [官方源码索引与成例 (references/)](skills/aveva-dev-pml/references/pmllib-idioms.md)。
 
 ---
 
@@ -139,7 +139,10 @@ aveva-dev-skills/
         ├── cheatsheet.md           # 诊断与避坑速查表
         ├── glossary.md             # 术语与系统对象字典
         ├── patterns.md             # 8 大生产级 PML 架构模式
-        └── chapters/               # 20 个完整系统章节 (ch01 - ch20)
+        ├── chapters/               # 20 个完整系统章节 (ch01 - ch20)
+        ├── references/             # 官方 PMLLIB 索引与已验证工程成例
+        ├── tools/                  # 辅助工具脚本 (索引自动重建)
+        └── PMLLIB/                 # 官方 PML 原生源码快照 (~6,075 源码文件)
 ```
 
 ---

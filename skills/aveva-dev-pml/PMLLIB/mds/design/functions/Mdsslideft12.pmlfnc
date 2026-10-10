@@ -1,0 +1,204 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:		Mdsslideft12.pml
+--   Type:		Function Definition
+--   Group:		Multi Discipline Supports Application
+--     Keyword:		MDS
+--   Module:		design
+--   Replaces:          MSLIPS135
+--
+-- Author:		I.Osborne
+-- Created:		Tue Jul 15
+--
+--
+-- Description:
+-- function to slide supports on frame to backmark or centerline of cross member
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         STRING       Textural string to determine which pline to
+--                                  choose. 'FRONT', 'BACK', or 'MID'
+--                                  'FRONT' - Backmark infront of datum
+--                                  'BACK'  - Backmark behind datum
+--                                  'MID'   - Neutral axis pline
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+  define function !!MdsSlideFt12(!Slide is STRING)
+
+-- Find current units and set the distance unit to metric
+    !CurrentUnits = !!KGetSetUnits()
+
+-- Initialise variables
+    !Support  = !!MdsFt12.Support
+    !Datum    = !Support.Datum
+    !DatumPos = !Support.Datum.pos
+    !Name     = !Support.Stru.name
+    !Frame    = !Name & '/MAIN'
+    VAR !SupportFrame  EXISTS $!Frame
+    !PList  = ARRAY()
+    !PDist  = ARRAY()
+
+-- Check that support structure has been created
+    if (!SupportFrame eq 'FALSEA')then
+      !!Alert.message('Support structure has not been created')
+      !!kRestoreUnits(!currentunits)
+      return
+    endif
+
+    !form = !!mdsft12
+
+-- Can we move all components of the support
+    if !!MdsCheckAccess(!Form,'DACMOD','POS').not() then
+      !!CE = !Form.Support.Datum
+      handle none
+        !!kRestoreUnits(!currentunits)
+      elsehandle any
+      endhandle
+      return
+    endif
+
+-------------------------------------------------
+--<wd>nov2004
+-- Get the ORTHOGONAL PLeave Direction of the DATUM Atta
+-- Vertical and Horizontal & Sloping Pipes
+    !directions = !!mdsremovegrad(!datum)
+    --handle ANY
+    --endhandle
+    !pldir      = !directions[1]
+    !planedir   = !pldir
+$(
+-- Get plane direction to move
+    !Pldir = PL DIR of $!Datum wrt world
+
+-- Plane direction is nearest value to 1
+    !Up = (abs(!Pldir.up))
+    !East = (abs(!Pldir.East))
+    !North = (abs(!Pldir.North))
+    !Max = max((abs(!Up)), (abs(!East)), (abs(!North)))
+    if (!Max eq !Up)then
+      !PlaneDir = U wrt world
+    elseif (!Max eq !East)then
+      !PlaneDir = E wrt world
+    else
+      !PlaneDir = N wrt world
+    endif
+$)
+--<wd>nov2004
+-------------------------------------------------
+
+-- Navigate to cross bar
+    !!CE = $!<Name>-BAR-1
+
+    !Start = plstart NA wrt world
+    !End   = plend NA wrt world
+    VAR !Line CONS LINE JOIN $!Start to $!End
+    VAR !Position CONS POS NEAR $!DatumPos ON $!Line
+
+    if (!Slide neq 'MID')then
+-- Get Backmarks associated with the cross bar.
+      !Backmarks = !!KCollectallfor('PLIN', 'PURP eq |B|', !!CE.pstre)
+      !Block = object block('!Backmarks[!EvalIndex].pkey')
+      !Pkeys = !Backmarks.evaluate(!Block)
+
+-- Loop through plines and construct an intersection point
+      do !I indices !Backmarks
+        !Start = plstart $!Pkeys[$!I] wrt world
+        !End   = plend $!Pkeys[$!I] wrt world
+        VAR !Line CONS LINE JOIN $!Start to $!End
+        VAR !Inter CONS POS NEAR $!DatumPos ON $!Line
+        !Dist = !!KStrReal('CONSt DIST $!DatumPos TO $!Inter')
+        !PList.append(!Inter)
+        !PDist.append(!Dist)
+      enddo
+
+-- Loop through intersection points to determine which are infront
+-- and which are behind the datum atta
+
+      PIN 2 at $!Position wrt world
+      PIN 2 DIR $!PlaneDir
+      !Infront = ARRAY()
+      !Behind  = ARRAY()
+      do !I indices !Plist
+        PIN 3 AT $!Plist[$!I] wrt world
+        PIN 4 COPY PIN 2
+        PIN 4 PLANE PIN 4 THRO PIN 3
+        VAR !InterDir CONS DIR PIN 2 TO PIN 4
+
+-- Set object definition
+        !Direction = object KEQUALDIR()
+        !Direction.DirectionA = !InterDir.direction()
+        !Direction.DirectionB = !PlaneDir
+        !Direction.Tolerance  = 0.05
+
+-- Check directions
+        if (!!KDirEqualDir(!Direction)) then
+-- Pline is infront of atta
+          !Infront.append(!Plist[!I])
+        else
+          !Behind.append(!Plist[!I])
+        endif
+      enddo
+
+      if (!Slide eq 'FRONT')then
+-- Use any of the intersection points held in array infront
+        !Position = !Infront.first()
+      else
+-- Use any of the intersection points held in array behind
+        !Position = !Behind.first()
+      endif
+    endif
+
+-- Position marker pin
+    PIN 2 AT $!Position wrt world
+
+-- Move Datum
+    !!CE = !Datum
+    PLANE $!PlaneDir THRO PIN 2
+
+    !!CE = $!<Name>/SREF
+
+    !!MdsMConn('ORI','ORI')
+    POS PA AT $!Datum
+    SAME
+
+    !Pos = !!CE.pos.wrt(world)
+
+    $M/%PDMSUI%/DES/CLIB/GAIDTEXT 210 Datum $<$!POS$>
+
+    do !Count from 1
+      $!<Name>.$!Count
+      handle any
+        break
+      endhandle
+
+      THRO PIN 2
+      !Pos = !!CE.pos.wrt(world)
+      !Num = 210 + !Count
+
+      $M/%PDMSUI%/DES/CLIB/GAIDTEXT $!Num $!Count $<$!Pos$>
+    enddo
+
+-- Reset all pins associated with this function
+    Call !!MdsResetPins(1,4)
+
+-- Store Current offset in form
+    !!MdsFt12.Support.Offset = !Slide
+    !!CE = !Support.Stru
+
+-- Reset Units
+    !!kRestoreUnits(!currentunits)
+
+-- End function
+  endfunction
+-- End of file Mdsslideft12.pmlfnc

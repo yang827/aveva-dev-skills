@@ -1,0 +1,1704 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File: Mdsdeletesupp.pmlfnc
+--   Type:    Function Definition
+--   Group:   Multi Discipline Supports Application
+--     Keyword:   MDS
+--   Module:    design
+--   Replaces:          MDELALL
+--
+-- Author:    I.Osborne
+-- Created:   Wed May 14
+--
+--
+-- Description:
+-- Function to delete a support structure and all its associated support ATTAS
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R          FORM        Delete Support Form
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+-- Define Function
+
+define function !!mdsDeleteSupp(!form is FORM,!action is STRING)
+
+  -- This function is ALSO used for the SILENT deletion of a MDS support from MOM
+  -- ****************************************************************************
+  -- The second argument will be either VERBOSE or BRIEF
+  -- VERBOSE for deletion from within MDS(PDMS DESIGN)
+  -- BRIEF for deletion from MOM
+  -- If BRIEF then any errors will need to be returned to the calling function
+
+  -- Initialise variables
+  !members = !form.supportMem
+  !name    = !form.name.val
+
+  if (!name.match('/').eq(1)) then
+    !mdsName = !name
+    !support = !name.dbref()
+  else
+    !mdsName = '/' & !name
+    !support = !mdsName.dbref()
+  endif
+
+  !mdsType = !!mdsabatype(!support)
+
+  -- Only activate manufacturers software if the appropriate environment variable is set
+  if (!!mdsHangIf.eq('LISEGA')) then
+    var !manIfExe evar LICADMDSEXE
+  elseif (!!mdsHangIf.eq('PSL')) then
+    var !manIfExe evar PSLMDSEXE
+  elseif (!!mdsHangIf.eq('CPL')) then
+    var !manIfExe evar CPLMDSEXE
+    -- Check to see if the WitchHanger DB has been selected, if not return an error
+    if (!mdsType.eq('HANGER')) then
+      if (!!mdsCplDB.db.eq('') or !!mdsCplDB.db.unset()) then
+        !!alert.error('Unable to delete a hanger as the WitchHanger db has not been selected, please use the Setting>WitchHanger DB Selection.. menu')
+        return
+      endif
+    endif
+  else
+    var !manIfExe ''
+  endif
+
+  if (!manIfExe NEQ '') then
+    !!manif = object MANIFFILES()
+    !!manif.exe = object FILE(!manIfExe)
+    if (defined(!!manif.exe)) then
+      if (!!manif.exe.exists()) then
+        if (!!ce.type eq 'ATTA') then
+          !intersType = !!ce.stype
+        else
+          !intersType = 'XXXX'
+        endif
+        -- dtf >>> we may need to delete grouped hangers from the manufacturers software
+        if (!!mdsDeleteSupp.isPartOfGroup  and  (!!mdsDeleteSupp.connectedHangers.size().gt(0)) ) then
+          !hIntersType = ARRAY()
+          do !i values !!mdsDeleteSupp.connectedHangers
+            !item = /$!i
+            if (!item.type.eq(|ATTA|)) then
+              !hIntersType.append(!item.stype)
+            else
+              !hIntersType.append('XXXX')
+            endif
+          enddo
+        endif
+      else
+        !hIntersType = ARRAY()
+        !hIntersType.append('XXXX')
+        !intersType = 'XXXX'
+      endif
+    else
+      !hIntersType = ARRAY()
+      !hIntersType.append('XXXX')
+      !intersType = 'XXXX'
+    endif
+  else
+    !hIntersType = ARRAY()
+    !hIntersType.append('XXXX')
+    !intersType = 'XXXX'
+  endif
+
+  -- Check Name and number of support elements
+  if (!name.upcase() eq |UNSET|) then
+    return 0
+  elseif (!members.empty())then
+    return 0
+  endif
+
+  -- Confirm decision
+  if (!action.neq('BRIEF')) then
+    if (!!alert.confirm('Are you sure you want to delete highlighted support $!<name>.') eq 'NO')then
+      return
+    endif
+  endif
+
+  ---------------------------------------------------------------------------------------------------
+  --<wd>oct2005
+  -- ***********************************************************************************************************
+  -- *** MDS VPRM MTO "DELETE" DATA to BE COLLECTED ***BEFORE*** the MDS SUPPORT is actually DELETED in PDMS ***
+  -- ***********************************************************************************************************
+  --
+  ---------------------------------------------------------------------------------------------------
+  ------------------------
+  -- MDS GROUP SUPPORTS --
+  ------------------------
+  --
+  -- <a> -- ONLY GENERATE a MDS VPRM "DELETE" MTO file when DELETING the MASTER SUPPORT <mdsGroupName>[1],
+  --        AND "DELETE" ALL the OTHER MDS GROUP SUPPORT Members.
+  --        i.e. "RESTRAINTS :- <mdsGroupName>[2] and/or <mdsGroupName>[3] etc...
+  --
+  -- <b> -- DO NOT generate a MDS VPRM "DELETE" MTO when DELETING a GROUP SUPPORT MEMBER RESTRAINT.
+  --        i.e. "RESTRAINTS :- <mdsGroupName>[2] or <mdsGroupName>[3] etc...
+  --
+  ---------------------------------------------------------------------------------------------------
+  --
+  -- CHECK if VPRM is ACCESSIBLE and being used on the Current PDMS Project for the AUTOMATIC VPRM UPDATE
+  -- ONLY need to set up the VPRM object if VPRM is being used on the PDMS Project
+  --
+  -- Get the DBREF of the Support to be DELETED
+  if (!name.match('/').eq(1)) then
+    !mdsName = !name
+    !support = !name.dbref()
+  else
+    !mdsName = '/' & !name
+    !support = !mdsName.dbref()
+  endif
+
+  --<GE> 06-08-06 HPD0033412 The VPRM Code only needs to be executed for a Framatome Project
+  -- This is ONLY!!!!! a temporary fix for other customers that have the Gateway loaded
+  if (desc of /MDS/TEMPLATES eq 'Framatome Templates') then
+
+    -- <GE> 07-08-06 added check for VPRM discipline as set in the Gateway config file
+    -- Project Code & Session data
+    !proj    = current project
+    !code    = !proj.code()
+    !projLow = !code.lowcase()
+    !unusedProjUp  = !code
+    !projDir = object FILE('%$!<projLow>iso%')
+
+    -- Read the VPRM Gateway Config File into a "VPRMCONFIG" OBJECT
+    !vprmFileGen  = FALSE
+    if (defined(!!vprmExists)) then
+      if (!!vprmExists) then
+        !projCFG = object FILE('$!projDir/pdsc01.cfg')
+        !vprmCFile = object VPRMCONFIG()
+        !vprmCFile.read(!projCFG)
+        !type = !!mdsabatype($!support)
+        if (!type.eq('FRAME')) then
+          !mdsDatumName = !support.name & '/DATUM'
+          !mdsDatumDbrf = !mdsDatumName.dbref()
+          if (!mdsDatumDbrf.owner.pspe.purp.upcase().eq('HVAC')) then
+            if (!vprmCFile.mdshvacdelrename) then
+              !vprmFileGen  = TRUE
+              --$P HVAC Framework
+            endif
+          elseif (!mdsDatumDbrf.owner.pspe.purp.upcase().eq('TRAY')) then
+            -- <GE> 28-09-06 This is always set too FALSE as at present we do not transfer Cable TRAY MTO
+            -- so the DELETE & RENAME functionality has been deactivated as RENAME transfers the full MTO
+            -- this fails at present.
+            --           if !vprmCFile.mdsElecDelRename then
+            --             !vprmFileGen  = TRUE
+            !vprmFileGen  = FALSE
+            --$P TRAY Framework
+            --           endif
+          elseif (!mdsDatumDbrf.owner.pspe.purp.upcase().eq('PIPE')) then
+            if (!vprmCFile.mdsPipeDelRename) then
+              !vprmFileGen  = TRUE
+              --$P PIPE Framework
+            endif
+          endif
+        else
+          if (!vprmCFile.mdsPipeDelRename) then
+            !vprmFileGen  = TRUE
+            --$P PIPE
+          endif
+        endif
+      endif
+    endif
+    -- ONLY Generate a MDS VPRM "DELETE" MTO File when the variables are SET as DEFAULT
+    -- The DEFAULT Settings are:-
+    --   !vprmFileGen  = TRUE
+    --   q var !vprmFileGen
+    !groupMember  = FALSE
+    -- <GE> end of check
+
+    -- Check if the SUPPORT about to be DELETED belongs to a MDS GROUP
+    if (!mdsName.matchwild('*[*]')) then
+      -- SUPPORT belongs to MDS GROUP
+      if (!mdsName.matchwild('*[1]')) then
+        !unusedGroupName = !mdsName.before('[1]')
+        ---------------------------------------------------------------------------------------------------
+        -- DELETE ALL GROUP MEMBERS when the passed MDS Support is the MASTER GROUP SUPPORT, i.e. No.[1]
+        !vprmFileGen  = TRUE
+        !groupMember  = FALSE
+      else
+        -- The passed SUPPORT belongs to a MDS GROUP SUPPORT, but it is a "RESTRAINT",
+        -- e.g. !<mdsName>[2] etc... so DO NOT Generate a MDS VPRM "DELETE" MTO file etc...
+        !vprmFileGen = FALSE
+        !groupMember = TRUE
+      endif
+    endif
+
+    -- Check if it is OK to GENERATE a MDS VPRM "DELETE" MTO file
+    if ((!vprmFileGen) and (!groupMember.not())) then
+
+      -- Check if VPRM is being used on the current PDMS Project
+      !mdsType     = !!mdsabatype(!support)
+      --  !vprmProcess = FALSE
+      !vprmProcess = TRUE
+
+      -- IGNORE any TRUNNION type MDS supports, as they are NOT PASSED to VPRM via the MDS VPRM Interface
+      if (!mdsType.neq('TRUNNION')) then
+
+        -- ************************************************************************************************
+        --<wd>jan2006
+        -- **********************
+        -- *** IMPORTANT NOTE ***
+        -- **********************
+        -- FRAMATOME<Wolfgang Umnig> & AVEVA<Neale Morris> -- Telephone Call Monday 21jan2006
+        -- FRAMATOME request a TEMPORARY SOLUTION ONLY for
+        -- MDS HVAC DUCTING and MDS ELECTRICAL TRAY FRAMEWORK Supports
+        -- *** DO NOT *** CREATE and/or AUTOMATICALLY TRANSFER a
+        -- MDS VPRM MTO file to the VPRM Project TRANSFER
+        -- DATABASE for MDS HVAC and TRAY FRAMEWORK Supports
+        --
+        -- i.e. TEMPORARILY IGNORE and DO NOT PROCESS a MDS VPRM MTO "DELETE or "RENAME"
+        --      FOR any MDS HVAC and MDS TRAY -- STRUCTURE Supports --
+        --
+        ---------------------------------------------------------------------
+        -- *** DO NOT PROCESS *** a MDS VPRM MTO file if the !!mdsType = FRAME
+        -- and the SUPPORT type is a MDS HVAC or TRAY FRAMEWORK Support
+        ---------------------------------------------------------------------
+        --
+        -- Determine the PURPOSE of the MDS ATTA's OWNING BRANCH PSPE
+        if (!mdsType.eq(|frame|)) then
+          -- Get the MDS DATUM ATTA set for utilising the MDS DESIGN Application
+          !mdsDatumNam = !support.name & '/DATUM'
+        elseif (!mdsType inset ('HANGER', 'ANCILL', 'PRELIM')) then
+          -- Get the MDS DATUM ATTA set for utilising the MDS DESIGN Application
+          !mdsDatumNam = !support.name
+        endif
+        -- Get the PURPOSE of the PSPE of the OWNER of the DATUM SUPPORT ATTA, i.e. the BRANCH
+        !mdsDatumDbf = !mdsDatumNam.dbref()
+        handle ANY
+          !mdsDatumOwn = ''
+        elsehandle NONE
+          !mdsDatumOwn = !mdsDatumDbf.owner.pspe.purp
+        endhandle
+
+        -- Only Process MDS STRUCTURE, HANGER and ATTA-<Stand-Alone> Supports
+        --       if (!mdsType inset ('FRAME', 'HANGER', 'ANCILL')) then
+        --
+        ---------------------------------------------------------------------------------------------------
+        -- ONLY Process the MDS STRUCTURE for PIPE SUPPORTS, MDS HANGER and MDS ATTA<Stand-Alone> Supports
+        ---------------------------------------------------------------------------------------------------
+        -- *** DO NOT *** Create or Process a MDS VPRM MTO file
+        -- for any MDS HVAC or MDS TRAY STRUCTURE SUPPORTS
+        --       if ((!mdsType.eq(|FRAME|)) and (!mdsDatumOwn.eq(|PIPE|)) or (!mdsType inset ('HANGER', 'ANCILL'))) then
+        --<GE> 07-08-06 removed restriction for HVAC elements being processed
+        if ((!mdsType.eq(|frame|)) or (!mdsType inset ('HANGER', 'ANCILL'))) then
+          ---------------------------------------------------------------------
+          --<wd>jan2006
+          -- ************************************************************************************************
+
+          -- When the VPRM FILE "%PDMSEXE%\pdsc01.exe" EXISTS on ENTRY to PDMS,
+          -- the global variable !!vprmExists = TRUE is set via the PDMS ENTRY login file,
+          -- ...\PDMS-VPRM4.2\pdmsui\MON\ADMIN\LOGIN
+          if (defined(!!vprmExists)) then
+            if (!!vprmExists) then
+              !vprmProcess = TRUE
+              -- Check, Populate and Store the "MDS VPRM MTO" objects of the MDS SUPPORT about to be DELETED.
+              -- <The objects are MDSVPRMMTO, MDSVPRMOBJECT and MDSVPRMDELETE>
+              !suppArr     = ARRAY()
+              !newSuppName = ''
+              !suppArr.append(!support)
+              !mdsVprmDelSupp = object MDSVPRMDELETE(!suppArr, 'DELETE', !mdsType, !newSuppName)
+              -- Temporary Global variable used for INTERROGATION etc... ONLY
+              !!mdsd = !mdsVprmDelSupp
+            endif
+          endif
+
+        elseif (!mdsType.eq('ERROR')) then
+          -- MDS SUPPORT TYPE is NOT Valid. Therefore MDS VPRM MTO file is NOT to be GENERATED
+          !vprmProcess = FALSE
+
+        endif
+      endif
+    endif
+  endif
+  --<GE> 06-08-06 HPD0033412
+  --<wd>oct2005
+  ---------------------------------------------------------------------------------------------------
+
+  -- Declare ARRAY Variables for GUIDES
+  !deleteGuide = ARRAY()
+  !resetGuide  = ARRAY()
+  !readGuide   = ARRAY()
+
+  -- Declare ARRAY Variables for BASEPLATES
+  !deleteBPRef = ARRAY()
+  !resetBPRef  = ARRAY()
+  !resetBPRef1 = ARRAY()
+  !resetBPRef2 = ARRAY()
+  !readBPRef   = ARRAY()
+
+  --dun1218 at this point we need to check if the support is a hanger, if it was then we need to know if it is an interface hanger type
+  --i.e. MH01 if it is an interface hanger we need to two additional bits of information. if there is a fitt or cmpf in the members list then we need to know if it can be deleted
+  --i.e. does it have write access to do so (if not we write a delete macro). if the fitt doesn't exist in the members list then we will write a delete connection macro
+  --because it should have a fitting and most likely we are awaiting a pending update macro to create it or rename it.
+  !interfaceHanger = FALSE
+  !cmpfMacro = FALSE
+  !fittMacro = FALSE
+  !writeAccess = FALSE
+  do !mem values !members
+    !!ce = !mem
+    handle (2,107)
+      skip
+    elsehandle (2,822)
+      skip
+    endhandle
+    !type = !mem.type
+    if (!type.eq('ATTA')) then
+      !hangerType = !!ce.:MDSSuppType
+      handle ANY
+        !hangerType = ''
+      endhandle
+      !hangerConfig = !!ce.:MDSHConfig
+      handle ANY
+        !hangerConfig = ''
+      endhandle
+
+      if (!hangerType.neq('') and !hangerConfig.neq('')) then
+        if (!hangerType.eq('MH01')) then
+          !interfaceHanger = TRUE
+          --dun1218 initialise the attaname variable for use with fitting macros
+          !attaName = !!ce.name
+        endif
+      endif
+
+      if (!interfaceHanger) then
+        !hangerConfig = !hangerConfig.before('H').before('V')
+        if (!hangerConfig inset ('1','2','31','32','7','21','6','600')) then
+          !fittMacro = TRUE
+        elseif (!hangerConfig inset ('18','19','20','25')) then
+          !cmpfMacro = TRUE
+        endif
+      endif
+
+    elseif (!type.eq('FITT')) then
+      !writeAccess = !!ce.dbwrite
+    elseif (!type.eq('CMPF')) then
+      !writeAccess = !!ce.dbwrite
+    elseif (!type.eq('SBFI')) then
+      !writeAccess = !!ce.dbwrite
+    endif
+  enddo
+
+  --dun1218 write out the macros if necessary
+  if (!fittMacro and !writeAccess.not()) then
+    !fitt = object MDSINTERFACEVIRTUALFITTING()
+    !completed = !fitt.deleteMacro(!attaName)
+    handle ANY
+    endhandle
+  elseif (!cmpfMacro and !writeAccess.not()) then
+    !cmpf = object MDSINTERFACEVIRTUALCMPF()
+    !completed = !cmpf.deleteMacro(!attaName)
+    handle ANY
+    endhandle
+  endif
+
+  -- Loop through Support Members and CHECK for GUIDE and/or BASEPLATE References
+  do !mem values !members
+    !!ce = !mem
+    handle (2,107)
+      skip
+    elsehandle (2,822)
+      skip
+    endhandle
+    !type = !mem.type
+
+    --<wd>oct 2003
+
+    if ((!type.eq('ATTA')) or (!type.eq ('PLAT')) or (!type.eq('CTSUPP'))) then
+      -- Delete associated lugs if found
+      --if (!mem.stype inset ('ST19','ST21','ST22','ST23','MH01')) then
+      !nameOfMem = !mem.name
+      !!mdsDacControl(TRUE)
+      do !count from 1 to 4
+        $!nameOfMem/LUG$!count
+        handle NONE
+          delete olet
+        elsehandle ANY
+        endhandle
+      enddo
+      !!mdsDacControl(FALSE)
+      -- Remove connection to plates for all hangers
+      if (!mem.stype inset ('MH01')) then
+        !!mdsDacControl(TRUE)
+        do !count from 1 to 5
+          $!nameOfMem/H$!count
+          handle NONE
+            !deleteRef = object MDSBPLATECONN()
+            !deleteRef.disconnect(!!ce)
+          elsehandle ANY
+          endhandle
+        enddo
+        !!mdsDacControl(FALSE)
+        --endif
+      endif
+      !!ce = !mem
+      --<wd>oct 2003
+      -- Skip if the atta is the SREF atta
+      skip if (!mem.name.match('SREF').gt(0))
+      -- Skip if the guide reference belongs to the same support
+      -- this will be the case of a shoe referencing a spring
+      -- Get current name
+      if (!mem.name.match('/DATUM').gt(0)) then
+        !currentName = !mem.name.before('/DATUM')
+      else
+        !currentName = !mem.name.before('.')
+      endif
+      -- Get Guide Reference name
+      if (!mem.:MDSGuideRef.badref().not()) then
+        if (!mem.:MDSGuideRef.name.match('/DATUM').gt(0)) then
+          !guideRefName = !mem.:MDSGuideRef.name.before('/DATUM')
+        else
+          !guideRefName = !mem.:MDSGuideRef.name.before('.')
+        endif
+      else
+        !guideRefName = ''
+      endif
+
+      skip if (!currentName.eq(!guideRefName))
+
+      -- If Current Support is a GUIDE, DELETE it (** at line 413 below **) and
+      -- RESET the ASSOCIATED Atta ':MDSGuideRef' Reference to default
+      if (!mem.spre.name.match('GT').gt(0)) then
+        !resetGuide.append(!mem.:MDSGuideRef)
+        skip
+      elseif (!mem.spre.name.match('SU').gt(0)) then
+        !resetGuide.append(!mem.:MDSGuideRef)
+        skip
+      elseif (!mem.spre.name.match('ST').gt(0)) then
+        !resetGuide.append(!mem.:MDSGuideRef)
+        skip
+        --<wd>apr2007<mds12>
+        -- From the MDU project -- USER Defined MDS Trunnion ANCHOR Ancillaries -- AN640 to AN700 only
+        -- *** IMPORTANT NOTE *** GT640 to GT700 and ST640 to 700 are already catered for immediately above.
+      elseif (!mem.spre.name.match('AN').gt(0)) then
+        !numb = !mem.styp.after('AN').real()
+        handle NONE
+          -- ONLY handle USER Defined MDS Trunnion ANCHOR Ancillaries -- AN640 to AN700 inclusive
+          if (!numb.between(640,700)) then
+            !resetGuide.append(!mem.:MDSGuideRef)
+            skip
+          endif
+        elsehandle ANY
+          -- MDS ANCHOR Ancillary 'probably' has an ALPHA character SUFFIX, which is DEFINITELY NOT a USER Defined MDS Trunnion ANCHOR Ancillary
+          skip
+        endhandle
+        --<wd>apr2007<mds12>
+      elseif (!mem.spre.name.match('AT30').gt(0)) then
+        !resetGuide.append(!mem.:MDSGuideRef)
+        skip
+        -->>>-<wd>feb2003
+      elseif (!mem.stype inset ('AT40A','AT40B','AT40C','AT40D','AT40E','AT40F','AT41A','AT41B','AT41C','AT41D','AT41E','AT41F','AT42')) then
+        !resetGuide.append(!mem.:MDSGuideRef)
+        skip
+      elseif (!mem.stype inset ('AT33A','AT33B','AT33C','AT33D','AT33E','AT33F','AT34A','AT34B','AT34C','AT34D','AT34E','AT34F','AT35')) then
+        !resetGuide.append(!mem.:MDSGuideRef)
+        skip
+        --<<<-<wd>feb2003
+        -->>>-<wd>oct2003
+      elseif (!mem.stype inset ('AT59','AT68')) then
+        !resetGuide.append(!mem.:MDSGuideRef)
+        skip
+        --<<<-<wd>oct2003
+        --<GE> 06/01/05 Fix for HPD0027605
+      elseif (!mem.stype inset ('AT100A','AT100B')) then
+        !resetGuide.append(!mem.:MDSGuideRef)
+        skip
+      endif
+      --<GE> 06/01/05 End of fix for HPD0027605
+      --<<<-<wd>oct2003
+
+      -- If Atta has a valid GUIDE Reference, go to GUIDE reference and DELETE it or RESET the ':MDSGuideRef' attribute to default
+      if (!mem.:MDSGuideRef.badref().not()) then
+        !gName = !mem.:MDSGuideRef.name
+        enhance $!gName col 2
+        -- Check if GUIDE is in a READ ONLY Database
+        -- Confirm whether to DELETE or Just RESET to default the ':MDSGuideRef' Atta
+        !lock  = STRING()
+        !write = STRING()
+        if (!!kcheckwrite(!mem.:MDSGuideRef, !lock, !write)) then
+          -- WRITE Access to the GUIDE
+          if (!write.eq('RW')) then
+            --------------------------------------x
+            if (!!alert.confirm('**** WARNING ** - The Support Atta $!mem.name references the highlighted GUIDE $!<gName>, which will be DELETED. Do you want to Continue?') eq 'YES')then
+              -- GUIDE is to BE DELETED
+              !deleteGuide.append(!mem.:MDSGuideRef)
+            else
+              -- GUIDE is NOT to be DELETED, so ABORT
+              --xxx                !resetGuide.append(!mem.:MDSGuideRef)
+              unenhance $!gName
+              golabel /return
+            endif
+            -- WRITE Access to the GUIDE, but it is LOCKED
+          elseif (!lock.eq('Locked')) then
+            if (!!alert.confirm('** WARNING ** - The Support Atta $!mem.name references the highlighted GUIDE $!<gName>, which will be DELETED. Do you want to Continue?') eq 'YES')then
+              -- GUIDE is to BE DELETED
+              !deleteGuide.append(!mem.:MDSGuideRef)
+            else
+              -- GUIDE is NOT to be DELETED, so ABORT
+              --xxx                !resetGuide.append(!mem.:MDSGuideRef)
+              unenhance $!gName
+              golabel /return
+            endif
+          endif
+          --------------------------------------x
+        else
+          -- GUIDE is in a READ ONLY Database, and cannot be DELETED or MODIFIED
+          !readGuide.append(!mem.:MDSGuideRef)
+        endif
+        -- Unenhance GUIDE
+        unenhance $!gName
+      endif
+
+      -->>-<GE>nov2003
+      -- Check if support is a TT04 and reset the reducer back to orig spref
+      -- Identify the Trunnion SREF Atta - Trunnion DESPARS are STORED here
+      !sRefName = '/' & !name & '/SREF'
+      !sRefAtta = !sRefName.dbref()
+      handle ANY
+      elsehandle NONE
+        -- Get the Trunnion Type from the SREF Atta
+        !trnTyp = !sRefAtta.styp
+        if (!trnTyp inset ('TT04')) then
+          BRAN
+          handle ANY
+          elsehandle NONE
+            GOTO href
+            handle ANY
+            elsehandle NONE
+              !origSpref = !!ce.:MDSComment
+              sel spref $!origSpref
+              handle ANY
+              elsehandle NONE
+                :MDSComment unset
+              endhandle
+            endhandle
+          endhandle
+        endif
+      endhandle
+
+      --------------------------------------------------------------------------------
+      -- If Atta has a BASEPLATE, go to BASEPLATE reference and DELETE it or RESET the ':MDSBPRef1' attribute to default
+      if (!mem.:MDSBPRef1.badref().not()) then
+        !bName = !mem.:MDSBPRef1.name
+        enhance mem of $!bName col 2
+        -- Check if BASEPLATE is in a READ ONLY Database
+        -- Confirm whether to DELETE or Just RESET to default the ':MDSBPRef1' Atta
+        !lock  = STRING()
+        !write = STRING()
+
+        if (!!kcheckwrite(!mem.:MDSBPRef1, !lock, !write)) then
+
+          -- WRITE Access to the BASEPLATE
+          if (!write.eq('RW')) then
+            if (!mem.:MDSBPRef1.type.neq('SBFI')) then
+              if (!!alert.confirm('The Support Atta $!mem.name references a BASEPLATE. Do you want to DELETE the BASEPLATE $!<bName> highlighted.') eq 'YES')then
+                -- BASEPLATE is to BE DELETED
+                !deleteBPRef.append(!mem.:MDSBPRef1)
+              else
+                -- BASEPLATE is NOT to be DELETED, so reset the BASEPLATE ':MDSBPRef1' attribute to default
+                !resetBPRef.append(!mem.:MDSBPRef1)
+              endif
+            else
+              !resetBPRef.append(!mem.:MDSBPRef1)
+            endif
+            -- WRITE Access to the BASEPLATE, but it is LOCKED
+          elseif (!lock.eq('Locked')) then
+            if (!mem.:MDSBPRef1.type.neq('SBFI')) then
+              if (!!alert.confirm('The Support Atta $!mem.name references a BASEPLATE. Do you want to DELETE the BASEPLATE $!<bName> highlighted.') eq 'YES')then
+                -- BASEPLATE is to BE DELETED
+                !deleteBPRef.append(!mem.:MDSBPRef1)
+              else
+                -- BASEPLATE is NOT to be DELETED, so reset the BASEPLATE ':MDSBPRef1' attribute to default
+                !resetBPRef.append(!mem.:MDSBPRef1)
+              endif
+            else
+              !resetBPRef.append(!mem.:MDSBPRef1)
+            endif
+          else
+            -- BASEPLATE is in a READ ONLY Database, and cannot be DELETED or MODIFIED
+            !readBPRef.append(!mem.:MDSBPRef1)
+          endif
+          -- Unenhance BASEPLATE
+          unenhance mem of $!bName
+
+        endif
+
+      endif
+
+      -- Delete the :MDSAncRef if set
+      --!q = object MDSBPLATECONN('delete',!!ce)
+      --!q = object MDSBPLATECONN()
+      --!q.disconnect('delete',!mem)
+
+      --------------------------------------------------------------------------------
+    elseif (!type.eq('STRU') and !mem.skey.neq('BEDP')) then
+      -- Type is a Structure, which is allowed to have TWO BasePlate References i.e. ':MDSBPRef1' and ':MDSBPRef2'
+      ---------------------------------------------------
+      ---------------------------------------------------
+      if (!mem.skey.eq('BEDP')) then
+        !basePlate = 'SUPPORT'
+      else
+        !basePlate = 'BASEPLATE'
+      endif
+      ---------------------------------------------------
+      ---------------------------------------------------
+      -- If Atta has a BASEPLATE, go to BASEPLATE reference and DELETE it or RESET the ':MDSBPRef1' attribute to default
+      if (!mem.:MDSBPRef1.badref().not()) then
+        !bName1 = !mem.:MDSBPRef1.name
+        enhance mem of $!bName1 col 2
+        -- Check if BASEPLATE is in a READ ONLY Database
+        -- Confirm whether to DELETE or Just RESET to default the ':MDSBPRef1'
+        !lock  = STRING()
+        !write = STRING()
+        if (!!kcheckwrite(!mem.:MDSBPRef1, !lock, !write)) then
+          -- WRITE Access to the BASEPLATE
+          if (!write.eq('RW')) then
+            if (!mem.:MDSBPRef1.type.neq('SBFI')) then
+              if (!!alert.confirm('The Support Structure $!mem.name references a $!<basePlate>. Do you want to DELETE the $!<basePlate> $!<bName1> highlighted.') eq 'YES')then
+                -- BASEPLATE is to BE DELETED
+                !deleteBPRef.append(!mem.:MDSBPRef1)
+              else
+                -- BASEPLATE is NOT to be DELETED, so reset the BASEPLATE ':MDSBPRef1' attribute to default
+                !resetBPRef1.append(!mem.:MDSBPRef1)
+              endif
+            else
+              !resetBPRef1.append(!mem.:MDSBPRef1)
+            endif
+            -- WRITE Access to the BASEPLATE, but it is LOCKED
+          elseif (!lock.eq('Locked')) then
+            if (!mem.:MDSBPRef1.type.neq('SBFI')) then
+              if (!!alert.confirm('The Support Structure $!mem.name references a $!<basePlate>. Do you want to DELETE the $!<basePlate> $!<bName1> highlighted.') eq 'YES')then
+                -- BASEPLATE is to BE DELETED
+                !deleteBPRef.append(!mem.:MDSBPRef1)
+              else
+                -- BASEPLATE is NOT to be DELETED, so reset the BASEPLATE ':MDSBPRef1' attribute to default
+                !resetBPRef1.append(!mem.:MDSBPRef1)
+              endif
+            else
+              !resetBPRef1.append(!mem.:MDSBPRef1)
+            endif
+          endif
+        else
+          -- BASEPLATE is in a READ ONLY Database, and cannot be DELETED or MODIFIED
+          !readBPRef.append(!mem.:MDSBPRef1)
+        endif
+        -- Unenhance BASEPLATE
+        unenhance $!bName1
+
+      endif
+
+      -- If Atta has a BASEPLATE, go to BASEPLATE reference and DELETE it or RESET the ':MDSBPRef2' attribute to default
+      if (!mem.:MDSBPRef2.badref().not()) then
+        !bName2 = !mem.:MDSBPRef2.name
+        enhance mem of $!bName2 col 2
+        -- Check if BASEPLATE is in a READ ONLY Database
+        -- Confirm whether to DELETE or Just RESET to default the ':MDSBPRef2'
+        !lock  = STRING()
+        !write = STRING()
+        if (!!kcheckwrite(!mem.:MDSBPRef2, !lock, !write)) then
+          -- WRITE Access to the BASEPLATE
+          if (!write.eq('RW')) then
+            if (!mem.:MDSBPRef2.type.neq('SBFI')) then
+              if (!!alert.confirm('The Support Structure $!mem.name references a $!<basePlate>. Do you want to DELETE the $!<basePlate> $!<bName2> highlighted.') eq 'YES')then
+                -- BASEPLATE is to BE DELETED
+                !deleteBPRef.append(!mem.:MDSBPRef2)
+              else
+                -- BASEPLATE is NOT to be DELETED, so reset the BASEPLATE ':MDSBPRef2' attribute to default
+                !resetBPRef2.append(!mem.:MDSBPRef2)
+              endif
+            else
+              !resetBPRef2.append(!mem.:MDSBPRef2)
+            endif
+            -- WRITE Access to the BASEPLATE, but it is LOCKED
+          elseif (!lock.eq('Locked')) then
+            if (!mem.:MDSBPRef2.type.neq('SBFI')) then
+              if (!!alert.confirm('The Support Structure $!mem.name references a $!<basePlate>. Do you want to DELETE the $!<basePlate> $!<bName2> highlighted.') eq 'YES')then
+                -- BASEPLATE is to BE DELETED
+                !deleteBPRef.append(!mem.:MDSBPRef2)
+              else
+                -- BASEPLATE is NOT to be DELETED, so reset the BASEPLATE ':MDSBPRef2' attribute to default
+                !resetBPRef2.append(!mem.:MDSBPRef2)
+              endif
+            else
+              !resetBPRef2.append(!mem.:MDSBPRef2)
+            endif
+          endif
+        else
+          -- BASEPLATE is in a READ ONLY Database, and cannot be DELETED or MODIFIED
+          !readBPRef.append(!mem.:MDSBPRef2)
+        endif
+        -- Unenhance BASEPLATE
+        unenhance mem of $!bName2
+      endif
+
+    endif
+
+  enddo
+  --------------------------------------------
+
+  -- Check if User wants to Continue if GUIDES or BASEPLATES are found in READ ONLY Databases
+  if (!readGuide.size().gt(0) and !readBPRef.size().gt(0)) then
+    if (!!alert.confirm('There are references to GUIDES and $!<basePlate> on this Support, which are in a READ ONLY Database, and cannot presently be DELETED or MODIFIED. Do you wish to Continue?') eq 'NO') then
+      return
+    else
+      !gString = STRING()
+      !gString = ''
+      do !gde values !readGuide
+        !gString = !gString & !gde.name & '; '
+      enddo
+
+      !bString = STRING()
+      !bString = ''
+      do !bpr values !readBPRef
+        !bString = !bString & !bpr.name & '; '
+      enddo
+      !!alert.message('Please Note: The following GUIDES: **  $!gString  ** and the following $!<basePlate>: **  $!bString  ** are in a READ ONLY Database.')
+    endif
+  elseif (!readGuide.size().gt(0) and !readBPRef.size().eq(0)) then
+    if (!!alert.confirm('There are references to GUIDES on this Support, which are in a READ ONLY Database, and cannot presently be DELETED or MODIFIED. Do you wish to Continue?') eq 'NO') then
+      return
+    else
+      !gString = STRING()
+      !gString = ''
+      do !gde values !readGuide
+        !gString = !gString & !gde.name & '; '
+      enddo
+      !!alert.message('Please Note: The following GUIDES: **  $!gString  ** are in a READ ONLY Database.')
+    endif
+  elseif (!readGuide.size().eq(0) and !readBPRef.size().gt(0)) then
+    if (!!alert.confirm('There are references to $!<basePlate> on this Support, which are in a READ ONLY Database, and cannot presently be DELETED or MODIFIED. Do you wish to Continue?') eq 'NO') then
+      return
+    else
+      !bString = STRING()
+      !bString = ''
+      do !bpr values !readBPRef
+        !bString = !bString & !bpr.name & '; '
+      enddo
+      !!alert.message('Please Note: The following $!<basePlate>: **  $!bString  ** are in a READ ONLY Database.')
+    endif
+  endif
+
+  --------------------------------------------
+  --------------------------------------------
+
+  -- Loop through All GUIDES and/or BASEPLATES stored in the ARRAYS '!deleteGuide' and '!deleteBPRef' and DELETE.
+  !deleteRefs = ARRAY()
+  !deleteRefs.appendarray(!deleteGuide)
+  !deleteRefs.appendarray(!deleteBPRef)
+  !!mdsDacControl(TRUE)
+
+  do !dgde values !deleteRefs
+    !!ce   = !dgde
+    handle ANY
+      skip
+    endhandle
+    !dType = !dgde.type
+    unlock
+    delete $!dType
+  enddo
+
+  -- Loop through All GUIDES and/or BASEPLATES stored in the ARRAYS and MODIFY attributes to default.
+  -- i.e. '!resetGuide', '!resetBPRef', '!resetBPRef1', '!resetBPRef2'
+  !resetRefs = ARRAY()
+  !resetRefs.append(!resetGuide)
+  !resetRefs.append(!resetBPRef)
+  !resetRefs.append(!resetBPRef1)
+  !resetRefs.append(!resetBPRef2)
+
+  !!mdsDacControl(TRUE)
+
+  do !indx indices !resetRefs
+    if (!indx.eq(1)) then
+      !attr = ':MDSGuideRef'
+    elseif (!indx.eq(2) or !indx.eq(3)) then
+      !attr = ':MDSBPRef1'
+    elseif (!indx.eq(4)) then
+      !attr = ':MDSBPRef2'
+    endif
+    -- Has the shoe a property called GNOT if so turn it on to give a notch for the
+    goto :MDSGuideRef
+    handle NONE
+      !dpNum = !!mdsGetDesp('GNOT')
+      if (!dpNum.neq(0)) then
+        despar n$!dpNum 0mm
+      endif
+    elsehandle ANY
+    endhandle
+
+
+    do !rgde values !resetRefs[!indx]
+      !!ce  = !rgde
+      handle ANY
+        skip
+      endhandle
+      !lOK  = !rgde.lock
+      if (!lOK) then
+        unlock
+        $!attr default
+        lock
+      else
+        if (!!ce.type.eq('SBFI')) then
+          !refs = :MDSAncRef
+          do !clearBad from 1 to !refs.size()
+            if (!refs[$!clearBad].badref()) then
+              !refs[$!clearBad].delete()
+            endif
+          enddo
+          -- Clear support being deleted
+          !supportBeingDeleted = /$!name
+          !find = !refs.find(!supportBeingDeleted)
+          !refs[$!find[1]].delete()
+          handle ANY
+          endhandle
+          !refs.compress()
+          if (!refs.size().gt(0)) then
+            !!ce.:MDSAncRef = !refs
+          elseif (!refs.size().eq(0)) then
+            :MDSAncRef def
+          endif
+        else
+          $!attr default
+        endif
+      endif
+    enddo
+
+  enddo
+
+  ------------------------------------------------------------------------------
+  -->>>-<sjr>jan2003
+  -- Check if support is a VT19 with four trunnion guide branches
+  !saveRef = !!ce
+  /$!name
+  if (!!ce.:MDSSuppType.eq('VT19')) then
+    -- delete the guide trunnions and tees
+    !!ce = /$!<name>/DATUM
+    handle ANY
+    elsehandle NONE
+      PIPE
+      !pname = !!ce.name
+      do !ii from 1 to 4
+        !bName = !pname + '/' + !form.name.val + '/' + !ii.string()
+        !!ce = $!bName
+        handle ANY
+        elsehandle NONE
+          GOTO HREF
+          handle ANY
+          elsehandle NONE
+            delete TEE
+          endhandle
+          !!ce = $!bName
+          delete BRAN
+        endhandle
+      enddo
+    endhandle
+  endif
+  $!saveRef
+  ------------------------------------------------------------------------------
+
+  !type.delete()
+
+  -----------------------------
+  --< Modified -<wd> - 7sep1998
+  -----------------------------
+
+  -- Before we delete we must clear all references to plates, via :MDSAncRef
+  var !collAll coll all (SCTN ATTA PLAT REDU FITT) for /$!<name>
+  !x = object MDSBPLATECONN()
+  !x.disconnect(!collAll)
+
+  !branches = ARRAY()
+
+  -- Loop through Support Members and DELETE
+  do !v values !members
+    !!ce = !v
+    handle (2,107) (2,822)
+      skip
+    endhandle
+    !type = !!ce.type
+    !!ce = !v
+
+    -----------------------------***** connexions ********---------------------------
+    if(!type.eq('SNOD')) then
+      !string = !!mdsRedraw(!v)  $* this block
+    else
+      !string = ''
+    endif
+
+
+    --> Modified - <wd> - 14sep1998
+    -----------------------------------------------------------------
+    --> Modified - <wd> - 27oct1998
+    -- FT22 Bedplates are STRU's and handled separately from OTher MDS Structures
+    if (!type.eq('STRU') and !v.skey.eq('BEDP')) then
+      -- Unset the Reference of the Associated Support
+      if (!v.:MDSBPRef1.badref().not() ) then
+        !!ce = !v.:MDSBPRef1
+        !sup = !!ce
+        if (!sup.:MDSBPRef1.eq(!v)) then
+          :MDSBPRef1 nulref
+        endif
+        if (!sup.type.eq('STRU')) then
+          if (!sup.:MDSBPRef2.eq(!v)) then
+            :MDSBPRef2 nulref
+          endif
+        endif
+      endif
+    endif
+    --< Modified - <wd> - 27oct1998
+    -----------------------------------------------------------------
+    !!ce = !v
+    !!mdsDacControl(TRUE)
+    !toDeleteRef = !!ce
+    !toDeleteRefName = !!ce.name
+
+    ------------------------------------------------------------------------------------------------------------
+    -->>>-<wd>dec2002
+    -- Code Added to handle DELETION of Cradle/Wear Pads or Reinforcing Plates
+    -- MDS Standards - AT05, AT09 and AT23 + AT65
+    --<dw>jan2009 DFN P16049 - To allow line stops ST57-ST59 & GT85 to be dis-associated from re-pads AT174,AT175
+    ------------------------------------------------------------------------------
+    -- mjb >>> 04.05.06 <mds12>
+    !mdsAttaObj  = object MDSREADPARSDATA()
+
+    --<RM 27/07/09> inserted a handle block here to deal with the case when !v is a hanger reference i.e. no styp
+    !unusedMdsAttaDefs = !mdsAttaObj.mdsDefsData(!v.stype,!v.lbor.real().value())
+    handle ANY
+    endhandle
+    --<RM 27/07/09> inserted a handle block here to deal with the case when !v is a hanger reference i.e. no styp - end
+    if (!v.type.eq('ATTA') and (!v.stype inset ('AT05', 'AT09', 'AT23' , 'AT65', 'AT174', 'AT175' ))) then
+      if (!v.:mdscp3.eq('SHOE')) then
+        !check = object MDSCHECKSTD(!mdsAttaObj)
+        -- mjb <<< 04.05.06 end of mod
+        ------------------------------------------------------------------------------
+        !shoeWarning = STRING()
+        -- Pad is associated with a SHOE atta by the uda :MDSSRef and needs to be unset
+        -- plus the associated SHOE Height and PAD thickness DESPARS need to be adjusted before DELETION of the PAD
+        if (!v.:MDSSRef.badref().not()) then
+          !shoeRef = !v.:MDSSRef
+          -- Shoe Atta Height is always CHECKED and MODIFIED in the <!check.shoeHeight(x,y,z) method> below
+          -- Issue a Warning if SHOE Height is NOT within the MDS Standards Permissible Height Range
+          if (!check.shoeHeight(!shoeRef,!v,!shoeWarning).not()) then
+            !!alert.warning(!shoeWarning)
+          endif
+        endif
+      elseif (!v.:mdscp3.upcase().eq('STOP')) then
+        !stopref  = !v.:mdssref
+        !!ce  = !stopref
+        :mdssref unset
+      endif
+    endif
+
+    -- Unset PAD uda :MDSSRef if the Associated SHOE Atta is being DELETED and NOT the PAD Atta
+    if ((!v.type.eq('ATTA')) and (!v.:MDSSRef.badref().not())) then
+      if (!v.:mdscp3.neq('SHOE') and !v.:mdscp3.upcase().neq('STOP')) then
+        !!ce  = !v.:MDSSRef
+        !rPad = !!ce
+        :MDSSRef unset
+        -- When type.eq('PIPE') reset Property 'OLAP'<dkey> DESPAR to be ZERO
+        !dpNum              = !!mdsGetDesp('OLAP')
+        !rPad.desp[$!dpNum] = 0
+        !rPad.:MDSCP3       = 'PIPE'
+      endif
+    endif
+
+    --<dw>jan2009 DFN P16049 - End of allowing line stops to be dis-associated from re-pads
+    --=======================
+    --<wd>oct2003
+    -- Code Added to handle DELETION of Cold Isolation Blocks on Trunnion Base Plates
+    -- i.e. MDS Standards - AT59/AT68 and READJUST the Associated Trunnion Length correctly
+    -- and within the Permitted Trunnion MINIMUM and MAXIMUM Lengths
+
+    -- Get Necessary Information BEFORE AT59 is DELETED
+    if (!v.type.eq('PLAT') and (!v.stype inset ('AT59','AT68'))) then
+      -- Navigate to Cold Isolation Block - 'PLAT'
+      !!ce  = !v
+      !vLen = !!kStrReal('cons dist p1 to p2')
+      !styp = !v.stype
+      -- Navigate to Trunnion Base Plate - 'PLAT'
+      --<wd>nov2003
+      -- previous
+      prev plat
+      --<wd>nov2003
+      !bPlt   = !!ce
+      !unusedBpltln = !!kStrReal('cons dist p1 to p2')
+      -- Identify the Trunnion SREF Atta - Trunnion DESPARS are STORED here
+      -- !trunName = !bPlt.name
+      bran
+      !trunName = !!mdsGetSuppname(!!ce)
+      same
+      !sRefName = !trunName & '/SREF'
+      !sRefAtta = !sRefName.dbref()
+      -- Get the Trunnion Type from the SREF Atta
+      !trnTyp = !sRefAtta.styp
+      !branch = !sRefAtta.owner
+    endif
+    --<wd>oct2003
+    --=======================
+
+    -- Navigate to Item to be Deleted
+    !!ce = !v
+    --<<<-<wd>dec2002
+    ------------------------------------------------------------------------------------------------------------
+
+    -- If type is a SBFI then you need to delete the CMPF
+    if (!!ce.type eq 'SBFI') then
+      OWN
+      !type = 'CMPF'
+    endif
+
+    -- for connections that are for civils
+    -- The civil connection is by a cmpf
+    -- Delete it if it exists
+    !!mdsDacControl(TRUE)
+    !iAmHere = !!ce
+    !!ce = /$!name/CMPF
+    handle NONE
+      delete cmpf
+      handle ANY
+        --dun1218 type is trying to delete from a read only database.
+        --if this is a virtual fitting situation then a hanger delete macro will be written
+        --as part of the standard code below
+      endhandle
+      !!ce = !iAmHere
+    elsehandle ANY
+    endhandle
+
+    --<kp>feb07
+    --if lighting support store reference to supported light - it is :MDSSRef will be cleared in case of successful deletion
+    !lightReference = nulref
+    if (!type.eq('STRU')) then
+      if (!!ce.:MDSSuppType.eq(!!mdslsuppdefs.type)) then
+        -- it is LIGHTING SUPPORT!!!
+        !lightReference = !!ce.:MDSSRef
+      endif
+    endif
+    --<kp>feb07
+    -----------------------------------------------------------------
+    --<wd>15jul2004
+    -- The TRUNNION BRANCH cannot be DELETED HERE!
+    -- DELETING the TRUNNION BRANCH here means the 'delete tee' CODE starting at approx. line 957 is NEVER ACTIVATED!
+    -- The PML function MDSSELECTSUPP.pmlfnc now adds the TRUNNION BRANCH to the array !form.supportMem,
+    -- whereas at MDS4.1.1 it NEVER did - HENCE the skip code has been added below and the TEE is NOW DELETED along with the TRUNNION BRANCH.
+    skip if (!type.eq('BRAN'))
+    --<wd>15jul2004
+    -----------------------------------------------------------------
+
+    ---------------------------------------------------------------------------------------------------
+    --<wd>oct2005
+    -- DELETE Stand-Alone MDS ATTA Support is DONE HERE!
+    -- DELETE MDS STRUCTURE Support INCLUDING ALL MDS ATTAS is DONE HERE!
+    -- DELETE MDS HANGER Support INCLUDING ALL MDS ATTA, RESTRAINT and TREF "FITTING" is DONE HERE!
+    --$P *** delete $!type ***
+    --<RM> 30/06/11 P-38756 add function call to remove pnod and pjoi rules that are causing errors when delete stru mem is run - start
+    if (!type.eq('STRU')) then
+      !!mdsRemoveAutoPadRules(!!ce)
+      !assos = !!ce.assos
+    endif
+    --<RM> 30/06/11 P-38756 add function call to remove pnod and pjoi rules that are causing errors when delete stru mem is run - end
+
+    delete $!type
+    handle (2,18) $* Locked Element
+      !etext = !!error.text.after(') ')
+      --> Modified by <ab> in case element was deleted in spite of the error 24/06/02
+      -- This could happen when deleting a restr which has a locked atta connected to it
+      if(!toDeleteRef.badref()) then
+        -- element was deleted in spite of the error
+        -- This could happen when deleting a restr which has a locked atta connected to it
+        -- just issue an warning to the user
+        !!alert.message('** Warning ** $!<etext>. $!toDeleteRefName was deleted')
+      else
+        -- element was not deleted
+        -- ask the user to confirm deletion
+        if (!!alert.confirm('** Warning ** $!<etext>. Do You want to DELETE this element?') eq 'YES') then
+          !!ce = !toDeleteRef
+          unlock
+          delete $!type
+        else
+          skip
+        endif
+      endif
+      --< Modified by <ab> in case element was deleted in spite of the error 24/06/02
+
+      --=======================
+      --<wd>oct2003
+    elsehandle (41,54)
+      --dun1218 type is trying to delete from a read only database. connection macros are already dealt with above so do nothing here
+    elsehandle NONE
+      ---------------------------------------------------------------------------------------------------
+      --<wd>jun2007<mds12>
+      if (!type.eq('STRU')) then
+        -- delete all associations
+        do !restrict value !assos
+
+          --get the purpose of the association world. if it's not MDS then return
+          var !purp purp of assowl of $!restrict
+          if (!purp.neq('MDS')) then
+            skip
+          endif
+
+          !!ce = !restrict.owner
+          delete ASSOC
+          handle ANY
+            !warning = true
+          endhandle
+          if (!!ce.memb.unset()) then
+            delete ASSOGP
+            handle ANY
+              !warning = true
+            endhandle
+          endif
+        enddo
+        if (defined(!warning)) then
+          -- Unable to rename the ASSOGP and the ASSOC elements
+          !!alert.warning('WARNING: Unable to DELETE the Associations')
+        endif
+      endif
+      --<wd>jun2007<mds12>
+      ---------------------------------------------------------------------------------------------------
+      --<kp>feb07 In case of Lighting supported clear :MDSSRef of supported light
+      if (!lightReference.badref().not()) then
+        !ownerOfDeleted = !!ce
+        !!ce = !lightReference
+        !lightLocked = lock
+        -- try to unlock to know if it is RW
+        unlock
+        handle ANY
+          !!alert.warning('Supported Light ($!!ce.namety) is READ ONLY. Its attribute :MDSSRef is left with "unknown reference"')
+        elsehandle NONE
+          :MDSSRef unset
+          !!ce.lock = !lightLocked
+        endhandle
+        !!ce = !ownerOfDeleted
+      endif
+      --<kp>feb07
+      if (defined(!styp)) then
+        if (!styp inset ('AT59','AT68')) then
+          -- Now Adjust the Trunnion length etc... after DELETING the AT59/AT68
+          -- Having DELETED the AT59/AT68 'PLAT' - We are now automatically at the Owning Trunnion Branch
+          if ((!!ce.type.eq('BRAN')) and (!!ce.:MDSTrun)) then
+            -- Get the Min and Max Length Values of the Trunnion Bore Length
+            -- When determining the MIN and MAX trunnion lengths the MAIN BRANCH HBOR size MUST be USED.
+            -------------------------------------------------------------------------------
+            -- mjb >>> 13.04.06 <mds12>
+            --><wd>08jun09 - DFN P-17079 - ERROR raised if PIPE BORE parameters are actual IMPERIAL bore sizes, e.g. 152.4mm = 6in and NOT 150mm
+            --              !braHBor = !branch.hbor
+            -- Set the Current Units
+            !currentunits = !!kGetSetUnits()
+            !braHBor  = !branch.hbor.string().lowcase().before('mm').real().value()
+            !mdsTrunObj  = object MDSREADTRUNDATA()
+            !mdsTrunData = !mdsTrunObj.mdsTrunData(!trnTyp,!braHBor)
+            --<<wd>08jun09 - DFN P-17079
+            -- Check Returned Data
+            if (!mdsTrunData.not()) then
+              -- ERROR with the MDS DEFAULTS in the PARAGON CATALOGUE "SECTION" or "CATEGORY" element
+              if (!mdsTrunObj.mdsStd.sactive.not()) then
+                -- ERROR with the MDS DEFAULTS in the PARAGON CATALOGUE "SECTION" element
+                !errormessage = !mdsTrunObj.mdsStd.smess
+              elseif (!mdsTrunObj.mdsStd.cactive.not()) then
+                -- ERROR with the MDS DEFAULTS in the PARAGON CATALOGUE "CATEGORY" element
+                !errormessage = !mdsTrunObj.mdsStd.cmess
+              endif
+              return
+            endif
+            -- Get the Minimum and Maximum Trunnion Lengths
+            !minLen = !mdsTrunObj.minLength
+            !maxLen = !mdsTrunObj.maxLength
+            --<<wd>08jun09 - DFN P-17079
+            -- Reset the Current Units
+            !!kRestoreUnits(!currentunits)
+            -- Ensure the variables !minLen and !maxLen are set in millimetres for later evaluation
+            !minLenStr = !minLen & 'mm'
+            !maxLenStr = !maxLen & 'mm'
+            !minLen = $!minLenStr
+            !maxLen = $!maxLenStr
+            --<<wd>08jun09 - DFN P-17079
+            --mjb <<< end
+            -------------------------------------------------------------------------------
+            -- Determine the Trunnion SREF Atta Despar used to store the Trunnion Length -
+            -- A MDS Trunnions DOES NOT have a DATA element with a DKEY in order to extract the Trunnion Length DESPAR NUMBER
+            --<dw>oct2008 dun979 - Also to allow for additional trunnion types TT42 to TT44
+            if (!trnTyp.eq('TT25')) then
+              !dpNum = 3
+            elseif (!trnTyp inset ('TT04','TT05','TT06','TT07','TT08','TT09','TT10','TT11','TT12','TT13','TT22','TT28','TT26','TT36','TT42','TT43','TT44')) then
+              !dpNum = 5
+            endif
+
+            -- Get the Existing Trunnion Length Before Deleting the AT59/AT68
+            --<dw>oct2008 dun979 - Also to allow for additional trunnion types TT42 to TT44
+            branch
+            if (!trnTyp inset ('TT04','TT06','TT08','TT10','TT12','TT22','TT25','TT26','TT05','TT07','TT09','TT11','TT13','TT28','TT36','TT42','TT43','TT44')) then
+              if (!!ce.href.type.eq('ELBO')) then
+                pin 9 copy ph
+                pin 9 plane pin 9 thro p0 of $!!ce.href
+              else
+                -- SET-ON TEE for PIPE, REDU or CROSS
+                pin 9 copy ph
+              endif
+              pin 8 copy pl of $!bPlt
+              -- Existing trunnion length
+              !xTrLen = !!kStrReal('cons dist pin 9 to plane pin 8')
+
+              -- Determine the value of the Modified Trunnion Length
+              !nTrLen = (!xTrLen + !vLen)
+              --Check if New Trunnion Length is within the MIN/MAX Limits
+              if(!nTrLen.lt(!minLen)) then
+                !!kFormatText.text.val = !minLen
+                !minVal = TRUE
+                !frmLen = !nTrLen.string(!!distanceFmt)
+                !minFmt = !minLen.string(!!distanceFmt)
+
+                !trunLenWarn = |The Required Trunnion Length $!frmLen is less than the minimum allowed. Setting Trunnion Length to the minimum of $!<minFmt>|
+                -- Set the SREF Atta Despar !dpNum to the Trunnion Length Minimum
+                !!mdsSetDespar(!sRefAtta,!dpNum,!minLen)
+                !!alert.warning(!trunLenWarn)
+              else
+                !minVal = FALSE
+              endif
+              --   Check New Trunnion Length Against the Permissible MAXIMUM Height
+              if (!nTrLen.gt(!maxLen)) then
+                !!kFormatText.text.val = !maxLen
+                !maxVal = TRUE
+                !frmLen = !nTrLen.string(!!distanceFmt)
+                !maxFmt = !maxLen.string(!!distanceFmt)
+
+                !trunLenWarn = |The Required Trunnion Length $!frmLen is greater than the maximum allowed. Setting Trunnion Length to the maximum of $!<maxFmt>|
+                -- Set the SREF Atta Despar !dpNum to the Trunnion Length Maximum
+                !!mdsSetDespar(!sRefAtta,!dpNum,!maxLen)
+                !!alert.warning(!trunLenWarn)
+              else
+                !maxVal = FALSE
+              endif
+              -- Trunnion Length is within the Permissible Min/Max Trunnion Length limits,
+              -- so silently set the despar for the Trunnion Length at the Trunnion SREF Atta
+              if (!minVal.not() and !maxVal.not()) then
+                !!mdsSetDespar(!sRefAtta,!dpNum,!nTrLen)
+              endif
+
+              -- Place Pin 8 at Pin 9 - Starting Point for the Trunnion Length
+              pin 8 copy pin 9
+              -- Place Pin 8 at the NEW Position for the Pleave of the trunnion Base Plate
+              if (!minVal) then
+                pin 8 plane pin 8 dist $!minLen
+              elseif (!maxVal) then
+                pin 8 plane pin 8 dist $!maxLen
+              elseif (!minVal.not() and !maxVal.not()) then
+                pin 8 plane pin 8 dist $!nTrLen
+              endif
+
+              -- Now Adjust the Trunnion Branch members etc.. as required due to the AT59/AT68 being deleted
+              !!ce = !bPlt
+              move pl thro pin 8
+              --<dw>oct2008 dun979 - Also to allow for additional trunnion types TT42 to TT44
+              if (!trnTyp inset ('TT04','TT08','TT12','TT25','TT26','TT36','TT42','TT43','TT44')) then
+                -- Base Plate Only
+                tail
+                -----------------------
+                --<wd>nov2003
+                last mem
+                if (!!ce.:MDSGuideRef.badref().not()) then
+                  -- Last Member is a Guide Atta
+                  move pl thro pin 8
+                endif
+                --<wd>nov2003
+                -----------------------
+                tail
+                conn pt to last mem
+                handle ANY
+                  fconn pt to last mem
+                endhandle
+
+                -- Move the last 2 ATTAS to avoid DATACON Errors
+                last atta
+                -----------------------
+                --<wd>nov2003
+                if (!!ce.:MDSGuideRef.badref().not()) then
+                  -- Goto the Trunnion SREF Atta
+                  prev atta
+                  at pa of next
+                endif
+                prev atta
+                conn to next
+                --<wd>nov2003
+                -----------------------
+
+              elseif (!trnTyp inset ('TT06','TT10','TT22')) then
+                -- Base Plate + Collar Plate etc...
+                tail
+                -----------------------
+                --<wd>nov2003
+                last mem
+                if (!!ce.:MDSGuideRef.badref().not()) then
+                  -- Last Member is a Guide Atta
+                  move pl thro pin 8
+                endif
+                tail
+                -----------------------
+                --<wd>nov2003
+                conn pt to last mem
+                handle ANY
+                  fconn pt to last mem
+                endhandle
+                -- Move the last 4 ATTAS to avoid DATACON Errors
+                last atta
+                prev atta
+                --<wd>nov2003
+                -----------------------
+                at pa of next
+                prev atta
+                conn to next
+                prev atta
+                conn to next
+                by u 50
+                -- Goto the Collar Plate
+                prev plat
+                handle ANY
+                  plat 1
+                endhandle
+                pin 7 copy pin 8
+                pin 7 dist -230
+                plane pa thro pin 7
+                prev
+                conn to next
+
+              elseif (!trnTyp inset ('TT05','TT09','TT13')) then
+                -- Bearing Plate + Base Plate
+                -- Goto the Bearing Plate and get Thickness
+                -----------------------
+                --<wd>nov2003
+                --next
+                next plat
+                !bearLn = !!kStrReal('cons dist p1 to p2')
+                --conn
+                move pa up thro pin 8
+                --<wd>nov2003
+                -----------------------
+                tail
+                conn pt to last mem
+                handle ANY
+                  fconn pt to last mem
+                endhandle
+                -- Move the last 3 ATTAS to avoid DATACON Errors
+                last atta
+                at pa of next
+                prev atta
+                conn to next
+                prev atta
+                conn to next
+                by u 50
+
+              elseif (!trnTyp inset ('TT07','TT11','TT28')) then
+                -- Bearing Plate + Base Plate + Collar Plate etc...
+                -- Goto the Bearing Plate and get Thickness
+                -----------------------
+                --<wd>nov2003
+                --next
+                next plat
+                !bearLn = !!kStrReal('cons dist p1 to p2')
+                --conn
+                move pa up thro pin 8
+                --<wd>nov2003
+                -----------------------
+                tail
+                conn pt to last mem
+                handle ANY
+                  fconn pt to last mem
+                endhandle
+                -- Move the last 3 ATTAS to avoid DATACON Errors
+                last atta
+                at pa of next
+                prev atta
+                conn to next
+                prev atta
+                conn to next
+                by u 50
+                -- Goto the Collar Plate
+                prev plat
+                pin 7 copy pin 8
+                pin 7 dist -230
+                plane pa thro pin 7
+                prev
+                conn to next
+              endif
+            endif
+          endif
+          !!mdsresetpins(7,9)
+        endif
+        branch
+        tail
+        tcon CLOS
+      endif
+      --<wd>oct2003
+      --=======================
+    endhandle
+
+    --< Modified by <tm> to build a list of trunnion branches for deletion
+    if (!!ce.type.eq('BRAN')) then
+      !branches.append(!!ce)
+    endif
+    --< Modified - <wd> - 14sep1998
+
+    $!string     $* and this line can be removed when graphics are fixed.11.1.3
+
+  enddo
+
+  !branches.unique()
+
+  -- Check to see if the support is a trunnion branch and if so delete it
+  -- If the branch is connected to a set-on tee, identified by the skey TESO then delete that as well
+  if (!!ce.type.eq('BRAN')) then
+    --< Modified by <tm> to loop thro a list of trunnion branches for deletion
+    do !bran values !branches
+      !!ce = !bran
+      if (!!ce.:MDSTrun) then
+        !suppName = !!mdsGetSuppname(!!ce)
+        !suppName = !suppName.after('/')
+        --< Modified by <tm> to match /1 and /2 support names
+        if (!suppName.match(!!mdsDeleteSupp.name.val).gt(0)) then
+          -- if !!mdsDeleteSupp.name.val.eq(!suppName) then
+          !supp = !!ce
+          !hRefSkey = !!ce.href.detref.skey
+          handle ANY
+            golabel /continueHDel
+          endhandle
+          goto href
+          if (!hRefSkey.eq('TESO')) then
+            delete tee
+          elseif (!!ce.:MDScp1.neq('unset')) then
+            if (!!ce.:MDScp1.match('=').eq(1)) then
+              if (!!ce.:MDSCp1.dbref().badref().not()) then
+                !spref = !!ce.:MDScp1
+                new tee copy att of prev
+                :MDSCp1 default
+                spref $!spref
+                prev
+                !crosArr = Arr
+                !crosLea = Lea
+                !connectedPoint = 6 - !crosArr - !crosLea
+                !teeCref = crfa num $!connectedPoint
+                if (!teeCref.unset()) then
+                  !tempArray = object ARRAY()
+                  do !i from 1 to !!ce.crfa.size()
+                    if (!!ce.crfa[!i].set() and !!ce.crfa[!i].type.eq('BRAN')) then
+                      !tempArray.append(!!ce.crfa[!i])
+                    endif
+                  enddo
+                  !teeCref = !tempArray
+                endif
+                next
+                cref $!teeCref[1]
+                goto cref
+                handle NONE
+                  href same
+                  same
+                elsehandle ANY
+                endhandle
+                prev
+                delete cros
+              endif
+            endif
+          endif
+
+          label /continueHDel
+
+          !!ce = !supp
+          !trefSkey = !!ce.tref.detref.skey
+          handle NONE
+            goto tref
+            if (!trefSkey.eq('TESO')) then
+              delete tee
+            endif
+          elsehandle ANY
+          endhandle
+
+          !!ce = !supp
+          delete bran
+        endif
+      endif
+      --< Modified by <tm> to loop thro a list of trunnion branches for deletion
+    enddo
+  endif
+
+  --> Modified - <wd> - 10sep1998
+  label /return
+  unenhance all
+  --< Modified - <wd> - 10sep1998
+
+  ---------------------------------------------------------------------------------------------
+  -- SILENT DELETE WITH THE MANUFACTURERS SOFTWARE
+  if (defined(!!manif.exe)) then
+    if (!!manif.set()) then
+      if (!!manif.exe.exists()) then
+        -- dtf >>> Check to see if part of group and if elements need deleting in LISEGA etc
+        do !delIndex indices !hIntersType
+          if (!hIntersType[!delIndex] eq 'MH01') then
+            !xSuppName = !!mdsDeleteSupp.connectedHangers[!delIndex]
+            if (!!mdsHangIf.eq('LISEGA')) then
+              !delete = !!mdsDeleteSuppLicad(!xSuppName)
+            elseif (!!mdsHangIf.eq('PSL')) then
+              !delete = !!mdsDeleteSuppPSL(!xSuppName)
+            elseif (!!mdsHangIf.eq('CPL')) then
+              !delete = !!mdsDeleteSuppCPL(!xSuppName)
+            endif
+          endif
+        enddo
+        if (!intersType eq 'MH01') then
+          if (!!mdsHangIf.eq('LISEGA')) then
+            !delete = !!mdsDeleteSuppLicad(!name)
+          elseif (!!mdsHangIf.eq('PSL')) then
+            !delete = !!mdsDeleteSuppPSL(!name)
+          elseif (!!mdsHangIf.eq('CPL')) then
+            !delete = !!mdsDeleteSuppCPL(!name)
+          endif
+        endif
+        -- dtf <<< End of Mod
+
+      endif
+    endif
+  endif
+  ---------------------------------------------------------------------------------------------
+
+  -- dtf >>> Check to see if part of group and if elements need renaming
+  if (!!mdsDeleteSupp.isPartOfGroup and !!mdsDeleteSupp.reNameHanger) then
+    !supportGroupList = ARRAY()
+    !rootName = !name.before('[')
+    -- Get list of hangers with the same root name
+    do !ii from 1 to 30
+      /$!rootName[$!ii]
+      handle (2,109)
+      elsehandle NONE
+        !supportGroupList.append(!!ce.name)
+      endhandle
+    enddo
+
+    -- rename !supportGroupList if required
+    do !jj from 2 to !supportGroupList.size()
+      if ('/$!rootName[$!jj]' eq !supportGroupList[!jj] ) then
+        --$P No need to rename
+      else
+        --$P Need to Rename
+        !!ce = $!supportGroupList[$!jj]
+        !unusedIsRenamed = !!mdsconvertgroup( |RENAME| , !!ce, |$!rootName[$!jj]| )
+      endif
+    enddo
+  endif
+  -- dtf <<< End of Mod
+
+  -- For FT61 make sure we delete the olet
+  --<dw>aug2008 Dun979 - name of olet is now LUG1  - note FT61 build
+  -- This follows additional note (NOTE1) advising that hole should not be cut in pipe
+  -- $!nameOfMem/OLET
+  --<mjb> P-29626 Fix error when !nameOfMem not defined
+  if (defined(!nameOfMem)) then
+    !deleteMem = !nameOfMem.replace('NOTE1','LUG1')
+    $!deleteMem
+    handle NONE
+      delete tee
+      handle ANY
+        delete olet
+      endhandle
+    elsehandle ANY
+    endhandle
+  endif
+  --<mjb> P-29626 end of mod
+
+  -- Clear Data from Form
+  !form.supportMem.clear()
+  !form.name.val = 'unset'
+  !!mdsDacControl(FALSE)
+
+  ---------------------------------------------------------------------------------------------------
+  --<GE> 06-08-06 HPD0033412 The VPRM Code only needs to be executed for a Framatome Project
+  -- This is ONLY!!!!! a temporary fix for other customers that have the Gateway loaded
+  if (desc of /MDS/TEMPLATES eq 'Framatome Templates') then
+    --<wd>oct2005
+    -- Check if a MDS VPRM "DELETE" MTO file is being GENERATED
+    if ((!vprmFileGen) and (!groupMember.not())) then
+      -- *******************************************************************************
+      -- Write and AUTOMATICALLY LOAD into VPRM -- the MDS VPRM MTO "DELETE" Output File
+      -- *******************************************************************************
+      --
+      -- IGNORE any TRUNNION type MDS supports, as they are NOT PASSED to VPRM via the MDS VPRM Interface
+      if (!mdsType.neq('TRUNNION')) then
+        if (!vprmProcess) then
+          -- MDS VPRM MTO files are about to be GENERATED and "AUTOMATICALLY LOADED" into the VPRM Database
+          -- So SAVEWORK in PDMS Database to UPDATE to reflect that the MDS SUPPORT has been DELETED
+          savework
+
+          -- CHECK if VPRM is ACCESSIBLE etc... for the Automatic UPDATE
+          !vprmErr  = ARRAY()
+          !mdsNamn  = !mdsVprmDelSupp.mdsvprmmto[1].suppName
+          !vprmTest = !mdsVprmDelSupp.vprmdbtest(!vprmErr, !mdsNamn)
+          if (!vprmTest.not()) then
+            -- Append ERRORS to the Beginning of the ARRAY !mdsVprmDelSupp.errArray
+            !mdsVprmDelSupp.errArray.insertarray(1, !vprmErr)
+            -- !alertUser = !vprmErr[2] & !vprmErr[3]
+            -- <GE> (04-08-06) modified the alert error as the string was too long.
+            !alertUser = !vprmErr[3]
+          endif
+
+          -- In ALL Cases -- Write the MDS VPRM MTO "DELETE" File and the MDS VPRM LOG File
+          !mdsVprmDelSupp.vprmFiles('DELETE', !mdsVprmDelSupp)
+
+          -- Check if the VPRM System is AVAILABLE etc...
+          if (!vprmTest.not()) then
+            -- Alert User that the VPRM System is NOT AVAILABLE for whatever reason!
+            !!alert.error(!alertUser)
+            return
+          else
+            -- !vprmTest = TRUE
+            -- This means that the VPRM DB is AVAILABLE  for AUTOMATIC LOADING of MDS VPRM MTO Files
+            -- Perform the Automatic UPDATE of the VPRM Database with the MDS VPRM MTO file of the DELETED MDS Support
+            !pDSC02ExeObj = object FILE('%pdmsexe%/pdsc02.exe')
+            !pDSC02ExeFil = !pDSC02ExeObj.fullname()
+            -- Load the MDS VPRM MTO "$!mdsVprmDelSupp.option" file into VPRM
+            --syscom '$!pDSC02ExeObj $!mdsVprmDelSupp.mtoFile'
+            syscom '$!pDSC02ExeFil $!mdsVprmDelSupp.mtoFile'
+
+
+            -- Echo Messages to the PDMS Windows Shell
+            syscom 'echo MESSAGE -- VPRM DB AUTOMATIC LOADING of MDS SUPPORT MTO "$!mdsVprmDelSupp.option" file:'
+            syscom 'echo MESSAGE -- $!mdsVprmDelSupp.mtoFile'
+
+          endif
+
+        else
+          ---------------------------------------------------------------------
+          -- The VPRM System is NOT Available -- The Project is NOT using VPRM
+          -- Therefore there is NOTHING TO DO
+          ---------------------------------------------------------------------
+        endif
+      endif
+    endif
+  endif
+  --<GE> 06-08-06 HPD0033412
+  --<wd>oct2005
+  ---------------------------------------------------------------------------------------------------
+
+  --<dw>Sept2007 delete bracing ATTAS -----------------------------------------------------------------------
+  !!mdsDacControl(TRUE)
+  /$!<name>/BR1
+  handle(2,109)
+    return
+  endhandle
+  bran
+  var !mem mem atta count
+  if ($!mem gt 0) then
+    do !attNum to $!mem
+      /$!<name>/BR$!attNum
+      handle(2,109)
+        skip
+      endhandle
+      delete atta
+    enddo
+  endif
+  !!mdsDacControl(FALSE)
+  --<dw> end of delete bracing ATTAS ---------------------------------------------------------------
+
+  -- End function
+endfunction

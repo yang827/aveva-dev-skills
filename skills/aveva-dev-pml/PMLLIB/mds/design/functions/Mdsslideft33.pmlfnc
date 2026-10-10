@@ -1,0 +1,353 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:		Mdsslideft33.pml
+--   Type:		Function Definition
+--   Group:		Multi Discipline Supports Application
+--     Keyword:		MDS
+--   Module:		design
+--   Replaces:          MSLIPS138
+--
+-- Author:		I.Osborne
+-- Created:		Wed Jul 23
+--
+--
+-- Description:
+-- function to slide support frame type 33 infront, behind or to centerline of COLUMN.
+-- This function is for horizontal pipes only
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         STRING       Textural string to determine which side to
+--                                  choose. 'FRONT', 'BACK', or 'MID'
+--                                  'FRONT' - Edge of section infront of datum
+--                                  'BACK'  - Edge of section behind datum
+--                                  'MID'   - Center of section
+--     2     R        DBREF         Section to connect to (Column)
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+--
+-- NOTE for EXTERNAL TEMPLATE JOINTS:
+--
+-- The configurations (MID, FRONT, BACK) of FT33 are created EVERY TIME
+-- via the  function MdsCREATEFT33.PMLFNC, and therefore the JOINTS have to be
+-- DELETED before creation by CURSOR can proceed. This DIFFERS from other MDS
+-- FRAMEs such as FT03 and FT04 etc...
+--
+-- Therefore the EXTERNAL JOINT CHECKING and/or DELETE routines are NOT
+-- required in this function.
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!MdsSlideFt33(!Slide is STRING, !Column is DBREF)
+
+-- Find current units and set the distance unit to metric
+
+    !CurrentUnits = !!KGetSetUnits()
+
+  -- Initialise variables
+    --!Selection = !!MdsFt33.Size.Selection('Rtext')
+    !Selection = !!MdsSetSteel.Size.Selection('Rtext')
+    !Support   = !!MdsFt33.Support
+    !Stru      = !Support.Stru
+    !Datum     = !Support.Datum
+    !Name      = !Support.Stru.name
+    !PLDir     = !Support.PLDir
+
+  !form = !!mdsft33
+
+-- Can we move all components of the support
+
+  if !!MdsCheckAccess(!Form,'DACMOD','POS').not() then
+    !!CE = !Form.Support.Datum
+      handle none
+        !!kRestoreUnits(!currentunits)
+      elsehandle any
+      endhandle
+    return
+  endif
+
+  -- Plane direction is nearest value to 1
+    !Up = (abs(!Pldir.up))
+    !East = (abs(!Pldir.East))
+    !North = (abs(!Pldir.North))
+    !Max = max((abs(!Up)), (abs(!East)), (abs(!North)))
+    if (!Max.eq(!Up))then
+      !PlaneDir = U wrt world
+    elseif (!Max.eq(!East))then
+      !PlaneDir = E wrt world
+    else
+      !PlaneDir = N wrt world
+    endif
+
+  -- Determine the general Pleave direction of the datum atta (for sloping lines)
+    PIN 1 COPY PL OF $!Datum
+    PIN 1 PLANE PIN 1 CLEAR 0 BEH $!Datum
+    PIN 1 DIR $!PlaneDir
+    PIN 2 COPY PIN 1
+    PIN 2 PLANE PIN 2 THRO $!Datum
+    VAR !GenPLDir CONS DIR PIN 2 TO PIN 1
+
+  -- Navigate to column
+    !!CE = !Column
+
+  -- Initialise variables
+    !Start = PLSTART NA WRT WORLD
+    !End = PLEND NA WRT WORLD
+    VAR !Line CONS LINE JOIN $!Start to $!End
+    VAR !DatumLine CONS LINE $!PlaneDir THRO P9 of $!Datum
+    VAR !Position CONS POS INT $!DatumLine $!Line
+    !PList = ARRAY()
+
+  -- Always position Support at intersection point of column and datum atta
+  -- Position marker pin at relevant intersection point
+
+    PIN 1 AT $!Position wrt world
+
+  -- Move everything thro pin 1
+
+  -- Move Datum
+    !!CE = !Datum
+    PLANE $!PlaneDir THRO PIN 1
+
+    !!CE = $!<Name>/SREF
+
+    !!MdsMConn('ORI','ORI')
+    POS PA AT $!Datum
+    SAME
+
+    !Pos = !!CE.pos.wrt(world)
+
+    $M/%PDMSUI%/DES/CLIB/GAIDTEXT 210 Datum $<$!POS$>
+
+    do !Count from 1
+      $!<Name>.$!Count
+        handle any
+          break
+        endhandle
+
+      THRO PIN 1
+      !Pos = !!CE.pos.wrt(world)
+      !Num = 210 + !Count
+
+      $M/%PDMSUI%/DES/CLIB/GAIDTEXT $!Num $!Count $<$!Pos$>
+
+    enddo
+
+  -- Move support to new position
+    !!CE = !Stru
+    MOVE $!PLDir PLANE $!PlaneDir THRO $!Datum
+
+  -- *********** ADJUST POSITION OF SUPPORT IF CREATION IS NOT TO CL *******
+
+    if (!Slide neq 'MID')then
+
+    -- Adjust support to correct side of column
+    -- Get Overlap required on connection from template
+      !!CE = /MDS/FT33/$!Selection-BAR-1
+      !Overlap = DERI LEN
+
+    -- Navigate back to column
+      !!CE = !Column
+
+    -- Get Plines associated with the section to connect to.
+      !Plines = !!KCollectallfor('PLIN', '', !!CE.pstre)
+      !Block = object block('!Plines[!EvalIndex].pkey')
+      !Pkeys = !Plines.evaluate(!Block)
+
+    -- Loop through plines and construct an intersection point
+      do !I indices !Plines
+        !Start = PLSTART $!Pkeys[$!I] WRT WORLD
+        !End = PLEND $!Pkeys[$!I] WRT WORLD
+        VAR !Line CONS LINE JOIN $!Start to $!End
+        VAR !Inter CONS POS INT $!DatumLine $!Line
+        !PList.append(!Inter)
+      enddo
+
+    -- Reduce the number of duplicate intersection points
+      !PList.unique()
+
+    -- Loop through intersection points to determine near and
+    -- far side.
+      PIN 2 at P0 of $!Datum
+      PIN 2 DIR $!PlaneDir
+      !Infront = ARRAY()
+      !Behind  = ARRAY()
+      !InfDist = ARRAY()
+      !BehDist = ARRAY()
+
+      do !I indices !PList
+        PIN 3 AT $!PList[$!I] wrt world
+        PIN 4 COPY PIN 2
+        PIN 4 PLANE PIN 4 THRO PIN 3
+        VAR !InterDir CONS DIR PIN 2 TO PIN 4
+        !InterDist = !!KStrReal('CONST DIST PIN 2 TO PIN 4')
+
+        skip if (!InterDist.eq(0))
+
+      -- Set object definition
+        !Direction = object KEQUALDIR()
+        !Direction.DirectionA = !InterDir.direction()
+        !Direction.DirectionB = !GenPlDir.direction()
+        !Direction.Tolerance  = 0.05
+
+      -- Check directions
+        if (!!KDirEqualDir(!Direction)) then
+        -- Pline is infront of atta (on the leave side of the datum atta)
+          !Infront.append(!Plist[!I])
+          !InfDist.append(!InterDist)
+        else
+        -- Pline is behind of atta (on the arrive side of the datum atta)
+          !Behind.append(!Plist[!I])
+          !BehDist.append(!InterDist)
+        endif
+      enddo
+
+      if (!Slide eq 'FRONT')then
+      -- Use largest distance to determine which intersection point to use
+        !TempBehDist = !BehDist
+        !TempBehDist.sort()
+        !Distance = !TempBehDist.last()
+          handle(2,752)
+          -- No elements in array therefore position of support has not moved
+            golabel /EXTEND
+          endhandle
+        !Index = !BehDist.findfirst(!Distance)
+        !Position = !Behind[!Index]
+      else
+      -- Use largest distance to determine which intersection point to use
+        !TempInfDist = !InfDist
+        !TempInfDist.sort()
+        !Distance = !TempInfDist.last()
+          handle(2,752)
+          -- No elements in array therefore position of support has not moved
+            golabel /EXTEND
+          endhandle
+        !Index = !InfDist.findfirst(!Distance)
+        !Position = !Infront[!Index]
+      endif
+
+    -- Now an adjustment has to be made to move the support steel clear of the
+    -- Marker position defined above. (Near and Far side only)
+
+      PIN 2 AT $!Position wrt world
+      PIN 4 AT $!Stru
+      PIN 4 DIR $!GenPlDir wrt world
+      PIN 5 COPY PIN 4
+      PIN 5 PLANE PIN 5 THRO PIN 2
+      PIN 4 DIR FROM PIN 4 TO PIN 5
+      PIN 3 COPY PIN 4
+      PIN 3 PLANE PIN 3 CLEAR 0 INF $!<Name>-BAR-1
+      !Nudge = !!KStrReal('CONST DIST PIN 3 TO PIN 4')
+      PIN 2 DIR FROM PIN 4 TO PIN 5
+      PIN 2 PLANE PIN 2 DIST $!Nudge
+      VAR !Position PIN 2 POS WRT WORLD
+
+  -- Now reposition support
+
+    -- Position marker pin at relevant intersection point
+      PIN 1 AT $!Position wrt world
+
+    -- Move everything thro pin 1
+
+    -- Move Datum
+      !!CE = !Datum
+      PLANE $!PlaneDir THRO PIN 1
+
+      !!CE = $!<Name>/SREF
+
+      !!MdsMConn('ORI','ORI')
+      POS PA AT $!Datum
+      SAME
+
+      !Pos = !!CE.pos.wrt(world)
+
+      $M/%PDMSUI%/DES/CLIB/GAIDTEXT 210 Datum $<$!POS$>
+
+      do !Count from 1
+        $!<Name>.$!Count
+          handle any
+            break
+          endhandle
+
+        THRO PIN 1
+        !Pos = !!CE.pos.wrt(world)
+        !Num = 210 + !Count
+
+        $M/%PDMSUI%/DES/CLIB/GAIDTEXT $!Num $!Count $<$!Pos$>
+
+      enddo
+
+    -- Move support to new position
+      !!CE = !Stru
+      MOVE $!PLDir PLANE $!PlaneDir THRO $!Datum
+
+    LABEL /EXTEND
+
+    -- Now extend crossbar
+      !!CE = $!<Name>-BAR-1
+
+    -- Get correct end
+      if (!Support.Mirror)then
+        !BarEnd   = Posend wrt world
+        !BarStart = Posstart wrt world
+        !SctnEnd = 'END'
+      else
+        !BarStart = Posend wrt world
+        !BarEnd   = Posstart wrt world
+        !SctnEnd = 'START'
+      endif
+      PIN 1 AT $!BarStart
+      PIN 2 AT $!BarEnd
+      PIN 1 DIR FROM PIN 2 TO PIN 1
+      PIN 2 DIR FROM PIN 1 TO PIN 2
+      PIN 2 DIST $!Overlap
+
+      EXTEND $!SctnEnd THRO PIN 2
+
+    -- Update dimensions for extended legs
+      PIN 9 PLANE PIN 9 THRO PIN 2
+      PIN 4 COPY PIN 8
+      PIN 4 PLANE PIN 4 THRO PIN 1
+
+  -- Dimension 1
+      !Dim1 = !!KStrReal('CONST DIST PIN 9 TO PIN 8')
+      !!MdsFt33.Dim1.Val = !Dim1
+
+  -- Dimension 2
+
+      !Dim2 = !!KStrReal('CONST DIST PIN 9 TO PIN 4')
+      !!MdsFt33.Dim2.Val = !Dim2
+
+    endif
+
+  -- Reset all pins associated with this function
+    Call !!MdsResetPins(1,5)
+
+  -- Store Current offset in form
+    !!MdsFt33.Support.Offset = !Slide
+
+    !!CE = !Support.Datum
+
+    Call !!MdsDistance(!!MdsFt33)
+
+    !!CE = !Support.Stru
+
+
+-- Reset Units
+
+   !!kRestoreUnits(!currentunits)
+
+-- End function
+endfunction
+
+-- End of file Mdscreateft33.pml

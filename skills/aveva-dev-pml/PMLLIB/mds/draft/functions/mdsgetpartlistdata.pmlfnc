@@ -1,0 +1,1471 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+----------------------------------------------------------------------
+--
+-- File:    mdsgetpartlistdata.pmlfnc
+--   Type:    Function Definition
+--   Group:   Multi Discipline Supports Application
+--     Keyword:   MDS
+--   Module:    DESIGN
+--   Replaces:
+--
+-- Author:    D.flannery
+-- Created:   Mon Oct 24 2005
+--
+--><wd>27jul2009 - DFN P-23237 - Added the AREVA supplied and requested file  modification - Details shown below
+--          Modified by AREVA:  LUTZIAN WIDUCH (LW), 27.01.2009 for AREVA
+--            Change for different management of V9_..sS clamps.
+--            In previous versions of the catalog the SS parts did not have a separate catalogue entry,
+--            the name ...-SS was only used for the BOM on the drawing or for VPRM.
+--            This is still valid for V3 clamps
+--<<wd>27jul2009 - DFN P-23237
+--
+-- Description:
+-- get data for mdsPartsList and mdsPipeReportObj
+--
+--------------------------------------------------------------------------------
+--<wd>16apr2010 - Added Revision Note and PML CODE Changes as supplied by AREVA - Introducing the Global Variable !!anpudaqcl
+--  revision:
+--  author      = Arnaud FLOQUET (NEMC)
+--  date        = 15/12/2009
+--  description = New Definition of Udas used in project (:FRA* , :IMS* ) with global variables
+--
+---------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         ARRAY      Array of components
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsgetpartlistdata(!suppArray is ARRAY, !sClass is STRING, !suppName is STRING) is ARRAY
+
+  -- Get the Support Members from !suppArray
+  !suppMembers = !suppArray
+
+  -- Rearrange !suppMember array to arrange Ancillaries first
+-- Structural elements second and Hanger elements Last
+-- and eliminate SREF Atta from SuppMembers array
+
+  !suppMembersMod = ARRAY()
+  !reord = ARRAY()
+
+  do !loop1 indices !suppMembers
+    if !suppMembers[$!loop1].type.eq(|STRU|) then
+      !reord.append(|$!loop1,2|)
+      --elseif (!suppMembers[$!loop1].type.eq(|ATTA|) and !suppMembers[$!loop1].name.occurs(|SREF|).leq(0)) then
+      elseif ((!suppMembers[$!loop1].type.eq(|ATTA|) OR !suppMembers[$!loop1].type.eq(|CTSUPP|)) and !suppMembers[$!loop1].name.occurs(|SREF|).leq(0)) then
+      if !suppMembers[$!loop1].cref.unset() then
+        !reord.append(|$!loop1,1|)
+      else
+        !reord.append(|$!loop1,3|)
+      endif
+    endif
+  enddo
+
+  !anclAr = ARRAY()
+  !struAr = ARRAY()
+  !hangAr = ARRAY()
+  do !i indices !reord
+    !ordsp = !reord[$!i].split(|,|)
+    !ori = !ordsp[1]
+    !new = !ordsp[2]
+    !suppMembersMod.insert($!new,!suppMembers[$!ori])
+    if !new.eq(|1|) then
+      !anclAr.append(|$!suppMembers[$!ori]|)
+    elseif  !new.eq(|2|) then
+      !struAr.append(|$!suppMembers[$!ori]|)
+    elseif  !new.eq(|3|) then
+      !hangAr.append(|$!suppMembers[$!ori]|)
+    endif
+  enddo
+
+  !suppMembers.delete()
+  !suppMembers=!suppMembersMod
+
+-- Create Table Entries
+-- Build and array of DDNM & ATEXT
+  -- Atext format Sl.no.\Quantity\Designation\ConfigNo.\TypeNo.\Length\Width\Material\MTS-PSNo.\Weight
+  -- atex |$!slNo\$!quantity\$!dtxr\ConfigNo\$!typeNo\Length\Width\$!material\MTS-PSNo.\$!weight|
+  !ddnmAR = ARRAY()
+  !aTexAr = ARRAY()
+-------------------------------------------------
+-- Create Ancillary Entries Array
+-------------------------------------------------
+  var !anclCode eval(PROP CODE) for all ATTA from !anclAr
+  !uniqueAnclCode = !anclCode
+
+-- Summarise Austenitic Shield
+  var !anclLstu eval(spre of lstu) for all ATTA from !anclAr
+  var !anclStyp eval(styp) for all ATTA from !anclAr
+
+  !anclStypLstu = ARRAY()
+  do !loopE indices !anclStyp
+    !anclStypLstu.append(|$!anclStyp[$!loopE] $!anclLstu[$!loopE]|)
+  enddo
+  !anclUnqStypLstu = !anclStypLstu
+
+-- Before we sort the shields need to determine which need tags
+
+  !shieldTags = ARRAY()
+
+  do !loopA indices !anclUnqStypLstu
+    !shld = !anclUnqStypLstu[$!loopA].split()[2].dbref().spown.:MDSAUSTSHLD
+    -- Block out ancillary that do not need austenitic plates
+    if !anclUnqStypLstu[$!loopA].split()[1] inset('AT77','AT88','AT139','GT34','GT41','GT42','ST17','ST18','ST25','ST26','ST28','ST29') then
+      skip
+    endif
+    -- Block HVAC and RACK rests
+    --<GE> 08/03/07 Mod to exclude PIPE-REST
+    --    if !anclAr[!loopA].dbref().styp.matchwild('*RACK-REST*') or !anclAr[!loopA].dbref().styp.matchwild('*HVAC-REST*') then
+    if !anclAr[!loopA].dbref().styp.matchwild('*RACK-REST*') or !anclAr[!loopA].dbref().styp.matchwild('*HVAC-REST*') or !anclAr[!loopA].dbref().styp.matchwild('*PIPE-REST*') then
+      skip
+    endif
+    -- Pre PDMS12.0, the matref is stored in the uda :MdsMatref, at PDMS12.0
+    -- the matref attribute has been added to atta. Find the correct attribute to use
+    -- The variable !matrefAtt will be set to either REF for matref or UDA for :MdsMatref
+    !matrefAtt = !!mdsUseMatref(!anclAr[!loopA].dbref())
+    if !matrefAtt.eq('UDA') then
+      -- Block shield if material of ancillary is SS (Stainless Steel)
+      if !anclAr[!loopA].dbref().:MDSMATREF.badref().not() then
+        if !anclAr[!loopA].dbref().:MDSMATREF.:MDSMATCODE.eq('SS') then
+          skip
+        endif
+      endif
+    else
+      -- Block shield if material of ancillary is SS (Stainless Steel)
+      if !anclAr[!loopA].dbref().matref.badref().not() then
+        if !anclAr[!loopA].dbref().matref.:mdsmatcode.eq('SS') then
+          skip
+        endif
+      endif
+    endif
+    if !shld.neq(| |).and(!anclAr[!loopA].dbref().prop.code.match('V9').neq(1)) then
+      !shldAr = !anclStypLstu.find(!anclUnqStypLstu[$!loopA])
+      do !loopB indices !shldAr
+        if !loopB.eq(!shldAr.size()) then
+          if !anclUnqStypLstu[$!loopA].split()[1] inset('AT108C','AT108D','AT110') then
+            !shieldTags.append($!anclAr[$!loopA] )
+            !shieldTags.append($!anclAr[$!loopA] )
+          else
+            !shieldTags.append($!anclAr[$!loopA] )
+          endif
+        endif
+      enddo
+    elseif(!shld.eq(| |).not() and !anclUnqStypLstu[$!loopA].split()[1] inset('AT106','AT107','AT78','AT79','AT80','AT83','AT84','AT108D','AT108C','AT110'$
+      ,'ST19','ST21','ST22','ST23','ST27')) then
+      !shldAr = !anclStypLstu.find(!anclUnqStypLstu[$!loopA])
+      do !loopC indices !shldAr
+        if !loopC.eq(!shldAr.size()) then
+          !shieldTags.append($!anclAr[$!loopA] )
+        endif
+      enddo
+    endif
+  enddo
+
+  --!anclUnqStypLstu.sortunique()
+
+
+-- Add Austenitic Shield based on STYP & LSTU of Ancillary
+  do !loopA indices !anclUnqStypLstu
+    !shld = !anclUnqStypLstu[$!loopA].split()[2].dbref().spown.:MDSAUSTSHLD
+    -- <K.pleschner> April 2005
+    -- eliminate reporting of austenitic shields for non-steel ancillaries ( code V9**** )
+    -- Skip AT types that do not require a austenitic shield
+    if !anclUnqStypLstu[$!loopA].split()[1] inset('AT77','AT88','AT139') then
+      skip
+    endif
+    -- Skip GT types that do not require a austenitic shield
+    if !anclUnqStypLstu[$!loopA].split()[1] inset('GT30','GT31','GT32','GT33','GT34','GT35','GT36','GT37','GT41','GT42','GT43','GT51','GT56','GT57','GT58','GT59') then
+      skip
+    endif
+    -- Skip ST types that do not require a austenitic shield
+    if !anclUnqStypLstu[$!loopA].split()[1] inset('ST17','ST18','ST25','ST26','ST28','ST29','ST35') then
+      skip
+    endif
+    -- Block HVAC and RACK rests
+    if !anclAr[!loopA].dbref().styp.matchwild('*RACK-REST*') or !anclAr[!loopA].dbref().styp.matchwild('*HVAC-REST*') then
+      skip
+    endif
+    -- Pre PDMS12.0, the matref is stored in the uda :MdsMatref, at PDMS12.0
+    -- the matref attribute has been added to atta. Find the correct attribute to use
+    -- The variable !matrefAtt will be set to either REF for matref or UDA for :MdsMatref
+    !matrefAtt = !!mdsUseMatref(!anclAr[!loopA].dbref())
+    if !matrefAtt.eq('UDA') then
+      -- Block shield if material of ancillary is SS (Stainless Steel)
+      if !anclAr[!loopA].dbref().:MDSMATREF.badref().not() then
+        if !anclAr[!loopA].dbref().:MDSMATREF.:MDSMATCODE.eq('SS') then
+          skip
+        endif
+      endif
+    else
+      -- Block shield if material of ancillary is SS (Stainless Steel)
+      if !anclAr[!loopA].dbref().matref.badref().not() then
+        if !anclAr[!loopA].dbref().matref.:mdsmatcode.eq('SS') then
+          skip
+        endif
+      endif
+    endif
+    if !shld.neq(| |).and(!anclAr[!loopA].dbref().prop.code.match('V9').neq(1)) then
+      !shldAr = !anclStypLstu.find(!anclUnqStypLstu[$!loopA])
+      do !loopB indices !shldAr
+        if !loopB.eq(!shldAr.size()) then
+          !shldStatAr[!shldAr[$!loopB]] = TRUE
+          !shldQtyAr[!shldAr[$!loopB]] = !shldAr.size()
+        else
+          !shldStatAr[!shldAr[$!loopB]] = FALSE
+          !shldQtyAr[!shldAr[$!loopB]] = 0
+        endif
+      enddo
+    elseif(!shld.eq(| |).not() and !anclUnqStypLstu[$!loopA].split()[1] inset('AT106','AT107','AT78','AT79','AT80','AT83','AT84','AT108D','AT108C','AT110'$
+      ,'ST19','ST21','ST22','ST23','ST27')) then
+      !shldAr = !anclStypLstu.find(!anclUnqStypLstu[$!loopA])
+      do !loopC indices !shldAr
+        if !loopC.eq(!shldAr.size()) then
+          !shldStatAr[!shldAr[$!loopC]] = TRUE
+          !shldQtyAr[!shldAr[$!loopC]] = !shldAr.size()
+        else
+          !shldStatAr[!shldAr[$!loopC]] = FALSE
+          !shldQtyAr[!shldAr[$!loopC]] = 0
+        endif
+      enddo
+    else
+      !shldAr = !anclStypLstu.find(!anclUnqStypLstu[$!loopA])
+      do !loopD indices !shldAr
+        !shldStatAr[!shldAr[$!loopD]] = FALSE
+        !shldQtyAr[!shldAr[$!loopD]] = 0
+      enddo
+    endif
+  enddo
+
+  -- Uncomment the following line if you want Ancillaries to be Summarised
+  --  !uniqueAnclCode.sortunique()
+  do !loop1 indices !uniqueAnclCode
+    -- Uncomment the following 2 lines if you want Ancillaries to be Summarised
+-- & Comment the next 2 lines
+    --      !quantity = !anclCode.find(|$!uniqueAnclCode[$!loop1]|).size()
+    --      !ddnm = !anclAr[!anclCode.findfirst(|$!uniqueAnclCode[$!loop1]|)]
+    !ddnm = !anclAr[$!loop1]
+    !quantity = 1
+--      !desc = prop DESC of  $!ddnm
+      !desc = styp of  $!ddnm
+
+-- Skip if PIPE-REST
+      if (!desc inset('PIPE-REST','PIPE-REST-INLINE','FLANGE-REST','RACK-REST','HVAC-REST')) then
+        skip
+      endif
+-- if the MDSVPRMMTO attribute is set to false, it means that the component should be ignored
+    !unusedtest = !anclAr[$!loop1].dbref().:MDSVprmMto
+        handle ANY
+        elsehandle NONE
+      if !anclAr[$!loop1].dbref().:MDSVprmMto.not() then
+            skip
+          endif
+        endhandle
+
+    !ddnmAR.append(|$!ddnm|)
+      !desc = 'DESC' + !desc
+      !desc = !!$!desc
+      !desc = !desc.after(!desc.part(2,|- |)).after(|- |).before(|(|)
+        handle (2,751)
+          !desc = |NA|
+        endhandle
+    --       !descSplit = !desc.split(|-|)
+    --       !descNew = ||
+    --        do !i indices !descSplit
+    --           if(!descSplit[$!i].occurs(|DN|).eq(0)) then
+    --              !descNew = !descNew + !descSplit[$!i]
+--           endif
+--        enddo
+    --        !dtxr = !descNew
+--        !dtxr = !dtxr.trim()
+      !desc = !desc.trim()
+    !typeNo = PROP CODE of $!ddnm
+    -- >>> dtf 16.11.05 mod to add -S1 to type number if Pipe safety class is SC1
+    !matCode = :mdsmatcode of matref of $!ddnm
+        handle ANY
+      !matCode = :mdsmatcode of :mdsmatref of $!ddnm
+    endhandle
+    if !matCode.eq('SS') and !typeNo.substring(1,2).neq('40') then
+
+      --><wd>27jul2009 - DFN P-23237 - Added the AREVA supplied and requested file  modification - Details shown below
+      -- Modified by AREVA:  LUTZIAN WIDUCH (LW), 27.01.2009 for AREVA
+      -- Change for different management of V9_..sS clamps.
+      -- In previous versions of the catalog the SS parts did not have a separate catalogue entry,
+      -- the name ...-SS was only used for the BOM on the drawing or for VPRM.
+      -- This is still valid for V3 clamps
+      -- Change supplied by AREVA - LW 27.01.2009: Check if catalogue part is already ...-SS or ...-SS-SW
+      if !typeNo.substring(!typeNo.length() - 2, 3).neq('-SS') and !typeNo.substring(!typeNo.length() - 5, 3).neq('-SS') then
+        !typeNo = !typeNo & '-SS'
+      endif
+      --<<wd>27jul2009 - DFN P-23237
+
+    endif
+    !currentAncil = !anclAr[$!loop1].dbref()
+    !currentPipe = !currentAncil.owner.owner
+    !pipeQClas = :FRA.qCL of $!currentPipe
+    handle ANY
+      --handle(99,532)
+      !pipeQClas = !currentPipe.function
+    endhandle
+    if !pipeQClas.eq('QC1') then
+      if !currentAncil.prop.code.matchwild('V4*GA') or $
+        !currentAncil.prop.code.matchwild('V4*GB') or $
+        !currentAncil.prop.code.matchwild('V3*FC') or $
+        !currentAncil.prop.code.matchwild('V3*FD') or $
+        !currentAncil.prop.code.matchwild('V3*FE') or $
+        !currentAncil.prop.code.matchwild('V3*FN') or $
+        !currentAncil.prop.code.matchwild('V3*FH') or $
+        !currentAncil.prop.code.matchwild('V3*XE') or $
+        !currentAncil.prop.code.matchwild('V3*XN') or $
+        !currentAncil.prop.code.matchwild('V3*XH') or $
+        !currentAncil.prop.code.matchwild('V4*XC') or $
+        !currentAncil.prop.code.matchwild('V6*GA') then
+--         $P ********* SC1 ANCIL*********
+
+        !typeNo = !typeNo & '-S1'
+        --           q var !typeNo
+         endif
+      endif
+      -- <<< dtf end of mod
+    !unitWt = prop WEIG of $!ddnm
+    !weight = !unitWt.real() * !quantity
+    !weiStr = !weight.string('D1')
+    --      !weight = STRING(!weiStr.real(),'D1')
+    !aText = |$!quantity\$!desc\ \$!typeNo\ \ \$!matCode \ \$!weiStr|
+    !aTexAr.append(|$!aText|)
+
+-- Create Entry for austenitic shield
+    !shld = :MDSAUSTSHLD of spec of spre of lstu of $!ddnm
+    if defined(!shldStatAr[$!loop1]) then
+      if !shldStatAr[$!loop1] then
+          if !ddnm.dbref().styp inset('AT108C','AT108D','AT110','AT114','AT115','AT136') then
+          !quantity = !shldQtyAr[$!loop1] + 1
+          else
+          !quantity = !shldQtyAr[$!loop1]
+          endif
+        -- !quantity = !shldQtyAr[$!loop1]
+
+-- dtf >>> 123.11.05 remove safety class from austenitic plate its not required
+        if !typeNo.matchwild('*-S1') then
+          !typeNo = !typeNo.before('-S1')
+          endif
+-- dtf <<< end of mod
+
+        !typeNo = !typeNo + '-IP'
+        --!aText = |$!quantity\Austenitic Shield\ \$!typeNo\ \ \Stainl. St.\ \ |
+        !aText = |$!quantity\Austenitic Shield\ \$!typeNo\ \ \ \ \ |
+        !ddnmAR.append(|$!ddnm|)
+        !aTexAr.append(|$!aText|)
+        endif
+      endif
+
+$(
+-- Remove the Comment if Austenitic Shield without summary is required
+    if !shld.eq(| |).not() then
+      !typeNo = !typeNo + '-IP'
+      !aText = |$!quantity\Austenitic Shield\ \$!typeNo\ \ \ \ \ |
+      !ddnmAR.append(|$!ddnm|)
+      !aTexAr.append(|$!aText|)
+      endif
+$)
+  enddo
+
+
+-------------------------------------------------
+-- Create Structural Member Entries Array
+-------------------------------------------------
+
+  !struMem = ARRAY()
+  do !loop2 indices !struAr
+    var !struMem append coll all (SCTN PJOI SJOI) with func neq 'DUMMY' for $!struAr[$!loop2]
+  enddo
+  --    var !struMemSpre eval(SPRE) for all from !struMem
+  var !struMemSpre eval(SPRE) for all from !struMem
+  !uniqueStruMemSpre = !struMemSpre
+  !uniqueStruMemSpre.sortunique()
+
+  --<wd>jun2005
+  -- Copy the !struMem array and use to determine the EXACT QUANTITY required,
+  -- when a "Q3*" or a "Q50*" SCTN assembly is referenced by the CREF attribute
+-- <see 'else' block of CODE in the 'if' statement below>
+  !copyStruMem = !struMem
+--<wd>jun2005
+
+  do !loop3 indices !struMem
+    !struMemName = !struMem[!loop3].dbref().flnm
+
+    if !struMem[$!loop3].dbref().type.eq(|SCTN|) then
+      --<K.pleschner> May2005
+-- set "unset" initial value of variables to avoid usage of value from previous loop
+      !desc = 'unset'
+      !typeNo = 'unset'
+      !material = 'unset'
+      !mtsps = 'unset'
+      !uWIG = '0'
+      --<K.pleschner> May 2005
+
+-------------
+--<wd>jun2005
+-- The QUALITY CLASS(QC) for the Highest QC Pipe on the MDS Support is SET via the
+-- FANP Specific PML CODE used by MDS ABA DRAFT Drawing Utility,
+      -- e.g. !!mdsFRAGetText(!suppName,'SC') called from the BTEX attribute from the PML task !!mdsTitleBlock.pmlfnc.
+      !tqc = !!mdsfanpqclass.after('QC')
+        handle ANY
+          !tqc = ''
+        endhandle
+
+      if (!tqc.eq('')) then
+        !tqc = 'unset'
+      endif
+
+-- Test the SCTN function attribute for "Q" Type SCTN Components
+      !qtp = FALSE
+      !dbf = !struMem[$!loop3].dbref()
+      !fnc = !dbf.function
+      if (!fnc.matchwild('Q*')) then
+        --<wd>08mar2010 - DUN1233 - CCT project DESIGN TMPL and CATA Update - "Q2P" SCTN type added
+        --if (!fnc.matchwild('Q2-?').not()) then
+        if (!fnc.matchwild('Q2-?').not()) and  (!fnc.matchwild('Q2P-?').not())then
+          --<wd>08mar2010 - DUN1233 - CCT project DESIGN TMPL and CATA Update - "Q2P" SCTN type added
+
+          --<wd>08mar2010 - DUN1233 - CCT project DESIGN TMPL and CATA Update
+          -- DO NOT PROCESS the 2nd SCTN for a "Q3O" or "Q5O" SCTN type as a SCTN of this Q type, i.e. TREAT as a NORMAL SCTN
+          --q var !dbf.name !fnc !dbf.jois.spref
+
+          if ((!fnc.matchwild('Q3O-?').not()) or (!fnc.matchwild('Q5O-?').not()) and !dbf.jois.spref.set()) then
+            --<wd>08mar2010 - DUN1233 - CCT project DESIGN TMPL and CATA Update
+
+            -- WRITE an ERROR to the ABA LOG File for the MDS Support if the Pipe<s> Quality Class is 'unset'
+            if (!tqc.lowcase().eq('unset')) then
+              !errorComp = !dbf.fullname
+              !errorType = 'Quality Class of Supported Pipe<s> is *** unset ***'
+              !!abaLogging.error(' ERROR -- MDS Support SCTN component $!errorComp $!errorType')
+              handle ANY
+                -- !!abaLogging does not exist when called from design
+                --return error 1 ' ERROR -- MDS Support SCTN component $!errorComp $!errorType'
+            endhandle
+          endif
+
+-- SCTN is a "Q" type SCTN
+-- **********************
+-- *** IMPORTANT NOTE ***
+-- ALL "Q2-*" type SCTNs are IGNORED as these are treated the same as ALL OTHER SCTNS for FANP
+-- **********************
+          !qtp = TRUE
+
+-- Determine if SCTN function attribute matches "Q3-*", "Q3M-*", "Q4-*" or "Q4M-*",
+-- and INCLUDE ONLY the QUALITY CLASS Number, i.e. without th "QC" prefix, in the "Type No"
+
+$(
+-- Determine if SCTN function attribute matches "Q3-*", "Q3M-*", "Q4-*" or "Q4M-*",
+-- and set the TYPE No. to show ONLY the SCTN "Q" SIZE + the QUALITY CLASS + the SCTN Length
+           !tln = !dbf.tctl
+           !des = !dbf.prop.desc
+           --!wei = !dbf.prop.uwig.real() * (!tln / 1000)
+           if ((!fnc.matchwild('Q3M-?')) or (!fnc.matchwild('Q4M-?'))) then
+             !tpx = !fnc.before('M-')
+             !tsz = !fnc.after('M-')
+             !tsx = !tsz & 'M' & '-' & !tqc
+           elseif ((!fnc.matchwild('Q3-?')) or (!fnc.matchwild('Q4-?'))) then
+             !tpx = !fnc.before('-')
+             !tsz = !fnc.after('-')
+             !tsx = !tsz & '-' & !tqc
+           endif
+$)
+
+-- Set up MDS VPRM object ONLY once for the MDS Support to use the same PML code for MDS ABA Drawings
+            if (undefined(!mdsABAVPRM)) then
+              !mdsSUPPORT = !suppName.dbref()
+              !mdsABAVPRM = object MDSVPRMMTO(!mdsSUPPORT)
+          endif
+-- Determine if SCTN function attribute matches "Q3-*", "Q3M-*", "Q4-*" or "Q4M-*",
+-- and set the TYPE No. to show ONLY the SCTN "Q" SIZE + the QUALITY CLASS + the SCTN ASSEMBLY "L" value
+            !tln = !mdsABAVPRM.mdsfanpcomp(!dbf, 'MDS-VPRM-MTO', 'Q-SCTN-LENGTH')
+          !des = !dbf.prop.desc
+-- Get the WEIGHT of the "Q" type SCTN ASSEMBLY
+            !tWE = !mdsABAVPRM.mdsfanpcomp(!dbf, 'MDS-VPRM-MTO', 'Q-SCTN-WEIGHT')
+             handle ANY
+             endhandle
+
+          if ((!fnc.matchwild('Q3M-?')) or (!fnc.matchwild('Q4M-?'))) then
+            !tpx = !fnc.before('M-')
+            !tsz = !fnc.after('M-')
+            !tsx = !tsz & 'M' & '-' & !tqc
+          elseif ((!fnc.matchwild('Q3-?')) or (!fnc.matchwild('Q4-?'))) then
+            !tpx = !fnc.before('-')
+            !tsz = !fnc.after('-')
+            !tsx = !tsz & '-' & !tqc
+
+              --<wd>08mar2010 - DUN1233 - CCT project DESIGN TMPL and CATA Update - "Q3N*","Q3O*","Q3P*","Q4N","Q4P*","Q5O" SCTN types added
+            elseif ((!fnc.matchwild('Q3N-?')) or (!fnc.matchwild('Q4N-?'))) then
+              !tpx = !fnc.before('N-')
+              !tsz = !fnc.after('N-')
+              !tsx = !tsz & 'N' & '-' & !tqc
+
+            elseif ((!fnc.matchwild('Q3P-?')) or (!fnc.matchwild('Q4P-?'))) then
+              !tpx = !fnc.before('P-')
+              !tsz = !fnc.after('P-')
+              !tsx = !tsz & 'P' & '-' & !tqc
+
+            elseif ((!fnc.matchwild('Q3O-?')) or (!fnc.matchwild('Q5O-?'))) then
+              !tpx = !fnc.before('O-')
+              !tsz = !fnc.after('O-')
+              !tsx = !tsz & 'O' & '-' & !tqc
+              --<wd>08mar2010 - DUN1233 - CCT project DESIGN TMPL and CATA Update - "Q3N*","Q3O*","Q3P*","Q4N","Q4P*","Q5O" SCTN types added
+
+          endif
+
+-- Set the variables required for the Parts List
+          !desc   = 'Special ' & !des
+            !lenStr = !tln.real().string('D0')
+            !typeNo = !tpx & !tsx & '-' & !tln
+
+            --<wd>08mar2010 - DUN1233 - CCT project DESIGN TMPL and CATA Update
+
+          endif
+
+          -- DO NOT PROCESS the 2nd SCTN for a "Q3O" or "Q5O" SCTN type as a SCTN of this Q type, i.e. TREAT as a NORMAL SCTN
+          --<wd>08mar2010 - DUN1233 - CCT project DESIGN TMPL and CATA Update
+
+        endif
+      endif
+      --<wd>jun2005
+      -------------
+
+
+      !quantity = 1
+      !ddnm = !struMem[$!loop3]
+      !ddnmAR.append(|$!ddnm|)
+
+-------------
+--<wd>jun2005
+-- Test for "!qtp" variable which has been added to Check if a SCTN is a Special "Q" type.
+      if (!qtp.not()) then
+        !desc = !ddnm.dbref().prop.desc.trim()
+          handle ANY
+-- If A cable bracket get the desc for dtxr
+            if !ddnm.dbref().spref.name.eq('/STD-BRACKET') or !ddnm.dbref().spref.name.eq('/LONG-BRACKET') then
+            !desc = !ddnm.dbref().dtxr.trim()
+            elseif !ddnm.dbref().spref.name.eq('/MDS-FRAMATOME-CHANNEL') then
+            !desc = !ddnm.dbref().dtxr.trim()
+            endif
+          endhandle
+
+$(
+        !propDept = prop dept of $!ddnm
+        handle any
+          !propDept = '0'
+        endhandle
+        !propWidt = prop widt of $!ddnm
+        handle any
+          !propWidt = '1000'
+        endhandle
+        if !propDept.eq(!propWidt) then
+        !desc = !desc.replace('RHS','SHS')
+      endif
+$)
+        if !desc.match('Plate t=').gt(0) then
+          !typeNo = !desc.trim().replace(' t=','').upcase()
+          if !typeNo.length().eq(6) then
+            !typeNo = 'PLATE0' + !typeNo.substring(6,1)
+          endif
+        else
+          !typeNo = :MDSSizeTag of Catref of $!ddnm
+          handle ANY
+          elsehandle NONE
+-->> dtf 01.06.06
+--   Add -SS to type number if Stainless Steel X1-SCTN
+            !matCode = description of matref of $!ddnm
+            -- <RM> 08 Sept 06 -- Included to stop an issue where MATREFS are invalid
+            handle(2,102)
+              --MATREF is null
+            elsehandle NONE
+              if !matCode.eq('1.4571') and !typeNo.substring(1,2).eq('X1') then
+                !typeNo = !typeNo & '-SS'
+              endif
+            endhandle
+            -- <RM> 08 Sept 06 -- end of fix
+
+-->> dtf end
+          endhandle
+        endif
+        if !ddnm.dbref().spref.name.eq('/STD-BRACKET') or !ddnm.dbref().spref.name.eq('/LONG-BRACKET') then
+          !typeNo = ' '
+        elseif !ddnm.dbref().spref.name.eq('/MDS-FRAMATOME-CHANNEL') then
+          !typeNo = ' '
+        endif
+        !length = cutl of $!ddnm
+        !lenStr = !length.string('D0')
+
+      endif
+      --<wd>jun2005
+      -------------
+
+      --      !material = :MDSMATCODE of Matref of $!ddnm
+      !matref = matref of $!ddnm
+      !material = !matref.desc
+      handle(2,754)
+        !material = |unset|
+        endhandle
+      if !dbf.gtyp.eq('PLAT') then
+       !depth = prop depth of $!ddnm
+          handle NONE
+          !pTHK = !depth.real()
+          if !material.neq(|unset|) and !sClass.eq(|SC2|) then
+            if (!pTHK.gt(20)) then
+              !mtsps = !matref.:MDSMTS.part(4,|\|)
+              else
+              !mtsps = !matref.:MDSMTS.part(1,|\|)
+            endif
+          elseif  !material.neq(|unset|) and !sClass.eq(|SC3|) then
+            if (!pTHK.gt(20)) then
+              !mtsps = !matref.:MDSMTS.part(5,|\|)
+            else
+              !mtsps = !matref.:MDSMTS.part(2,|\|)
+            endif
+          elseif  !material.neq(|unset|) then
+            if (!pTHK.gt(20)) then
+              !mtsps = !matref.:MDSMTS.part(6,|\|)
+            else
+              !mtsps = !matref.:mdsmts.part(3,|\|)
+            endif
+          else
+            !mtsps = | |
+          endif
+        elsehandle ANY
+          !mtsps = | |
+        endhandle
+      else
+        if !sClass.eq(|SC2|) then
+          !mtsps = !matref.:MDSMTS.part(1,|\|)
+          handle ANY
+            !mtsps = 'unset'
+          endhandle
+        elseif !sClass.eq(|SC3|) then
+          !mtsps = !matref.:MDSMTS.part(2,|\|)
+          handle ANY
+            !mtsps = 'unset'
+          endhandle
+        else
+          !mtsps = !matref.:MDSMTS.part(3,|\|)
+          handle ANY
+            !mtsps = 'unset'
+            endhandle
+        endif
+      endif
+
+-->>dtf 01.06.06
+--  Set MTS for stainless steel X1-SCTN
+      if !material.eq('1.4571') and !typeNo.substring(1,2).eq('X1') then
+        !mtsps = !matref.:MDSMTS.part(7,|\|)
+      endif
+-->>dtf end
+
+
+-------------
+--<wd>jun2005
+-- ONLY When a SCTN is a "Q" type SCTN -- Set to BLANK the "Material" and the "MTS" field variables
+      -- Also Use the Calculated "Q" Stype SCTN ASSEMBLY WEIGHT from above in the !aText variable
+      if (!qtp) then
+        !material = ' '
+        !mtsps    = ' '
+        !aText = |$!quantity\$!desc\ \$!typeNo\$!lenStr\ \$!material\$!mtsps\$!tWE|
+      --endif
+
+-->> dtf mod to get weight of plat modelled as SCTN
+      elseif !dbf.gtyp.eq('PLAT') then
+
+-- Set up MDS VPRM object ONLY once for the MDS Support to use the same PML code for MDS ABA Drawings
+        if (undefined(!mdsABAVPRM)) then
+          !mdsSUPPORT = !suppName.dbref()
+          !mdsABAVPRM = object MDSVPRMMTO(!mdsSUPPORT)
+        endif
+-- Get the WEIGHT of the "Q" type SCTN ASSEMBLY
+        !tWE = !mdsABAVPRM.mdsfanpcomp(!dbf, 'MDS-VPRM-MTO', 'PLAT-WEIGHT')
+           handle ANY
+            endhandle
+--        $P PLAT
+        !platWidth = !dbf.prop.width
+        !aText = |$!quantity\$!desc\ \$!typeNo\$!lenStr\$!platWidth\$!material\$!mtsps\$!tWE|
+--<< dtf
+
+      else
+-- ALL NON "Q" type SCTNS, i.e. Normal FANP SCTN components
+
+        !uWIG = prop UWIG of $!ddnm
+          handle ANY
+          !!abaLogging.error('Cannot calculate weight for $!struMemName ')
+          endhandle
+        !weight = !uWIG.real() * !length / 1000
+        !weiStr = !weight.string('D1')
+        !aText = |$!quantity\$!desc\ \$!typeNo\$!lenStr\ \$!material\$!mtsps\$!weiStr|
+
+      endif
+      --<wd>jun2005
+      -------------
+      !aTexAr.append(|$!aText|)
+
+    else
+---------------------------------------------------------------
+-- ALL other MDS STRUCTURE Members which are not of type "SCTN"
+---------------------------------------------------------------
+
+--<wd>jun2005
+-- Set up MDS VPRM object ONLY once for the MDS Support to use the same PML code for MDS ABA Drawings
+      if (undefined(!mdsABAVPRM)) then
+        !mdsSUPPORT = !suppName.dbref()
+        !mdsABAVPRM = object MDSVPRMMTO(!mdsSUPPORT)
+      endif
+
+-- Check if a "Q" type SCTN and invoke the Code below so as to EXCLUDE PLATE elements from the Parts List
+      -- SKIP if the STRU member element does NOT exist in the MDS VPRM object array "!mdsABAVPRM.struMemb[2]"
+      if (!mdsABAVPRM.struMemb[2].find(!struMem[!loop3]).empty()) then
+        !memDBRF = !struMem[!loop3].dbref()
+        --!memname = !memDBRF.fullname
+        !memSpre = !memDBRF.spref.name
+        handle ANY
+          !memSpre = ||
+        endhandle
+        skip
+      endif
+      --<wd>jun2005
+
+      if !struMem[$!loop3].dbref().catref.owner.:MDSSummary then
+        !struMemDel = !struMemSpre.find(!struMem[$!loop3].dbref().spref.name)
+-- Delete the PJOI / SJOI repeated with the same SPREF from the array
+        do !loop4 from 2 to !struMemDel.size()
+          !struMem.deletefrom(!struMemDel[$!loop4],1)
+        enddo
+        !quantity = !struMemSpre.find(!struMem[$!loop3].dbref().spref.name).size()
+
+        --<wd09mar2010 - DUN1233 - Add the NEW Q3N*, Q3O*, Q3?P, Q5O* SCTN types to this CODE
+        --<wd>jun2005
+        -- ********************************************************************************************************************************
+        -- FANP members attached to "Q3*" and "Q5O*" type SCTNS only *** DO NOT *** want to be INCLUDED in the QUANTITY of SPREFS found to be the SAME
+        -- ********************************************************************************************************************************
+        -- Adjust the QUANTITY to EXCLUDE ANY PJOI/SJOI/FITT elements whose CREF attribute references a FANP "Q3*" or a "Q5*" type SCTN
+        !copyStruMemDel = !struMemSpre.find(!copyStruMem[!loop3].dbref().spref.name)
+        !lessNumber = 0
+        -- Use the !copyStruMem array to determine which PJOI elements etc... are to DEDUCTED from the QUANTITY total
+        do !indx values !copyStruMemDel
+          if (!copyStruMem[!indx].dbref().cref.unset().not()) then
+            --<wd09mar2010 - DUN1233 - Add the NEW Q3N*, Q3O*, Q3?P, Q5O* SCTN types to this
+            --if (!copyStruMem[!indx].dbref().cref.function.matchwild('Q3*')) then
+            if (!copyStruMem[!indx].dbref().cref.function.matchwild('Q3*')) or (!copyStruMem[!indx].dbref().cref.function.matchwild('Q5*'))then
+              --<wd09mar2010 - DUN1233 - Add the NEW Q3N*, Q3O*, Q3?P, Q5O* SCTN types to this CODE
+              !lessNumber = !lessNumber + 1
+            endif
+          endif
+        enddo
+        !quantity = (!quantity - !lessNumber)
+        --<wd>jun2005
+        --<wd09mar2010 - DUN1233 - After REMOVING the PLATE elements for the EXISTING & NEW Q3N*, Q3O*, Q3?P, Q5O* SCTN types etc..
+        -- SKIP if the QUANTITY of PLATE elements is now ZERO(0) to ENSURE these PLATE elements are NOT INCLUDED (ONLY) in the FINAL MDS ABA Support DRWG MTO PARTS list
+        skip if (!quantity.eq(0))
+        --<wd09mar2010 - DUN1233 - After REMOVING the PLATE elements for the EXISTING & NEW Q3N*, Q3O*, Q3?P, Q5O* SCTN types etc..
+
+      else
+        !quantity = (prop noff of $!ddnm)
+        handle ANY
+          !quantity = 1
+        endhandle
+      endif
+
+-- Get Other Values
+      !ddnm = !struMem[$!loop3]
+      !ddnmAR.append(|$!ddnm|)
+      !desc = dtxr of $!ddnm
+      !desc = !desc.trim()
+      !leng = STRING()
+      !lengB = STRING()
+      -- Find XLEN
+      !leng = prop XLEN of $!ddnm
+      handle(2,207)
+        !leng = | |
+      endhandle
+      -- For multiple plates find XLEB
+      !lengB = prop XLEB of $!ddnm
+      handle (2,207)
+        !lengB = | |
+      endhandle
+
+      !leng = !leng.real().string('D0')
+      !lengB = !lengB.real().string('D0')
+
+      -- Find YLEN
+      !widt = STRING()
+      !widtB = STRING()
+      -- Find YLEN
+      !widt = prop YLEN of $!ddnm
+      handle(2,207)
+        !widt = | |
+      endhandle
+      -- For multiple plates find YLEB
+      !widtB = prop YLEB of $!ddnm
+      handle (2,207)
+        !widtB = | |
+      endhandle
+
+      !widt = !widt.real().string('D0')
+      !widtB = !widtB.real().string('D0')
+
+      -- If multiple plates are found then get correct quantities
+
+      if !lengB.neq('') then
+        !quantity = (rpro NOFF of $!ddnm )
+        handle ANY
+        endhandle
+        !quantityA = (rpro NOFA of $!ddnm )
+        handle ANY
+          !quantityA = ' '
+        endhandle
+      endif
+
+      !matref = matref of $!ddnm
+      !material = !matref.desc
+      handle(2,754)
+        !material = |unset|
+      endhandle
+
+--<wd>jun2005
+-- FANP MTSPS values for PLATE elements now depends on the PLATE Thickness and Material
+-- Not required for Building Attachments
+      if !desc.neq(|Building Attachment|) then
+        !zlen = prop zlen of $!ddnm
+          handle NONE
+          !pTHK = !zlen.real()
+          if !material.neq(|unset|) and !sClass.eq(|SC2|) then
+            if (!pTHK.gt(20)) then
+              !mtsps = !matref.:MDSMTS.part(4,|\|)
+              else
+              !mtsps = !matref.:MDSMTS.part(1,|\|)
+            endif
+          elseif  !material.neq(|unset|) and !sClass.eq(|SC3|) then
+            if (!pTHK.gt(20)) then
+              !mtsps = !matref.:MDSMTS.part(5,|\|)
+            else
+              !mtsps = !matref.:MDSMTS.part(2,|\|)
+            endif
+          elseif  !material.neq(|unset|) then
+            if (!pTHK.gt(20)) then
+              !mtsps = !matref.:MDSMTS.part(6,|\|)
+              else
+                !mtsps = !matref.:mdsmts.part(3,|\|)
+              endif
+            else
+              !mtsps = | |
+            endif
+          elsehandle ANY
+            !mtsps = | |
+          endhandle
+      endif
+--<wd>jun2005
+
+
+-- MTSPS Not required for Building Attachments
+      if !desc.eq(|Building Attachment|) then
+        !mtsps = | |
+
+--<wd>jun2005
+-- MATERIAL Not required for Building Attachments
+        !material = ' '
+-- Set other empty fields
+        !leng = | |
+        !widt = | |
+
+-- Append the "U6*" type and QUALITY CLASS to the description
+-- FANP Building Attachments are SJOI Assemblies and to be treated as SINGLE ITEMS and NOT as PLATE items
+-- Therefore DO NOT output AN "AREA" record for these SJOI items
+        !dbf = !struMem[$!loop3].dbref()
+
+        if ((!dbf.type inset ('PJOI','SJOI')) and (!dbf.catre.name.matchwild('*U6*'))) then
+-- FANP Building Attachment TYPE Nos.to be similar to SCTN components
+          !szt = !dbf.catref.name
+          !xca = !szt.after('FRA-')
+          if (!xca.matchwild('*-END-*')) then
+            !szt = !xca.after('-END-')
+            --!xcb = !xca.before('-END-') & '-END' & !szt
+            !xcb = !xca.before('-END-') & !szt
+
+            --<wd>08mar2010 - DUN1233 - Add TAG CODE for NEW "U6?_P*" (A & B) Building attachment
+          elseif (!xca.matchwild('U6?_P*')) then
+            !sze = !xca.after('_P-')
+            !xcb = !xca.before('-')
+            !xcb = !xcb.replace('_',!sze)
+            --<wd>08mar2010 - DUN1233 - Add TAG CODE for NEW "U6?_P*" (A & B)Building attachments
+
+          else
+            !xcb = !xca.replace('-','')
+          endif
+          !mat = !dbf.matref
+          !matDesc = !mat.description
+          handle ANY
+            !matDesc = 'unset'
+          endhandle
+          !tqc = !!mdsfanpqclass.after('QC')
+          handle ANY
+            !tqc = 'unset'
+          endhandle
+
+-- WRITE an ERROR to the ABA LOG File for the MDS Support if the Pipe<s> Quality Class is 'unset'
+          if (!tqc.lowcase().eq('unset')) then
+            !errorComp = !dbf.fullname
+            !errorType = 'Quality Class of Supported Pipe<s> is *unset*'
+            !!abaLogging.error(' ERROR -- MDS Support BUILDING ATTACHMENT component $!errorComp $!errorType')
+            handle ANY
+              -- !!abaLogging does not exist when called from design
+              return error 1 ' ERROR -- MDS Support BUILDING ATTACHMENT component $!errorComp $!errorType'
+            endhandle
+          endif
+
+          !desc   = !desc & ' ' & !xcb & '-' & !tqc
+          !isType = !xcb & '-' & !tqc
+          -- >>> dtf 16.11.05 mod to add -S1 to type number if Pipe safety class si SC1
+          if !xcb.match('U6B').gt(0) then
+--            $P ********  PJOI *****
+            !classArray  = !!mdsFRAGetText(!mdsABAVPRM,'SC')
+            !qualityClass = !classArray[1]
+            --!safetyClass  = !classArray[2]
+            if !qualityClass.eq('QC1') then
+               !desc = !desc & '-S1'
+              !isType = !isType & '-S1'
+            endif
+            --            q var !safetyClass
+          endif
+          -- <<< dtf end of mod
+
+-- Get the WEIGHT of the "U6*" Joint type
+          !weiStr = !dbf.prop.weig
+          handle ANY
+            !weiStr = ''
+          elsehandle NONE
+            !weiReal = !weiStr.real() * !quantity
+            !weiStr  = !weiReal.string('d1')
+          endhandle
+
+        endif
+---------------------------
+
+      else
+
+        --<wd>jun2005
+        !uWIG = prop WEIG of $!ddnm
+        handle ANY
+          !!abaLogging.error('Cannot calculate weight for $!struMemName ')
+        endhandle
+        if !leng.empty() and !widt.empty() then
+          !leng = | |
+          !widt = | |
+        endif
+        if unset(!uWIG) then
+          !vol = nvol of $!ddnm
+          !weig = !vol * 7850kg/m3
+          !uWIG = !weig.string()
+        endif
+        !weight = !uWIG.real() * !quantity
+        !weiStr = !weight.string('D1')
+        if !desc.match('Plate t=').gt(0) then
+          !isType = !desc.trim().replace(' t=','').upcase()
+          if !isType.length().eq(6) then
+            !isType = 'PLATE0' + !isType.substring(6,1)
+          endif
+        else
+          !isType = ''
+        endif
+        --<wd>jun2005
+      endif
+      !aText = |$!quantity\$!desc\ \$!isType \$!leng\$!widt\$!material\$!mtsps\$!weiStr|
+      !aTexAr.append(|$!aText|)
+
+      if !lengB.neq('') then
+        !weiStrB = prop WEIB of $!ddnm
+        handle ANY
+          !weiStrB = ''
+        elsehandle NONE
+          --<GE> 08/03/07 Mod to use correct quantity ->  !quantityA
+          --              !weiRealB = !weiStrB.real() * !quantity
+          !weiRealB = !weiStrB.real() * !quantityA
+          !weiStrB  = !weiRealB.string('d1')
+        endhandle
+        -- If its a full reinforcement its store two weights
+        -- There may be more than one so get total and increase quantity
+        !spref = spref of $!ddnm
+        var !joiq coll all pjoi with spref eq $!spref for stru of $!ddnm
+        !jq = !joiq.size()
+        !quantityA = !quantityA * !jq
+        !newWei = !weiStrB.real() * !jq
+        !aText =      |$!quantityA\$!desc\ \$!isType \$!lengB\$!widtB\$!material\$!mtsps\$!newWei|
+        !aTexAr.append(|$!aText|)
+        !ddnmAR.append(!ddnm)
+        -- Also reset previous line
+        !aTexLine = !aTexAr.size() - 1
+        !quantity = !quantity * !jq
+        !newWei = !weiStr.real() * !jq
+        !aTexAr[$!aTexLine] = |$!quantity\$!desc\ \$!isType \$!leng\$!widt\$!material\$!mtsps\$!newWei|
+      endif
+    endif
+  enddo
+
+-------------------------------------------------
+-- Create Hanger Member Entries Array
+-------------------------------------------------
+  !hangMem = ARRAY()
+
+  do !loop5 indices !hangAr
+    var !hangMem  append coll all HANG mem for owner of cref of $!hangAr[$!loop5]
+  enddo
+  -- Remove all !hangMem with :MDSVPRMMTO eq false
+-- We cannot include this within the collect syntax above because it
+-- will not list the tubi elements because they do not have the uda
+
+  do !removeMdsVprmMto from 1 to !hangMem.size()
+    if !hangMem[$!removeMdsVprmMto].dbref().type.neq('TUBI') then
+      if !hangMem[$!removeMdsVprmMto].dbref().:MDSVPRMMTO.not() then
+        !hangMem[$!removeMdsVprmMto].delete()
+      endif
+    endif
+  enddo
+  !hangMem.compress()
+
+-- Remove tubi after rigid struts
+  do !removeStrutTubi from 1 to !hangMem.size()
+    if !hangMem[$!removeStrutTubi].dbref().type.eq('TUBI') then
+      !prevComp = !removeStrutTubi - 1
+      if !hangMem[$!prevComp].dbref().spref.name.after('/').after('/').matchwild('39????') or !hangMem[$!prevComp].dbref().spref.name.after('/').after('/').matchwild('R39????') then
+        !hangMem[$!removeStrutTubi].delete()
+      endif
+    endif
+  enddo
+  !hangMem.compress()
+
+  var !hangMemSpre eval(SPRE) for all from !hangMem
+  !uniqueHangMemSpre = !hangMemSpre
+  !uniqueHangMemSpre.sortunique()
+
+  do !loop6 indices !hangMem
+-- Part List Entries for PCLA & VSPR
+    if (!hangMem[$!loop6].dbref().type.eq(|PCLA|) or !hangMem[$!loop6].dbref().dtxr.occurs(|spring|).eq(1)) then
+      !quantity = 1
+      !ddnm = !hangMem[$!loop6]
+      !ddnmAR.append(|$!ddnm|)
+      !oldUwei = :USTWEIGHT of spre of $!ddnm
+      !uWei = !!mdsAbaLicadWei(!hangMem[$!loop6].dbref())
+      !dtxr = dtxr of $!ddnm
+      !desc = !dtxr.before(|type|).trim()
+      !configNo = :USTHCFGKEY of rest of $!ddnm
+      !configNo = !configNo.replace(|.|,||)
+      !typeNo = !dtxr.split()[!dtxr.split().maxindex()]
+      if !hangMem[$!loop6].dbref().spref.name.match('34SG').gt(0) then
+-- dtf >>> 19.09.06 Mod because reactor building have R as first char
+        --!typeNo =  !hangMem[$!loop6].dbref().owner.owner.:USTDRWG.substring(1,7)
+        !typeNo =  !hangMem[$!loop6].dbref().owner.owner.:USTDRWG.split('-')[1]
+-- dtf <<<
+        !desc = 'Balance Beam'
+        !tempLenStr = desp of $!hangMem[$!loop6]
+        !lenStr = !tempLenStr[1].string()
+      elseif !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('37*') or !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('R37*') then
+        !lenStr = prop span of $!hangMem[$!loop6]
+        handle ANY
+          !lenStr = | |
+        endhandle
+      elseif !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('45*') or !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('R45*') then
+        !lenStr = prop span of $!hangMem[$!loop6]
+        handle ANY
+          !lenStr = | |
+        endhandle
+      elseif !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('48*') or !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('R48*') then
+        !lenStr = prop span of $!hangMem[$!loop6]
+        handle ANY
+          !lenStr = | |
+        endhandle
+      else
+        !lenStr  = | |
+      endif
+      -- dtf remove R from reactor building code nos.
+      if !typeNo.substring(1,1).eq('R') then
+        !typeNo = !typeNo.after('R')
+      endif
+      -- >>> dtf 16.11.05 mod to add -S1 to type number if Pipe safety class si SC1
+      if !hangMem[$!loop6].dbref().type.eq(|PCLA|) then
+        !currentPipe = !hangMem[$!loop6].dbref().owner.href.owner.owner
+        !pipeQClas = :FRA.qCL of $!currentPipe
+        handle ANY
+          --handle(99,532)
+          !pipeQClas = !hangMem[$!loop6].dbref().owner.href.owner.owner.function
+        endhandle
+        if !pipeQClas.eq('QC1') then
+          if !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('44*') or $
+            !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('34SG') or $
+            !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('36P') or $
+            !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('37P') or $
+            !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('36*') or $
+            !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('37*') or $
+            !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('T9*') then
+--           $P ********* SC1 Hanger elem*********
+
+            !typeNo = !typeNo & '-S1'
+            --             q var !typeNo
+           endif
+        endif
+      endif
+      -- <<< dtf end of mod
+      --      !typeNo = styp of $!ddnm
+      !material = | |
+      --      !material = mtxx of $!ddnm
+        handle(2,232)
+        !material = | |
+      endhandle
+      !weight = !quantity * !uWei[1]
+      handle ANY
+        !weiStr = '0000'
+      elsehandle NONE
+        !weiStr = !weight.string('D1')
+      endhandle
+      !aText = |$!quantity\$!desc\$!configNo\$!typeNo\$!lenStr\ \$!material\ \$!weiStr|
+      !aTexAr.append(|$!aText|)
+      -- The pipe clamp may have an austenitic shield
+      if !hangMem[$!loop6].dbref().type.eq(|PCLA|) then
+        !pclaAustShld = :MDSAUSTSHLD of $!ddnm
+        if !pclaAustShld.neq(' ') then
+          !ddnmAR.append(|$!ddnm|)
+          !pclaAustShldS = !pclaAustShld.split('/')
+          !aText = |$!pclaAustShldS[1]\Austenitic Shield\ \$!pclaAustShldS[2]\ \ \ \ \ |
+          !aTexAr.append(|$!aText|)
+          !shieldTags.append($!ddnm)
+        endif
+      endif
+
+
+-- Part List Entries for WPAD
+    elseif (!hangMem[$!loop6].dbref().type.eq(|WPAD|)) then
+      !quantity = 1
+      !ddnm = !hangMem[$!loop6]
+      !ddnmAR.append(|$!ddnm|)
+      !oldUwei = :USTWEIGHT of spre of $!ddnm
+      !uWei = !!mdsAbaLicadWei(!hangMem[$!loop6].dbref())
+      !dtxr = dtxr of $!ddnm
+      !desc = !dtxr.split()[!dtxr.split().minindex()].trim()
+      !platTHK = prop HEIG of $!ddnm
+      if !platTHK.length().eq(1) then
+        !platTHK = '0' & !platTHK
+      endif
+      !typeNo = 'PLATE' & !platTHK
+      !leng = prop LENG of $!ddnm
+      handle(2,207)
+        !leng = | |
+      endhandle
+      !leng = !leng.real().string('D0')
+      !widt = prop WIDT of $!ddnm
+      handle(2,207)
+        !widt = | |
+      endhandle
+      !widt = !widt.real().string('D0')
+      !thks = prop HEIG of $!ddnm
+      handle(2,207)
+        !thks = | |
+      endhandle
+      !desc = !desc + ' t=$!thks'
+      !material = mtxx of $!ddnm
+      handle(2,232)
+        !material = | |
+      endhandle
+      !matref = matref of $!ddnm
+      handle ANY
+        !matref = :mdsmatref of $!ddnm
+      endhandle
+      !material = !matref.desc
+      handle(2,754)
+        !material = |unset|
+      endhandle
+
+      --<wd>jun2005
+      -- FANP MTSPS values for PLATE elements now depends on the PLATE Thickness and Material
+      !pTHK = !thks.real()
+
+      if !material.neq(|unset|) and !sClass.eq(|SC2|) then
+        if (!pTHK.gt(20)) then
+          !mtsps = !matref.:MDSMTS.part(4,|\|)
+        else
+          !mtsps = !matref.:MDSMTS.part(1,|\|)
+        endif
+      elseif  !material.neq(|unset|) and !sClass.eq(|SC3|) then
+        if (!pTHK.gt(20)) then
+          !mtsps = !matref.:MDSMTS.part(5,|\|)
+        else
+          !mtsps = !matref.:MDSMTS.part(2,|\|)
+        endif
+      elseif  !material.neq(|unset|) then
+        if (!pTHK.gt(20)) then
+          !mtsps = !matref.:MDSMTS.part(6,|\|)
+        else
+          !mtsps = !matref.:MDSMTS.part(3,|\|)
+        endif
+      else
+        !mtsps = | |
+      endif
+
+      if !leng.empty() and !widt.empty() then
+        !leng = | |
+        !widt = | |
+      endif
+      if unset(!uWei) then
+        !vol = nvol of $!ddnm
+        !weig = !vol * 7850kg/m3
+        !uWIG = !weig.string()
+      else
+        !uWIG = !uWei[1].string()
+      endif
+      !weight = !uWIG.real() * !quantity
+      !weiStr = !weight.string('D1')
+      !aText = |$!quantity\$!desc\ \$!typeNo\$!leng\$!widt\$!material\$!mtsps\$!weiStr|
+      !aTexAr.append(|$!aText|)
+-- Part List Entries for HELE
+    else
+      if !hangMem[$!loop6].dbref().catref.owner.:MDSSummary then
+        !hangMemDel = !hangMemSpre.find(!hangMem[$!loop6].dbref().spref.name)
+  -- Delete the Hanger Members repeated with the same SPREF from the array
+        if !hangMem[$!loop6].dbref().type.eq(|TUBI|) then
+          !tempLength = !hangMem[$!loop6].dbref().itle
+        else
+          !tempLength = 0
+        endif
+        do !loop7 from 2 to !hangMemDel.size()
+          if !tempLength.neq(0) then
+            !testLength = !hangMem[$!hangMemDel[$!loop7]].dbref().itle
+            if !tempLength.neq(!testLength) or !hangMem[$!loop6].eq(!hangMem[$!hangMemDel[$!loop7]]) then
+              !hangMemDel.deletefrom($!loop7,1)
+              skip
+            endif
+          endif
+          !hangMem.deletefrom(!hangMemDel[$!loop7],1)
+        enddo
+        !quantity = !hangMemDel.size()
+        --!quantity = !hangMemSpre.find(!hangMem[$!loop6].dbref().spref.name).size()
+        !itle = !quantity
+      else
+        !quantity = 1
+        !itle = 1
+      endif
+      !ddnm = !hangMem[$!loop6]
+      !ddnmAR.append(|$!ddnm|)
+      if !hangMem[$!loop6].dbref().type.eq(|TUBI|) then
+        !oldUwei = :USTWEIGHT of spre of $!hangMem[$!loop6]
+        !length = !hangMem[$!loop6].dbref().itle
+        --!quan = !itle
+        --!itle = !length / 1000 * !quan
+        !lenStr = !length.string('D0')
+      elseif !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('20?9*') or !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('R20?9*') then
+        !lenStr = prop span of $!hangMem[$!loop6]
+      elseif !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('34P*') or !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('R34P*') then
+        !lenStr = prop span of $!hangMem[$!loop6]
+      elseif !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('79??5*') or !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('R79??5*') then
+        !lenStr = prop span of $!hangMem[$!loop6]
+      elseif !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('79??8*') or !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('R79??8*') then
+        !lenStr = prop span of $!hangMem[$!loop6]
+      elseif !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('39????') or !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('R39????') then
+        $!hangMem[$!loop6]
+        var !lenStr const dist p1 to p2
+        var !lenStr (nint($!lenStr))
+        same
+      else
+        !oldUwei = :USTWEIGHT of spre of $!ddnm
+        !lenStr = | |
+      endif
+      !uWei = !!mdsAbaLicadWei(!hangMem[$!loop6].dbref())
+      !dtxr = dtxr of $!ddnm
+      !desc = !dtxr.before(|type|).trim()
+      !configNo = :USTHCFGKEY of rest of $!ddnm
+      !configNo = !configNo.replace(|.|,||)
+      !typeNo = !dtxr.split()[!dtxr.split().maxindex()]
+      -- dtf remove R from reactor building code nos.
+      if !typeNo.substring(1,1).eq('R') then
+        !typeNo = !typeNo.after('R')
+      endif
+
+      -- >>> dtf 16.11.05 mod to add -S1 to type number if Pipe safety class si SC1
+      if !hangMem[$!loop6].dbref().type.eq(|SCLA|) then
+        !currentPipe = !hangMem[$!loop6].dbref().owner.href.owner.owner
+        --<wd>16apr2010 - Added modification as supplied by AREVA - Introducing the Global Variable !!anpudaqcl
+        --!pipeQClas = :FRA.qCL of $!currentPipe
+        !pipeQClas = $!!anpudaqcl of $!currentPipe
+        handle ANY
+          --handle(99,532)
+          !pipeQClas = !hangMem[$!loop6].dbref().owner.href.owner.owner.function
+        endhandle
+        if !pipeQClas.eq('QC1') then
+          if !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('74*')  or !hangMem[$!loop6].dbref().spref.name.after('/').after('/').matchwild('75*') then
+--           $P ********* SC1 SCLA elem*********
+
+            !typeNo = !typeNo & '-S1'
+            --             q var !typeNo
+           endif
+        endif
+      endif
+      -- <<< dtf end of mod
+
+      !material = | |
+      !weight = !itle * !uWei[1]
+      !weiStr = !weight.string('D1')
+      !aText = |$!quantity\$!desc\$!configNo\$!typeNo\$!lenStr\ \$!material\ \$!weiStr|
+      !aTexAr.append(|$!aText|)
+    endif
+  enddo
+
+-------------------------------------------------
+-- Create Entry for Bolts of Hangers
+-------------------------------------------------
+  !nutSpcAr = ARRAY()
+  !nutQtyAr = ARRAY()
+  !nutDdmAr = ARRAY()
+  !nutTags  = ARRAY()
+  !tempNutDdmAr = ARRAY()
+  do !loop17 indices !hangAr
+    !hanger = !hangAr[$!loop17].dbref().cref
+    var !allHangers coll all hang mem for owner of $!hanger
+    !nutSpc = ARRAY()
+    do !loop18 indices !allHangers
+      if (!allHangers[$!loop18].dbref().type inset('REST','HELE','PCLA','SCLA')) then
+        if !allHangers[$!loop18].dbref().:USTNUTREF.empty().not() then
+          !nutSpc.appendarray(!allHangers[$!loop18].dbref().:USTNUTREF)
+          !nutTags.append(|$!allHangers[$!loop18]|)
+          !tempNameOfHang = !allHangers[$!loop18].dbref().owner
+          !tempNutDdmAr.append($!tempNameOfHang)
+        endif
+      endif
+    enddo
+    --!nutFound = FALSE
+    !nutsUnique = !nutSpc
+    !nutsUnique = !nutsUnique.sortunique()
+    do !loop19 indices !nutsUnique
+      !nutQty = !nutSpc.find(!nutsUnique[$!loop19]).size()
+      !nutQtyAr.append(|$!nutQty|)
+      !nutSpcAr.append(|$!nutsUnique[$!loop19]|)
+      !nameOfHang = $!tempNutDdmAr[$!loop19]
+      !nutDdmAr.append(|$!nameOfHang|)
+    enddo
+    !nutQty = !nutSpc.size()
+  enddo
+
+  do !loop20 indices !nutSpcAr
+    !ddnmAR.append(|$!nutDdmAr[$!loop20]|)
+    !quantity = !nutQtyAr[$!loop20].real()
+    !desc = !nutSpcAr[$!loop20].dbref().dtxr.before(!nutSpcAr[$!loop20].dbref().name.part(3,|/|)).before(|type|).trim()
+    !configNo = :USTHCFGKEY of rest of $!nutDdmAr[$!loop20]
+    !configNo = !configNo.replace(|.|,||)
+    !typeNo = !nutSpcAr[$!loop20].dbref().name.part(3,|/|)
+    --    !material = !nutSpcAr[$!loop20].dbref().mtxx
+    -- dtf remove R from reactor building code nos.
+    if !typeNo.substring(1,1).eq('R') then
+      !typeNo = !typeNo.after('R')
+    endif
+    !material = | |
+    !uWIG = !nutSpcAr[$!loop20].dbref().:USTWEIGHT[1].string()
+    !weight = !uWIG.real() * !quantity.real()
+    !weiStr = !weight.string('D1')
+    !aText = |$!quantity\$!desc\$!configNo\$!typeNo\ \ \$!material\ \$!weiStr|
+    !aTexAr.append(|$!aText|)
+  enddo
+
+
+  !!ddnmAR = !ddnmAR
+
+  !posNumAr = ARRAY()
+  !nutCount = (1)
+
+  if (not defined(!mdsSUPPORT)) then
+    !mdsSUPPORT = !suppName.dbref()
+  endif
+
+  !unusedTestForUDA = !mdsSUPPORT.:MDSPosNumMax
+  handle ANY
+    --    $P handled
+    !numCount = (1)
+    !numFromDesign = FALSE
+  elsehandle NONE
+    if !mdsSUPPORT.:MDSPosNumMax.real().gt(0) then
+      !numCount = !mdsSUPPORT.:MDSPosNumMax.real() + 1
+      !numFromDesign = TRUE
+    else
+      !numCount = (1)
+      !numFromDesign = FALSE
+    endif
+  endhandle
+
+ !count = (1)
+  -- q var !mdsSUPPORT.name
+  do !loop values !ddnmAR
+    !mdsPosNum = !loop.dbref().:MDSPosNum
+   handle (2,222)
+     --$P Ileave tube 'Threaded Rod'
+      !element = !loop.after('IL TUB OF ').dbref()
+      !mdsPosNum = !element.:MDSPosNum
+      if !mdsPosNum.unset().not() then
+       if !element.type.eq('HANG') then
+          !posNumAr.append(!element.:MDSPosNum[1])
+       else
+          !posNumAr.append(!element.:MDSPosNum[2])
+       endif
+      elseif !numFromDesign then
+        !posNumAr.append(!numCount)
+        !numCount = (!numCount + 1 )
+      else
+        !posNumAr.append(!count)
+      endif
+    elsehandle NONE
+      if !mdsPosNum.unset().not() then
+        if !aTexAr[!count].upcase().match('AUSTENITIC SHIELD').gt(0) then
+          !posNumAr.append(!loop.dbref().:MDSPosNum[2])
+          handle ANY
+            !posNumAr.append(0)
+          endhandle
+        elseif !aTexAr[!count].upcase().match('HEXAGON NUT').gt(0) and !loop.dbref().type.eq('HANG') then
+          !posNumAr.append(!loop.dbref().:MDSPosNum[!nutCount])
+          !nutCount = !nutCount + 1
+        elseif !loop.dbref().spref.name.upcase().match('/MDS-FRA-PNODS-FRP').gt(0) then
+          if !frp.eq(1) then
+            !posNumAr.append(!loop.dbref().:MDSPosNum[1])
+            handle ANY
+              !posNumAr.append(0)
+            endhandle
+            !frp = 2
+          else
+            !posNumAr.append(!loop.dbref().:MDSPosNum[2])
+            handle ANY
+              !posNumAr.append(0)
+            endhandle
+            !frp = 1
+          endif
+        else
+          !posNumAr.append(!mdsPosNum[1])
+        endif
+      elseif !numFromDesign then
+        !posNumAr.append(!numCount)
+        !numCount = (!numCount + 1 )
+      else
+        !posNumAr.append(!count)
+      endif
+    elsehandle ANY
+      !posNumAr.append(!numCount)
+      !numCount = (!numCount + 1 )
+   endhandle
+   !count = (!count + 1 )
+ enddo
+
+  -- **********
+
+ !return = ARRAY()
+  !return.append(!ddnmAR)
+  !return.append(!aTexAr)
+  !return.append(!posNumAr)
+  !return.append(!shieldTags)
+
+  return !return
+
+endfunction

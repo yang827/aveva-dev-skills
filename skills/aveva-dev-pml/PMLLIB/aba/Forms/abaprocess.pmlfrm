@@ -1,0 +1,1921 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            <abaProcess>
+--   Type:          Object Definition
+--   Group:         <group>
+--     Keyword:     <keyword>
+--   Module:        <module>
+--   Replaces:
+--
+-- Author:          <MPW>
+-- Created:         <14> <May> <pm> <year>
+--
+--
+-- Description:
+-- Main process form, controls the collection of data for subsequent processing of
+-- list of drawing elements, objects.
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  sortDrawings(STRING,STRING)      -
+--  stopText(STRING)                 BOOLEAN
+--  visible()                        -
+--  visible(boolean)                 -
+--  warning(STRING)                  -
+--
+------------------------------------------------------------------------
+import 'GridControl'
+  handle any
+  endhandle
+
+setup form !!abaProcess
+
+  title 'Process Drawings Control'
+  cancelcall |!this.cancel()|
+
+  bar
+    add ' File '     .fileMenu
+    add ' Settings ' .settingsMenu
+    add ' Browse '   .viewMenu
+  exit
+
+  menu .fileMenu
+    add 'Load Log File' |!this.fileList()|
+    add 'Close' 'hide !!abaProcess '
+  exit
+
+  menu .viewMenu
+    add 'Existing Drawings...'   |!tmp = ARRAY()
+!!abaProcess.browse(!tmp,'POP')|
+
+    add 'Stored LogFiles...'     |!!abaTemplate('FILES','PROCESS')|
+
+    if ($!!CDADMIN) then
+      add 'Show Version...'      |!this.showVersion()|
+    endif
+
+  exit
+
+  menu .settingsmenu
+    add 'General Defaults' form !!abadefaults
+  exit
+
+  menu .default
+    add 'Close' 'hide !!abaMainForm '
+  exit
+
+  frame .one 'New Drawings' at x0 ymin
+
+    button .selectN |Select...| call |!this.showNewDwrg()| at x1 y0.8
+
+    container .newGrid nobox pmlNetControl 'NET' at xmin.selectN ymax width 65 height 7
+
+  exit
+
+  frame .two 'Existing Drawings' at x0 ymax+0.2
+
+    button .selectO |Select...| call |!this.showOldDwrg()| at x1 y0.8
+
+    path right
+    button .add 'Add' call |!this.addCeList()|
+
+    option .ceList call || Width 12
+
+    container .oldGrid nobox pmlNetControl 'NET' at xmin.selectO ymax width 65 height 7
+
+    button .modVar 'Modify Variant' at x25 ymax+0.2 call |!this.modVar()|
+
+  exit
+
+  frame .three 'Drawing Registry Area' at x0 ymax+0.2
+
+    rgroup .action1 '' frame vertical at x1 ymin+0.5
+
+      add tag 'Create One Automatically' select 'Auto' call |!this.action1('CREATE')|
+      add tag 'Use Existing Registry'    select 'User' call |!this.action1('EXISTS')|
+
+    exit
+
+    text .creRegName '' call '' at xmax+1 ymin.action1+0.3 width 34 is STRING
+
+    button .storage 'Select..' at xmin ymax+0.1 call 'show !!abaRegistry'
+
+    text .useRegName '' at xmax+1 ymin  call '' width 18 is STRING
+
+    button .ce 'CE' call '!this.regiCe()'
+
+  exit
+
+  frame .taskMod 'Process Settings' at x0 ymax+0.2
+
+    button .tasks  ' Process Tasks... '  at x1 y0.8 call |show !!abaProcessTask|
+
+    para .taskStatus at xmin ymax+0.3 width 20 lines 1
+
+    option .update 'Process Type ' at xmax.tasks+3.7 ymin.tasks call |!this.warning(!this.update.selection())|  width 24
+
+    para .an at xmin.update ymax.update+0.2 text 'Auto Numbering'
+
+    rgroup .numbering '' frame horizontal at xmax ymin
+
+      add tag ' ON ' select ' ON ' call ||
+      add tag 'OFF ' select 'OFF ' call ||
+
+    exit
+
+  exit
+
+  path down
+
+  frame .five 'Start Processing' at x0 ymax+0.2
+
+    toggle .batch 'Batch Process' at x1 y0.7
+
+    button .procall '  OK  '  at xmin ymax+0.2 call |!this.run('ALL')|
+
+    button .cancel  'Cancel' at xmax form-9 ymin call |!this.cancel()|
+
+  exit
+
+  !this.storage.active = False
+
+  member .taskList     is ABATASKLIST
+  member .task         is ABATASK
+  member .mode         is STRING
+  member .show         is BOOLEAN
+  member .template     is BOOLEAN
+  member .defaults     is BOOLEAN
+  member .newDrawings  is ARRAY
+  member .oldDrawings  is ARRAY
+  member .processType  is ARRAY
+  member .started      is REAL
+  member .drawings     is ABADRAWINGS
+  member .errorList    is ARRAY
+  member .version      is STRING
+  member .autoNumber   is BOOLEAN
+  member .selOpt       is STRING
+  member .selFunc      is STRING
+  member .regiName     is DBREF
+  member .new          is ABADRAWINGS
+  member .old          is ABADRAWINGS
+  member .areaOverride is BOOLEAN
+  member .units        is COMUNITS
+
+  !this.areaOverride = FALSE
+  !this.template     = FALSE
+
+  -- Modify the following to get debug messages to the screen
+  !!debon = FALSE
+
+  -- Modify the following to disable the log file
+  !!logactive = false
+
+  -- Declare the grid controls
+  using namespace 'Aveva.Pdms.Presentation'
+  member .newControl  is NETGRIDCONTROL
+  member .oldControl  is NETGRIDCONTROL
+
+  member .headings    is ARRAY
+
+  !this.started      = 0
+  !!batchMode        = FALSE
+  !this.defaults     = FALSE
+  !this.AutoNumber   = FALSE
+  !this.selOpt       = 'All'
+  !cel[1]            = 'CE'
+  !cel[2]            = 'Current List'
+  !this.ceList.dtext = !cel
+
+exit
+
+------------------------------------------------------------------------
+--
+-- Method:      .abaProcess()
+--
+-- Description: Constructor method
+--
+-- Method Type: Constructor
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .abaProcess()
+
+  -- Pre-load forms ready for use.
+  if (undefined(!!abaDefaults)) then
+     prompt 'Loading Defaults (7)'
+     pml load Form !!abaDefaults
+  endif
+
+  prompt 'Loading Existing Drawings List (6)'
+  pml load form !!abaOldDrwgs
+  !!abaOldDrwgs.errorList = FALSE
+
+  prompt 'Loading New Drawings List (5)'
+  pml load form !!abaNewDrwgs
+
+  prompt 'Loading File List (4)'
+  pml load form !!abaFileList
+
+  prompt 'Loading Browse Sheet (3)'
+  pml load form !!abaBrowseSheet
+
+  prompt 'Loading ABA Tasks (2)'
+  pml load form !!abaTasks
+
+  prompt 'Loading Interrupt (1)'
+  pml load form !!abaStop
+
+  prompt 'Loading Names Form'
+  pml load form !!abaNameSelect
+
+  prompt 'Loading Process Task Form'
+  pml load form !!abaProcessTask
+
+  prompt 'Loading Create Hierarchy Form'
+  pml load form !!abaCrHierarchy
+
+  prompt ''
+
+  if (!!appDraMain.abaClass.dtext.size().lt(2)) then
+    !!setAbaDrwgTypes(!!appDraMain.abaClass)
+  endif
+
+  -- Define interrupt button gadget.
+  !!FMSYS.setInterrupt(!!abaStop.stopButton)
+
+  -- Define Global variables for Auto-Numbering.
+  !!comDefineGlobal(object RULESTORE())
+  !!comDefineGlobal(object NAMOPT())
+
+  !!abaLogging = object ABALOGGING()
+
+  !this.creRegName.val = 'Aba_Registry'
+  !this.useRegName.val = |Aba_Registry|
+
+  if (defined(!!cdauto) and !!cdauto) then
+    !this.defaults = true
+  endif
+
+  -- Determine if registry create or exists
+  VAR !exist EXIST /Aba_Registry
+  if (!exist.eq('TRUEA')) then
+     !this.Action1('EXISTS')
+   else
+     !this.Action1('CREATE')
+   endif
+
+  !this.numbering.val = 2
+
+  prompt ''
+
+  -- Define new drwgs pop-up menu
+  !menu = !this.newMenu('newPopUp')
+    !menu.add('callback', 'Select All', |!this.select('ALL', 'NEW')|,'SELALLNEW')
+    !menu.add('callback', 'Clear Selection', |!this.select('NONE', 'NEW')|, 'CLRALLNEW')
+    !menu.add('separator')
+    !menu.add('callback', 'Rename...', |!this.rename('NEW')|, 'RENAME')
+    !menu.add('callback', 'Remove All', |!this.select('CLEAR', 'NEW')|, 'REMALLNEW')
+    !menu.add('callback', 'Remove Selection', |!this.select('CLEARSELECT', 'NEW')|, 'REMSELNEW')
+
+  -- Define old drwgs pop-up menu
+  !menu = !this.newMenu('oldPopUp')
+    !menu.add('callback', 'Select All', |!this.select('ALL', 'OLD')|,'SELALLOLD')
+    !menu.add('callback', 'Clear Selection', |!this.select('NONE', 'OLD')|, 'CLRALLOLD')
+    !menu.add('separator')
+    !menu.add('callback', 'Add CE', |!this.addCE(!!CE)|, 'ADDCE')
+    !menu.add('callback', 'Add From List', |!this.addFromList()|, 'ADDLIST')
+    !menu.add('separator')
+    !menu.add('callback', 'Rename...', |!this.rename('OLD')|, 'RENAME')
+    !menu.add('callback', 'Remove All', |!this.select('CLEAR', 'OLD')|, 'REMALLOLD')
+    !menu.add('callback', 'Remove Selection', |!this.select('CLEARSELECT', 'OLD')|, 'REMSELOLD')
+
+  -- Create instances of the grid controls
+  using namespace 'Aveva.Pdms.Presentation'
+  !this.newControl = object NETGRIDCONTROL()
+  !this.oldControl = object NETGRIDCONTROL()
+
+  -- Add .net control to the containers
+  !this.newGrid.control = !this.newControl.handle()
+  !this.oldGrid.control  = !this.oldControl.handle()
+
+  -- Add PML event handlers to .net controls
+  !this.newControl.addEventHandler('afterSelectChange', !this, 'newAfterSelectChange')
+  !this.newControl.addEventHandler('onPopup', !this, 'newPopup')
+  !this.oldControl.addEventHandler('afterSelectChange', !this, 'oldAfterSelectChange')
+  !this.oldControl.addEventHandler('onPopup', !this, 'oldPopup')
+
+  -- Set grid visual attributes
+  !this.newControl.columnExcelFilter(false)
+  !this.newControl.outlookGroupStyle(false)
+  !this.newControl.fixedRows(false)
+  !this.newControl.gridHeight(1000.0)
+  !this.newControl.editableGrid(false)
+  !this.newControl.singleRowSelection(false)
+  !this.newControl.columnExcelFilter(false)
+  !this.newControl.fixedHeaders(false)
+  !this.newControl.headerSort(true)
+  !this.newControl.columnSummaries(false)
+  !this.oldControl.columnExcelFilter(false)
+  !this.oldControl.outlookGroupStyle(false)
+  !this.oldControl.fixedRows(false)
+  !this.oldControl.gridHeight(1000.0)
+  !this.oldControl.editableGrid(false)
+  !this.oldControl.singleRowSelection(false)
+  !this.oldControl.columnExcelFilter(false)
+  !this.oldControl.fixedHeaders(false)
+  !this.oldControl.headerSort(true)
+  !this.oldControl.columnSummaries(false)
+
+  -- Set grid control headings
+  !this.headings.append('Drawing Name')
+  !this.headings.append('Template ')
+  !this.headings.append('Description ')
+  !this.headings.append('Area')
+  !this.headings.append('Description')
+  !this.headings.append('Variant')
+
+endmethod
+-- End of method definition for .abaProcess()
+
+-----------------------------------------------------------------------
+--
+-- Method:      .init()
+--
+-- Description: Method to initialize the form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .init()
+
+  -- Clear arrays
+  !this.oldDrawings.clear()
+  !this.newDrawings.clear()
+
+  -- Clear grids
+  !this.clear()
+
+  -- Set active/inactive
+  !this.modVar.active = FALSE
+  if defined(!!abadefaults) then
+    !!abadefaults.defString = '   2'
+  !this.defaults      = !!abadefaults.getdefaults()
+  endif
+
+  if (undefined(!!cdAuto) or !!cdauto.not()) then
+    !!messagefile.warning(43,292)
+    hide !!abaProcess
+    return
+  endif
+
+  -- Hide browser
+  if (defined(!!abaBrowseSheet)) then
+    if (!!abaBrowseSheet.shown()) then
+      !this.cancel()
+    endif
+  endif
+
+  -- Read module toolbar
+  !this.selopt  = !!appDraMain.abaClass.selection('DTEXT')
+  !this.selfunc = !!appDraMain.abaClass.selection('RTEXT')
+
+  !this.show()
+    handle any
+    endhandle
+
+  !this.setTaskStatus()
+
+endmethod
+-- End of method definition for .init()
+
+-----------------------------------------------------------------------------
+define method .init (!show is STRING)
+
+  -- Clear arrays
+  !this.oldDrawings.clear()
+  !this.newDrawings.clear()
+
+  -- Clear grids
+  !this.clear()
+
+  -- Set active/inactive
+  !this.modVar.active = false
+
+  if (undefined(!!cdauto) or !!cdauto.not()) then
+    !!messagefile.warning(43,292)
+    !!abaProcess.visible(FALSE)
+    return
+  endif
+
+  -- Hide browser
+  if (defined(!!abaBrowseSheet)) then
+    if (!!abaBrowseSheet.shown()) then
+      !this.cancel()
+    endif
+  endif
+
+  !this.selopt  = !!appDraMain.abaClass.selection('DTEXT')
+  !this.selfunc = !!appDraMain.abaClass.selection('RTEXT')
+
+  !this.setTaskStatus()
+
+endmethod
+
+----------------------------------------------------------------------
+define method .action1(!switch is STRING)
+
+  -- Create a new registry
+   if (!switch eq 'CREATE') then
+       !This.Action1.Val = 1
+       !This.Storage.Active = False
+       !this.CreRegName.Active = True
+       !this.UseRegName.Active = False
+       !this.ce.active = false
+   else
+       !This.Action1.Val = 2
+       !This.Storage.Active = True
+       !this.CreRegName.Active = False
+       !this.UseRegName.Active = True
+       !this.ce.active = true
+
+       -- Check to see if registry exists.
+           !regiName = !this.UseRegName.val
+           if (!reginame.substring(1,1) eq '/') then
+               !regin = !regiName
+           else
+               !regin = '/' & !reginame
+           endif
+           !this.reginame = !regin.dbref()
+           handle (2,109)
+             -- Undefined name /Testing
+             if (!this.started eq 1) then
+               show !!abaRegistry
+             endif
+           endhandle
+   endif
+   !this.started = 1
+--
+endmethod
+
+-----------------------------------------------------------------------------
+define method .addCe(!item is DBREF)
+
+  -- Add CE to process list, Existing.
+  if (!!ce.type ne 'DRWG') then
+
+    -- Try to navigate to DRWG to see if we are below the DRWG level.
+    DRWG
+      handle any
+        !!alert.error('Cannot access a drawing from this level - Please go to an appropriate element and try again')
+        return
+      endhandle
+
+  else
+
+    SHEET1
+    !ceDrawing = object ABADRAWING(!!ce)
+
+    do !drawing index !this.olddrawings
+
+      if !this.olddrawings[!drawing].template eq !cedrawing.template and !this.olddrawings[!drawing].area eq !cedrawing.area then
+        return
+      endif
+
+    enddo
+
+    !this.olddrawings.append(!cedrawing)
+    !this.display()
+    !this.setupProcess()
+
+  endif
+
+endmethod
+
+----------------------------------------------------------------------
+define method .addCeList()
+
+  -- Add elements from either a standard UI list, or the current element from the members list
+  if (!this.ceList.rtext[!this.ceList.val] eq 'CE') then
+
+    -- Add CE to process list, Existing.
+    if (!!ce.type ne 'DRWG') then
+
+      -- Try to navigate to DRWG to see if we are below the DRWG level.
+      DRWG
+        handle any
+          !!alert.error('Cannot access a drawing from this level - Please go to an appropriate element and try again')
+          return
+        endhandle
+
+    endif
+
+    SHEET 1
+      handle any
+        !!alert.error('Invalid Drawing - No sheets Found')
+        return
+      endhandle
+
+    !cedrawing = object abadrawing(!!ce)
+
+    do !drawing index !this.olddrawings
+
+      if (!this.olddrawings[!drawing].template eq !cedrawing.template and !this.olddrawings[!drawing].area eq !cedrawing.area) then
+        return
+      endif
+
+    enddo
+
+    !this.olddrawings.append(!cedrawing)
+    !this.display()
+
+  else
+
+    -- Add from current list.
+    !this.addFromList()
+
+  endif
+
+  !this.setupProcess()
+
+endmethod
+
+----------------------------------------------------------------------
+define method .addFromList()
+
+  !dt    = !!cdclist
+  !rtext = !dt.list.RTEXT
+
+  do !x values !rtext
+
+    !!ce = !x.dbref()
+      handle any
+        -- handle to cater for the possibility of the user deleting the item before starting the process
+        skip
+      endhandle
+
+    !this.addCe(!!ce)
+
+  enddo
+
+  !this.display()
+
+endmethod
+
+-----------------------------------------------------------------------------
+define method .addTask(!string is STRING)
+
+  !curDtext = !this.choice.dtext
+
+  if (!curDtext.size() eq 0) then
+    golabel /ADD
+
+  elseif (!curDtext.find(!string).size() eq 0) then
+    golabel /ADD
+
+  else
+    golabel /END
+  endif
+
+  label /ADD
+
+  !curDtext.append(!this.options.selection('DTEXT'))
+
+  !this.choice.dtext = !curDtext
+  !this.choice.val   = !curDtext.size()
+
+  !this.TaskList.append(!!abaDefaults.globaltasks.getTask(!this.options.selection('DTEXT')))
+
+  label /END
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .batch
+--
+-- Description: method for getting batch data
+--
+-- Method Type: constructor method
+--
+------------------------------------------------------------------------
+define method .batch()
+
+  -- go and get the registry if it is not yet built return
+  if (!this.processregi().not()) then
+    return
+  endif
+
+  pml reload form !!abaBatchMode
+
+  !!abaBatchMode.regi = !this.regiName
+
+  show !!abaBatchMode free
+
+  hide !!abaProcess
+
+endmethod
+
+--------------------------------------------------------------------
+define method .browse(!list is ARRAY, !mode is STRING)
+
+  if (!list.size() eq 1) then
+    !!ababrowseSheet.Select[1] = !list
+
+  else
+
+    !NONE[1]                   = 'NONE'
+    !!abaBrowseSheet.select[1] = !NONE
+
+  endif
+
+  hide !!abaProcess
+
+  !!abaBrowseSheet.mode = !mode
+    handle (2,765)
+      --  Cannot get member MODE from non-existent object
+      loadform !!ababrowsesheet
+
+      !!abaBrowseSheet.mode = !mode
+
+    endhandle
+
+  show !!abaBrowseSheet at xr 1 yr 1
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .cancel()
+--
+-- Description: Cancel this form
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .cancel()
+
+  hide !!abaProcess
+
+  !!abaProcess.Show = TRUE
+
+endmethod
+-- End of method definition for .cancel()
+
+------------------------------------------------------------------------
+--
+-- Method:      .clear()
+--
+-- Description: Clear relevant data arrays
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .clear()
+
+  -- Clear the grids
+  !this.newControl.clearGrid()
+  !this.oldControl.clearGrid()
+
+endmethod
+-- End of method definition for .clear()
+
+------------------------------------------------------------------------
+--
+-- Method:      .display()
+--
+-- Description: Display the data in the appropriate lists
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .display()
+
+  -- Initialise variables
+  !newRowSet = ARRAY()
+  !oldRowSet = ARRAY()
+
+  -- Clear the grids
+  !this.clear()
+
+  -- Build the data for the new drawings grid
+  do !drawing val !this.newDrawings
+
+    -- Initialise variables
+    !rowData  = ARRAY()
+
+    -- Build row data
+    !rowData.append(!drawing.drwgName)
+    !rowData.append(!drawing.template.flnn)
+    !rowData.append(!drawing.tempDesc)
+    !rowData.append(!drawing.area.namn)
+    !rowData.append(!drawing.areaDesc)
+    !rowData.append(!drawing.variant)
+
+    -- Add row data to row set array
+    !newRowSet.append(!rowData)
+
+  enddo
+
+  -- Build the data for the old drawings grid
+  do !drawing val !this.oldDrawings
+
+    -- Initialise variables
+    !rowData  = ARRAY()
+
+    -- Build row data
+    !rowData.append(!drawing.drwgName)
+    !rowData.append(!drawing.template.flnn)
+    !rowData.append(!drawing.tempDesc)
+    !rowData.append(!drawing.area.namn)
+    !rowData.append(!drawing.areaDesc)
+    !rowData.append(!drawing.variant)
+
+    -- Add row data to row set array
+    !oldRowSet.append(!rowData)
+
+  enddo
+
+  -- Set the grids
+  using namespace 'Aveva.Pdms.Presentation'
+  !this.newControl.bindToDataSource(object NETDATASOURCE('Options', !this.headings, !newRowSet, '^Drawing Name'))
+  !this.oldControl.bindToDataSource(object NETDATASOURCE('Options', !this.headings, !oldRowSet, '^Drawing Name'))
+
+  !this.setupProcess()
+
+endmethod
+-- End of method definition for .display()
+
+--------------------------------------------------------------------
+define method .fileList()
+
+  !!abafileList.whereFrom = 'PROCESS'
+  !!abafileList.dirName.val = '$!!abadefaults.logf.val'
+  show !!abafilelist
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .getAllDrwgNames()
+--
+-- Description: Get the names of all the drawings in both the new and old lists
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       STRING names
+--
+------------------------------------------------------------------------
+define method .getAllDrwgNames() is ARRAY
+
+  -- It is crazy that we have to do this here
+  -- It should occur when building the drawing object in the first place
+  -- Unfortunately, the code is so poorly organised that it is too difficult to change for now
+
+  -- Build an array of all drawing objects for both new and old
+  !allDrgObjs =  !this.oldDrawings
+  !allDrgObjs.appendarray(!this.newDrawings)
+
+  -- For each drawing object extract the drawing name
+  !getNames = object BLOCK('!allDrgObjs[!evalIndex].drwgname')
+
+  return !allDrgObjs.evaluate(!getNames)
+
+endmethod
+-- End of method definition for .getAllDrwgNames()
+
+--------------------------------------------------------------------
+define method .loadLogFile(!fileName is string)
+
+  -- Initialise variables
+  !fileObj = object file (!fileName)
+  !read = !fileObj.readfile()
+  !references = array()
+
+  -- Clear the Process form & load the new drawings form
+  !!abaProcess.init()
+
+  --pml reload form !!abaNewDrwgs
+  --!!abaNewDrwgs.init()
+  !drwgs = ARRAY()
+
+  -- Search log file for all "Entry for Drawing" and stop at "End of Process List"
+  do !text value !read
+
+    break if (!text.eq('End of Process List'))
+
+    if (!text.match('Entry for Drawing').neq(0)) then
+
+      -- Entry for Drawing /equipment_2/S1-area3 (=15393/15076,=15393/14888)
+      !references.append(!text.after('(').before(')').split(','))
+      !drawing = !text.after('Entry for Drawing ').before('(').trim() & '/S1'
+      !test = !drawing.dbref()
+      handle ANY
+      elsehandle NONE
+          !shee = sheet 1 of $!test
+          !drwg = object abadrawing(!shee)
+          !drwgs.append(!drwg)
+      endhandle
+
+    endif
+
+  enddo
+  !!abaprocess.olddrawings.appendarray(!drwgs)
+  !!abaprocess.display()
+
+  if !drwgs.size().eq(0) then
+    !!Alert.Error('No Drawings found')
+  endif
+
+endmethod
+
+-----------------------------------------------------------------------------
+define method .modifyTask (!string is STRING)
+
+  !!ababuildEditForm(!this.TaskList,!string,'PROCESS')
+
+endmethod
+
+
+------------------------------------------------------------------------
+--
+-- Method:      .modVar(ARRAY)
+--
+-- Description: Modify variant
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .modVar()
+
+  -- Initialise variables
+  !drwgs = ARRAY()
+
+  -- Load form
+  pml reload form !!abaVariant
+
+  -- Get all drTmpls from rtext
+  do !text val !this.oldDrgs.selection()
+
+    !name = '/' & !text.split()[1]
+    !drwgs.append(!name)
+
+  enddo
+
+  -- Sort
+  !drwgs.sortUnique()
+
+  -- Pass data to form
+  --!!abaVariant.drawings = !drwgs
+  --!!abaVariant.select = !this.oldDrgs.selection('DTEXT')[1].split()[1].dbref()
+
+   -- Show form
+  show !!abaVariant
+
+endmethod
+-- End of method definition for .modVar()
+
+------------------------------------------------------------------------
+--
+-- Method:      .newAfterSelectChange(ARRAY)
+--
+-- Description: Callback on grid control after select change of the new grid
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .newAfterSelectChange(!array is ARRAY)
+
+  -- When more than one row is selected, deactivate the renaming pop-up option
+  -- since only one can be renamed at any one time
+  if (!this.newControl.getSelectedRowTags().size().gt(1)) then
+
+    !this.newPopup.setFieldProperty('RENAME' , 'ACTIVE', false)
+
+  else
+
+    !this.newPopup.setFieldProperty('RENAME' , 'ACTIVE', true)
+
+  endif
+
+endmethod
+-- End of method definition for .newAfterSelectChange(ARRAY)
+
+------------------------------------------------------------------------
+--
+-- Method:      .newPopup()
+--
+-- Description: Pop-up for the new grid control
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    0   R      REAL      Cursor position X
+--    1   R      REAL      Cursor position Y
+--    2   R      ARRAY     Array of selected row tags
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .newPopup(!array is ARRAY)
+
+  -- Show the pop-up
+   !this.newGrid.popup = !this.newPopUp
+   !this.newGrid.showPopup(!array[0], !array[1])
+
+endmethod
+-- End of method definition for .newPopup()
+
+------------------------------------------------------------------------
+--
+-- Method:      .oldAfterSelectChange(ARRAY)
+--
+-- Description: Callback on grid control after select change of the old grid
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .oldAfterSelectChange(!array is ARRAY)
+
+  -- Test for many selected entries
+  if (!this.oldControl.getSelectedRowTags().size().gt(1)) then
+
+    -- When more than one row is selected, deactivate the renaming pop-up option
+    -- Since only one can be renamed at any one time
+    !this.oldPopup.setFieldProperty('RENAME' , 'ACTIVE', false)
+
+    -- Set the Modify Variant button inactive, since only one can be modified at any one time
+    !this.modVar.active = false
+
+  -- Test for none selected or one
+  else
+
+    -- Activate the renaming pop-up option
+    !this.oldPopup.setFieldProperty('RENAME' , 'ACTIVE', true)
+
+    -- Test for only one selected entry
+    if (!this.oldControl.getSelectedRowTags().size().eq(1)) then
+
+      -- Set the Modify Variant button active
+      !this.modVar.active = true
+
+      -- Display the owning registry
+      !this.useRegName.val = !this.olddrawings[!this.oldControl.getSelectedRowTags()[1].real()].drwg.owne.name
+
+    else
+
+      -- Set the Modify Variant button inactive
+      !this.modVar.active = false
+
+      -- Reset the displayed registry
+      !this.useRegName.val = !this.regiName.name
+
+    endif
+
+  endif
+
+endmethod
+-- End of method definition for .oldAfterSelectChange(ARRAY)
+
+------------------------------------------------------------------------
+--
+-- Method:      .oldPopup()
+--
+-- Description: Pop-up for the old grid control
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    0   R      REAL      Cursor position X
+--    1   R      REAL      Cursor position Y
+--    2   R      ARRAY     Array of selected row tags
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .oldPopup(!array is ARRAY)
+
+  -- Show the pop-up
+   !this.oldGrid.popup = !this.oldPopUp
+   !this.oldGrid.showPopup(!array[0], !array[1])
+
+endmethod
+-- End of method definition for .oldPopup()
+
+-----------------------------------------------------------------
+define method .processRegi()is BOOLEAN
+
+-- method .processregi()
+-- Description: Sets the regi to be used in the aba process
+-- return true if the registry is successful. False if not
+
+  -- Check validity of Regi being used.
+  if (!this.action1.val eq 2) then $*
+    !regiName = !This.UseRegName.val
+  else
+    !regiName = !this.CreRegName.val
+  endif
+
+  if (!regiName.substring(1,1) ne '/' and !regiName.substring(1,1) ne '=') then
+    !regiName = '/' & !reginame
+  else
+    !regiName = !regiName
+  endif
+  if !this.newdrawings.size().eq(0) then
+    return true
+  endif
+  !this.reginame = !RegiName.dbref()
+    handle (2,109)
+      -- Undefined name
+      if (!!alert.question(|Registry (| & !reginame & |) does not exist, Create One?|) eq 'YES') then
+        !!abacreregistry.registry = !reginame.substring(2)
+        handle (2,765)
+          -- Cannot get member REGISTRY from non-existent object
+          loadform !!abaCreRegistry
+          !!abacreregistry.registry = !reginame.substring(2)
+        endhandle
+        show !!abacreregistry
+      endif
+      return false
+    endhandle
+
+  return true
+
+endmethod
+
+-------------------------------------------------------------------------------
+define method .regiCe()
+
+  !RegiName = !!ce
+
+  if !RegiName.type ne 'REGI' then
+    !!alert.error('Element Type is not a Registry.')
+  elseif !RegiName.DbWrite eq FALSE then
+    !!alert.error('You do not have Write Access to this Registry. Select another one')
+  else
+    !This.UseRegName.val = !RegiName.name
+    !This.reginame = !RegiName
+  endif
+
+endmethod
+
+-----------------------------------------------------------------------------
+define method .removeTask(!string is REAL)
+
+    if (!string ne 0) then
+      !this.tasklist.deletetask(!this.choice.selection())
+      !curDtext = !this.choice.dtext
+      !curDtext.remove(!this.choice.val)
+      !this.choice.dtext = !curDtext
+   endif
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .rename(STRING)
+--
+-- Description: Rename the first selected drawing
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Whether it is the NEW or OLD grid to be handled
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .rename(!grid is STRING)
+
+  -- Test for a call from the new or old drawing grid
+  -- NEW
+  if (!grid.eq('NEW')) then
+
+    -- Check for a loaded rename form
+    if (undefined(!!abaAReNameNew)) then
+      pml load form !!abaAReNameNew
+    endif
+
+    -- Pass the first selected drawing object to the rename form
+    !!abaAReNameNew.setDrwg(!this.newDrawings[!this.newControl.getSelectedRowTags()[1].real()])
+
+    -- Display the rename form
+    !!abaAReNameNew.show()
+
+  -- OLD
+  else
+
+    -- Check for a loaded rename form
+    if (undefined(!!abaAReNameOld)) then
+      pml load form !!abaAReNameOld
+    endif
+
+    -- Pass the first selected drawing object to the rename form
+    !!abaAReNameOld.setDrwg(!this.oldDrawings[!this.oldControl.getSelectedRowTags()[1].real()])
+
+    -- Display the rename form
+    !!abaAReNameOld.show()
+
+  endif
+
+endmethod
+-- End of method definition for .rename(STRING)
+
+--------------------------------------------------------------------------------
+define method .replaceDrawing(!drwg is ABADRAWING)
+
+  do !a index !this.oldDrawings
+
+    if (!this.oldDrawings[!a].drwg.eq(!drwg.drwg)) then
+
+      !this.oldDrawings[!a] = !drwg
+      return
+
+    endif
+
+  enddo
+
+  !!alert.error('Drawing not found in old drawing list')
+
+endmethod
+-- End of method definition for .replaceDrawing(ABADRAWING)
+
+------------------------------------------------------------------------
+--
+-- Method:      .replaceName(STRING,STRING)
+--
+-- Description: Rename the first selected drawing
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Whether it is the NEW or OLD grid to be handled
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .replaceName(!grid is STRING, !name is STRING)
+
+  -- Test for a call from the new or old drawing grid
+  -- NEW
+  if (!grid.eq('NEW')) then
+
+    -- Replace the first selected drawing object name
+    !this.newDrawings[!this.newControl.getSelectedRowTags()[1].real()].drwgName = !name
+
+  -- OLD
+  else
+
+    -- Replace the first selected drawing object name
+    !this.oldDrawings[!this.oldControl.getSelectedRowTags()[1].real()].drwgName = !name
+
+  endif
+
+  -- Refresh the display
+  !this.display()
+
+endmethod
+-- End of method definition for .replaceName(STRING,STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      .run(STRING)
+--
+-- Description: Process the drawings
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      What to process ALL,
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .run(!what is STRING)
+
+  -- Check to make sure there is something to draw
+  if (!this.newControl.getRows().size().eq(0) and !this.oldControl.getRows().size().eq(0)) then
+    !!alert.error('There are no drawings to process.')
+    return
+  endif
+
+  -- Check to see if Batch mode is set. and go and write the batch file
+  if (!this.batch.val) then
+    if (!this.defaults) then
+      !this.batch()
+    endif
+    return
+  endif
+
+  -- Remember the units so that we can reset them after the process is finished
+  !units = object COMUNITS(TRUE)
+  !this.units = !units
+
+  -- Try to reduce the number of spurious error messages
+  WARNINGS OFF
+    handle(47,15)
+      -- handle syntax error for pre 11.4 use
+    endhandle
+
+  -- Process Drawings Now
+  if (!!abaBrowseSheet.shown()) then
+    !!abaBrowseSheet.hide()
+  endif
+
+  -- Check for process tasks only and no tasks selected
+  if ((!this.update.val.eq(3) and undefined(!!abaProcessTask.taskList.taskArray[1])) or !this.defaults.not()) then
+    !!alert.error('You have selected the "Process Task Only" update type, but you have not chosen any Process tasks')
+    return
+  endif
+
+  -- Start processing for ALL
+  if (!what.eq('ALL') and !this.defaults) then
+
+    -- Calculate total number of drawings to process
+    !num = !this.newControl.getRows().size() + !this.oldControl.getRows().size()
+
+    -- Start logging process
+    !!abalogging.openLogfile()
+    !desc = 'ABA Log File - Processing ' & !num & ' Drawings'
+    !numdesc[2] = '                    ' & !desc
+    !numdesc[1] = '                    ' & !!abalogging.makeString(!desc,'=')
+    !numdesc[3] = '                    ' & !!abalogging.makeString(!desc,'=')
+    !numdesc[4] = ' '
+    !!abalogging.addToLog(!numdesc)
+
+    -- Add list of drawings to log file, for use  when importing creation list.
+    if (defined(!!cdauto) and !!cdauto) then
+      !this.defaults = true
+    endif
+
+    !drawlist = !this.oldDrawings
+    !drawlist.appendArray(!this.newDrawings)
+
+    !!abalogging.addDrawingList(!drawlist)
+    !!abalogging.AlphaStart()
+
+    -- Start drawing creation
+    !total = !drawList.size()
+    !this.cancel.callback = ''
+    !count = 0
+
+    -- if process tasks only do the process tasks and return
+    if !this.update.val.eq(3) then
+      golabel /proctasks
+    endif
+
+    -- Go and get the registry if it is not yet built return
+    if !this.processRegi().not() then
+     return
+    endif
+
+    -- Show the stop form
+    show !!abaStop
+
+    -- This loop from Here to the next comment does the whole thing.=============
+    -- this.drawinglist is a list of abadrawing objects which at this stage points to the
+    -- the area and template. No other values seem to have been set.
+    -- this.drawinglist is an array of abadrawing objects
+    !total = !drawlist.size()
+
+    do !x values !drawlist
+
+      !count = !count + 1
+
+      !!abaPrompt('Processing drawing ($!count of $!total)',1)
+      !logLine[1] = 'Processing drawing ($!count of $!total)'
+      !!abaLogging.addToLog(!logLine)
+
+      !testForInterrupt = !!FMSYS.Interrupt()
+        handle (61,104)
+        elsehandle NONE
+          if (!!FMSYS.INTERRUPT()) then
+            break
+          endif
+        endhandle
+
+      !this.processType = !this.update.rtext
+
+      -- $p enter makedrawing
+      !x.makedrawing(!this.regiName,!this.setupProcess(!this.numbering.val))
+
+      -- $p exit makedrawing
+      !time = object datetime()
+        handle any
+          !!abalogging.error('  ' & !!error.text)
+          --break
+          !logline[1] = 'Drawing ($!count of $!total) Completed With Errors at $!time'
+          !logline[2] = '---------------------------------------------------------------------------------'
+          !!abalogging.addtolog(!logline)
+
+        elsehandle none
+
+          !logline[1] = 'Drawing ($!count of $!total) Completed at $!time'
+          !logline[2] = '---------------------------------------------------------------------------------'
+          !!abalogging.addtolog(!logline)
+        endhandle
+
+    enddo
+
+    -- End of doing loop =========================================================
+
+    -- Now run process tasks
+    label /proctasks
+
+    -- Process global tasks selected via the form abaprocesstask
+    if (defined(!!abaProcessTask.taskList.taskArray[1])) then
+
+      -- Print separator to logfile
+      !logDesc[1] = '_______________________________________________________________________________'
+      !logDesc[2] = ' '
+      !!abaLogging.addToLog(!logDesc)
+
+      -- Read the selected tasks
+      !taskList = !!abaProcessTask.taskList.taskArray
+      !logDesc[1] = '  Applying selected global tasks'
+      !!abaLogging.addToLog(!logDesc)
+
+      -- make a list of drawings to process
+      !sheets = ARRAY()
+
+      -- if we are doing process tasks only, we need to skip new drawings
+      if !this.update.val.neq(3) and !this.defaults then
+
+        do !ad from 1 to !!abaprocess.newdrawings.size()
+
+          !!abaprocess.newdrawings[!ad] = !drawlist.removefirst()
+            handle any
+              break
+            endhandle
+         !sheets.append(!!abaprocess.newdrawings[!ad].sheet)
+
+        enddo
+
+      endif
+
+      do !ad from 1 to !!abaProcess.oldDrawings.size()
+
+        -- Get error here ?????????
+        !!abaProcess.oldDrawings[!ad] = !drawlist.removefirst()
+          handle any $* handle spurious error where the list sizes get out of phase
+            break
+          endhandle
+
+        !sheets.append(!!abaProcess.oldDrawings[!ad].sheet)
+
+      enddo
+
+      if !sheets.size() eq 0 then
+        !!abalogging.error('No sheets to Process')
+        return
+      endif
+
+      -- Process each task
+      do !x values !taskList
+
+        -- Check for interrupt
+        !testForInterrupt = !!FMSYS.Interrupt()
+          handle (61,104)
+          elsehandle NONE
+            if (!!FMSYS.INTERRUPT()) then
+              break
+            endif
+          endhandle
+
+        -- Make log entry and prompts
+        !logDesc[1] = |    Executing function '| & !x.execute & |' for task '| & !x.name & |'|
+        !!abaLogging.addToLog(!logDesc)
+        !!abaPrompt('Executing function $!x.execute for task $!x.name',2)
+
+        -- Execute task function
+        !fname = '!!' & !x.execute
+        ONERROR CONTINUE
+
+        -- execute the process tasks on all the sheets
+        $!fname(!x.paramval,!sheets)
+          handle any
+
+            !!abaLogging.error('      Error in executing function $!x.execute for task $!x.name')
+            prompt off
+
+            -- reset the current units if there has been an error
+            !this.units.restoreSavedBoreDist()
+
+          endhandle
+
+        onerror return
+        prompt off
+
+      enddo
+
+    -- Probably not required!!!
+    elseif (!this.update.val.eq(3)) then
+
+    !!abaLogging.error('You have selected "Process Task Only" update type, but you have not selected any Process tasks')
+
+    endif
+    -- End of global tasks
+
+    -- Hide the stop form
+    hide !!abastop
+
+    !this.cancel.callback = '!this.cancel()'
+
+    -- Finish Logging Process
+
+    -- Output Log date Stamp.
+    !today = object DATETIME()
+    !logDesc[1] = '_______________________________________________________________________________'
+    !logDesc[2] = ' '
+    !logDesc[3] = |Processing of drawings finished|
+    !logDesc[4] = ' '
+    !logDesc[5] = !today.date() & ' ' & !today.monthstring().substring(1,3) & ' ' & !today.year()$
+                              & ' ' & !today.hour() & ':' & !today.minute() & ':' & !today.second()
+    !logDesc[6] = ' '
+    !logDesc[7] = '_______________________________________________________________________________'
+    !!abaLogging.addToLog(!logDesc)
+    !!abalogging.AlphaEnd()
+    !!abalogging.closeLogfile()
+
+    prompt ''
+
+  elseif (!ans.eq('NO')) then
+
+    !!abaProcess.visible(TRUE)
+
+  endif
+
+  -- Reset the units in case they have been corrupted
+  !this.units.restoreSavedBoreDist()
+
+  WARNINGS ON
+  handle(47,15) $* handle syntax error for pre 11.4 use
+  endhandle
+
+  !!abaProcess.visible(TRUE)
+  !!abaprocess.browse(!drawlist,'NONE')
+
+endmethod
+-- End of method definition for .run()
+
+------------------------------------------------------------------------
+--
+-- Method:      .select(STRING,STRING)
+--
+-- Description: Called from the drawing list popups
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      What to do
+--    1   R      STRING      Which grid calling NEW or OLD
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .select(!how is STRING, !grid is STRING)
+
+  -- Select all rows in the grid
+  if (!how.eq('ALL')) then
+
+    -- For the new drawings grid
+    if (!grid.eq('NEW')) then
+
+      -- For each grid row
+      do !row from 1 to !this.newControl.getRows().size()
+        !this.newControl.selectRow(!row)
+      enddo
+
+    -- For the old drawings grid
+    else
+
+      do !row from 1 to !this.oldControl.getRows().size()
+        !this.oldControl.selectRow(!row)
+      enddo
+
+    endif
+
+  -- Clear the grid selection
+  elseif (!how.eq('NONE')) then
+
+    -- For the new drawings grid
+    if (!grid.eq('NEW')) then
+      !this.newControl.clearRowSelection()
+
+    -- For the old drawings grid
+    else
+
+      -- Clear the grid
+      !this.oldControl.clearRowSelection()
+
+      -- Set the Modify Variant button inactive
+      !this.modVar.active = false
+
+    endif
+
+  -- Remove all rows from the grid
+  elseif (!how.eq('CLEAR')) then
+
+    -- initialize variables
+    !rows = ARRAY()
+
+    -- For the new drawings grid
+    if (!grid.eq('NEW')) then
+
+      -- Build an array of all row numbers
+      do !rowNumber from 1 to !this.newControl.getRows().size()
+        !rows.append(!rowNumber)
+      enddo
+
+      -- Delete all rows
+      !this.newControl.deleteRows(!rows)
+
+      -- Clear the drawings array
+      !this.newDrawings.clear()
+
+    -- For the old drawings grid
+    else
+
+      -- Build an array of all row numbers
+      do !rowNumber from 1 to !this.oldControl.getRows().size()
+        !rows.append(!rowNumber)
+      enddo
+
+      -- Delete all rows
+      !this.oldControl.deleteRows(!rows)
+
+      -- Set the Modify Variant button inactive
+      !this.modVar.active = false
+
+      -- Clear the drawings array
+      !this.oldDrawings.clear()
+
+    endif
+
+    -- Reset the form gadgets
+    !this.setupProcess()
+
+  -- Delete selected entries from list.
+  elseif (!how.eq('CLEARSELECT')) then
+
+    -- For the new drawings grid
+    if (!grid.eq('NEW')) then
+
+      -- Delete the entries in the drawing array
+      do !selectedRow val !this.newControl.getSelectedRowTags()
+        !this.newDrawings.deleteFrom(!selectedRow.real(),1)
+      enddo
+
+      -- Compress the arra
+      !this.newDrawings.compress()
+
+      -- Delete the selected rows
+      !this.newControl.deleteSelectedRows()
+
+    else
+
+      -- Delete the entries in the drawing array
+      do !selectedRow val !this.oldControl.getSelectedRowTags()
+        !this.oldDrawings.deleteFrom(!selectedRow.real(),1)
+      enddo
+
+      -- Compress the arra
+      !this.oldDrawings.compress()
+
+      -- Delete the selected rows
+      !this.oldControl.deleteSelectedRows()
+
+      -- Set the Modify Variant button inactive
+      !this.modVar.active = false
+
+    endif
+
+    -- Reset the grids
+    !this.display()
+
+  endif
+
+endmethod
+-- End of method definition for .select(STRING,STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      .setupProcess()
+--
+-- Description: Sets up the processing options gadget
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setupProcess()
+
+  -- Get number of new and old drawings
+  !new = !this.newControl.getRows().size()
+  !old = !this.oldControl.getRows().size()
+
+  -- Set process type options depending on old versus new
+  if (!new.eq(0) and !old.neq(0)) then
+
+    !procd[1] = 'Update'              !procr[1] = 'Update'
+    !procd[2] = 'Regenerate'          !procr[2] = 'Regenerate'
+    !procd[3] = 'Process Tasks Only'  !procr[3] = 'Tasks'
+
+  elseif (!new.neq(0) and !old.neq(0)) then
+
+    !procd[1] = 'Create & Update'     !procr[1] = 'Update'
+    !procd[2] = 'Create & Regen'      !procr[2] = 'Regenerate'
+
+  elseif (!new.neq(0) and !old.eq(0)) then
+
+    !procd[1] = 'Create'              !procr[1] = 'Regenerate'
+
+  else
+
+    !procd[1] = ' '                   !procr[1] = ' '
+
+  endif
+
+  !this.update.dtext = !procd
+  !this.update.rtext = !procr
+
+endmethod
+-- End of method definition for .setupProcess()
+
+------------------------------------------------------------------------
+--
+-- Method:      .setupProcess(REAL)
+--
+-- Description: Sets up the processing options gadget and returns a string setting up autonumber or not
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setupProcess(!num is REAL) is STRING
+
+  -- if autonumbering is set to 1 then its using the autonumber method
+  if (!num eq 1) then
+
+    !return = 'T' & !!abaProcess.update.rtext[!!abaProcess.update.val]
+
+  else
+
+    !return = 'F' & !!abaProcess.update.rtext[!!abaProcess.update.val]
+
+  endif
+
+  return !return
+
+endmethod
+-- End of method definition for .setupProcess(REAL)
+
+------------------------------------------------------------------------
+--
+-- Method:      .setTaskStatus()
+--
+-- Description: Set task status gadget
+--
+-- Method Type: Constructor
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setTaskStatus()
+
+  if !!abaProcessTask.taskList.taskArray.size().eq(1) then
+
+     !this.taskStatus.val = !!abaProcesstask.taskList.taskArray.size() & ' Task Selected'
+     !this.taskStatus.background = 5
+
+  elseif !!abaProcessTask.taskList.taskArray.size().eq(0) then
+
+     !this.taskStatus.val =  'No Tasks Selected'
+     !this.taskStatus.background = 2
+
+  else
+
+     !this.taskStatus.val = !!abaProcessTask.taskList.taskArray.size() & ' Tasks Selected'
+     !this.taskStatus.background = 5
+
+  endif
+
+endmethod
+-- End of method definition for .setTaskStatus()
+
+--------------------------------------------------------------------
+define method .showOldDwrg()
+
+  !!abaProcess.show      = TRUE
+  !!abaOldDrwgs.existing = TRUE
+
+  !!abaOldDrwgs.show()
+
+  if (!!abaOldDrwgs.errorlist) then
+    show !!abaErrorList
+    !!abaOldDrwgs.errorList = FALSE
+  endif
+
+endmethod
+
+--------------------------------------------------------------------
+define method .showNewDwrg()
+
+  !!abaProcess.show           = TRUE
+  !!abaNewDrwgs.existing      = FALSE
+
+  !!abaNewDrwgs.show()
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .showVersion()
+--
+-- Description: Show current version
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .showVersion()
+
+  -- Get the version from the installed folder
+  var !install  evar 'aba_installed_dir'
+
+  !location = object FILE(!install)
+
+  !version = 'Version ' & !location.fullname().after(!location.pathname()).replace('\','')
+
+  setup form !!versionText
+
+    title 'ABA UI Version'
+    vdist 0.5
+
+    frame .fdisc ' Current Version  '
+
+      para .details at 3 1 text '$!version' width 20 lines 2
+
+    exit
+
+    button .ok 'OK' at xmin+10 ymax+0.2 ok
+
+  exit
+
+  show !!versionText
+
+endmethod
+-- End of method definition for .showVersion()
+
+--------------------------------------------------------------------------------
+define method .sortDrawings(!gad is STRING,!sortType is STRING)
+
+  !object   = '!this.' & !gad & 'Drawings'
+  !sortlist = array()
+  !item     = '!a.' & !sorttype
+
+
+  do !a values $!object
+     !sortlist.append($!item)
+  enddo
+
+  !listOrder = !sortlist.sortedindices()
+
+  $!object$n.reindex(!listOrder)
+
+  !this.display()
+
+endmethod
+
+----------------------------------------------------------------------
+define method .stopText(!string is STRING) is BOOLEAN
+
+-- method to detect interrupts called after each drawing
+
+  !ans = FALSE
+  !this.stopText.val = !string
+
+  !testForInterrupt = !!FMSYS.Interrupt()
+    handle (61,104)
+    elsehandle NONE
+
+      if (!!FMSYS.INTERRUPT()) then
+        !ans = TRUE
+      endif
+
+    endhandle
+
+   return !ans
+
+endmethod
+
+--------------------------------------------------------------------
+define method .visible()
+
+  return
+
+endmethod
+
+--------------------------------------------------------------------
+define method .visible(!Show is boolean)
+
+  return
+
+endmethod
+
+-----------------------------------------------------------------------
+define method .warning(!selec is STRING)
+
+  -- TM addition to warn about regeneration killing the existing drawing
+  if !selec.lowcase().match('regen').gt(0) then
+
+    if !!alert.confirm('Selecting "Regenerate" will delete your existing drawings - OK to continue') eq 'NO' then
+      !this.update.val = 1
+    endif
+
+  endif
+
+endmethod

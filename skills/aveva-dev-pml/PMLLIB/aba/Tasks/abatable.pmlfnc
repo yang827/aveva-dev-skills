@@ -1,0 +1,254 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            abaTable.pmlfnc
+--   Type:          Function Definition
+--   Group:         draft
+--     Keyword:     ABA
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         18 August 2000
+--
+--
+-- Description:
+-- Create a table on the sheet
+-------------------------------------------------------------------------
+--
+-- METHODOLOGY:
+-- The reserved areas for the table position are RECT elements under a NOTE with
+-- the function set to 'Table Data'and exist on the backing sheet.
+-- The origin of the rectangle will determine the start position of the labels so
+-- it should match the table symbols.
+-- More than one rectangle will be required for overflow unless you are certain
+-- that you will never fill the first.
+--
+-------------------------------------------------------------------------
+--
+-- LIMITIONS:
+-- Cannot handle more than 5 reserved areas
+--
+-------------------------------------------------------------------------
+--
+-- ASSUMPTIONS:
+-- That the SHEET is the current element
+--
+-------------------------------------------------------------------------
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     ARRAY       Array of string arguments
+--                           Argument 1 is the direction of build Horizontal or Vertical
+--                           Argument 2 is the discipline idli to be reported
+--                           Argument 3 is the header symbolic template name
+--                           Argument 4 is the entry symbolic template name
+--                           Argument 5 is the last entry symbolic template name
+--
+------------------------------------------------------------------------
+define function !!abaTable(!arguments is array)
+
+  -- Initialise variables
+  !sheeRefe = !!ce
+  !bsrf = !sheeRefe.bsrf
+  !build = !arguments[1]
+  !idli = !arguments[2]
+  !header = !arguments[3]
+  !entry = !arguments[4]
+  !last = !arguments[5]
+  !whichRect = 1
+  !doRead = true
+  !alphabet[1] = 'A'
+  !alphabet[2] = 'B'
+  !alphabet[3] = 'C'
+  !alphabet[4] = 'D'
+  !alphabet[5] = 'E'
+  !itemList = array()
+
+  -- Lo0k for a reserved area note
+  var !dataNote COLL ALL NOTE WI (matchwild(function,'Table Data')) FOR $!bsrf
+  if (!dataNote.empty()) then
+    !!abaLogging.error('      Cannot make table build - there is no backing sheet reserved area')
+    return
+  endif
+
+  -- Read table reserved areas
+  var !rectangles COLL ALL RECT FOR $!dataNote[1]
+  var !rectFpen EVAL FPEN FOR ALL FROM !rectangles
+  !rectangles.reIndex(!rectFpen.sortedindices())
+
+  -- Get symbolic template data
+  !headerHeight = !header.dbref().chei
+  !entryHeight = !entry.dbref().chei
+
+  -- Get all reported elements by scanning all views
+  var !allView COLL ALL VIEW FOR $!sheeRefe
+  var !allItem COLL MEMB OF $!idli
+
+  do !view val !allView
+
+    do !item val !allItem
+
+      !itemRefe = !item.dbref()
+      !itemType = !itemRefe.type
+      !itemIdnm = !itemRefe.idnm
+
+      if (!itemType.upcase().eq('ADDE')) then
+
+        -- ADD
+        if (!itemRefe.criteria.empty().not()) then
+
+          -- Got a rule-based item
+          var !addCriteria EVAL CRITERIA FOR $!itemRefe
+          var !allElem VSCAN FOR $!addCriteria[1] IN $!view
+
+          -- Extract reference numbers
+          do !elem val !allElem
+            !bits = !elem.split()
+            !itemList.append(!bits[2])
+          enddo
+
+        else
+
+          -- Got a design item
+          var !itemList APPEND COLLECT ALL ($!search) FOR $!itemIdnm
+
+        endif
+
+      else
+
+        -- REMOVE
+        if (!itemRefe.criteria.empty().not()) then
+
+          -- Got a rule-based item
+          var !remCriteria EVAL CRITERIA FOR $!itemRefe
+          var !allElem VSCAN FOR $!remCriteria[1] IN $!view
+
+          -- Extract reference numbers
+          do !elem val !allElem
+            !bits = !elem.split()
+            !removeList.append(!bits[2])
+          enddo
+
+        else
+
+          -- Got a design item
+          var !removeList COLLECT ALL ($!search) FOR $!itemIdnm
+
+        endif
+
+        -- Take removes away from current adds
+        !itemList = !itemList.difference( !removeList )
+
+      endif
+
+    enddo
+
+  enddo
+
+  -- Sort the found elements by name
+  var !itemNames EVAL FLNN FOR ALL FROM !itemList
+  !itemList.reIndex(!itemNames.sortedindices())
+
+  -- Create the table
+  do !created ind !itemList
+
+    -- Check if all available rectangles have been used and there are still labels to be done
+    if (!whichRect.gt(!rectangles.size())) then
+      !!abaLogging.error('      Cannot complete table build - there is not sufficient reserved area')
+      return
+    endif
+
+    -- Read a rectangle for data
+    if (!doRead) then
+
+      -- Initialise variables
+      !rectRefe = !rectangles[!whichRect].dbref()
+      !rectCreated = 0
+      !xPos = !rectRefe.ptrf.xypo.east
+      !yPos = !rectRefe.ptrf.xypo.north
+
+      -- Determine table available space and hence the number of possible entries
+      if (!build.eq('V')) then
+        !rectSide = !rectRefe.ylen
+      else
+        !rectSide = !rectRefe.xlen
+      endif
+      !possible = (!rectSide - !headerHeight) / !entryHeight
+      !possible = !possible.int()
+
+      -- Get into position in hierarchy by finding any existing layer
+      !purpose = 'TABLE' & !alphabet[!whichRect]
+      var !laye coll all laye wi SpPURP eq '$!purpose' for $!sheeRefe
+      if (!laye.empty()) then
+
+        -- Create the laye in the first view
+        !!ce = VIEW 1 OF $!sheeRefe
+        !layeName = !!ce.flnm & '/Table_' & !purpose
+        NEW LAYE $!layeName
+        handle any
+           delete layer
+           $!layeName
+           delete LAYE MEM
+        endhandle
+        SpPURP TABLE
+
+      else
+
+        -- Access the existing laye and delete all existing elements
+        !!ce = !laye[1].dbref()
+        delete LAYE MEM
+
+      endif
+
+      -- Create table header
+      NEW SLAB
+       LEAD OFF  LFPEN TEMP  TPEN TEMP
+       DDNM $!itemList[$!created]
+       XYPO X $!xPos Y $!yPos
+       TMRF $!header
+
+      -- Mark as read
+      !doRead = false
+
+      -- Determine position of first entry
+      if (!build.eq('V')) then
+        !yPos = !yPos - !headerHeight + !entryHeight
+      else
+        !xPos = !xPos + !headerHeight - !entryHeight
+      endif
+
+    endif
+
+    -- Calculate entry origin
+    if (!build.eq('V')) then
+      !yPos = !yPos - !entryHeight
+    else
+      !xPos = !xPos + !entryHeight
+    endif
+
+    -- Create entry label
+    NEW SLAB
+     LEAD OFF  LFPEN TEMP  TPEN TEMP
+     DDNM $!itemList[$!created]
+     XYPO X $!xPos Y $!yPos
+     TMRF $!entry
+
+    -- Raise count to indicate that this rectangle has been created
+    !rectCreated =  !rectCreated + 1
+
+    -- Test for last entry
+    if (!created.eq(!itemList.size()) or !rectCreated.eq(!possible)) then
+      TMRF $!last
+    endif
+
+    -- Test for filled rectangle
+    if (!rectCreated.eq(!possible)) then
+      !doRead = true
+      !whichRect = !whichRect + 1
+    endif
+
+  enddo
+
+endfunction

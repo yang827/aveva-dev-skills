@@ -1,0 +1,766 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            admbacktrack.pmlfrm
+--   Type:          Form Definition
+--   Group:         General Application
+--     Keyword:     GEN
+--   Module:        admin
+--   Replaces:
+--
+-- Author:          C.J.Fellows
+-- Created:         Tues Mar 24 1998
+--
+--
+-- Description: Backtrack (REVERT) DB session changes.
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  admBacktrack()                   -                   Constructor
+--  apply()                          -                   Apply backtrack selection
+--  dateSession()                    -                   Maintain session number from session time
+--  dbListInit()                     -                   Initialise the Database List gadget based on the current display mode.
+--  dbListSelect()                   -                   Display information about the database selected
+--  getStamps()                      -                   Populate the stamp list gadget(s)
+--  ifTime()                         -                   Maintain the Since Gadgets
+--  init()                           -                   Form initialisation
+--  notStamped()                     -                   Check for db not stamped
+--  qrySessComment()                 -                   Show a form with the session comment on
+--  sessCount(REAL)                  -                   Session Plus/Minus counter
+--  sessionDate()                    -                   Maintain session time from session number
+--  sessionDate(STRING)              -                   Maintain session time from session number
+--  stampActive()                    -                   Set stamp gadgets active status
+--  stampData()                      -                   Get data for selected stamp
+--  zero(STRING)                     STRING              Tests if a hour or minute value requires a leading zero
+--
+------------------------------------------------------------------------
+
+setup form !!admBacktrack
+
+  !this.formTitle     = 'Backtrack Changes'
+  !this.iconTitle     = 'Backtrack'
+  !this.callback      = '!this.init()'
+  !this.formRevision  = ' $Revision: 1.14 $ '
+
+  -- Body of form definition
+
+  -- Available Databases
+  member .dbObjects is ARRAY
+  member .currentDb is DB
+
+  -- Was - or + button pressed or direct number input (0 = Minus, 1 = Plus, 2 = Number input)
+  member .plusMinusNum  is REAL
+
+  --stores an array of sessions for currently selected Database
+  --Note this array is in reverse order from what you would expect
+  -- i.e. the first value is the latest value!
+  member .lastSession is DBSESS
+  member .currentSession is DBSESS
+
+  --The index of the currently viewed session
+  member .currentNumber is REAL
+
+  -- Stamps
+  member .stampRefs is ARRAY
+
+  path down
+  list .dbs 'Available Databases' at x 0 y 0.2 width 35 length 12
+
+  frame .since 'Backtrack Changes' at ymax +0.5
+
+    rgroup .sinceType '' at xmin+1 ymax Horizontal
+--      add tag 'Savework '  select 'SAVE'
+      add tag 'TimeDate '  select 'TIME'
+      add tag 'Session  '  select 'SESS'
+      add tag 'Stamp '     select 'STAMP'
+    exit
+
+    para     .tim       at x1       ymax+0.5   text       'Time HH:MM        '
+    text     .time      at xmax_tim ymin   width 5  string
+    para     .dat       at x1       ymin+1 text     'Date DD Mon Year  '
+    text     .date      at xmax_dat ymin   width 11  string
+
+    para     .sessNu    at x1       ymax   text    'Session Number    '
+    text     .sessNum   at xmax_sessNu+3  ymin  width 5  is REAL
+    button   .minus '-' at xmin_sessNum-3 ymin_sessNum
+    button   .plus  '+' at xmin_sessNum+8 ymin_sessNum
+    button   .more  'More...' at xmin_sessNum ymin_sessNum+1
+    para     .sessUser  at x1       ymax   text   'Session User      ' width 32
+--    para     .sessDb    at x2       ymax   width 35
+
+    para     .stamp at xmin ymax text 'Stamps'
+    option   .sort  'Sort By' at xmax+4 ymin width 11
+    list     .stampList at xmin.stamp ymax+0.1 SINGLE width 32 length 3
+
+  exit
+
+  button     .apply     at xmin_since ymax_since + 0.5  |Apply|
+  button     .rebuild   at xcen form-0.5 * size ymin  |Rebuild list|
+  button     .dismiss   at xmax form-size ymin |Dismiss| OK
+
+exit
+-- End of form definition for !!admBacktrack
+
+------------------------------------------------------------------------
+--
+-- Method:      !admBacktrack()
+--
+-- Description: Constructor
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .admBacktrack()
+
+  !this.dbs.callback       = '!this.dbListSelect()'
+  !this.sinceType.callback = '!this.ifTime()'
+  !this.time.callback      = '!this.dateSession()'
+  !this.date.callback      = '!this.dateSession()'
+  !this.sessNum.callback   = '!this.sessionDate(|INPUT|)'
+  !this.minus.callback     = '!this.sessCount(0)'
+  !this.plus.callback      = '!this.sessCount(1)'
+  !this.more.callback      = '!this.qrySessComment()'
+  !this.apply.callback     = '!this.apply()'
+  !this.rebuild.callback   = '!this.dbListInit()'
+
+  -- Stamp sort options
+  !!admStampSortGadg(!this.sort,'LONG')
+  !this.sort.callback = '!!admStampSort(!this.stampRefs,!this.sort,!this.stampList)'
+  !this.sort.callback = '!!admStampSort(!this.stampRefs,!this.sort,!this.stampList)'
+
+  -- Stamp list selection
+  !this.stampList.callback = '!this.stampData()'
+
+endmethod
+-- End of method definition for .admBacktrack()
+
+------------------------------------------------------------------------
+--
+-- Method:      init
+--
+-- Description: Form initialisation
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .init()
+
+  !this.dbObjects.empty()
+
+  !this.sinceType.select( 'SESS' )
+
+  !this.plusMinusNum = 2
+
+  -- Initialise List of DBs
+  if( !this.dbObjects.size() eq 0 ) then
+    !this.dbListInit()
+  endif
+  -- no databases in this project
+  !this.since.active = ( !this.dbObjects.size() gt 0 )
+  !this.apply.active = !this.since.active
+  if( !this.dbObjects.size() gt 0 ) then
+    !this.ifTime()
+  endif
+
+endmethod
+-- End of method definition for .init()
+
+------------------------------------------------------------------------
+--
+-- Method:      apply
+--
+-- Description: Apply backtrack selection
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+-- *** COMMAND LINE SYNTAX ***
+--
+------------------------------------------------------------------------
+define method .apply()
+
+  !selection = !this.dbs.selection()
+  if( !this.sinceType.selection() eq 'SESS' ) then
+    if(!this.sessNum.val lt 2) then
+      !!alert.error(|You cannot backtrack to the first session of a DB|)
+      return
+    endif
+    -- Backtrack to specified session
+    !changeString = 'TO SESSION ' + !this.sessNum.val.string()
+
+  elseif( !this.sinceType.selection() eq 'TIME' ) then
+    -- Backtrack to specified time
+    !changeString =  !this.time.val + ' ' + !this.date.val
+
+  -- For STAMP
+  else
+    if(!this.sessNum.val lt 2) then
+      !!alert.error(|You cannot backtrack to the first session of a DB|)
+      return
+    endif
+    -- Backtrack to specified stamp
+    !changeString = 'TO STAMP ' & !this.stampList.selection('rText').dbref().flnm
+
+  endif
+
+  -- *** COMMAND LINE SYNTAX ***
+--write 'REVERT $!selection $!changeString'
+  !!admCommand(|REVERT $!selection $!changeString|)
+  handle (1,141)
+    -- Cannot backtrack across a stamped session
+    !!alert.error(' You c' & !!error.text.after('(1,141)   C') & '. You will need to modify the stamp if you wish to backtrack to this session')
+  elsehandle any
+    -- cleanly handle messages!
+    !!alert.error(!!error.text)
+  endhandle
+
+  -- refresh display for this DB
+  !this.dbListSelect()
+
+endmethod
+-- End of method definition for .apply()
+
+------------------------------------------------------------------------
+--
+-- Method:      dbListInit
+--
+-- Description: Initialise the Database List gadget based on the current display mode.
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .dbListInit()
+
+  !dbListObject   = object DBLISTOBJ()
+  !dbListObject.setForeign(false)
+  !p        = CURRENT PROJECT
+  if( !p.isGlobal() ) then
+    !dbListObject.setSecondary(false)
+    !dbListObject.setTransaction(false)
+  endif
+  !dbListObject.update()
+  !this.dbObjects = !dbListObject.listOfDbs
+
+  if (!!sessionSettings.showAs eq |DESC|) then
+    -- show DB descriptions
+    !dbDtext = !dbListObject.getDbDesc()
+    !dbRText = !dbListObject.getDbNames()
+  else
+    -- show DB names
+    !dbDtext = !dbListObject.getDbNames()
+    !dbRText = !dbDtext
+  endif
+
+  if( defined(!dbDtext[1]) ) then
+    -- Sort the list of DBs
+    !sortOrder = !dbDtext.sortedIndices()
+    !this.dbObjects.reIndex( !sortOrder )
+    !dbDispList = ARRAY()
+    !dbReplList = ARRAY()
+
+    do !i values !sortOrder
+      !dbDispList.append(!dbDtext[!i])
+      !dbReplList.append(!dbRText[!i])
+    enddo
+
+    !this.dbs.dText = !dbDispList
+    !this.dbs.rText = !dbReplList
+
+  else
+
+    !this.dbs.clear()
+
+  endif
+
+  -- Call function to display selected users information
+  !this.dbListSelect()
+
+endmethod
+-- End of method definition for .dbListInit()
+
+------------------------------------------------------------------------
+--
+-- Method:      dbListSelect
+--
+-- Description: Display information about the database selected
+-- in the Database List form.
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      GADGET      List gadget from which DB is selected
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .dbListSelect()
+
+  -- Get the current selected database object
+--  !this.sessDb.val = 'Database Name  =  ' & !this.dbs.selection()
+
+  if( !this.dbs.val eq 0 ) then
+    !!alert.error('There are no databases in the project: At least one database must exist' )
+    return
+  endif
+
+  --Store in the Member variables
+  --Store the Sessions for this DB
+  !this.lastSession = !this.dbObjects[ !this.dbs.val ].lastSession()
+  handle any
+    -- probably db deleted without rebuilding the list
+    !!alert.error('Problem found when retrieving the session history for DB ' + !this.dbObjects[ !this.dbs.val ].name + ': Try rebuilding the list' )
+    return
+  endhandle
+  -- Store the current dB setting
+  !this.currentDb = !this.dbObjects[ !this.dbs.val ]
+  !this.currentSession = !this.lastSession
+  !this.currentNumber = !this.lastSession.number
+
+  --Display the Relevant information
+  !this.sessionDate()
+  !this.ifTime()
+  !this.notStamped()
+
+endmethod
+-- End of method definition for .dbListSelect()
+
+------------------------------------------------------------------------
+--
+-- Method:      sessCount
+--
+-- Description: Session Plus/Minus counter
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      REAL      Plus/Minus selection
+-- Return:
+--   [Data Type] [Description]
+--
+---------------------------------------------------------------------------------
+define method .sessCount(!select is REAL)
+
+  -- remember which button was pressed
+  !this.plusMinusNum = !select
+
+  if (!select eq 1) then
+    -- Adding
+    !nextSession = !this.currentDb.sessionRange(!this.currentNumber, 2)
+    !this.currentSession = !nextSession[!nextSession.size()]
+    !this.currentNumber = !this.currentSession.number
+  elseif(!select eq 0) then
+    -- Subtracting
+    !nextSession = !this.currentDb.sessionRange(!this.currentNumber, -2)
+    !this.currentSession = !nextSession[!nextSession.size()]
+    !this.currentNumber = !this.currentSession.number
+  elseif(!select eq 2) then
+    -- Specific Number input
+    !this.currentSession = !this.currentDb.session(!this.sessNum.val)
+    !this.currentNumber = !this.currentSession.number
+  endif
+
+  !this.sessionDate()
+
+endmethod
+-- End of method definition for .sessCount(REAL)
+
+------------------------------------------------------------------------
+--
+-- Method:      ifTime
+--
+-- Description: Maintain the Since Gadgets
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .ifTime()
+
+  if (!this.sinceType.selection() eq 'TIME') then
+    !this.time.active    = true
+    !this.date.active    = true
+    !this.sessNum.active = false
+    !this.plus.active    = false
+    !this.minus.active   = false
+    !this.dateSession()
+    !this.stampList.clear()
+    if (!this.dbs.rText.size().gt(0)) then
+      !this.apply.active = true
+    endif
+
+  elseif (!this.sinceType.selection() eq 'SESS') then
+    !this.time.active    = false
+    !this.date.active    = false
+    !this.sessNum.active = true
+    !this.plus.active    = true
+    !this.minus.active   = true
+    !this.sessionDate()
+    !this.stampList.clear()
+    if (!this.dbs.rText.size().gt(0)) then
+      !this.apply.active = true
+    endif
+
+  else
+
+    -- Populate the stamp gadget(s)
+    !this.getStamps()
+
+    -- Get stamp data
+    !this.stampData()
+
+    -- If it is not stamped grey out apply appropriately
+    !this.notStamped()
+
+  endif
+
+  -- Set stamp gadget active status
+  !this.stampActive()
+
+endmethod
+-- End of method definition for .ifTime()
+
+------------------------------------------------------------------------
+--
+-- Method:      sessionDate
+--
+-- Description: Maintain session time from session number
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .sessionDate()
+
+  !sessionNumber = !this.currentSession.number
+  !sessDate      = !this.currentSession.date
+  !sessAuthor    = !this.currentSession.author
+
+  !clockArr = !sessDate.split()
+  !this.time.val = !clockArr[1]
+  !this.date.val = !clockArr[2] & ' ' & !clockArr[3] & ' ' & !clockArr[4]
+  !this.sessNum.val  = !sessionNumber
+  !this.sessUser.val = 'Session User      ' & !sessAuthor
+--  !this.sessDb.val   = 'Database Name  =  ' & !this.dbs.selection()
+
+  -- Maintain the session comments form
+  if (defined(!!admSessComment)) then
+    if (!!admSessComment.shown()) then
+      !!admSessComment.initialise()
+    endif
+  endif
+
+  !this.plusMinusNum = 2
+
+endmethod
+-- End of method definition for .sessionDate()
+------------------------------------------------------------------------
+--
+-- Method:      sessionDate
+--
+-- Description: Maintain session time from session number
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     STRING      Key word 'INPUT' for direct input of session number
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .sessionDate(!option is STRING)
+
+  if( !this.sessNum.val.unset() ) then
+	  !this.sessNum.val = !this.currentSession.number
+  endif
+  if (!option eq 'INPUT') then
+    !this.currentSession = !this.currentDb.session(!this.sessNum.val)
+    !this.currentNumber  = !this.currentSession.number
+  endif
+
+  !this.sessionDate()
+
+endmethod
+-- End of method definition for .sessionDate(STRING)
+------------------------------------------------------------------------
+--
+-- Method:      dateSession
+--
+-- Description: Maintain session number from session time
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .dateSession()
+
+  -- Set Session number
+  !selection = !this.dbs.selection()
+  !dbSelection = object DB(!selection)
+
+  !timeValue = !this.time.val
+  !dateValue = !this.date.val
+
+  var !sessDnum SESSION ON $!timeValue $!dateValue $!selection
+  !sessionNumber = !sessDnum.real()
+
+  -- Get Session
+  !this.currentSession = !dbSelection.session(!sessionNumber)
+  !this.currentNumber = !sessionNumber
+
+  -- Set Session user
+  !sessAuthor = ''
+  !sessAuthor = !this.currentSession.author
+
+  !sessionUser = 'Session User      ' & !sessAuthor
+
+  !this.sessNum.val  = !sessionNumber
+  !this.sessUser.val = !sessionUser
+
+  -- Maintain the session comments form
+  if (defined(!!admSessComment)) then
+    if (!!admSessComment.shown()) then
+      !!admSessComment.initialise()
+    endif
+  endif
+
+endmethod
+-- End of method definition for .dateSession()
+
+------------------------------------------------------------------------
+--
+-- Method:      qrySessComment
+--
+-- Description: Show a form with the session comment on
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Method of showing selection form
+-- Return:
+--   [Data Type] [Description]
+--
+---------------------------------------------------------------------------------
+define method .qrySessComment()
+
+  if( undefined(!!admSessComment) ) then
+    pml load form !!admSessComment
+  endif
+  !!admSessComment.main = !this
+
+  SHOW !!admSessComment
+
+endmethod
+-- End of method definition for .qrySessComment()
+
+------------------------------------------------------------------------
+--
+-- Method:      notStamped()
+--
+-- Description: Check for db not stamped
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+---------------------------------------------------------------------------------
+define method .notStamped()
+
+  -- Check for no stamps
+  if (!this.stampList.selection().eq('None Found')) then
+    !this.apply.active = false
+  else
+    if (!this.dbs.rText.size().gt(0)) then
+      !this.apply.active = true
+    endif
+  endif
+
+endmethod
+-- End of method definition for .notStamped()
+
+------------------------------------------------------------------------
+--
+-- Method:      .getStamps()
+--
+-- Description: Populate the stamp list gadget(s)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+---------------------------------------------------------------------------------
+define method .getStamps()
+
+  -- Get current db
+  !curDb = object DB(!this.dbs.selection('DTEXT'))
+
+  -- Get all stamps for this db
+  !this.stampRefs = !curDb.refNo.dbref().stpDbs
+
+  -- Sort and populate the gadget
+  if (!this.stampRefs.empty()) then
+
+    -- Populate the list gadget
+    !dText[1] = 'None Found'
+    !this.stampList.dText = !dText
+
+  else
+
+    -- Populate the list gadget
+    !!admStampSort(!this.stampRefs,!this.sort,!this.stampList)
+
+  endif
+
+endmethod
+-- End of method definition for .getStamps()
+
+------------------------------------------------------------------------
+--
+-- Method:      .stampActive()
+--
+-- Description: Set stamp gadgets active status
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+---------------------------------------------------------------------------------
+define method .stampActive()
+
+  if (!this.sinceType.selection().eq('STAMP')) then
+
+    -- Set time, date and session inactive
+    !this.time.active        = false
+    !this.date.active        = false
+    !this.sessNum.active     = false
+    !this.plus.active        = false
+    !this.minus.active       = false
+
+    -- Set stamp gadgets
+    !this.stampList.active  = true
+    if (!this.stampList.selection().eq('None Found')) then
+      !this.sort.active = false
+    else
+      !this.sort.active = true
+    endif
+
+  else
+    !this.sort.active       = false
+    !this.stampList.active  = false
+    !this.stampList.clear()
+  endif
+
+endmethod
+-- End of method definition for .stampActive()
+
+------------------------------------------------------------------------
+--
+-- Method:      .stampData()
+--
+-- Description: Get data for selected stamp
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+---------------------------------------------------------------------------------
+define method .stampData()
+
+  -- Test for no stamps
+  if (!this.stampList.selection().eq('None Found')) then
+    return
+  endif
+
+  -- Get selected stamp
+  !stampRef = object DBREF(!this.stampList.selection())
+
+  -- Get the stamp list that references the current db
+  !stampedDbs = !stampRef.dbsStp
+  !getDbName = object BLOCK('!stampedDbs[!evalIndex].name.after(|*|)')
+  !dbNames = !stampedDbs.evaluate(!getDbName)
+  !stlstRef = !stampRef.mem[!dbNames.findFirst(!this.dbs.selection('DTEXT'))]
+
+  --If stamp has a date use it, otherwise use the session date
+  if (!stampRef.setDat.eq('')) then
+    !dbObj = object DB(!this.dbs.selection('DTEXT'))
+    !this.currentSession = !dbObj.session(!stlstRef.stSess)
+    !dateObj = object DATETIME(!this.currentSession.date)
+  else
+    !dateObj = object DATETIME(!stampRef.setDat)
+  endif
+
+  -- Test hours, minutes & day if they require a leading zero
+  !hours = !this.zero(!dateObj.hour().string())
+  !minutes = !this.zero(!dateObj.minute().string())
+  !day = !this.zero(!dateObj.date().string())
+
+  -- Populate gadgets
+  !this.time.val = !hours & ':' & !minutes
+  !this.date.val = !day & ' ' & !dateObj.monthString().subString(1,3) & ' ' & !dateObj.year()
+  !this.sessNum.val = !stlstRef.stSess
+
+endmethod
+-- End of method definition for .stampData(GADGET)
+
+------------------------------------------------------------------------
+--
+-- Method:      .zero(STRING)
+--
+-- Description: Tests if a hour or minute value requires a leading zero
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Value to be tested
+-- Return:
+--   [Data Type] [Description]
+--    STRING      Returned string
+--
+------------------------------------------------------------------------
+-- Define method
+define method .zero(!string is STRING) is STRING
+
+  -- Is a leading zero required?
+  if (!string.length().eq(1)) then
+    !value = '0' & !string
+  else
+    !value = !string
+  endif
+  return !value
+
+endmethod
+-- End of method definition for .zero(STRING)

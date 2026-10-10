@@ -1,0 +1,1254 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            pfPipeSpoolDimension.pmlobj
+--    Type:          Object Definition
+--    Group:         PIPE
+--      Keyword:     PIPE
+--    Module:        Draft
+--  Author:          Daniel(Jaehun Choi)
+--  Created:         23 July 2010
+--
+--  Description:     This object used to be create linear dimension on a view
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  checkConnectElement(DBREF)       ARRAY               check connect element
+--  checkDimPosView(ARRAY,ARRAY)     BOOLEAN             check dimension position on view
+--  checkNonTubeElement(DBREF,ARRAY,REAL) ARRAY               check non tube element
+--  checkTubeElement(DBREF)          ARRAY               check tube element
+--  createDimension(DBREF)           -                   create dimension on drawing
+--  createLinearDim(ARRAY,ARRAY,ARRAY) -                   create linear dimension on drawing
+--  filterTubes(DBREF)               ARRAY
+--  getBranchComponent()             ARRAY               get branch component
+--  getDimDir(ARRAY,ARRAY,DBREF)     ARRAY               get direction of dimension
+--  getDimSourceData(ARRAY)          ARRAY               get dimension source data
+--  setDimDefault()                  -                   set default of dimension
+--  showTable(ARRAY)                 -                   Show what the filtered dimension points look like as a list
+--  stripUnwanted(ARRAY)             ARRAY               remove attas welds and unwanted tubes from the list of components
+--
+------------------------------------------------------------------------
+
+define object PFPIPESPOOLDIMENSION
+  member .spoolRef        is DBREF
+  member .createdDimList  is ARRAY
+  -- it'll be used to arrange dimension on optimum position on view
+  member .dimSectionLimit is ARRAY
+  member .dimOptions      is ARRAY
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:      getDimSourceData
+--
+-- Description: get dimension source data
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getDimSourceData(!componentList is ARRAY) is ARRAY
+
+  !dimSourceList    = object ARRAY()
+  do !i indices !componentList
+    !entry     = !componentList[!i]
+    !entryType = !entry.type
+
+    if (!entryType eq 'TUBI') then
+      -- if the entry type is a tubi it returns the leave of the previous and the arrive of the next
+      -- if these items are welds the we get the funny dimensions seen drawings with welds.
+      -- we still need to dimension the weld gap
+      !ppointTable = !this.checkTubeElement(!entry)
+    else
+      !ppointTable = !this.checkNonTubeElement(!entry, !componentList, !i)
+    endif
+
+    skip if (!ppointTable.unset())
+    if (!entry.hardType eq 'ATTA') then
+      !volume = object LOCALVOLUME(!entry, !entry)
+      !isValidVolume = !volume.from.distance(!volume.to) gt 0.1mm
+      skip if (!entry.atty eq 'CCNN' or !isValidVolume.not())
+    endif
+
+    if (!entry.type eq 'OLET') then
+      skip if (!entry.compType inset ('SSAH','SSAT','STUH','SEXH','SSUH','SSUT','TAPH','BOSH','BOST'))
+    endif
+
+    skip if (!entry.hardType eq 'WELD')
+
+    do !tableEntry values !ppointTable
+      !dimSourceList.append(!tableEntry)
+    enddo
+  enddo
+
+  return !dimSourceList
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      checkTubeElement
+--
+-- Description: check tube element
+--
+--
+------------------------------------------------------------------------
+define method .checkTubeElement(!tubeRef is DBREF) is ARRAY
+
+  !posRefTable  = object ARRAY()
+
+  !prevComp = prev of $!tubeRef
+  handle any
+    !prevComp = !tubeRef.owner
+  endhandle
+
+  !nextComp = next of $!tubeRef
+  handle any
+    !nextComp = !tubeRef.owner
+  endhandle
+
+  -- if both ends are branches the we only have tube so we need to get the head reference
+  if (!prevComp.hardType eq 'BRAN' and !nextComp.hardType eq 'BRAN') then
+    if (!prevComp.hRef.badRef().not()) then
+      !table[1] = !prevComp.hRef
+      -- we connect to p3 of a PTAP because this determines the connected insert depth and branch tube length
+      if !prevComp.hRef.type.eq('PTAP') then
+        !table[2] = 3
+      else
+        !table[2] = 0
+      endif
+    else
+      !table[1] = !prevComp
+      !table[2] = 1
+    endif
+
+    !posRefTable.append(!table)
+
+    if (!nextComp.tRef.badRef().not()) then
+      !table[1] = !nextComp.tRef
+      if (!nextComp.tRef.type.eq('PTAP')) then
+        !table[2] = 3
+      else
+        !table[2] = 0
+      endif
+    else
+      !table[1] = !nextComp
+      !table[2] = 2
+    endif
+
+    !posRefTable.append(!table)
+    -- The head is a branch but the next is NOT a branch
+  elseif (!prevComp.hardType eq 'BRAN' and !nextComp.hardType ne 'BRAN') then
+    !table[1] = !prevComp
+    !table[2] = 1
+    if (!prevComp.tGeom) then
+      !table[1] = il tube of $!prevComp
+    else
+      if (!prevComp.hRef.badRef().not()) then
+        if (!prevComp.hRef.type inset ('TEE','OLET')) then
+          !table[1] = !prevComp.hRef
+          !table[2] = 0
+          -- we connect to p3 of a PTAP because this determines the connected insert depth and branch tube length
+        elseif !prevComp.hRef.type.eq('PTAP') then
+          !table[1] = !prevComp.hRef
+          !table[2] = 3
+        else
+          !table[1] = !prevComp.hRef
+        endif
+      endif
+    endif
+
+    !posRefTable.append(!table)
+
+    !table[1] = !nextComp
+    if (!nextComp.hardType eq 'FLAN') then
+      !table[2] = 1
+    elseif (!nextComp.type inset ('ELBO','BEND','TEE','OLET')) then
+      !table[2] = 0
+      if (!nextComp.hardType inset ('ELBO','BEND') and !nextComp.shop.not()) then
+        if (!nextComp.aPos.eq(!nextComp.pPos[1])) then
+          !table[2] = 1
+        else
+          !table[2] = 2
+        endif
+      endif
+    elseif  !nextComp.type.eq('PTAP') then
+      !table[2] = 3
+    else
+      if (!nextComp.hardType eq 'COUP') then
+        if (!nextComp.shop) then
+          !table[2] = 0
+        else
+          !table[2] = 1
+        endif
+      else
+        if (!nextComp.aPos.eq(!nextComp.pPos[1])) then
+          !table[2] = 1
+        else
+          !table[2] = 2
+        endif
+      endif
+    endif
+
+    !posRefTable.append(!table)
+    -- previous component is NOT a branch but the next component is
+  elseif (!prevComp.hardType ne 'BRAN' and !nextComp.hardType eq 'BRAN') then
+    !table[1] = !prevComp
+
+    if (!prevComp.hardType eq 'FLAN') then
+      !table[2] = 1
+    elseif (!prevComp.type inset ('ELBO','BEND','TEE','OLET','PTAP')) then
+      !table[2] = 0
+      if (!prevComp.hardType inset ('ELBO', 'BEND') and !prevComp.shop.not()) then
+        if (!prevComp.lPos.eq(!prevComp.pPos[2])) then
+          !table[2] = 2
+        else
+          !table[2] = 1
+        endif
+      elseif  !prevComp.type.eq('PTAP') then
+        !table[2] = 3
+      endif
+    else
+      if (!prevComp.hardType eq 'COUP') then
+        if (!prevComp.shop) then
+          !table[2] = 0
+        else
+          if (!prevComp.tGeom) then
+            !table[2] = 2
+          else
+            !table[2] = 0
+          endif
+        endif
+      else
+        if (!prevComp.lPos.eq(!prevComp.pPos[2])) then
+          !table[2] = 2
+        else
+          !table[2] = 1
+        endif
+      endif
+    endif
+
+    !posRefTable.append(!table)
+
+    if (!nextComp.hRef.badRef().not()) then
+      !table[1] = !nextComp.hRef
+    else
+      !table[1] = !nextComp
+    endif
+
+    !table[1] = !nextComp
+
+    if (!nextComp.hardType eq 'COUP') then
+      !table[2] = 0
+    else
+      !table[2] = 2
+    endif
+    !posRefTable.append(!table)
+  else
+    !table[1] = !prevComp
+    if (!prevComp.hardType eq 'FLAN') then
+      if(!prevComp.shop.not()) then
+        !table[2] = 2
+      else
+        !table[2] = 1
+      endif
+    elseif (!prevComp.type inset ('ELBO','BEND','TEE','OLET')) then
+      !table[2] = 0
+      if (!prevComp.hardType inset ('TEE','OLET') and !nextComp.hardType eq 'COUP') then
+        if (!prevComp.lPos.eq(!prevComp.pPos[2])) then
+          !table[2] = 2
+        else
+          !table[2] = 1
+        endif
+      endif
+
+      if (!prevComp.hardType inset ('ELBO','BEND') and !prevComp.shop.not()) then
+        if (!prevComp.lPos.eq(!prevComp.pPos[2])) then
+          !table[2] = 2
+        else
+          !table[2] = 1
+        endif
+      endif
+      elseif (!prevComp.type inset ('PTAP')) then
+      !table[2] = 3
+    else
+      if (!prevComp.hardType eq 'COUP') then
+        if (!prevComp.shop) then
+          !table[2] = 0
+        else
+          !table[2] = 2
+        endif
+      else
+        if (!prevComp.lPos.eq(!prevComp.pPos[2])) then
+          !table[2] = 2
+        else
+          !table[2] = 1
+        endif
+      endif
+    endif
+
+    !posRefTable.append(!table)
+
+    !table[1] = !nextComp
+    if (!nextComp.hardType eq 'FLAN') then
+      if(!nextComp.shop.not()) then
+        !table[2] = 2
+      else
+        !table[2] = 1
+      endif
+    elseif (!nextComp.hardType inset ('ELBO','BEND','TEE','OLET')) then
+      !table[2] = 0
+      if (!nextComp.hardType inset ('TEE','OLET')) then
+        if (!prevComp.hardType eq 'COUP' and !nextComp.hardType inset ('TEE','OLET')) then
+          !table[2] = 1
+        else
+          !table[2] = 2
+        endif
+      endif
+
+      if (!nextComp.hardType inset ('ELBO', 'BEND') and !nextComp.shop.not()) then
+        if (!nextComp.aPos.eq(!nextComp.pPos[1])) then
+          !table[2] = 1
+        else
+          !table[2] = 2
+        endif
+      endif
+
+      if (!nextComp.type.eq('PTAP')) then
+        !table[2] = 3
+      endif
+
+    else
+      if (!nextComp.hardType eq 'COUP') then
+        if (!nextComp.shop) then
+          !table[2] = 0
+        else
+          if (!prevComp.hardType eq 'COUP' and !prevComp.tGeom) then
+            !table[2] = 1
+          else
+            !table[2] = 2
+          endif
+        endif
+      else
+        if (!nextComp.aPos.eq(!nextComp.pPos[1])) then
+          !table[2] = 1
+        else
+          !table[2] = 2
+        endif
+      endif
+    endif
+
+    !posRefTable.append(!table)
+
+  endif
+
+  !consistOnlyTube = !this.spoolRef.belrfa.first().hardType eq 'TUBI' and !this.spoolRef.belrfa.last().hardType eq 'TUBI'
+  !isConnectedWithTwoCoupling = !consistOnlyTube and !posRefTable[1][1].hardType eq 'COUP' and !posRefTable[2][1].hardType eq 'COUP' and !posRefTable[1][1].tGeom
+  handle any
+    !isConnectedWithTwoCoupling = false
+  endhandle
+
+  !nextIsShop = !posRefTable[2][1].shop
+  handle any
+    !nextIsShop = true
+  endhandle
+
+  if (!isConnectedWithTwoCoupling and !nextIsShop) then
+    !posRefTable[1][2] = 2
+  endif
+
+  return !posRefTable
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      filterTubes
+--
+-- Description: return any branch ends which may need to be dimensioned.
+--
+--
+---------------------------------------------------------------------------
+define method .filterTubes(!tubeRef is DBREF )is ARRAY
+
+  !return = ARRAY()
+  !prevComp = prev of $!tubeRef
+  handle any
+    !prevComp = !tubeRef
+    !return[1] = !prevComp
+  endhandle
+
+  !nextComp = next of $!tubeRef
+  handle any
+    !nextComp = !tubeRef
+    !return[2] = !nextComp
+  endhandle
+
+  return !return
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      showTable
+--
+-- Description: Show what the filtered dimension points look like as a list
+-- for debugging the dimension list.
+--
+--
+---------------------------------------------------------------------------
+define method .showTable(!input is ARRAY)
+
+  do !a index !input
+    if nint(!a / 2) eq (!a / 2) then
+      !to   = !input[!a][1].flnn
+      !type = !input[!a][1].namesq
+      !ppoint = !input[!a][2]
+      !text= '$!a To P$!ppoint of $!type $!to'
+    else
+      !from   = !input[!a][1].flnn
+      !ppoint = !input[!a][2]
+      !type = !input[!a][1].namesq
+      !text= '$!a From P$!ppoint of $!type $!from'
+    endif
+    write $!text
+  enddo
+
+endmethod
+
+
+------------------------------------------------------------------------
+--
+-- Method:      checkNonTubeElement
+--
+-- Description: check non tube element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .checkNonTubeElement(!component is DBREF, !componentList is ARRAY, !currentIndex is REAL) is ARRAY
+
+  !branchRef     = !component.owner
+  !componentSize = !componentList.size()
+  !posRefTable   = object ARRAY()
+
+  if (!component.sequ eq 1) then
+    -- check if there is connected element
+    if (!currentIndex ne 1) then
+      !table[1] = !component
+      !table[2] = 0
+      !posRefTable.append(!table)
+    endif
+
+    !connectionInfo = !this.checkConnectElement(!component)
+    if (!connectionInfo.set()) then
+      if (!componentList.findfirst(!connectionInfo[1]).unset()) then
+        return !posRefTable
+      endif
+
+      !posRefTable.append(!connectionInfo)
+
+      if (!branchRef.mCount eq 1) then
+        !table[1] = !component
+
+        if (!component.type inset ('BEND', 'ELBO')) then
+          !table[2] = 0
+        else
+          !table[2] = 1
+        endif
+        if !component.type.eq('PTAP')  then
+          !table[2] = 3
+        endif
+        !posRefTable.append(!table)
+      endif
+      return !posRefTable
+    endif
+  endif
+
+  !table[1] = !component
+
+  if (!component.type inset ('BEND','ELBO')) then
+
+    if (!currentIndex eq 1) then
+      !table[2] = 1
+
+    elseif (!currentIndex eq !componentSize) then
+      !table[2] = 0
+
+    else
+      !table[2] = 0
+    endif
+  elseif !component.type.eq('PTAP')  then
+    !table[2] = 3
+  else
+
+    !table[2] = 0
+  endif
+
+  !posRefTable.append(!table)
+
+  return !posRefTable
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      checkConnectElement
+--
+-- Description: check connect element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .checkConnectElement(!compRef is DBREF) is ARRAY
+
+  !posRefTable   = object ARRAY()
+  !branchRef     = !compRef.owner
+
+  !branchHeadRef = !branchRef.hRef
+  !branchTailRef = !branchRef.tRef
+
+  if (!branchHeadRef.badRef().not()) then
+    if (!branchHeadRef.type inset ('TEE','OLET')) then
+      !posRefTable[1] = !branchHeadRef
+      !posRefTable[2] = 0
+    endif
+  endif
+
+  if (!branchTailRef.badRef().not()) then
+    if (!branchTailRef.type inset ('TEE','OLET')) then
+      !posRefTable[1] = !branchTailRef
+      !posRefTable[2] = 0
+    endif
+  endif
+
+  return !posRefTable
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      getBranchComponent
+--
+-- Description: get branch component
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getBranchComponent() is ARRAY
+  !pipeSpoolManager = object PIPESPOOLMANAGER()
+  !spoolComponents  = !pipeSpoolManager.getBranchElements(!this.spoolRef)
+  !branchList  = object ARRAY()
+  !branCompList = object ARRAY()
+
+  -- adds each entry branch if the branch does not exist in the list
+  do !entry values !spoolComponents
+    !branRef = !entry.owner
+    -- see if we can find the branch in the rest of the list
+    !index = !branchList.findfirst(!branRef)
+    if (!index.unset()) then
+      --if we can't find the branch in the branch list we add it
+      !branchList.append(!branRef)
+      !index = !branchList.size()
+      -- declare the last branchlist array member as void
+      !branCompList[!index] = object ARRAY()
+    endif
+    -- add a component to the bran comp list array
+    !branCompList[!index].append(!entry)
+  enddo
+  -- this seems to work and returns a list of components to dimension
+
+  return !branCompList
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      .stripUnwanted
+--
+-- Description: remove attas welds and unwanted tubes from the list of components
+--
+--
+---------------------------------------------------------------------------
+define method .stripUnwanted(!list is ARRAY) is ARRAY
+
+  !return = ARRAY()
+
+  do !a values !list
+    !interim= ARRAY()
+    do !b values !a
+      if !b.type inset('ATTA','WELD') then
+        skip
+      elseif !b.type.eq('TUBI') then
+        !additionalBranches = !this.filterTubes(!b)
+        --!additionalBranches = array()
+        -- we need to establish if the end of the tube is a branch or not
+        if !additionalBranches.size().gt(0) then
+          do !comp index !additionalBranches
+            if !comp eq(1) then
+              !interim.insert(1,!additionalBranches[!comp])
+            else
+              !interim.append(!additionalBranches[!comp])
+            endif
+          enddo
+        endif
+      else
+        !interim.append(!b)
+      endif
+
+    enddo
+    !return .append(!interim)
+  enddo
+
+  return !return
+
+endmethod
+
+
+------------------------------------------------------------------------
+--
+-- Method:      createDimension
+--
+-- Description: create dimension on drawing
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createDimension(!viewRef is DBREF)
+
+  !dimNoteRef     = !!collectAllFor('LAYE',|purp eq 'DIMA'|, !viewRef)
+  if (!dimNoteRef.unset()) then
+    return
+  endif
+
+  -- get component list with group by branch
+  !branCompList = !this.getBranchComponent()
+  if (!branCompList.unset()) then
+    return
+  endif
+  -- bran complist is an array of components including tube
+
+  --!branCompList =  !this.stripUnwanted(!branCompList)
+  !this.createdDimList.clear()
+  !this.dimSectionLimit.clear()
+
+  !!ce = !dimNoteRef[1]
+  handle any
+    return
+  endhandle
+
+  !psarfa = !this.spoolRef.psarfa[1]
+  handle any
+    !psarfa = object DBREF()
+  endhandle
+
+  !pslrfa = !this.spoolRef.pslrfa[1]
+  handle any
+    !pslrfa = object DBREF()
+  endhandle
+
+  --  !coupJoint = !psarfa.hardType eq 'BRAN' and !pslrfa.hardType eq 'WELD' or !psarfa.hardType eq 'WELD' and !pslrfa.hardType eq 'BRAN'
+  --  !coupJoint = !psarfa.hardType eq 'WELD' or !pslrfa.hardType eq 'WELD'
+
+  -- this loop creates all the dimensions
+  do !compList values !branCompList
+
+    !dimSourceTable = !this.getDimSourceData(!compList)
+    -- dimSourceTable is an array of two elements per component in !compList ignoring the tube
+    -- element 1 is a component dbref
+    -- element 2 is a real 0 1 2 or 3
+    !dimSourceTable.unique()
+
+    do !i from 1 to !dimSourceTable.size() - 1
+      !fromCompTable = !dimSourceTable[!i]
+      !toCompTable   = !dimSourceTable[!i + 1]
+      -- it'll be skipped if from and to position are same on a view
+      -- this does not work properly because it fails to check the specified ppoints
+      -- but it does remove same element dimensions
+      if (!this.checkDimPosView(!fromCompTable, !toCompTable).not()) then
+        skip
+      endif
+
+
+      -- is it an FTUB with a slanted end
+      skip if (!this.checkDimPosView(!fromCompTable, !toCompTable).not())
+
+      if (!fromCompTable[1].hardType eq 'FTUB' and !fromCompTable[1].compType eq 'SEND') then
+        !isStartPart = !fromCompTable[1].sequ eq 1
+        if (!isStartPart.not()) then
+          !fromCompTable[2] = 2
+        endif
+      endif
+
+      -- is it an FTUB with a slanted end
+      if (!toCompTable[1].hardType eq 'FTUB' and !toCompTable[1].compType eq 'SEND') then
+        !isStartPart = !toCompTable[1].sequ eq 1
+        if (!isStartPart.not()) then
+          !toCompTable[2] = 2
+        endif
+      endif
+
+      if (!toCompTable[1].hardType eq 'ATTA') then
+        !toCompTable[2] = 0
+        if (!fromCompTable[1].hardType eq 'TUBI') then
+          !tubeRef = !fromCompTable[1]
+          !attaRef = !toCompTable[1]
+
+          if (!tubeRef.lPos.distance(!attaRef.lPos) lt 0.5mm) then
+            !toCompTable[2] = 2
+          endif
+        endif
+      endif
+
+      -- get direction of dimension
+      !dimDirData = !this.getDimDir(!fromCompTable, !toCompTable, !viewRef)
+
+      skip if !dimDirData.unset()
+
+      !this.createLinearDim(!fromCompTable, !toCompTable, !dimDirData)
+
+      if (!fromCompTable[1].hardType eq 'TUBI' and !toCompTable[1].hardType eq 'ATTA') then
+        !tubeRef = !fromCompTable[1]
+        !attaRef = !toCompTable[1]
+
+        !isOnTubePos = !tubeRef.aPos.distance(!attaRef.aPos) gt 0.1mm and !tubeRef.lPos.distance(!attaRef.lPos) gt 0.1mm
+        if (!isOnTubePos) then
+          !fromCompTable[2] = 2
+          !this.createLinearDim(!toCompTable, !fromCompTable, !dimDirData)
+        endif
+      endif
+
+    enddo
+  enddo
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      createLinearDim
+--
+-- Description: create linear dimension on drawing
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createLinearDim(!fromDimData is ARRAY, !toDimData is ARRAY, !dimDirData is ARRAY)
+
+  !fromEntry  = !fromDimData[1]
+  !fromPpoint = !fromDimData[2]
+
+  !toEntry    = !toDimData[1]
+  !toPpoint   = !toDimData[2]
+
+  !vreg = vreg of view
+
+  !xmin = !vreg[1]
+  !ymin = !vreg[2]
+  !xmax = !vreg[3]
+  !ymax = !vreg[4]
+
+  if (defined(!!pfContext)) then
+    !!pfContext.delete()
+  endif
+
+  !ppCtx = object PFCONTEXT()
+  --  !ppCtx.globalInstance()
+  !ppCtx.loadDefaults()
+
+  if (defined(!!distanceFMT)) then
+    !dUnit = !!distanceFMT
+    !dUnit.dp = 0
+  else
+    !dUnit = object FORMAT()
+  endif
+
+  if (defined(!!boreFMT)) then
+    !bUnit = !!boreFMT
+    !bUnit.dp = 0
+  else
+    !bUnit = object FORMAT()
+  endif
+
+  if (!dUnit.set() and !bUnit.set()) then
+    UCODE $!<dUnit.units> DISTANCE $!<bUnit.units> BORE
+    handle any
+    endhandle
+  endif
+
+  !viewScale = vscal of VIEW
+  !viewDir   = dir of VIEW
+
+  do !entry values !dimDirData
+    -- dimension direction and principal orientation: HOR(IZONTAL),VER(TICAL),NON(-ORTHOGONAL)
+    !dimDir     = !entry.part(1)
+    !dimDirAxes = !entry.part(2)
+    -- compose (both 2D/3D) start, end, mid position
+    !fromPos   = !!draGetPipeEntryPos(!fromDimData)
+    !toPos     = !!draGetPipeEntryPos(!toDimData)
+    !from3DPos = !fromPos[1]
+    !to3DPos   = !toPos[1]
+    !from2DPos = !fromPos[2]
+    !to2DPos   = !toPos[2]
+    !mid2DPos  = !from2DPos.midPoint(!to2DPos)
+
+    --var !mid3DPos enupos of x $!mid2DPos.east y $!mid2DPos.north
+    var!side vside of $!mid2DPos
+
+    -- compute XYpos
+    if !dimDirAxes.eq('HOR') then
+      -- avoid zero dimension
+      skip if (abs(!from2DPos.east - !to2DPos.east) leq 1mm)
+      if !side.match('Down').boolean() then
+        !ypos = !ymin
+      else
+        !ypos = !ymax
+      endif
+      !xpos = !mid2DPos.east
+    elseif !dimDirAxes.eq('VER') then
+      -- avoid zero dimension
+      skip if (abs(!from2DPos.north - !to2DPos.north) leq 1mm)
+      if !side.match('Left').boolean() then
+        !xpos = !xmin
+      else
+        !xpos = !xmax
+      endif
+      !ypos = !mid2DPos.north
+    elseif !dimDirAxes.eq('NON') then
+      -- avoid zero dimension
+      skip if !from2DPos.distance(!to2DPos).leq(1mm)
+      !dir2d = !from2DPos.direction(!to2DPos)
+      !ortholine = !mid2DPos.line(!mid2DPos.offset(!dir2d.orthogonal(Z),100mm))
+      !bl = object POSITION('x' & !xmin & ' y' & !ymin)
+      !br = object POSITION('x' & !xmax & ' y' & !ymin)
+      !tr = object POSITION('x' & !xmax & ' y' & !ymax)
+      !tl = object POSITION('x' & !xmin & ' y' & !ymax)
+      !left = !bl.line(!tl)
+      !right = !br.line(!tr)
+      !down = !bl.line(!br)
+      !up = !tl.line(!tr)
+
+      !errorOccurred = false
+      if !side.match('Left').boolean().and(!side.match('Down').boolean()) then
+        !intsc[1] = !left.intersection(!ortholine)
+        handle ANY
+          !errorOccurred = true
+        elsehandle none
+          !dist[1] = !mid2DPos.distance(!intsc[1])
+          !intsc[2] = !down.intersection(!ortholine)
+          handle ANY
+            !errorOccurred = true
+          elsehandle none
+            !dist[2] = !mid2DPos.distance(!intsc[2])
+          endhandle
+        endhandle
+      elseif !side.match('Right').boolean().and(!side.match('Down').boolean()) then
+        !intsc[1] = !right.intersection(!ortholine)
+        handle ANY
+          !errorOccurred = true
+        elsehandle none
+          !dist[1] = !mid2DPos.distance(!intsc[1])
+          !intsc[2] = !down.intersection(!ortholine)
+          handle ANY
+            !errorOccurred = true
+          elsehandle none
+            !dist[2] = !mid2DPos.distance(!intsc[2])
+          endhandle
+        endhandle
+      elseif !side.match('Right').boolean().and(!side.match('Up').boolean()) then
+        !intsc[1] = !right.intersection(!ortholine)
+        handle ANY
+          !errorOccurred = true
+        elsehandle none
+          !dist[1] = !mid2DPos.distance(!intsc[1])
+          !intsc[2] = !up.intersection(!ortholine)
+          handle ANY
+            !errorOccurred = true
+          elsehandle none
+            !dist[2] = !mid2DPos.distance(!intsc[2])
+          endhandle
+        endhandle
+      elseif !side.match('Left').boolean().and(!side.match('Up').boolean()) then
+        !intsc[1] = !left.intersection(!ortholine)
+        handle ANY
+          !errorOccurred = true
+        elsehandle none
+          !dist[1] = !mid2DPos.distance(!intsc[1])
+          !intsc[2] = !up.intersection(!ortholine)
+          handle (2,870)
+            !errorOccurred = true
+          elsehandle none
+            !dist[2] = !mid2DPos.distance(!intsc[2])
+          endhandle
+        endhandle
+      endif
+
+      if (!errorOccurred.not()) then
+        if !dist[1].lt(!dist[2]) then
+          !orthoDir = !mid2DPos.direction(!intsc[1])
+        else
+          !orthoDir = !mid2DPos.direction(!intsc[2])
+        endif
+
+        !dpos = !mid2DPos.offset(!orthoDir,8mm)
+      else
+        if !side.match('Left').boolean().and(!side.match('Down').boolean()) then
+          !dpos = !down.startPosition
+        elseif !side.match('Right').boolean().and(!side.match('Down').boolean()) then
+          !dpos = !down.startPosition
+        elseif !side.match('Right').boolean().and(!side.match('Up').boolean()) then
+          !dpos = !up.startPosition
+        elseif !side.match('Left').boolean().and(!side.match('Up').boolean()) then
+          !dpos = !up.startPosition
+        else
+        endif
+
+      endif
+
+      !xpos = !dpos.east
+      !ypos = !dpos.north
+    endif
+
+    -- now create dimension
+    new LDIM dtan para
+
+    !this.setDimDefault()
+    dpos x $!xpos y $!ypos
+    dir $!dimDir
+
+    --    !isBranType = !fromEntry.hardType eq 'BRAN' or !toEntry.hardType eq 'BRAN'
+    --    !isSameDest = !fromEntry eq !toEntry
+
+    new DPPT
+    ddname $!fromEntry
+    nppt $!fromPpoint
+    handle (64,277)
+    endhandle
+
+    !tempFromPos = !fromEntry.pPos[!fromPpoint]
+    handle any
+      !tempFromPos = object POSITION()
+    endhandle
+
+    new DPPT
+    !toDppt = !!ce
+    ddname $!toEntry
+    nppt $!toPpoint
+    handle (64,277)
+    endhandle
+
+    !tempToPos = !toEntry.pPos[!toPpoint]
+    handle any
+      !tempToPos = object POSITION()
+    endhandle
+
+    if (!tempFromPos.set() and !tempToPos.set() and !tempFromPos.distance(!tempToPos) gt 0.5mm) then
+      var !tempFrom2DposStr shpos of $!<tempFromPos>
+      var !tempTo2DposStr   shpos of $!<tempToPos>
+
+      !distance = !tempFrom2DposStr.position().distance(!tempTo2DposStr.position())
+      if (!distance.nint() lt 1mm) then
+        !distance = -1
+      else
+        !distance = !distance / !viewScale
+      endif
+    else
+      !distance = -1
+    endif
+
+    if (!distance ne 0) then
+      !dimDistance = !!ce.exdmtxt
+      !isValidOffset = abs(!dimDistance.real() - !distance.real()) lt 1mm
+      handle any
+        !isValidOffset = true
+      endhandle
+
+      if (!isValidOffset.not()) then
+        !tempPlane  = object PLANE(!from3DPos, object ORIENTATION('X is ' & !viewDir.string().before('WRT')))
+        !revisedDir = !tempPlane.direction().string().before('WRT')
+
+        LDIM
+
+        DIR $!<revisedDir>
+        handle any
+        elsehandle none
+          !isValidDist = !toDppt.exdmtxt.real() gt 0.1mm
+          handle any
+            !isValidDist = false
+          endhandle
+
+          if (!isValidDist.not()) then
+            !revisedDir = !tempPlane.direction().cross(!viewDir).string().before('WRT')
+            handle any
+            elsehandle none
+              DIR $!<revisedDir>
+              handle any
+              endhandle
+            endhandle
+          endif
+        endhandle
+      endif
+    endif
+
+    !excessForSaddle = 0
+    --    if (!fromEntry.hardType eq 'OLET' or !toEntry.hardType eq 'OLET') then
+    --      !isSaddleConnection = !fromEntry.compType inset ('SSAH', 'SSAT') or !toEntry.compType inset ('SSAH', 'SSAT')
+    --      if (!isSaddleConnection) then
+    --        !excessForSaddle = !!pfContext.defaultBossExcess
+    --      endif
+    --    endif
+
+    !fromExcess = !fromEntry.lExcess
+    handle (2,201)
+      !fromExcess = 0
+    endhandle
+
+    !toExcess   = !toEntry.aExcess
+    handle (2,201)
+      !toExcess = 0
+    endhandle
+
+    --    !excess = !fromEntry.aExcess + !fromEntry.lExcess + !toEntry.aExcess + !toEntry.lExcess + !excessForSaddle
+    !excess = !fromExcess + !toExcess + !excessForSaddle
+    handle any
+      !excess = 0
+    endhandle
+
+    skip if (!excess eq 0)
+
+    !markExcess = !excess.string(!!distanceFMT).real().value()
+
+    LDIM
+    dmtx |#DIM + $!markExcess|
+    Ptcheight 1.5mm
+  enddo
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      setDimDefault
+--
+-- Description: set default of dimension
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setDimDefault()
+  do !para values !this.dimOptions
+    !func    = !para[1]
+    !pType   = !para[2]
+    !tpValue = !para[3]
+
+    if (!pType.upcase().trim() eq 'REAL') then
+      $!func $!tpValue
+    endif
+  enddo
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      getDimDir
+--
+-- Description: get direction of dimension
+--
+--
+------------------------------------------------------------------------
+define method .getDimDir(!fromDimData is ARRAY, !toDimData is ARRAY,!view is DBREF) is ARRAY
+
+  !dimDirData = ARRAY()
+
+  -- evaluate horizontal / vertical dimension direction of view
+  var !rdir viewdir right
+  var !udir viewdir up
+  !horDir = !rdir.direction()
+  !verDir = !udir.direction()
+
+  -- get 3d position of source entries
+  !from3DPos = !!draGetPipeEntryPos(!fromDimData)[1]
+  !to3DPos   = !!draGetPipeEntryPos(!toDimData)[1]
+
+  -- get the from position depending on its type
+  if (!fromDimData[1].hardType eq 'BRAN') then
+    !dirFromPos = !fromDimData[1].hPos.wrt(world)
+  elseif (!fromDimData[1].type eq 'PTAP') then
+    -- the current component is a ptap which means that it can be to an offline branch
+    -- or it is in line. This is important because the dimension positions are different
+    -- we can only find out which it is by checking the the other component
+    if !toDimData[1].type.eq('BRAN').and(!toDimData[1].neq(!fromDimData[1].owner)) then
+      !dirFromPos = !fromDimData[1].pPos[3].wrt(world)
+    else
+      !dirFromPos = !fromDimData[1].pPos.wrt(world)
+    endif
+  else
+    if (!fromDimData[1].hardType eq 'TUBI') then
+      !dirFromPos = !fromDimData[1].aPos.wrt(world)
+    else
+      !dirFromPos = !fromDimData[1].pos.wrt(world)
+    endif
+  endif
+
+  if (!toDimData[1].hardType eq 'BRAN') then
+    !dirToPos = !toDimData[1].tPos.wrt(world)
+  elseif (!toDimData[1].type eq 'PTAP') then
+    if !fromDimData[1].type.eq('BRAN').and(!fromDimData[1].neq(!toDimData[1].owner)) then
+      !dirToPos = !toDimData[1].pPos[3].wrt(world)
+    else
+      !dirToPos = !toDimData[1].pPos.wrt(world)
+    endif
+  else
+    if (!toDimData[1].hardType eq 'TUBI') then
+      !dirToPos = !toDimData[1].lPos.wrt(world)
+    else
+      !dirToPos = !toDimData[1].pPos.wrt(world)
+    endif
+  endif
+
+  if (!fromDimData[1].hardType eq 'BRAN' and !toDimData[1].hardType eq 'ATTA') then
+    !tubeRef = !fromDimData[1]
+    !attaRef = !toDimData[1]
+
+    !isOnTubePos = !tubeRef.aPos.distance(!attaRef.aPos) gt 0.1mm and !tubeRef.lPos.distance(!attaRef.lPos) gt 0.1mm
+    if (!isOnTubePos.not()) then
+      return !dimDirData
+    endif
+  elseif (!fromDimData[1].hardType eq 'ATTA' and !toDimData[1].hardType eq 'BRAN') then
+    !tubeRef = !toDimData[1]
+    !attaRef = !fromDimData[1]
+
+    !isOnTubePos = !tubeRef.aPos.distance(!attaRef.aPos) gt 0.1mm and !tubeRef.lPos.distance(!attaRef.lPos) gt 0.1mm
+    if (!isOnTubePos.not()) then
+      return !dimDirData
+    endif
+  endif
+
+  !dir = !dirFromPos.direction(!dirToPos)
+  handle any
+    return !dimDirData
+  endhandle
+
+  !tempDir = !from3DPos.direction(!to3DPos)
+
+  !isSkewDir = !horDir.dot(!tempDir).abs().between(0.1, 0.99) or !verDir.dot(!tempDir).abs().between(0.1, 0.99)
+
+  if (!horDir.dot(!tempDir).abs().between(0.1, 0.99) and !verDir.dot(!tempDir).abs().between(0.1, 0.99)) then
+    !isSkewDir = false
+  endif
+
+  if (!isSkewDir) then
+    if (!horDir.dot(!tempDir).abs() lt !verDir.dot(!tempDir).abs()) then
+      !dir = !verDir
+    else
+      !dir = !horDir
+    endif
+  endif
+
+  -- P45482 fix to iron out small direction differences from the previous line
+  !flowDir = object DIRECTION(!dir.string())
+
+
+  !isPerpendicularDir = !flowDir.isPerpendicular(!view.dir)
+  handle any
+    !isPerpendicularDir = false
+  endhandle
+
+  if !isPerpendicularDir then
+    -- one true distance dimension
+    if !flowDir.isParallel(!horDir) then
+      !dimDir = ' HOR'
+    elseif !flowDir.isParallel(!verDir) then
+      !dimDir = ' VER'
+    else
+      !dimDir = ' NON'
+    endif
+    !insertDir = !flowDir.string().before('WRT').replace(' ','') & !dimDir
+    !dimDirData.append(!insertDir)
+  else
+    if !flowDir.isParallel(!horDir) then
+      !dimDir = ' HOR'
+    elseif !flowDir.isParallel(!verDir) then
+      !dimDir = ' VER'
+    else
+      !dimDir = ' NON'
+    endif
+
+    !insertDir = !flowDir.string().before('WRT').replace(' ','') & !dimDir
+
+    !dimDirData.append(!insertDir)
+  endif
+
+  return !dimDirData
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      checkDimPosView
+--
+-- Description: check dimension position on view
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .checkDimPosView(!fromCompData is ARRAY, !toCompData is ARRAY) is BOOLEAN
+  !from2DPos = !!draGetPipeEntryPos(!fromCompData)[3]
+  handle (2,752)
+    return false
+  endhandle
+
+  -- get the sheet position of the passed element P0
+  !to2DPos = !!draGetPipeEntryPos(!toCompData)[3]
+  handle (2,752)
+    return false
+  endhandle
+
+  -- compare from position and to position
+  if (!from2DPos eq !to2DPos) then
+    return false
+  else
+    return true
+  endif
+endmethod
+-- End of method

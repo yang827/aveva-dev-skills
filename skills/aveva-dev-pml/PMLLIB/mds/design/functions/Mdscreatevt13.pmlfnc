@@ -1,0 +1,455 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:  Mdscreatevt13.pmlfnc
+--   Type:  Function Definition
+--   Group:  Multi Discipline Supports Application
+--     Keyword:  MDS
+--   Module:  design
+--   Replaces:          MVS101
+--
+-- Author:  Neale Morris
+-- Created:  Tuesday 16th April 2002
+--
+--
+-- Description:
+-- function to create Vessel support frame type 'VT13'
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         STRING       Method of creating support
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdscreateVT13(!dummymethod is STRING)
+
+  -- Save current db position
+
+  !ce = !!ce
+
+  -- Find current units and set the distance unit to metric
+  !currentunits = !!kgetsetunits()
+
+  -- Initialise variables
+  call !!mdsresetpins(1,10)
+  !form      = !!mdsVT13
+  !support   = !!mdsVT13.support
+  !selection = !!mdsSetSteel.size.selection('Rtext')
+  !datum     = !support.datum
+  !stru      = !support.stru
+  !name      = !stru.name
+  !p9dir     = !support.p9dir
+  !p10dir    = !support.p10dir
+  !p11dir    = !support.p11dir
+  !alias     = !support.alias
+  !datumName = !name & '/' & 'DATUM'
+  !srefName  = !name & '/' & 'SREF'
+  !unlocked  = ARRAY()
+  !resetLock = false
+
+  --------------------------------------------------------------------------------
+  -- Check that Datum atta has been created
+  if (!datum.set().not())then
+    !!alert.message('Datum support atta has not been created')
+    !!kRestoreUnits(!currentunits)
+    return
+  endif
+
+  -- Can we write to the spref attribute of the SREF atta
+  -- and the stru
+
+  if !support.datum.badref().not() then
+    !srefName = !support.datum.name.before('/DATUM') + '/SREF'
+    if !!mdsComClaimDac(!support.stru,'DACMOD','POS').not() or !!mdsComClaimDac(!srefName.dbref(),'DACMOD','SPREF').not() then
+      !despars = !srefName.dbref().despar
+      !!mdsResetDims(!form,!despars)
+      !!kRestoreUnits(!currentunits)
+      !!alert.error('Unable to change the support as write access to the SREF atta is not available')
+      return
+    endif
+  endif
+
+  !bore      = !!mdsVT13.support.atta[1].abore
+  -- Store section name and matref for each member
+  -- for reseting later
+
+  !storeMat = ARRAY()
+  !storeMat = !!mdsStoreMat(!name)
+
+  -- Identify bracket on equipment
+
+  label /Element1
+
+  prompt off
+  prompt load escape |Identify Vessel Support Clip|
+  id pyra box @
+  handle (61,528)
+    prompt on
+    !!kRestoreUnits(!currentunits)
+    return
+  endhandle
+  prompt dismiss
+  prompt on
+  !sb = !!ce
+
+  -- Is the identified pyra owned by a piece of equipment
+
+  equi
+  handle any
+    !!alert.error('Identified pyra is not owned by a piece of equipment. Please retry')
+    golabel /Element1
+  elsehandle none
+    !equip1 = !!ce
+  endhandle
+
+  label /Element2
+
+  prompt off
+  prompt load escape |Identify Vessel Wall|
+  id cyli @
+  handle (61,528)
+    prompt on
+    !!kRestoreUnits(!currentunits)
+    return
+  endhandle
+  prompt dismiss
+  prompt on
+  !wall = !!ce
+
+  -- Is the identified cyli owned by a piece of equipment
+
+  equi
+  handle any
+    !!alert.error('Identified cylinder is not owned by a piece of equipment. Please retry')
+    golabel /Element2
+  elsehandle none
+    !equip2 = !!ce
+  endhandle
+
+  -- Is the identified cyli owned by the same piece of equipment
+
+  if !equip1.name.neq(!equip2.name) then
+    !!alert.error('Identified cylinder is not owned by the same equipment. Aborting!')
+    return
+  endif
+
+  -- Generate Please Wait... Prompt
+  !!mdscreatemess(true)
+
+  -- Set elevation of attas in line with bracket
+
+  !!ce = $!datumName
+  through $!sb
+  !!ce = $!srefName
+  through $!sb
+
+  !!mdsDacControl(true)
+
+  --<dw>sep2008 dun979 - To operate with defaults in Paragon for mds12
+  !mdsattaobj  = object MDSREADPARSDATA()
+  !unusedmdsattadefs = !mdsattaobj.mdsdefsdata(!alias,!bore.real().value())
+  !despars = !mdsattaobj.despars
+  --!despars = !!mdsPar$!alias[$!bore].despars
+  --<dw>sep2008 dun979 - End of mod
+
+  -- DP 1 = standards sheet dimension L actual distance (initially 0 in params file)
+  --!dimL = $!despars[1]
+  -- DP 2 = min distance from bolt centre to face of vessel wall (125mm)
+  !firstBoltDist = $!despars[2]
+  -- DP 3 = distance from end of support to centre of first bolt hole (44mm)
+  !steelBackDist = $!despars[3]
+  -- DP 4 = dimension L minimum value
+  !dimLmin = $!despars[4]
+  !dimLmax = 900
+
+  -- get direction from datum to face of vessel wall
+  pin 1 at $!wall
+  pin 1 dir d wrt /*
+  pin 1 clear 0 beh $!sb
+  pin 2 copy p0 of $!datum
+  pin 2 dir d
+  pin 2 thro pin 1
+  pin 2 dir tow pin 1
+  -- pin 2 now holds direction for X-axis of support frame
+  -- and the p9 directions for the support attas
+
+  -- go to the attas and reorientate p9 to suit
+  var !p2d pin 2 dir wrt /*
+  !!ce = $!datumName
+  plane d thr pin 2
+  ori and p9 is $!p2d wrt /*
+  !!ce = $!srefName
+  plane d thr pin 2  ori and p9 is $!p2d wrt /*
+  !support.p9dir = p9 dir
+
+  -- now reset pin 2 to match p9 of datum (this may have been rotated)
+  !!ce = $!datumName
+  pin 2 copy p9
+
+  -- Navigate to Stru
+  !!ce = !stru
+
+  -- Pins now in position create Framework
+  delete stru mem
+  handle (41,66) (2,113) (2,113)
+  endhandle
+
+  !mdstemp = /MDS/$!alias/$!selection
+  :mdscheck $!mdstemp.:mdscheck
+
+  -- Temporarily Position Structure at Datum Atta
+  at $!datum
+
+  new frmw $!name/MAIN
+  !frmwsupport = !!ce
+
+  -- Copy required template/s
+  !!ce         = /MDS/$!alias/$!selection
+  !frmw        = !!kCollectAllFor('FRMW', '', !!ce)
+  !subs        = !!kCollectAllFor('SUBS', '', !!ce)
+  !frameFormat = before(!frmw[1].name, '-FRMW')
+
+  --------------------------------------------------------------------------------------
+  -- Navigate back to support and create template elements
+
+  !!ce = !frmwsupport
+  copy $!frmw[1] rename $!frameFormat $!name
+
+  -- Set stru description for template recognition
+
+  !desc = desc of /MDS/$!alias/$!selection
+
+  -- Position and Orientate Structure
+  !!ce = !stru
+  desc '$!desc'
+
+  -- Navigate back to support and create template elements
+  do !i indices !subs
+    NEW SUBS $!name/SUBS$!i COPY ATTRIB OF $!subs[$!i]
+    COPY MEM OF $!subs[$!i] RENAME $!frameFormat $!name
+  enddo
+
+  -- save spref of joint and unset temporarily to stop desp warning messages
+  SJOI 1 of SNOD 1 of $!<name>-BAR-1
+  var !saveSPREF SPREF
+  SPREF unset
+
+  stru
+
+  -- Orientate stru
+  ori -x is $!p2d wrt /*
+
+  -- now set the POSS and POSE for bar 1
+  pin 1 at $!stru
+  pin 1 dir $!p2d wrt /*
+  pin 1 clear ($!firstBoltDist - $!steelBackDist) inf $!wall
+  $!<name>-BAR-1 POSE pin 1
+
+  -- move support bracket to centre of steel
+  pin 2 copy pin 1
+  pin 2 dir d
+  pin 2 clear 0 beh $!<name>-BAR-1
+  var !dist construct distance pin 1 to pin 2
+  var !halfway ($!dist / 2)
+  pin 2 dist -$!halfway
+  !!ce = $!datumName
+  plan d thr pin 2
+  !!ce = $!srefName
+  plan d thr pin 2
+
+  -- Reset distance gadget to new position
+  !!ce = !datum
+  call !!mdsDistance(!!mdsVT13)
+
+  -- Set dimensions into srefs despars
+  !!ce = !datum
+  pin 1 at ce
+  pin 1 dir $!p2d wrt /*
+  pin 2 copy pin 1
+  pin 2 clear 0 inf $!wall
+  var !dim1 const dist pin 1 to pin 2
+  pin 1 copy p9
+  !!mdsVT13.dim1.val = $!dim1
+  !!mdsDacControl(false)
+
+  -- Select correct spref for sref
+  !!ce = $!<name>/SREF
+  !!mdsDacControl(true)
+  sel spref with styp '$!alias-$!selection' spec /MDF
+
+  -- set desp to cut back end of section joining clip with -ve cyl
+  SJOI 1 of SNOD 1 of $!<name>-BAR-1
+  SPREF $!saveSPREF
+  var !negdiam prop CLID of $!<name>/DATUM
+  var !clipthk prop CTHK of $!<name>/DATUM
+  var !offset  prop CCLR of $!<name>/DATUM
+
+  -------------------------------------------------------------------
+  --<wd>nov2003
+  DESP ($!negdiam + 2 * $!clipthk) ($!offset / 2)
+
+  -- *** IMPORTANT NOTE:- *** -
+  --     DESP[2] at the SJOI is NOT REQUIRED NOW that the PIPE CLAMP GMSE
+  --     has been CONSTRUCTED CORRECTLY and FITS around the PIPE with the
+  --     REQUIRED 3mm CLEARANCE
+  DESP ($!negdiam + 2 * $!clipthk) 0mm
+
+  -- The POSS of the SCTN is NOW CALCULATED to be at the INTERESCTION of
+  -- the O/DIA of the associated Pipe Clamp <AC35> and the EXTREMITIES
+  -- of the Structural SCTN selected for this type of SUPPORT
+
+  -- Calculate the Half Width Dimension of the SCTN
+  !!ce = !datum
+  pin 10 copy p10
+  pin 9 copy pin 10
+  pin 9 at ce
+  pin 10 plane pin 10 clear 0 beh $!<name>-BAR-1
+  !halfsctn = !!kstrreal('cons dist pin 9 to plane pin 10')
+
+  -- Calculate the Offset for the POSS of the SCTN
+  !halfdiam = ( (!negdiam.real() / 2 ) + !clipthk.real() )
+  !adjacent = (!halfdiam.power(2) - !halfsctn.power(2))
+  !possoffs = !adjacent.sqrt()
+  -- Set Pin9 at the P9 of the DATUM Atta to get the Correct Direction
+  pin 9 copy p9
+  -- Place Pin at the ORIGIN/POSS Location at the SCTN
+  pin 9 at $!<name>-BAR-1
+  pin 9 dist $!possoffs
+
+  -- Goto SCTN and Position POSS
+  !!ce = $!<name>-BAR-1
+  POSS pin 9
+  -- Position the SNOD at the DATUM ATTA to get the Correct Cut-Out Shape for the SJOI
+  SNOD 1 of $!<name>-BAR-1
+  zdist -$!possoffs
+
+  --<wd>nov2003
+  -------------------------------------------------------------------
+
+
+  !!ce = $!<name>/SREF
+  !!mdsSetIspe()
+  !!mdsSelLstu(!!ce)
+
+  -- Set position flag
+
+  !support.position = true
+
+  -- Store design parameters
+
+  !!mdsDacControl(true)
+  despar $!dim1 $!firstBoltDist $!steelBackDist $!dimLmin
+
+  !!mdsDacControl(false)
+
+  -- Reset materials of sections
+
+  !!mdsResetMat(!storeMat)
+
+  -- Reset datum tag
+
+  !!ce = !datum
+  VAR !pOS POS WRT WORLD
+  $M/%PDMSUI%/DES/CLIB/GAIDTEXT 210 Datum $<$!pOS$>
+
+  -- Navigate to Structure
+  !!ce = !stru
+
+  -- Enhance elements using colour set for highlight
+  !colourlist = ARRAY()
+  !colourlist.append(!!ce)
+  !colourlist.appendarray(!support.atta)
+
+  -- Colour Support
+  call !!kenhancelist(!colourlist)
+
+
+  -- Update support data held in form
+  !!mdsVT13.support = !support
+
+  -- Show dimensions on graphics if required
+
+  if !!mdsVT13.graphicalDim then
+    !!mdsshowdim(!!mdsVT13)
+  endif
+
+  -- Reset all pins associated with this support
+  !!mdsresetpins(1,10)
+
+
+  -- Lock any items that have been locked
+
+  !!mdsDacControl(true)
+  if !resetLock then
+    do !lock values !unlocked
+      !!ce = !lock
+      lock all
+    enddo
+  endif
+
+  -- We need to add the associated branches to the ADP drawlist so they draw on the ADP drawing
+  -- plus the equipment
+
+  !!mdsDacControl(true)
+
+  !!ce = !datum
+  !mdsAdp = :MdsAdp
+  !mdsAdp.append(equi of $!sb )
+  !mdsAdp.append(bran of $!datum )
+  !mdsAdp.unique()
+
+  do !add from 1 to !mdsAdp.size()
+    :MdsAdp number $!add $!mdsAdp[$!add]
+  enddo
+
+  !!ce = !stru
+
+  -- clear any dimension errors from previous support build and determine
+  -- if any min/max errors exist for this build
+  !!mdsVT13.dimerrors.clear()
+
+  -- check if the created framework's L dimension (dim 1) is less then minimum
+  -- this cannot be checked as part of consistency report as there is no way
+  -- at present to calculate the min sctn length taking the pipe OD into account
+  if ($!dim1 lt $!dimLmin) then
+    !!kRestoreUnits(!currentunits)
+    prec var 1/16
+    var !dimLminD dist($!dimLmin)
+    units mm bore mm dist
+    !error = |Support dimension 1 is less than allow minimum of $!dimLminD|
+    !!alert.warning(!error)
+    !!mdsVT13.dimerrors.append(!error)
+  endif
+
+  -- check if the created framework's L dimension (dim 1) is greater than maximum
+  if ($!dim1 gt $!dimLmax) then
+    !!kRestoreUnits(!currentunits)
+    prec var 1/16
+    var !dimLmaxD dist($!dimLmax)
+    units mm bore mm dist
+    !error = |Support dimension 1 is greater than allow maximum of $!dimLmaxD|
+    !!alert.warning(!error)
+    !!mdsVT13.dimerrors.append(!error)
+  endif
+
+  --------------------------------------------------------------------------------------
+  -- Remove Wait.. Prompt from Screen
+  !!mdscreatemess(false)
+
+  !!mdsDacControl(false)
+
+  -- Reset Units
+  !!kRestoreUnits(!currentunits)
+
+  !!ce = !ce
+
+endfunction

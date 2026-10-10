@@ -1,0 +1,376 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            isousercwayelev.pmlfnc
+--   Type:          Function Definition
+--   Group:         ISOADP
+--     Keyword:     Isometric
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         25 March 2001
+--
+-- Description:
+-- Creates the elevation labels
+-- Only creates a label when the elevation changes for Cable Way
+--
+-- Assumptions:
+-- The current element is the layer
+--
+-- Logic for tagging:
+-- All BEND elements at P0
+-- All TEE or CROS in the vertical
+-- All elements whose PL is different from the PA at the PL
+--
+------------------------------------------------------------------------
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     ARRAY       The parts in the drawlist
+--    2    R     ISODEFAULTS The defaults settings
+--
+------------------------------------------------------------------------
+define function !!isoUserCwayElev(!allParts is ARRAY, !defaults is ISODEFAULTS)
+
+  -- Initialise variables
+  !elevLaye            = !!ce
+  !unusedTemplateRefe  = !defaults.elecElevTag.template
+  !offset              = !defaults.elecElevTag.offset[1].queryString() & ' ' & !defaults.elecElevTag.offset[2].queryString()
+  !tColour             = !defaults.elecElevTag.tColour
+  !fColour             = !defaults.elecElevTag.fColour
+  !fStyle              = !defaults.elecElevTag.fStyle & !defaults.elecElevTag.fThickness.replace('Thin','')
+  !cHei                = !defaults.elecElevTag.cHei.queryString()
+  !bendConn            = !defaults.elecElevTag.bendConn
+  !vertOn              = !defaults.elecElevTag.vertOn
+  !vertConn            = !defaults.elecElevTag.vertConn
+  !keep                = ARRAY()
+  !parts               = ARRAY()
+
+  -- Set the layer colours
+  TXColour $!tColour  LFStyle $!fStyle  LFColour $!fColour  LLStyle $!fStyle  LLColour $!fColour
+
+  -- Clean any bad references
+  DELETE NULL ANNO
+    handle (64,353)
+      -- n elements with null or illegal DDNM attributes have been deleted
+    endhandle
+
+  -- Get all existing labels
+  VAR !existTags COLL ALL (SLAB GLAB) FOR CE
+  VAR !existRefe EVAL REFE OF DDNM FOR ALL FROM !existTags
+
+  -- Get the owning part for all spool components
+  -- These will be the parts we dimension
+  do !compRefe val !allParts
+
+    -- Ignore any POINTR components
+    skip if (!compRefe.type.upcase().eq('POINTR'))
+
+    -- Test for template and section as these are one level further down in the hierarchy
+    if (!compRefe.type.upcase().eq('TMPL') or !compRefe.type.upcase().eq('GENSEC')) then
+      !parts.append(!compRefe.owne.owne)
+
+    -- We will use this part
+    else
+      !parts.append(!compRefe)
+
+    endif
+
+  enddo
+
+  -- For each relevant component
+  do !count from 1 to (!parts.size())
+
+    -- Initialise variables
+    !partRefe = !parts[!count]
+
+    -- Get the element type
+    !partType = !partRefe.type.upcase()
+
+    -- Test for BENDS
+    if (!partType.eq('CTRISE') or !partType.eq('CTBEND')) then
+
+      -- Check is a label already exists for this component
+      !find = !existRefe.findFirst(!partRefe.string())
+      if (!find.unset()) then
+
+        -- Create a coordinate label
+        NEW GLAB ON $!bendConn OF $!partRefe
+         XYPO $!offset  OSET TRUE  CHEI $!cHei  BLNK TRUE  FRA OFF  GBOX 0
+         TXColour DEF  LFStyle DEF  LFColour DEF  LLStyle DEF  LLColour DEF
+
+        -- Keep this one
+        !keep.append(!!ce.string())
+
+      else
+
+        -- Update the existing label
+        !keep.append(!existTags[!find])
+        !!ce = !existTags[!find].dbref()
+        ON $!bendConn OF $!partRefe
+
+      endif
+
+      -- Find all tray levels
+      !trayLevels = ARRAY()
+      !components = ARRAY()
+
+      do !memRefe val !partRefe.mem
+
+        -- Only consider ctray elements
+        if (!memRefe.type.upcase().eq('CTRAY')) then
+
+          -- Only include bend and elbo types
+          if (!memRefe.catref.gtype.upcase().eq('BEND') or !memRefe.catref.gtype.upcase().eq('ELBO')) then
+            !trayLevels.append(!memRefe.pos.wrt(world).up.nint().value())
+            !components.append(!memRefe)
+
+          endif
+
+        endif
+
+      enddo
+
+      -- Sort the levels into order highest first
+      !trayLevels.unique()
+      !components.unique()
+      !sorted = !trayLevels.sortedIndices()
+      !components.reindex(!sorted).invert()
+
+      -- Add the east and north coordinates
+      !btex = '#POSE#/#POSN#/'
+
+      -- Add the up elevation for a single level
+      if (!components.size().eq(1)) then
+        !btex = !btex & ' #POSU<FR ' & !components[1] & '>'
+
+      -- Add the up elevation for a multi levels
+      else
+
+        -- For each level build the elevation string
+        do !index ind !components
+
+          -- Build the string for this level and add it to the previous
+          !btex = !btex & '[#< #POSU<FR ' & !components[!index] & '> #>]'
+
+          -- Add a newline character for all lines but the last
+          if (!index.neq(!components.size())) then
+            !btex = !btex & '#/'
+          endif
+
+        enddo
+
+      endif
+
+      -- Set the btex
+      BTEX |$!btex|
+
+      -- We have annotated this bend so we are done here
+      skip
+
+    endif
+
+    -- Test for a tee or cross component in the vertical
+    -- To do this we are looking for when both the arrive and leave directions have an UP component
+    -- Label this component when the defaults switch is ON
+    if (!vertOn) then
+
+      -- Only annotate CTCROS and CTTEE parts
+      if (!partType.eq('CTCROS') or !partType.eq('CTTEE')) then
+
+        -- Get thre part arrive and leave directions
+        !adir = PA DIR OF $!partRefe
+        !ldir = PL DIR OF $!partRefe
+
+        -- For any up or down component
+        if (!adir.up.neq(0) and !ldir.up.neq(0)) then
+
+          -- Check is a label already exists for this component
+          !find = !existRefe.findFirst(!partRefe.string())
+          if (!find.unset()) then
+
+            -- Check the part has the required p-point
+            !unusedTest = $!vertConn POS OF $!partRefe
+              handle any
+                !!isoLog.messages.append('  Error in creating elevation label on ' & !partRefe.flnm)
+
+              elsehandle none
+
+                -- Create a coordinate label
+                NEW GLAB ON $!vertConn OF $!partRefe
+                 XYPO $!offset  OSET TRUE  CHEI $!cHei  BLNK TRUE  FRA OFF  GBOX 0
+                 TXColour DEF  LFStyle DEF  LFColour DEF  LLStyle DEF  LLColour DEF
+
+                -- Keep this one
+                !keep.append(!!ce.string())
+
+              endhandle
+
+          else
+
+            -- Update the existing label
+            !keep.append(!existTags[!find])
+            !!ce = !existTags[!find].dbref()
+            ON $!vertConn OF $!partRefe
+              handle any
+                !!isoLog.messages.append('  Error when updating elevation label for ' & !partRefe.flnm)
+
+              elsehandle none
+                ON $!partRefe
+
+              endhandle
+
+          endif
+
+          -- Find all tray levels
+          !trayLevels = ARRAY()
+          !components = ARRAY()
+
+          do !memRefe val !partRefe.mem
+
+            -- Only consider ctray elements
+            if (!memRefe.type.upcase().eq('CTRAY')) then
+
+              -- Only include cros and tee types
+              if (!memRefe.catref.gtype.upcase().eq('CROS') or !memRefe.catref.gtype.upcase().eq('TEE')) then
+                !trayLevels.append(!memRefe.pos.wrt(world).up.nint().value())
+                !components.append(!memRefe)
+
+              endif
+
+            endif
+
+          enddo
+
+          -- Sort the levels into order highest first
+          !trayLevels.unique()
+          !components.unique()
+          !sorted = !trayLevels.sortedIndices()
+          !components.reindex(!sorted).invert()
+
+          -- Add the east and north coordinates
+          !btex = '#POSE#/#POSN#/'
+
+          -- Add the up elevation for a single level
+          if (!components.size().eq(1)) then
+            !btex = !btex & ' #POSU<FR ' & !components[1] & '>'
+
+          -- Add the up elevation for a multi levels
+          else
+
+            -- For each level build the elevation string
+            do !index ind !components
+
+              -- Build the string for this level and add it to the previous
+              !btex = !btex & '[#< #POSU<FR ' & !components[!index] & '> #>]'
+
+              -- Add a newline character for all lines but the last
+              if (!index.neq(!components.size())) then
+                !btex = !btex & '#/'
+              endif
+
+            enddo
+
+          endif
+
+          -- Set the btex
+          BTEX |$!btex|
+
+        endif
+
+      endif
+
+    endif
+
+    -- Test for component PL different to the PA in the HORIZONTAL
+    -- To do this we can compare the direction of the PA with the direction of the PA to the PL
+    if (!!isoOffset(!partRefe,true)) then
+
+      -- Check is a label already exists for this component
+      !find = !existRefe.findFirst(!partRefe.string())
+      if (!find.unset()) then
+
+        -- Create a coordinate label at the leave p-point
+        NEW GLAB ON PL OF $!partRefe
+         XYPO $!offset  OSET TRUE  CHEI $!cHei  BLNK TRUE  FRA OFF  GBOX 0
+         TXColour DEF  LFStyle DEF  LFColour DEF  LLStyle DEF  LLColour DEF
+
+        -- Keep this one
+       !keep.append(!!ce.string())
+
+      else
+
+        -- Update the existing label
+        !keep.append(!existTags[!find])
+        !!ce = !existTags[!find].dbref()
+        ON PL OF $!partRefe
+
+      endif
+
+      -- Find all tray levels
+      !trayLevels = ARRAY()
+      !components = ARRAY()
+
+      do !memRefe val !partRefe.mem
+
+        -- Only consider ctray elements
+        if (!memRefe.type.upcase().eq('CTRAY')) then
+          !trayLevels.append(!memRefe.pos.wrt(world).up.nint().value())
+          !components.append(!memRefe)
+
+        endif
+
+      enddo
+
+      -- Sort the levels into order highest first
+      !trayLevels.unique()
+      !components.unique()
+      !sorted = !trayLevels.sortedIndices()
+      !components.reindex(!sorted).invert()
+
+      -- Add the east and north coordinates
+      !btex = '#POSE#/#POSN#/'
+
+      -- Add the up elevation for a single level
+      if (!components.size().eq(1)) then
+        !btex = !btex & ' #POSU<FR ' & !components[1] & '>'
+
+      -- Add the up elevation for a multi levels
+      else
+
+        -- For each level build the elevation string
+        do !index ind !components
+
+          -- Build the string for this level and add it to the previous
+          !btex = !btex & '[#< #POSU<FR ' & !components[!index] & '> #>]'
+
+          -- Add a newline character for all lines but the last
+          if (!index.neq(!components.size())) then
+            !btex = !btex & '#/'
+          endif
+
+        enddo
+
+      endif
+
+      -- Set the btex
+      BTEX |$!btex|
+
+    endif
+
+  enddo
+
+  -- Remove any unwanted existing labels
+  !remove = !existTags.difference(!keep)
+  do !delete val !remove
+    !!ce = !delete.dbref()
+    DELETE $!!<ce.type>
+  enddo
+
+  -- Return to laye
+  !!ce = !elevLaye
+  UPDATE ANNO
+
+endfunction

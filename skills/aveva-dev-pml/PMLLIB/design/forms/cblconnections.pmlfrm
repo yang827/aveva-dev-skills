@@ -1,0 +1,841 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:           cblconnections.pmlfrm
+-- Type:           Form Definition
+-- Group:          Cabling Application
+--
+-- Keyword:        CABLING
+-- Module:         design
+-- Replaces:
+--
+-- Author:         Anand Kalathil
+-- Created:        Thu Apr 17 2008
+-- Last Modified:
+-- Description:    Form to show connections of a cableway branch
+--
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  cblconnections()                 -                   Constructor
+--  clearAids()                      -                   Creation of aid text and lines
+--  compareElementsPosition(DBREF,DBREF) BOOLEAN
+--  disconnect()                     -                   Disconnect Branch
+--  dismiss()                        -
+--  displayMessage()                 -                   Display message in message panel
+--  getNotLogConnectedInTheSamePosition(ARRAY,ARRAY) -
+--  initialise()                     -                   initialisation
+--  loadGrid(DBREF)                  -                   Put the connection data into the data grid
+--  markConnections(STRING)          -                   puts an aid at connection point
+--  netAfterSelectChangeCallback(ARRAY) -                   Callback after dataGrid selection
+--  netMainCallback(ARRAY)           -                   main grid callback
+--  netPopupMainCallback(ARRAY)      -                   Popup callback
+--  setData(REAL)                    -                   Sets the data on the form
+--
+
+-- Import DLL
+import 'GridControl'
+handle any
+endhandle
+setup form !!cblconnections dialog docking
+
+  para   .paraloadType  anchor l+t at x0 ymax  text 'Select:'
+  option .loadType    '' anchor l+t at xmax ymin callback '!this.setData(!this.loadType.val)' width 15
+  para   .paratag  anchor l+t at x0 ymax+0.5  text 'Tag:'
+  line   .tagLine               anchor l+t+r       at x0         ymax     horizontal                width 65
+  toggle .markSelected   'Selected'  at x0 ymax  callback '!this.markConnections(|SELECTED|)'
+  path right
+  button .markConnected     linklabel 'Connected'  callback '!this.markConnections(|CONNECTED|)'
+  button .markUnconnected   linklabel 'Unconnected' callback '!this.markConnections(|UNCONNECTED|)'
+  button .markErrors        linklabel 'Errors'   callback '!this.markConnections(|ERROR|)'
+  button .markAll           linklabel 'All'   callback '!this.markConnections(|ALL|)'
+  button .unMarkAll         linklabel 'Remove all' callback '!this.markConnections(|REMOVE|)'
+
+
+  frame  .connectionFrame  panel    anchor all  at x0 ymax+1  height 8 width 65
+    -- define PML Container to host .Net control
+    container .dataFrame PMLNetCONTROL 'NET'  DOCK FILL
+  exit
+
+  using namespace 'Aveva.Pdms.Presentation'
+  -- .Net control
+  member .dataGrid is NETGRIDCONTROL
+
+  frame .messFrame  'Messages' anchor left + right + bottom at x0 ymax+0.4
+    para .mess   anchor left + right + bottom at xmin+1 ymax  width 63 lines 3
+  exit
+
+  menu .popmenumain
+    !this.popmenumain.add( 'toggle',   'Navigate on Selection', '' )
+    !this.popmenumain.add( 'SEPARATOR' )
+    !this.popmenumain.add( 'CALLBACK', 'Disconnect', '!this.disconnect()' )
+    !this.popmenumain.add( 'SEPARATOR' )
+    !this.popmenumain.add( 'CALLBACK', 'Export to Excel...', '!!exportToExcel(!this.dataGrid, |ConnectionData.xls|, |Save As|)' )
+    !this.popmenumain.add( 'CALLBACK', 'Print Preview...', '!this.dataGrid.printpreview()' )
+
+  -- connections
+  member .connections is ARRAY
+  member .connectedTo is ARRAY
+  member .message     is ARRAY
+
+  --cableway manager
+  member .cableway    is CABLEWAYMANAGER
+
+  --aid numbers
+  member .connectionAidNumber        is REAL
+
+  -- manage enhanced items
+  member .enhanced     is COMENHANCE
+
+exit
+
+
+------------------------------------------------------------------------
+--
+-- Method:   cblconnections
+--
+-- Description: Constructor
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .cblconnections()
+
+  !this.formTitle = 'Cableway Branch Connections'
+  !this.quitcall   = |!this.dismiss()|
+  !this.callback   = |!this.initialise()|
+
+   using namespace 'Aveva.Pdms.Presentation'
+   -- create instance of .Net control
+  !this.dataGrid = object NETGRIDCONTROL()
+
+  -- add PML event handlers to .Net control
+  !this.dataGrid.addEventHandler('AfterSelectChange', !this, 'NETAfterSelectChangeCallback')
+
+  -- add .Net control to PML container
+  !this.dataFrame.control = !this.dataGrid.handle()
+
+   -- configure grid presentation
+  !this.dataGrid.fixedHeaders(false)
+  !this.dataGrid.outlookGroupStyle(FALSE)
+  !this.dataGrid.columnExcelFilter(true)
+  !this.dataGrid.headerSort(true)
+  !this.dataGrid.columnSummaries(false)
+  !this.dataGrid.singleRowSelection(true)
+  !this.dataGrid.setAlternateRowColor('WHITE')
+  !this.dataGrid.errorIcon(TRUE)
+
+  --Register Aid numbers
+    !this.connectionAidNumber       = !!aidNumbers.add('Connection')
+
+  -- options for collection scope
+  !scopeDtext = ARRAY()
+  !scopeDtext.append('Current Branch')
+  !scopeDtext.append('Current Cableway')
+  !scopeDtext.append('Current Zone')
+  !scopeDtext.append('Current Site')
+  !this.loadType.dtext  = !scopeDtext
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:   initialise
+--
+-- Description: initialisation
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .initialise()
+
+ !this.dataGrid.cleargrid()
+ -- see if we can navigate to CWBRAN if at a lower level than CWBRAN
+ if !!ce.ahlist.findfirst('CWBRAN').set() then
+   CWBRAN
+ endif
+
+ -- load the grid with data
+ if !!ce.type.eq('CWBRAN') then
+   !this.setData(1)
+   !this.loadType.val = 1
+ elseif !!ce.type.eq('CWAY') then
+   !this.setData(2)
+   !this.loadType.val = 2
+ elseif !!ce.type.eq('ZONE') then
+   !this.setData(3)
+   !this.loadType.val = 3
+ elseif !!ce.type.eq('SITE') then
+   !this.setData(4)
+   !this.loadType.val = 4
+ endif
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:   loadGrid
+--
+-- Description: Put the connection data into the data grid
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .loadGrid(!branch is DBREF)
+
+  -- clear Messages
+  !this.mess.val = ' '
+
+  -- get branch connections
+  !col  = object COLLECTION()
+
+  !col.scope(!branch)
+  !col.addtype('RATTA')
+  !col.addtype('HATTA')
+  !col.addtype('TATTA')
+  !connect = !col.results()
+  !elementsNotConnected = object ARRAY()
+  !items = object ARRAY()
+  !this.connections = object ARRAY()
+  !this.connectedTo = object ARRAY()
+  do !conn values !connect
+    !data = object ARRAY()
+    if (!conn.type eq 'HATTA') then
+      !hdref = !conn.owner.hdref
+      !hcref = !conn.owner.hcref
+      !hdref.appendarray(!hcref)
+      !hdref.unique()
+      if !hdref.set() then
+        do !i from 1 to  !hdref.size()
+          !data.clear()
+          !this.connections.append(!conn)
+          if !hdref[!i].badref().not() then
+            !data.append('HEAD of ' & !conn.owner.flnm)
+            !data.append(!hdref[!i].flnm)
+            if (!this.compareElementsPosition(!hdref[!i],!conn)) then
+              !data.append('OK')
+            else
+              !data.append('Position Error')
+            endif
+
+
+            !this.connectedTo.append(!hdref[!i])
+          else
+            !data.append('HEAD of ' &!conn.owner.flnm)
+            !data.append('Unknown element')
+             !data.append('Bad Reference')
+            !this.connectedTo.append(!hdref[!i])
+
+          endif
+          !data.append(' ')
+          !items.append(!data)
+        enddo
+      else
+        !this.connections.append(!conn)
+        !data.append('HEAD of ' & !conn.owner.flnm)
+        !data.append('No Connections')
+        !data.append('No Connections')
+        !elementsNotConnected.append(!conn)
+        !data.append(' ')
+        !items.append(!data)
+      endif
+    elseif (!conn.type eq 'TATTA') then
+      !tlref = !conn.owner.tlref
+      !tcref = !conn.owner.tcref
+      !tlref.appendarray(!tcref)
+      !tlref.unique()
+
+      !data.clear()
+      if !tlref.set() then
+        do !i from 1 to  !tlref.size()
+          !data.clear()
+          !this.connections.append(!conn)
+          if !tlref[!i].badref().not() then
+            !data.append('TAIL of ' & !conn.owner.flnm)
+            !data.append(!tlref[!i].flnm)
+
+
+            if (!this.compareElementsPosition(!tlref[!i],!conn)) then
+              !data.append('OK')
+            else
+              !data.append('Position Error')
+            endif
+            !this.connectedTo.append(!tlref[!i])
+          else
+             !data.append('TAIL of ' & !conn.owner.flnm )
+            !data.append('Unknown element')
+            !data.append('Bad Reference')
+            !this.connectedTo.append(!tlref[!i])
+
+          endif
+          !data.append(' ')
+          !items.append(!data)
+        enddo
+      else
+        !this.connections.append(!conn)
+        !data.append('TAIL of ' & !conn.owner.flnm)
+        !data.append('No Connections')
+        !data.append('No Connections')
+        !elementsNotConnected.append(!conn)
+        !data.append(' ')
+        !items.append(!data)
+      endif
+
+    elseif !conn.conats.set() then
+      do !i from 1 to !conn.conats.size()
+        !data.clear()
+        !this.connections.append(!conn)
+        -- show modified display
+        if (!conn.flnm.occurs('HATTA').gt(0)) then
+          !name = !conn.flnm.replace('HATTA 1','Head')
+        elseif !conn.flnm.occurs('TATTA').gt(0) then
+          !name = !conn.flnm.replace('TATTA 1','Tail')
+        elseif !conn.flnm.occurs('RATTA').gt(0) then
+          !name = !conn.flnm.replace('RATTA','Route Attachment')
+          !name = !name.replace(' CONSEQ 1 of', '')
+        else
+          !name = !conn.flnm
+        endif
+        !data.append(!name)
+        !data.append(!conn.conats[!i].flnm)
+        if (!this.compareElementsPosition(!conn.conats[!i],!conn)) then
+           !data.append('OK')
+        else
+          !data.append('Position Error')
+        endif
+        !this.connectedTo.append(!conn.conats[!i])
+        !data.append(' ')
+        !items.append(!data)
+      enddo
+
+    else
+      !this.connections.append(!conn)
+      if !conn.flnm.occurs('HATTA').gt(0) then
+        !name = !conn.flnm.replace('HATTA 1','Head')
+        !data.append(!name)
+      elseif !conn.flnm.occurs('TATTA').gt(0) then
+        !name = !conn.flnm.replace('TATTA 1','Tail')
+        !data.append(!name)
+      elseif !conn.flnm.occurs('RATTA').gt(0) then
+        !name = !conn.flnm.replace('RATTA','Route Attachment')
+        !name = !name.replace(' CONSEQ 1 of', '')
+        !data.append(!name)
+      else
+        !name = !conn.flnm
+      endif
+      !data.append('No Connections')
+      !data.append('No Connections')
+      !elementsNotConnected.append(!conn)
+      !this.connectedTo.append(object DBREF())
+      !data.append(' ')
+      !items.append(!data)
+    endif
+  enddo
+    !repeatedEle = object  ARRAY()
+    !this.getNotLogConnectedInTheSamePosition(!elementsNotConnected,!repeatedEle)
+
+    do !k from 1 to !this.connections.size()
+      !tempDBElement = !this.connections[!k]
+      if !repeatedEle.findfirst(!tempDBElement).set() then
+        !this.enhanced.addItem(!tempDBElement)
+        !items[!k][3] = 'They are unconnected elements in the same position'
+      endif
+    enddo
+
+  !headings = object ARRAY()
+  !headings.append('Branch Connections')
+  !headings.append('Connected To')
+  !headings.append('Status')
+
+  -- define data source and bind to the grid
+  !gridName = 'Data'
+  using namespace  'Aveva.Pdms.Presentation'
+  !nds = object NETDATASOURCE(!gridName, !headings, !items)
+  !this.dataGrid.bindToDataSource(!nds)
+
+  !this.dataGrid.addEventHandler('OnPopup', !this, 'netPopupMainCallback')
+  !this.dataGrid.addEventHandler('AfterSelectChange', !this, 'netMainCallback')
+
+  -- Select first row in the list
+  !this.dataGrid.selectRow(1)
+
+  -- get icons
+  !valid        = !!pml.getPathname('valid12.png')
+  !failed       = !!pml.getPathname('failed12.png')
+
+  -- get connectivity
+  !this.message  = object ARRAY()
+--  This two methods are deprecated  and should be removed from code
+--  !connectionManager = object MDRCONNECTIONMANAGER()
+--  !geomProblems = !connectionManager.getNotLogConnected(!branch)
+--  !logicalProblems = !connectionManager.getNotGeomConnected(!branch)
+
+  !this.enhanced.clear()
+  !tempDBElement = object DBREF()
+
+  do !k from 1 to !items.size()
+    if (!items[!k][3] EQ 'OK') then
+      !this.dataGrid.setcellimage(!k,1,!valid)
+      !this.message.append(TRUE)
+    elseif (!items[!k][3] EQ 'No Connections') then
+      --!this.dataGrid.setcellimage(!k,1,!valid)
+      !this.message.append(TRUE)
+    else
+      !this.dataGrid.setcellimage(!k,1,!failed)
+      !this.message.append(FALSE)
+     endif
+  enddo
+
+   !this.displayMessage()
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:   compareElementsPosition
+--
+-- Description: compare Elements Position
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--  !secondElement [R] - first Element
+--  !secondElement [R] - second Element
+--
+-- Return:
+-- [Data Type] [Description]
+-- true when positions are near
+-- false when positions are far
+define method .compareElementsPosition(!firstElement is DBREF, !secondElement is DBREF) is BOOLEAN
+  !firstPosition = !firstElement.pos.wrt(WORL)
+  !secondPosition = !secondElement.pos.wrt(WORL)
+  if (!firstPosition.near(!secondPosition , 1)) then
+    return TRUE
+  else
+    return FALSE
+  endif
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:   compareElementsPosition
+--
+-- Description: compare Elements Position
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--  !firstArray  [R] - first array with elements without connections
+--  !returnArray [W] - second array with elements without connections and in the same position
+
+-- Return:
+-- [Data Type] [Description]
+define method .getNotLogConnectedInTheSamePosition(!firstArray is ARRAY, !returnArray is ARRAY)
+
+  do !k from 1 to !firstArray.size()
+    do !j from !k + 1 to !firstArray.size()
+      if (!this.compareElementsPosition(!firstArray[!k],!firstArray[!j])) then
+        !returnArray.append(!firstArray[!k])
+      endif
+    enddo
+  enddo
+  !returnArray.unique()
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:   netAfterSelectChangeCallback
+--
+-- Description: Callback after dataGrid selection
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .netAfterSelectChangeCallback(!selectArray is ARRAY)
+
+  !this.mess.val = ' '
+  if !selectArray.set() then
+   !this.displayMessage()
+   !this.markConnections('SELECTED')
+  endif
+
+endmethod
+-- End of method definition
+
+-------------------------------------------------------------------
+--
+-- Method:      displayMessage
+--
+-- Description: Display message in message panel
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .displayMessage()
+
+  if(!this.message.set()) then
+    !this.clearAids()
+    !selectedRow   = !this.dataGrid.getSelectedRowTags()[1].real()
+    if(defined(!this.message[!selectedRow])) then
+      if(!this.message[!selectedRow]) then
+       !this.mess.val = 'Connections correct at this point'
+      else
+       !this.mess.val = 'Error in connections at this point'
+      endif
+    -- display aids
+    --!pos = !this.connections[!this.dataGrid.getSelectedRowTags()[1].real()].position.wrt(world)
+    --aid text number $!this.connectionAidNumber 'Error in Connection' at $!pos
+    else
+      !this.mess.val = ' '
+    endif
+  else
+    !this.mess.val = ' '
+  endif
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method: clearAids
+--
+-- Description: Creation of aid text and lines
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .clearAids()
+
+    aid clear text $!this.connectionAidNumber
+    handle ANY
+    endhandle
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method: Dismiss
+--
+-- Description: Dismiss form
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .dismiss()
+
+  !this.clearAids()
+  !this.enhanced.clear()
+
+endmethod
+--End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method: setData
+--
+-- Description: Sets the data on the form
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .setData(!value is REAL)
+
+  if !value.eq(1) then
+   !selection = CWBRAN
+   handle ANY
+     !!alert.error('Cannot Navigate to Cableway Branch')
+     return
+    endhandle
+  elseif !value.eq(2) then
+    !selection = CWAY
+    handle ANY
+     !!alert.error('Cannot Navigate to Cableway')
+     return
+    endhandle
+  elseif !value.eq(3) then
+    !selection = zone
+    handle ANY
+     !!alert.error('Cannot Navigate to Zone')
+     return
+    endhandle
+  elseif !value.eq(4) then
+    !selection = site
+    handle ANY
+     !!alert.error('Cannot Navigate to Site')
+     return
+    endhandle
+  endif
+  -- load Data
+  !this.loadGrid(!selection)
+endmethod
+
+--End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:  netPopupMainCallback
+--
+-- Description: Popup callback
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .netPopupMainCallback(!a is ARRAY)
+
+  !this.dataFrame.popup = !this.popmenumain
+  !this.dataFrame.showPopup(!a[0], !a[1])
+
+endmethod
+--End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:  netMainCallback
+--
+-- Description: main grid callback
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .netMainCallback(!a is ARRAY)
+
+  !row = !this.dataGrid.getSelectedRowTags()
+  !element = !this.connections[!row[1].real()]
+  handle ANY
+    return
+  endhandle
+  --Navigate if flagged
+  !test = !this.dataFrame.popup.selected('Navigate on Selection')
+  handle ANY
+  elsehandle NONE
+    if (!test.set() and !test) then
+      !!ce = !element
+    endif
+  endhandle
+
+endmethod
+--End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:  markConnections
+--
+-- Description: puts an aid at connection point
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .markConnections(!type is STRING)
+
+  -- clear aids
+  !this.clearAids()
+
+  if !type.eq('REMOVE') then
+   return
+  endif
+
+  -- add rows to array
+  !rows = object ARRAY()
+
+  if !type.eq('SELECTED') then
+    if !this.markSelected.val then
+     !rows = !this.dataGrid.getSelectedRowTags()
+    else
+      return
+    endif
+  else
+    do !i from 1 to !this.dataGrid.getRows().size()
+      !rows.append(!i)
+    enddo
+  endif
+
+  do !row values !rows
+    !j = !row.real()
+    !connectedElement = !this.connections[!j]
+
+    !branch = CWBRAN of $!connectedElement
+    !connectedPosition = !connectedElement.position.wrt(worl)
+    !manager = object MDRCONNECTIONMANAGER()
+    !text    = object STRING()
+
+    !logicalProblems = !manager.getNotLogConnected(!branch)
+    !geomProblems = !manager.getNotGeomConnected(!branch)
+
+    !problemArray = !geomProblems
+    !problemArray.appendarray(!logicalProblems)
+
+    if !type.eq('ALL') or !type.eq('SELECTED') then
+     if !problemArray.set() then
+       if !connectedElement.conats.set() then
+         if !problemArray.findfirst(!connectedElement).set() then
+          !text   = 'Error in Connection'
+         else
+          !text = 'Connected'
+         endif
+       else
+        !text = 'Unconnected'
+       endif
+     else
+       if !connectedElement.conats.set() then
+        !text = 'Connected'
+       else
+        !text = 'Unconnected'
+       endif
+     endif
+    endif
+
+    if !type.eq('CONNECTED')then
+     if !problemArray.set() then
+       if !connectedElement.conats.set() then
+         if !problemArray.findfirst(!connectedElement).set() then
+          !text   = 'Error in Connection'
+         else
+          !text = 'Connected'
+         endif
+       endif
+     else
+       if !connectedElement.conats.set() then
+        !text = 'Connected'
+       endif
+     endif
+    endif
+
+    if !type.eq('ERROR') then
+      if !problemArray.set() then
+       if !connectedElement.conats.set() then
+         if !problemArray.findfirst(!connectedElement).set() then
+          !text   = 'Error in Connection'
+         endif
+       endif
+      endif
+    endif
+
+    if !type.eq('UNCONNECTED') then
+      if !connectedElement.conats.unset() then
+        !text = 'Unconnected'
+      endif
+    endif
+
+    if !text.set() then
+     AID TEXT NUMBER $!<this.connectionAidNumber> |$!<text>| at $!connectedPosition
+    endif
+  enddo
+
+endmethod
+--End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method: disconnect
+--
+-- Description: Disconnect Branch
+--
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .disconnect()
+	if (!this.dataGrid.getSelectedRows()[1][2] eq 'No Connections')then
+		 !!alert.error('No Connections')
+		 return
+	endif
+	
+  !answer = !!alert.question('Do you want to disconnect ')
+  if !answer.eq('YES') then
+    !connectedElement = !this.connections[!this.dataGrid.getSelectedRowTags()[1].real()]
+
+    --!connectedToElement = !this.connectedTo[!this.dataGrid.getSelectedRowTags()[1].real()]
+    !connectPos  = !connectedElement.position.wrt(worl)
+    !firstBranch   = CWBRAN of $!connectedElement
+
+
+		if (not !!dbRefUpdatable(!firstBranch))then
+	    !stringMessage  = !!error.text
+      !!alert.error(!stringMessage )
+      return
+    endif
+
+ 		!temp = !this.dataGrid.getSelectedRows()[1][2].dbRef()
+ 		handle ANY
+    elsehandle NONE
+	  	!secondBranch  = CWBRAN of $!temp
+	  	if (not !!dbRefUpdatable(!secondBranch))then
+		    !stringMessage  = !!error.text
+	      !!alert.error(!stringMessage )
+	      return
+	    endif
+    endhandle
+
+
+    -- Mark database
+    !undo               = object UNDOABLE()
+    !undo.description('Disconnect')
+    !undo.add()
+ 		
+ 		!this.cableway.disconnectAtPoint(!firstBranch, !connectPos)
+ 		
+    -- End undo mark
+    !undo.endUndoable()
+
+    --update aid if required
+    !this.markConnections('SELECTED')
+
+
+    -- update table
+    !!ce = !firstBranch
+		!this.setData(!this.loadType.val)
+
+  endif
+
+endmethod
+--End of method definition

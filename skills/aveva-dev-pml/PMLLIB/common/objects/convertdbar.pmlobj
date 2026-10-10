@@ -1,0 +1,642 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            convertdbar.pmlobj
+--   Type:          Object Definition
+--   Group:         Application Switching
+--     Keyword:     APP
+--   Module:        common
+--   Replaces:
+--
+-- Author:          Jamie Brunning
+-- Created:         Wed Feb 18 10:27:47 2004
+--
+--
+-- Description:     Convert a DBAR file to use the new add-in object
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  applicationFile()                -
+--  convert()                        -                   Constructor method
+--  convertDbar(STRING,STRING,STRING,STRING) -                   Constructor method
+--  makeFieldName(STRING)            STRING
+--  splitWithStrings(STRING)         ARRAY               where strings with spaces have been used, get these into correct form
+--  unmatchedQuotes(STRING)          BOOLEAN             determines whether a string has unmatched quotes
+--
+------------------------------------------------------------------------
+define object CONVERTDBAR
+  -- name of module
+  member .module is STRING
+
+  -- name of application
+  member .appName is STRING
+
+  -- directory in which to put addin object definition file
+  member .outputDir is STRING
+
+  -- directory in which to put addin definition file
+  member .applicationFileDir is STRING
+
+  -- array to hold lines of APPLICATIONS file
+  member .appFileLines is ARRAY
+  -- location of APPLICATIONS file is determined automatically by looking at the current setting for %PDMSUI%
+
+  -- title of application (found by looking in APPLICATIONS file)
+  member .appTitle is STRING
+
+  -- name of addin object (automatically generated from name of application)
+  member .objectName is STRING
+endobject
+-- End of object definition for CONVERTDBAR
+
+------------------------------------------------------------------------
+--
+-- Method:      .convertDbar()
+--
+-- Description: Constructor method
+--
+-- Method Type: Constructor
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+--    2   R      STRING
+--    3   R      STRING
+--    4   R       !applicationFileDir
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .convertDbar(!module is STRING, !appNameStr is STRING, !outputDir is STRING, !applicationFileDir is STRING)
+  -- set module
+  !this.module = !module.upcase()
+
+  -- !appName = !appNameStr.upcase()
+  !this.appName = !appNameStr
+
+  !this.outputDir = !outputDir
+
+  -- set application file member
+  !this.applicationFileDir = !applicationFileDir
+endmethod
+-- End of method definition for .convertDbar(STRING, STRING, STRING,  !applicationFileDir)
+
+------------------------------------------------------------------------
+--
+-- Method:      .convert()
+--
+-- Description: Constructor method
+--
+-- Method Type: Constructor
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .convert()
+
+  -- set apptitle just in case we can't find the information in the APPLICATIONS file
+  !appTitle = !this.appName
+
+  !appName = !this.appName.upcase()
+  ----------------------------------------------------------
+  -- load information from APPLICATIONS file
+  ----------------------------------------------------------
+  !appFile = object FILE('%PDMSUI%\' & !this.module & '\DFLTS\APPLICATIONS')
+  !appFileLines = !appFile.readFile()
+  !this.appFileLines = !appFileLines
+  !appTitles = ARRAY()
+  do !l values !appFileLines
+    if (!l.lowcase().match('directory') gt 0) then
+      !part = !l.part(2, ':').trim().upcase()
+      !appTitles.append(!part)
+    elseif (!l.lowcase().match('title') gt 0) then
+      !part = !l.part(2, ':').trim()
+      !appTitles.append(!part)
+    endif
+  enddo
+
+  !pos = !appTitles.findFirst(!appName)
+  if (!pos le !appTitles.size()) then
+    !appTitle = !appTitles[!pos + 1]
+  endif
+  !this.appTitle = !appTitle
+
+  ----------------------------------------------------------
+  -- load information about which menus correspond to which
+  -- sections in the DBAR file
+  ----------------------------------------------------------
+  if (!this.module eq 'DES') then
+    !str = 'DISPLAY sysView GRAPH sysGph QUERY sysQry SETTINGS sysSet UTILS sysUtil CREATE sysCrt MODIFY sysMod DELETE sysDel'
+  elseif (!this.module eq 'DRA') then
+    !str = 'DISPLAY mbDisplay GRAPH mbGraphics QUERY mbQuery SETTINGS mbSettings UTILS mbUtils'
+  elseif (!this.module eq 'CAT') then
+    !str = 'DISPLAY sysView GRAPH none QUERY sysQry SETTINGS sysSet UTILS sysUtil CREATE sysCrt MODIFY sysMod DELETE sysDel'
+  endif
+  !menuNames = !str.split()
+
+  ----------------------------------------------------------
+  -- put first part of file into array
+  ----------------------------------------------------------
+  -- initialise output to be empty array
+  !out = ARRAY()
+
+  -- lines for object definition
+  !this.objectName = 'APP' & !this.module & !appName
+  !out.append('define object ' & !this.objectName)
+  !out.append('endobject')
+  !out.append('')
+
+  -- add stuff for toolbars - need to decide what function to call now!
+  !out.append('define method .modifyForm()')
+  !out.append('!this.toolbars()')
+  !out.append('endmethod')
+  !out.append('')
+
+  ----------------------------------------------------------
+  -- get on with main part
+  ----------------------------------------------------------
+
+  -- load DBAR file into array
+  !file = object FILE('%PDMSUI%\' & !this.module & '\' & !appName & '\DBAR')
+  -- !file = object FILE('h:\uisrc\pdmsui\dev\' & !this.module & '\' & !appName & '\DBAR')
+  !lines = !file.readFile()
+
+  -- open output file
+  -- !outFile = object FILE(!outputFilename)
+  -- change back to WRITE when not testing any more
+  -- !outFile.open('OVERWRITE')
+
+  -- list of functions that create menus
+  !menuMethods = ARRAY()
+
+  -- set up some initial variables
+  !section = ''
+  -- settings for skipping: if skip is true, we ignore lines until a line with the required text is found
+  !skip = 1
+  !endskip = 'label'
+  -- flag to comment out lines we don't understand
+  !comment = true
+
+  -- avoid calculating size of array every loop by getting it now
+  !linesSize = !lines.size()
+
+  -- loop through lines
+  !i = 0
+  do
+    -- increment counter and get out if we've got the end of the array
+    !i = !i + 1
+    break if !i gt !linesSize
+
+    -- get current line
+    !l = !lines[!i]
+
+    -- skip if the line's blank
+    skip if (!l.trim().empty())
+    -- skip if we're ignoring these lines
+    if (!skip ne 0 and !l.trim().lowcase().match(!endskip) ne 1) then
+      skip
+    elseif (!skip eq 1) then
+      !skip = 0
+    elseif (!skip eq 2) then
+      !skip = 0
+      skip
+    endif
+    -- skip if (!skip and !l.trim().lowcase().match(!endskip) ne 1)
+    -- !skip = false
+
+    -- start new section: get the section we're in
+    if (!l.trim().lowcase().match('label') eq 1) then
+      !section = !l.after('/').trim()
+      -- make sure it's upper case
+      !section = !section.upcase()
+
+      -- now output stuff to the new file depending on the section entered
+      if (!section eq 'DATA') then
+        !out.append('define method .toolbars()')
+        !toolbarName = !appName.lowcase() & 'Toolbar'
+        -- don't attempt to parse these lines, just output them
+        !comment = false
+        !out.append(|frame .| & !toolbarName & | toolbar '| & !appTitle & | Toolbar'|)
+      elseif (!section eq 'MENU') then
+        !menuMethods.append('.menus()')
+        !out.append('define method .menus()')
+      elseif (!section eq 'ERROR') then
+        !endskip = 'return'
+        !skip = 1
+      else
+        !methodName = '.' & !section.lowcase() & 'Menu()'
+        !menuMethods.append(!methodName)
+        !out.append('define method ' & !methodName)
+        if (!section eq 'BAR') then
+          !out.append('!bmenu = object APPBARMENU()')
+        else
+          -- ignore this section if there are no lines in it
+          $(
+          if (!lines[!i + 1].lowcase().trim() eq 'return') then
+            !out.append('endmethod')
+            !out.append('')
+            !skip = 1
+            !endskip = 'label'
+            skip
+          endif
+          $)
+          -- find out menu name by looking up in array
+          -- q var !section
+          !menuName = !menuNames[!menuNames.findFirst(!section) + 1]
+          !out.append(|!menu = object APPMENU('| & !menuName & |')|)
+        endif
+      endif
+      skip
+    endif
+
+    -- end section
+    if (!l.trim().lowcase().match('return') eq 1) then
+      -- output stuff to the new file
+      if (!section eq 'DATA') then
+        !comment = true
+        !out.append('exit')
+        !out.append(|!!appTbarCntrl.addToolbar('| & !toolbarName & |', '| & !appName.upcase() & |')|)
+      elseif (!section eq 'MENU') then
+        !out.append('')
+      elseif (!section eq 'BAR') then
+        !out.append(|!!appMenuCntrl.addBarMenu(!bmenu, '| & !appName & |')|)
+      elseif (!section eq 'ERROR') then
+        skip
+      else
+        !out.append(|!!appMenuCntrl.addMenu(!menu, '| & !appName & |')|)
+      endif
+      -- end method for this block
+      !out.append('endmethod')
+      !out.append('')
+
+      !section = ''
+      -- ignore everything outside a label ... return block
+      !skip = 1
+      !endskip = 'label'
+      skip
+    endif
+    -- all of the sections apart from DATA and MENU are defining new entries on existing menus
+
+    -- ignore lines to do with icon size
+    if (!section eq 'DATA' and !l.lowcase().match('!maintoolbar =') ne 0) then
+      !skip = 2
+      !endskip = 'endif'
+      skip
+    endif
+
+    if (!section eq 'BAR') then
+      -- q var !l
+      if (!l.trim().lowcase().matchWild('add * _*')) then
+        !parts = !l.trim().split()
+        -- get rid of _ from beginning of menu name
+        !menuName = !parts[3].replace('_', '')
+        -- de-dot menu name
+        !menuName = !menuName.replace('.', '')
+        !command = |!bmenu.add(| & !parts[2] & |, '| & !menuName & |')|
+        !out.append(!command)
+        skip
+      endif
+    else
+      -- convert menu entries
+      !l2 = !l.trim('LMR').lowcase()
+
+      -- starting to define a new menu
+      if (!section eq 'MENU' and !l2.matchWild('menu _*')) then
+        !parts = !l.split()
+        !menuName = !parts[2].replace('_', '')
+        -- de-dot menu name
+        !menuName = !menuName.replace('.', '')
+        !command = |!menu = object APPMENU('| & !menuName & |')|
+        !out.append(!command)
+        skip
+      -- exit menu definition
+      elseif (!section eq 'MENU' and !l2.match('exit') eq 1) then
+        !command = |!!appMenuCntrl.addMenu(!menu, '| & !appName & |')|
+        !out.append(!command)
+        !out.append('')
+        skip
+      --
+      elseif (!section eq 'DATA') then
+        -- get rid of explicit positioning
+        if (!l2.matchWild('*.* at *tooltip*') or !l2.matchWild('*_* at *tooltip*')) then
+          !p1 = !l.match('tooltip')
+          !p2 = !l.match(|'|)
+          if (!p2 eq 0) then
+            !p2 = !l.length()
+          endif
+          !p3 = !l.match('|')
+          if (!p3 eq 0) then
+            !p3 = !l.length()
+          endif
+          -- get minimum of these
+          !pos = !p1.min(!p2).min(!p3)
+          -- q var !pos
+          -- q var !l.before(' at ')
+          -- q var !l.substring(!pos)
+          !l = !l.before(' at ') & ' ' & !l.substring(!pos)
+        -- remove references to !formObj
+        elseif (!l2.match('!formobj') ne 0) then
+          do
+            !pos = !l.lowcase().match('!formobj')
+            break if (!pos eq 0)
+            !l = !l.substring(1, !pos - 1) & '!!app' & !this.module.substring(1,1).upcase() & !this.module.substring(2).lowcase() & 'Main' & !l.substring(!pos + 8)
+          enddo
+        endif
+      -- displays a form
+      elseif (!l2.matchWild('add * form _*') or !l2.matchWild('add * form !!*')) then
+        !parts = !this.splitWithStrings(!l)
+        !dtext = !parts[2]
+        -- get name of form
+        !formName = !parts[4]
+        if (!formName.substring(1,1) eq '_') then
+          !formName = !formName.substring(2)
+        elseif (!formName.substring(1,2) eq '!!') then
+          !formName = !formName.replace('!!', '')
+        endif
+        -- construct fieldName from dtext by removing some characters
+        !fieldName = !this.makeFieldName(!dtext)
+        -- !fieldName = !dtext.replace('.', '').replace('''', '').replace('|', '').replace(' ','').replace('&','')
+        !command = |!menu.add('FORM', | & !dtext & |, '| & !formName & |', '| & !fieldName & |')|
+        !out.append(!command)
+        skip
+      -- opens a submenu
+      elseif (!l2.matchWild('add * menu _*')) then
+        !parts = !this.splitWithStrings(!l)
+        !dtext = !parts[2]
+        -- get name of form
+        !menuName = !parts[4]
+        !menuName = !menuName.substring(2)
+        -- de-dot menu name
+        !menuName = !menuName.replace('.', '')
+        -- construct fieldName from dtext by removing some characters
+        !fieldName = !this.makeFieldName(!dtext)
+        !command = |!menu.add('MENU', | & !dtext & |, '| & !menuName & |', '| & !fieldName & |')|
+        !out.append(!command)
+        skip
+      -- executes a callback
+      elseif (!l2.matchWild('add * *')) then
+        -- if there's a callback split over two lines or more, we need to deal with it
+        -- (no more than 4 lines)
+        do !tmpi to 4
+          break if (!this.unmatchedQuotes(!l).not())
+          !i = !i + 1
+          !l = !l & '\\' & !lines[!i]
+        enddo
+
+        !parts = !this.splitWithStrings(!l)
+        !dtext = !parts[2]
+        !callback = !parts[3]
+        !fieldName = !this.makeFieldName(!dtext)
+
+        -- replace \\ by newline where callback split over two or more lines
+        if (!callback.match('\\') ne 0) then
+          !out2 = ARRAY()
+          !command = |!menu.add('CALLBACK', | & !dtext & |, | & !callback.before('\\')
+          !out.append(!command)
+          do !tmpi to 4
+            !callback = !callback.after('\\')
+            break if (!callback.match('\\') eq 0)
+            !command = !callback.before('\\')
+            !out.append(!command)
+          enddo
+          !command = !callback & |, '| & !fieldName & |')|
+          !out.append(!command)
+        else
+          !command = |!menu.add('CALLBACK', | & !dtext & |, | & !callback & |, '| & !fieldName & |')|
+          !out.append(!command)
+        endif
+        skip
+      -- separator
+      elseif (!l2.match('add sep') gt 0) then
+        !command = |!menu.add('SEPARATOR')|
+        !out.append(!command)
+        skip
+      endif
+    endif
+
+    -- if we haven't skipped by here, the line's not recognised. Comment it out!
+    if (!comment and !l.trim().match('--') ne 1) then
+      !l = '-- ' & !l
+    endif
+    !out.append(!l)
+  enddo
+
+  -- output a method to run all of the menu construction methods
+  !out.append('')
+  !out.append('define method .modifyMenus()')
+  do !methodName values !menuMethods
+    !out.append('!this' & !methodName)
+  enddo
+  !out.append('endmethod')
+
+  ------------------------------------------------------------
+  -- set the indents on the data created
+  ------------------------------------------------------------
+  !indent = 0
+  !indentIncrement = 0
+  !indentStr = '                                             '
+  do !l values !out
+    -- work out the indent of the line
+    !indent = !indent + !indentIncrement
+    -- default is to have next line with same indent as this one
+    !indentIncrement = 0
+    !l2 = !l.lowcase()
+    if (!l2.match('else') eq 1) then
+      !indent = !indent - 1
+      !indentIncrement = 1
+    elseif (!l2.match('end') eq 1) then
+      !indent = !indent - 1
+    elseif (!l2.match('if ') eq 1 or !l2.match('define ') eq 1 or !l2.match('do ') eq 1) then
+      !indentIncrement = 1
+    endif
+    !l = !indentStr.substring(1, !indent * 2) & !l
+  enddo
+
+  -- close the output file
+  -- !outFile.close()
+  !outFile = object FILE(!this.outputDir & '\' & !this.objectName.lowcase() & '.pmlobj')
+  !outFile.writeFile('OVERWRITE', !out)
+
+  -- output application definition file
+  !this.applicationFile()
+
+endmethod
+-- End of method definition for .convert()
+
+------------------------------------------------------------------------
+--
+-- Method:      .splitWithStrings()
+--
+-- Description: where strings with spaces have been used, get these into correct form
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+-- Return:
+--   [Data Type] [Description]
+--   ARRAY
+--
+------------------------------------------------------------------------
+define method .splitWithStrings(!str is STRING) is ARRAY
+  -- q var !str
+  !parts = !str.split()
+
+  !j = 1
+  !partsSize = !parts.size()
+  do
+    if (!parts[!j].substring(1,1) eq '|' or !parts[!j].substring(1,1) eq |'|) then
+      !quoteChar = !parts[!j].substring(1,1)
+      if (!parts[!j].replace(!quoteChar & !quoteChar, '').substring(-1,1) ne !quoteChar or !parts[!j].length() eq 1) then
+        do !k from 1 to 100
+          !add = !parts[!j + !k]
+          !parts[!j] = !parts[!j] & ' ' & !add.replace(!quoteChar & !quoteChar, !quoteChar)
+          !parts.deleteFrom(!j + !k, 1)
+          if (!add.replace(!quoteChar & !quoteChar, '').substring(-1,1) eq !quoteChar) then
+            break
+          endif
+        enddo
+        !j = !j + !k
+      endif
+    endif
+    break if !j ge !partsSize
+    !j = !j + 1
+  enddo
+  !parts.compress()
+
+  -- q var !parts
+  return !parts
+endmethod
+-- End of method definition for .splitWithStrings(STRING) ARRAY
+
+------------------------------------------------------------------------
+--
+-- Method:      .unmatchedQuotes()
+--
+-- Description: determines whether a string has unmatched quotes
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+-- Return:
+--   [Data Type] [Description]
+--   BOOLEAN
+--
+------------------------------------------------------------------------
+define method .unmatchedQuotes(!str is STRING) is BOOLEAN
+  !inStr = ''
+  do !i from 1 to !str.length()
+    !char = !str.substring(!i, 1)
+    if (!char eq '|' or !char eq |'|) then
+      if (!inStr eq '') then
+        !inStr = !char
+      elseif (!inStr eq '|' and !char eq '|') then
+        !inStr = ''
+      elseif (!inStr eq |'| and !char eq |'|) then
+        !inStr = ''
+      endif
+    endif
+  enddo
+  -- q var !inStr
+  if (!inStr ne '') then
+    return true
+  else
+    return false
+  endif
+endmethod
+-- End of method definition for .unmatchedQuotes(STRING) BOOLEAN
+
+------------------------------------------------------------------------
+--
+-- Method:      .applicationFile()
+--
+-- Description:
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .applicationFile()
+  !appFile = object FILE(!this.applicationFileDir & '\' & !this.appName)
+  !out = ARRAY()
+
+  !out.append('# ' & !this.appTitle & ' application definition')
+
+  -- properties
+  !p = ARRAY()
+  -- values
+  !v = ARRAY()
+
+  !p.append('name:')       !v.append(!this.appName.upcase())
+  !p.append('directory:')  !v.append(!this.appName.upcase())
+  !p.append('object:')     !v.append(!this.objectName)
+
+  -- flags whether to collect lines from file
+  !collect = false
+  do !l values !this.appFileLines
+    skip if (!l.trim().empty() or !l.trim().substring(1,1) eq '#')
+    -- put something here to check for status?!
+    if (!l.trim().lowcase().matchWild('directory:*' & !this.appName.lowcase())) then
+      !collect = true
+    endif
+    -- skip if we're not collecting data
+    skip if (!collect.not())
+    -- get out if the application we want is over
+    break if (!l.trim().lowcase().match('application') eq 1)
+
+    -- add properties and values to array
+    !property = !l.part(1, ':').trim().lowcase() & ':'
+    !value = !l.part(2, ':').trim()
+
+    -- get rid of form property
+    skip if (!property eq 'form:')
+
+    -- get rid of callback for Draft applications
+    skip if (!this.module eq 'DRA' and !property eq 'callback:')
+
+    if (!p.findFirst(!property).unset()) then
+      !p.append(!property)
+      !v.append(!value)
+    endif
+  enddo
+
+  !pw = !p.width()
+  do !i indices !p
+    !pi = !p[!i]
+    var !output compose '$!pi' width $!pw l spaces 2
+    !out.append(!output[1] & !v[!i])
+  enddo
+
+  !appFile.writeFile('OVERWRITE', !out)
+endmethod
+-- End of method definition for .applicationFile()
+
+------------------------------------------------------------------------
+--
+-- Method:      .makeFieldName()
+--
+-- Description:
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+-- Return:
+--   [Data Type] [Description]
+--   STRING
+--
+------------------------------------------------------------------------
+define method .makeFieldName(!str is STRING) is STRING
+  !return = !str.replace('.', '').replace('''', '').replace('|', '').replace(' ','').replace('&','').replace('-', '').replace('/', '').replace(',', '')
+  return !return
+endmethod

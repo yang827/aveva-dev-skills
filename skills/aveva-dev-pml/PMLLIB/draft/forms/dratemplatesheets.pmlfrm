@@ -1,0 +1,1343 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            dratemplatesheets.pmlfrm
+--   Type:          Form Definition
+--   Group:         Document production
+--     Keyword:     3D
+--   Module:        DRAFT
+--   Replaces:      Maybe FTEMPLATE eventually
+--
+-- Author:          Steve Bentley
+-- Created:         Fri Nov 14 9:43:03 "GMT 2003
+--
+--
+-- Description:
+-- Create drawing sheet from template (Modify?)
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  close()                          -                   close the form
+--  copyDrawingFrom(STRING)          -                   Create new drawing by copying DRWG or DRTMPL (was in MTEMPLATE)
+--  copySheetFrom(STRING)            -                   Create new sheet by copying DRWG (was in MTEMPLATE)
+--  createElement(STRING,STRING,STRING) -                   Method to create the new element (like DRA CLIB ICREATE)
+--  draTemplateSheets()              -                   Constructor
+--  drawingContainsE3DSheet()        -
+--  initialise()                     -                   Initialise the form
+--  loadToolbar()                    -                   load the main form tool bar gadgets to the default template (Only called by MACLOAD)
+--  onApply()                        -                   Method called on Apply
+--  preOnApply()                     -                   Method called on Apply
+--  setDrawing()                     -                   Set the form when drawing selected
+--  setNameOrDescription(STRING,STRING) -                   set the name or description form member
+--  setRegistry()                    -                   Set the form when registry selected
+--  setSheet()                       -                   Set the form when sheet selected
+--  setUp(STRING,STRING,DBREF)       -                   set up the form
+--
+------------------------------------------------------------------------
+--setup form !!draTemplateSheets dialog resize
+setup form !!draTemplateSheets dialog dock t
+
+  !this.formTitle     = 'Create New Drawing/Sheet from Template'
+  !this.iconTitle     = 'Template'
+  !this.callback      = '!this.initialise()'
+
+  option .create       'Create'       at x0 y0     call '!this.setUp(!this.create.selection(''rtext''), |create|, !!ce)
+!this.setSheet()' width 23
+
+  option .setRegistry       'From  '                  at x0 ymax     call '!this.setRegistry()' width 23
+  list   .setDrawing        'Template Drawings'       at xmin ymax call '!this.setDrawing()'  width 31 length 6
+  list   .setSheet          'Template Drawing Sheets' at xmin ymax call '!this.setSheet()' width 31 length 3
+
+  toggle .defaultName 'Use Default Naming (/DR/S/...)' at x0 ymax callback |!!appDraMain.defaultName.val = !this.defaultName.val |
+
+  button .ok at x0 ymax 'OK' callback '!this.preOnApply()' ok
+  toggle .useAsDefault 'Use as Default' at xmax+1 ymin
+  button .cancel at xmax.setSheet-8 ymin 'Cancel' callback '!this.close()' cancel
+
+  -- View save and restore commands
+  view .view at xmax.setSheet+0.5 y0 area
+    height 13.5 aspect 1.414
+  exit
+
+  menu .viewPopUp
+    add |Background Colour...| |!!colourSelectLoad('!!draTemplateSheets.view.background = !!colourSelectGet()', 'Background Colour', !!draTemplateSheets.view.background)|
+  exit
+
+  -- Form Members
+  member .type is STRING
+  member .mode is STRING
+  member .calledFrom is DBREF
+  member .nameOrDescription is STRING
+  member .selectedTemplate is DBREF
+  member .defaultTemplate is DBREF
+  member .drawingPrefix is STRING
+  member .sheetPrefix is STRING
+  member .undo is UNDOABLE
+
+exit
+
+------------------------------------------------------------------------
+--
+-- Method:      draTemplateSheets
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .draTemplateSheets()
+
+  -- Set the cancel call
+  !this.cancelCall = '!this.close()'
+
+  -- Set the undoable object
+  !this.undo.description('Undo Creation by Template')
+  !this.undo.undoAction('')
+  !this.undo.redoAction('')
+  !this.ok.setUndoable(!this.undo)
+
+  -- Set the view pop-up menu
+  !this.view.setPopUp(!this.viewPopUp)
+  !this.view.background = 'midnight'
+
+  --  No use using description because most elements do not have this attribute
+  -- We could use title I suppose but probably samples duplicate
+  !this.nameOrDescription = 'description'
+  --!this.nameOrDescription = 'name'
+
+  !menu = !this.newMenu('nameDescriptionDrawingPopUp')
+  !menu.add('toggle', |Name|, |!this.setNameOrDescription('DRWG', 'NAME')|)
+  !menu.add('toggle', |Description|, |!this.setNameOrDescription('DRWG', 'DESC')|)
+  !this.setDrawing.setPopUp(!this.nameDescriptionDrawingPopUp)
+  !menu = !this.newMenu('nameDescriptionSheetPopUp')
+  !menu.add('toggle', |Name|, |!this.setNameOrDescription('SHEE', 'NAME')|)
+  !menu.add('toggle', |Description|, |!this.setNameOrDescription('SHEE', 'DESC')|)
+  !this.setSheet.setPopUp(!this.nameDescriptionSheetPopUp)
+  !this.nameDescriptionSheetPopUp.select('Description', TRUE)
+  !this.nameDescriptionSheetPopUp.select('Name', FALSE)
+  !this.nameDescriptionDrawingPopUp.select('Description', TRUE)
+  !this.nameDescriptionDrawingPopUp.select('Name', FALSE)
+
+  -- Define the create option gadget
+  !dtext = ARRAY()
+  !dtext.append('Drawing from Template')
+  !dtext.append('Sheet from Template')
+  !rtext = ARRAY()
+  !rtext.append('drawing')
+  !rtext.append('sheet')
+  !this.create.dtext = !dtext
+  !this.create.rtext = !rtext
+
+  -- Initial form setup
+  !this.setUp('drawing', 'create', !!ce)
+
+endmethod
+-- End of method definition for .draTemplateSheets()
+------------------------------------------------------------------------
+--
+-- Method:      initialise
+--
+-- Description: Initialise the form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .initialise()
+
+WARNINGS OFF
+
+  if (!!ce.dbtype neq 'PADD') then
+    switch
+  endif
+
+  -- We may need a Create and Modify mode
+
+  -- Set the default name toggle (Always aligned with toolbar on main form)
+  !this.defaultName.val = !!appDraMain.defaultName.val
+
+  -- Initialise the form with all the template registries in the project templates department.
+
+  -- check tmplt(template) area is set up...
+  !userTemplateArea = !!cdrUdflts.tmplt.val
+  if (!userTemplateArea eq |unset|) then
+    -- ********** This if rule may need tightening up ************
+    return error 1 |Drawing & Sheet Template area not defined...|
+  else
+    -- load all REGIs into option list
+    !this.setRegistry.clear()
+    !this.setDrawing.clear()
+    !this.setSheet.clear()
+    !prefix = !userTemplateArea.trim()
+    !prefixLength = !prefix.length()
+    var !registries collect all REGI with (substring(NAME,1,$!prefixLength) eq |$!prefix|)
+    var !libraries collect all DRTMLB with (substring(NAME,1,$!prefixLength) eq |$!prefix|)
+-- ****** Do we need a PURP attribute? **********
+    !registries.appendArray(!libraries)
+    if (!registries.size() eq 0) then
+      !!alert.error(|No Templates found using prefix | & !prefix & |, please contact your system administrator|)
+    else
+      !dtext = ARRAY()
+      !rtext = ARRAY()
+      do !registry values !registries
+        if (!this.nameOrDescription.lowcase() eq 'description') then
+          if (!registry.dbref().function.trim() neq '') then
+            !dtext.append(!registry.dbref().function)
+          else
+            !dtext.append(!registry.dbref().namn)
+          endif
+        else
+          !dtext.append(!registry.dbref().namn)
+        endif
+        !rtext.append(!registry)
+      enddo
+      !this.setRegistry.dtext = !dtext
+      !this.setRegistry.rtext = !rtext
+      !this.setRegistry.val = 1
+      -- Load all drawings and sheets from selected registry into list gadgets
+      !this.setRegistry()
+    endif
+  endif
+
+WARNINGS ON
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      setUp
+--
+-- Description: set up the form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     STRING      Key word DRAWING or SHEET to be created
+--    2    R     STRING      Key word CREATE or MODIFY (Create only being done at this stage)
+--    3    R     DBREF       Element
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setUp(!type is STRING, !mode is STRING, !calledFrom is DBREF)
+
+  !this.type       = !type.lowcase()
+  !this.mode       = !mode.lowcase()
+  !this.calledFrom = !calledFrom
+
+  !this.create.select('rtext', !this.type)
+  if (!this.type eq 'drawing') then
+    !this.formTitle = 'Create New Drawing from Template'
+  else
+    !this.formTitle = 'Create New Sheet from Template'
+  endif
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      setNameOrDescription
+--
+-- Description: set the name or description form member
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     STRING      STRING 'DRWG' or 'SHEE'
+--    2    R     STRING      STRING 'DESC' or 'NAME'
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setNameOrDescription(!option is STRING, !pick is STRING)
+
+  --What is currently selected
+  !registry = !this.setRegistry.selection('rtext')
+  !drawing = !this.setDrawing.selection('rtext')
+  !sheet = !this.setSheet.selection('rtext')
+
+  -- Set the display member
+  if (!option eq 'DRWG') then
+    if (!pick eq 'DESC') then
+      !this.nameDescriptionDrawingPopUp.select('Name',        !this.nameDescriptionDrawingPopUp.selected('Description').not())
+      !this.nameDescriptionSheetPopUp.select(  'Description', !this.nameDescriptionDrawingPopUp.selected('Description'))
+      !this.nameDescriptionSheetPopUp.select(  'Name',        !this.nameDescriptionDrawingPopUp.selected('Description').not())
+    else
+      !this.nameDescriptionDrawingPopUp.select('Description', !this.nameDescriptionDrawingPopUp.selected('Name').not())
+      !this.nameDescriptionSheetPopUp.select(  'Name',        !this.nameDescriptionDrawingPopUp.selected('Name'))
+      !this.nameDescriptionSheetPopUp.select(  'Description', !this.nameDescriptionDrawingPopUp.selected('Name').not())
+    endif
+    if (!this.nameDescriptionDrawingPopUp.selected('Description')) then
+      !this.nameOrDescription = 'description'
+    else
+      !this.nameOrDescription = 'name'
+    endif
+  elseif (!option eq 'SHEE') then
+    if (!pick eq 'DESC') then
+      !this.nameDescriptionSheetPopUp.select(  'Name',        !this.nameDescriptionSheetPopUp.selected('Description').not())
+      !this.nameDescriptionDrawingPopUp.select('Description', !this.nameDescriptionSheetPopUp.selected('Description'))
+      !this.nameDescriptionDrawingPopUp.select('Name',        !this.nameDescriptionSheetPopUp.selected('Description').not())
+    else
+      !this.nameDescriptionSheetPopUp.select(  'Description', !this.nameDescriptionSheetPopUp.selected('Name').not())
+      !this.nameDescriptionDrawingPopUp.select('Name',        !this.nameDescriptionSheetPopUp.selected('Name'))
+      !this.nameDescriptionDrawingPopUp.select('Description', !this.nameDescriptionSheetPopUp.selected('Name').not())
+    endif
+    if (!this.nameDescriptionSheetPopUp.selected('Description')) then
+      !this.nameOrDescription = 'description'
+    else
+      !this.nameOrDescription = 'name'
+    endif
+  endif
+  -- Re initialise the display gadgets
+  !this.initialise()
+
+  -- Set the selection to what it was, if possible.
+  !this.setRegistry.select('rtext', !registry)
+  handle ANY
+    return
+  elsehandle NONE
+    !this.setRegistry()
+    !this.setDrawing.select('rtext', !drawing)
+    handle ANY
+      !this.initialise()
+      return
+    elsehandle NONE
+      !this.setDrawing()
+      !this.setSheet.select('rtext', !sheet)
+      handle ANY
+        !this.initialise()
+        return
+      elsehandle NONE
+        !this.setSheet()
+      endhandle
+    endhandle
+  endhandle
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      close
+--
+-- Description: close the form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .close()
+
+  !this.hide()
+
+endmethod
+-- End of method
+
+define method .drawingContainsE3DSheet(!drwg IS STRING) IS BOOLEAN
+  var !sheets collect all (SHEE SHTMPL) for $!drwg
+  do !sheet values !sheets
+     !acpict = !sheet.dbref().acpict
+     if (!acpict.neq('OFF') and !acpict.neq('ON')) then
+       return true
+     endif
+  enddo
+  return false
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      setRegistry
+--
+-- Description: Set the form when registry selected
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setRegistry()
+
+  !this.setDrawing.clear()
+  !this.setSheet.clear()
+
+  -- load all drawings from selected registry into list gadget
+  !registry = !this.setRegistry.selection('rtext')
+  var !drawings collect all (DRWG DRTMPL) for $!registry
+  if (!drawings.size() eq 0) then
+  else
+    !dtext = ARRAY()
+    !rtext = ARRAY()
+     do !drawing values !drawings
+       skip if (!this.drawingContainsE3DSheet(!drawing))
+       if (!this.nameOrDescription.lowcase() eq 'description') then
+         if (!drawing.dbref().title.trim() neq '') then
+           !dtext.append(!drawing.dbref().title)
+         else
+           !dtext.append(!drawing.dbref().namn)
+         endif
+       else
+         !dtext.append(!drawing.dbref().namn)
+       endif
+       !rtext.append(!drawing)
+     enddo
+     !this.setDrawing.dtext = !dtext
+     !this.setDrawing.rtext = !rtext
+     if (!rtext.size().eq(0)) then
+        return
+     endif
+     !this.setDrawing.val = 1
+     -- load all SHEETS from selected DRWG into list gadget
+     !this.setDrawing()
+   endif
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      setDrawing
+--
+-- Description: Set the form when drawing selected
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setDrawing()
+
+  !this.setSheet.clear()
+  !this.selectedTemplate = object DBREF()
+
+  -- load all sheets from selected drawing into list gadget
+  !drawing = !this.setDrawing.selection('rtext')
+  var !sheets collect all (SHEE SHTMPL) for $!drawing
+  if (!sheets.size() eq 0) then
+  else
+    !dtext = ARRAY()
+    !rtext = ARRAY()
+     do !sheet values !sheets
+       if (!this.nameOrDescription.lowcase() eq 'description') then
+         if (!sheet.dbref().title.trim() neq '') then
+           !dtext.append(!sheet.dbref().title)
+         else
+           !dtext.append(!sheet.dbref().namn)
+         endif
+       else
+         !dtext.append(!sheet.dbref().namn)
+       endif
+       !rtext.append(!sheet)
+     enddo
+     !this.setSheet.dtext = !dtext
+     !this.setSheet.rtext = !rtext
+     !this.setSheet.val = 1
+   endif
+
+   -- view the selected sheet in the view gadget
+   !this.setSheet()
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      setSheet
+--
+-- Description: Set the form when sheet selected
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setSheet()
+
+WARNINGS OFF
+
+  -- Put the selected sheet in the view gadget
+  !sheet = !this.setSheet.selection('rtext')
+
+  -- Set the form member for selected template
+  if (!this.mode.lowcase() eq 'create' and !this.type.lowcase() eq 'drawing') then
+    !this.selectedTemplate = !this.setDrawing.selection('rtext').dbref()
+    handle ANY
+      !this.selectedTemplate = object DBREF()
+    endhandle
+  elseif (!this.mode.lowcase() eq 'create' and !this.type.lowcase() eq 'sheet') then
+    !this.selectedTemplate = !this.setSheet.selection('rtext').dbref()
+    handle ANY
+      !this.selectedTemplate = object DBREF()
+    endhandle
+  endif
+
+  -- If there is not sheet clear the gadget
+  if (!sheet eq '') then
+    edit !!draTemplateSheets.view area
+      put =0/0
+    exit
+    return
+  endif
+
+  edit !!draTemplateSheets.view area
+    put $!sheet
+    handle ANY
+--      put =0/0
+--      !!alert.error('Cannot display template')
+--      !!alert.error(!!error.text)
+      exit
+        handle ANY
+          -- It seems that the exit sometimes is by passed by the error, depending on the error.
+        endhandle
+
+        -- May not be required in final version but update the anno on the template
+        $!sheet
+        update anno
+        handle ANY
+        endhandle
+        same
+
+      return
+    endhandle
+  exit
+
+  -- May not be required in final version but update the anno on the template
+  $!sheet
+  update anno
+  handle ANY
+  endhandle
+  same
+
+WARNINGS ON
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      preOnApply
+--
+-- Description: Method called on Apply
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .preOnApply()
+
+  if (!!appDraMain.defaultName.val) then
+    -- Go straight on onApply method
+    !this.onApply()
+  else
+    -- show a naming form
+    show !!draDrwgTemplateName at xr0.4 yr0.4
+    return
+  endif
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      onApply
+--
+-- Description: Method called on Apply
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .onApply()
+
+  -- Get the form member for selected template
+  if (!this.selectedTemplate.unset()) then
+    !!alert.error('Template not selected')
+    return
+  endif
+  if (!this.drawingContainsE3DSheet(!this.selectedTemplate.string())) then
+    !!alert.error('Template '+!this.selectedTemplate.name+ ' is only available in AVEVA E3D DRAW')
+    return
+  endif
+
+  -- *********** Create Drwg from selected template ***************
+  -- We want to make every attempt to create a drawing or sheet even if in wrong hierarchy
+  -- Potential banana skins:
+  -- a. No DAC access at all
+  --    No DAC access where expected, however, somewhere else was found but that was not really where the user wanted
+  -- b. Multiwrite db, other user claimed.
+  --    Multiwrite db, explicit claim required.
+  -- c. Extract db (problems like multiwrite but more so because of extract ancestry)
+  -- d. No writeable dbs all
+  -- e. We could create a drawing, but in wrong db for user; and we currently have no explorer function for cut and paste
+  --    (Moving to another database is more of an issue than moving within same database.)
+
+  -- I am concerned that we make be trying to be too clever and end up making the user rectify a wrong assumption.
+  -- Anyway....
+
+  -- if in exact valid place create drawing or sheet
+  -- if too high in valid hierarchy create missing hierarchy
+  -- if too low in valid hierarchy create will work
+  -- If in invalid hierarchy (i.e for any of the above lettered reasons)
+  -- Should we:
+  -- 1. Ask the user where?
+  --     i.e Bring up an explorer, like Microsoft would, displaying the valid folders
+  --         i.e Database or World in our case, then disclose the Dept folders, then Regi folders.
+  --             The user should be able to create a New... (like Microsoft do for folders)
+  -- 2. Deny the user and inform them with the reason for denial?  (This is the usual approach)
+  -- 3. Do our best assumption to find some where and only deny if totally impossible to find a place to create the new drawing.
+  --   Beware!!!!
+  --   We could create a drawing, but in wrong db for user; and we currently have no explorer function for cut and paste
+  --    (Moving to another database is more of an issue than moving within same database.)
+
+  if (!!appDraMain.defaultName.val) then
+    !this.drawingPrefix = 'DR'
+    !this.sheetPrefix   = 'S'
+    !this.drawingPrefix = !!cdrDfltsName.drwg.val
+    handle ANY
+    elsehandle NONE
+      if (!this.drawingPrefix.string().trim() eq '') then
+        !this.drawingPrefix = 'DR'
+      endif
+    endhandle
+    !this.sheetPrefix   = !!cdrDfltsName.shee.val
+    handle ANY
+    elsehandle NONE
+      if (!this.sheetPrefix.string().trim() eq '') then
+        !this.sheetPrefix = 'S'
+      endif
+    endhandle
+  else
+    if (!this.type.lowcase() eq 'drawing') then
+      !this.drawingPrefix = !!draDrwgTemplateName.nameGadget.val.after('/')
+      !sheetPrefixDefault   = !!cdrDfltsName.shee.val
+      handle ANY
+      elsehandle NONE
+        if (!sheetPrefixDefault.string().trim() eq '') then
+          !sheetPrefixDefault = 'S'
+        endif
+      endhandle
+      !this.sheetPrefix   = !!draDrwgTemplateName.nameGadget.val.after('/') & '/' & !sheetPrefixDefault & '1'
+    else
+      !this.drawingPrefix = !!draDrwgTemplateName.nameGadget.val.after('/')
+      !this.sheetPrefix   = !!draDrwgTemplateName.nameGadget.val.after('/')
+    endif
+  endif
+
+WARNINGS OFF
+
+  if (!this.type.lowcase() eq 'drawing') then
+    -- Create the actual new element
+-- **************** Prefix could be obtained from existing form *********************
+
+    !this.createElement(!this.drawingPrefix, 'DRWG', 'ce')
+    handle ANY
+      return
+    endhandle
+    if (!this.selectedTemplate.type eq 'DRWG') then
+       !this.copyDrawingFrom('drawing')
+    elseif (!this.selectedTemplate.type eq 'DRTMPL') then
+      !this.copyDrawingFrom('drtmpl')
+    endif
+  elseif (!this.type.lowcase() eq 'sheet') then
+    -- Create the actual new element
+    !this.createElement(!this.sheetPrefix, 'SHEE', 'ce')
+    if (!this.selectedTemplate.type eq 'SHEE') then
+       !this.copySheetFrom('sheet')
+    elseif (!this.selectedTemplate.type eq 'SHTMPL') then
+       !this.copySheetFrom('shtmpl')
+    endif
+  endif
+
+WARNINGS ON
+
+  -- If the user has selected 'Use as Default' then add to the default template gadget
+  if (!this.useAsDefault.val) then
+    -- Change the tooltip on this toolbar create gadget
+    !!cdrGenApp.createDefaultTemplate.settooltip('Create New ' & !this.type.lowcase() & ' from Default Template')
+    !this.defaultTemplate = !this.selectedTemplate
+    -- Activate Create > From Default Template menu's
+    !!cdrGenApp.createDefaultTemplate.active = TRUE
+    !dtext = !!cdrGenApp.optionDefaultTemplate.dtext
+    !rtext = !!cdrGenApp.optionDefaultTemplate.rtext
+    !dtext.append(!this.defaultTemplate.name)
+    !rtext.append(!this.defaultTemplate.refe.string())
+    !dtext.unique()
+    !rtext.unique()
+    -- eliminate the 'unset' option
+--    do !i indices !dtext
+--      if (!dtext[!i] eq 'unset') then
+--        !dtext.remove(!i)
+--        !rtext.remove(!i)
+--        break
+--      endif
+--    enddo
+    -- Is there a danger that dtext and rtext could be out of step? No
+    !!cdrGenApp.optionDefaultTemplate.dtext = !dtext
+    !!cdrGenApp.optionDefaultTemplate.rtext = !rtext
+    -- Select the default template on the gadget
+    !!cdrGenApp.optionDefaultTemplate.select('rtext', !this.defaultTemplate.refe.string())
+    if (!this.selectedTemplate.type eq 'DRWG' or !this.selectedTemplate.type eq 'DRTMPL') then
+      !!cdrGenApp.mbCrDrwg.setActive(|From Default Template...|, TRUE)
+      !!cdrGenApp.mbCrShee.setActive(|From Default Template...|, FALSE)
+    elseif (!this.selectedTemplate.type eq 'SHEE' or !this.selectedTemplate.type eq 'SHTMPL') then
+      !!cdrGenApp.mbCrDrwg.setActive(|From Default Template...|, FALSE)
+      !!cdrGenApp.mbCrShee.setActive(|From Default Template...|, TRUE)
+    else
+      -- do nothing or else we would lose the template default setting
+    endif
+  endif
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      copyDrawingFrom
+--
+-- Description: Create new drawing by copying DRWG or DRTMPL (was in MTEMPLATE)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     STRING      key word 'DRAWING' or 'DRTMPL' (Type of template)
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .copyDrawingFrom(!templateType is STRING)
+
+  !template = !this.selectedTemplate
+  !templateName = !template.name
+
+  -- First check we are in the correct DB type
+  if (!!ce.dbtype neq 'PADD') then
+    switch
+  endif
+
+  -- This assumes the template is named (Is this good enough?) ***********
+  -- copy drawing...
+  !newDrawing = !!ce
+  !newDrawingName = !!ce.name
+
+  !author = !!ce.author
+  !date = !!ce.date
+
+  if (!templateType.lowcase() eq 'drawing') then
+    !command = 'COPY ' & !templateName & ' RENAME ' & !templateName & ' ' & !newDrawingName
+  else
+    !command = 'BSRF unset COPY LIKE ' & !templateName & ' RENAME ' & !templateName & ' ' & !newDrawingName
+  endif
+  $!command
+  handle ANY
+    -- ********** error occurred using copy or copy like **********************
+  endhandle
+
+  -- Set author back to real author and date not template's author
+  !!ce.author = !author
+  !!ce.date = !date
+  update anno
+
+  -- ************************** DRTMPL specific code **********************************
+  -- This bit has been copied from the abaDrawing pml object
+  -- Copy and rename all the members of the template into the new drawing because copy like does not do this.
+  if (!templateType.lowcase() eq 'drtmpl') then
+
+    LINKREF $!templateName
+    SPPURPOSE unset
+
+    -- Cycle round the members of the drawing template make copies and rename
+    do !member values !template.members
+      -- Initialise variables
+      !memberType = !member.type
+      !memberName = !member.flnn
+      if (!memberType.eq('SHTMPL')) then
+        -- Do do anything yet till the next do loop
+      else
+        -- its not the sheet template
+        if (!memberName.match(!templateName).gt(0)) then
+          !newName = !newDrawingName & !memberName.after(!templateName)
+        else
+          !newName = ' '
+        endif
+        if (!memberType eq 'LIBY') then
+          NEW LIBY $!newDrawingName/LIBY
+          -- *************** What if there was more than 1 library? ***********************
+          COPY MEMBERS OF $!member rename $!templateName $!newDrawingName
+        else
+          NEW $!memberType $!newName COPY $!member RENAME $!templateName $!newDrawingName
+          handle (64,503)
+            -- Picture needs to be loaded
+            !loadElem = !!error.text.after(') ').before(': Picture')
+            LOAD $!loadElem
+            handle ANY
+            endhandle
+          endhandle
+        endif
+      endif
+    enddo
+
+    -- Do again
+    do !member values !template.members
+      -- Initialise variables
+      !memberType = !member.type
+      !memberName = !member.flnn
+      if (!memberType.eq('SHTMPL')) then
+        -- Just change the selected template to be this shtmpl and run the .copySheetFrom('shtmpl') method
+        !this.selectedTemplate = !member
+        -- Create the actual new element
+        !this.createElement(!this.sheetPrefix, 'SHEE', 'ce')
+        !this.copySheetFrom('shtmpl')
+        !this.selectedTemplate = !template
+      endif
+    enddo
+    DRWG
+
+
+
+  endif
+
+  -- ************************** End of DRTMPL specific code ***************************
+
+-- ********** Actually I think this may just be for from DRWG (not when from DRTMPL) so...
+if (!templateType.lowcase() eq 'drawing') then
+  -- set the idln to point to the drwgs default idlist
+  -- This relies on names being adhered to (This is a Draft dependency on expected naming)
+  IDLN $!newDrawingName/DRAWLIST/DRWG
+  handle ANY
+  endhandle
+  var !idlname IDLN
+
+  -- drwg may contain sheets
+  -- goto each sheet and cascade drwgs new idln to each sheet....
+  var !numberSheets MEM SHEE COUNT
+  do !i to $!numberSheets
+    SHEET $!i
+    IDLN $!idlname
+    handle ANY
+    endhandle
+    !newSheetName = !!ce.name
+    -- update the sheet on the main form
+    -- Temporary run macro call a new function needs writing ******** will be easy.
+    call !!runMacro(|%PDMSUI%/DRA/CLIB/UELEMSEL|, !newSheetName)
+
+    -- sheet may contain views
+    -- goto each view and cascade sheets new idln to each view....
+    var !numberViews MEM VIEW COUNT
+    do !j to $!numberViews
+      VIEW $!j
+      IDLN $!idlname
+      handle ANY
+      endhandle
+    enddo
+
+  enddo
+else
+  -- drwg may contain sheets
+  -- goto each sheet and cascade drwgs new idln to each sheet....
+  var !numberSheets MEM SHEE COUNT
+  do !i to $!numberSheets
+    SHEET $!i
+    !newSheetName = !!ce.name
+    -- update the sheet on the main form
+    -- Temporary run macro call a new function needs writing ******** will be easy.
+    call !!runMacro(|%PDMSUI%/DRA/CLIB/UELEMSEL|, !newSheetName)
+  enddo
+endif
+
+  -- Navigate back to the new drawing
+  !!ce = !newDrawing
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      copySheetFrom
+--
+-- Description: Create new sheet by copying DRWG (was in MTEMPLATE)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     STRING      Key word can be 'SHEET' or 'SHTMPL' (Type of template)
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .copySheetFrom(!templateType is STRING)
+
+  !template = !this.selectedTemplate
+  !templateName = !template.name
+
+  -- This assumes the template is named (Is this good enough?) ***********
+  !newSheet = !!ce
+  !newSheetName = !!ce.name
+  if (!templateType.lowcase() eq 'sheet') then
+    !command = 'COPY ' & !templateName & ' RENAME ' & !templateName & ' ' & !newSheetName
+  else
+    !command = 'BSRF unset COPY LIKE ' & !templateName & ' RENAME ' & !templateName & ' ' & !newSheetName
+  endif
+  $!command
+  handle ANY
+    -- ********** error occurred using copy or copy like **********************
+  endhandle
+
+  -- Specific requirements if using the SHTMPL as the template origin
+  if (!templateType.lowcase() eq 'shtmpl') then
+    LINKREF $!templateName
+    SPPURPOSE unset
+    BSRF BSRF OF $!templateName
+    handle ANY
+      !!alert.error('Unable to Set Template Backing Sheet for $!template - See Your System Administrator')
+    endhandle
+    -- Now copy all members of the sheet
+    !command = 'COPY MEMBERS OF ' & !templateName & ' RENAME ' & !templateName & ' ' & !newSheetName
+    $!command
+
+    SHEET
+    -- For all ABA templates we want to unset the SPPURP
+    var !allWithABAT collect all with (SPPURP eq 'ABAT') for ce
+    do !i indices !allWithABAT
+      !!ce = !allWithABAT[!i].dbref()
+      SPPURPOSE unset
+    enddo
+    SHEET
+
+  endif
+
+  -- move to owning DRWG and set sheets IDLN to DRWGS IDLN
+    -- *********** Do we need to worry about DAC here? *************
+  DRWG
+  !drawingName = !!ce.name
+  var !idlname IDLN
+
+  -- Go to the template name and capture the IDLN of all of the VIEWS
+
+  -- return to sheet
+  !!ce = !newSheet
+  IDLN $!idlname
+  handle ANY
+  endhandle
+
+  -- sheet may contain views....
+  -- goto each view and cascade sheets new idln to all views....
+  var !views MEM VIEW COUNT
+  do !i to $!views
+    VIEW $!i
+    !viewName = !!ce.name
+    $!drawingName/LIBY
+    handle ANY
+      -- this might not exist
+    elsehandle NONE
+      NEW PLLB
+      name $!viewName/PLANES
+      handle (41,12)
+        DELETE PLLB
+      endhandle
+    endhandle
+    !!ce = !newSheet
+  enddo
+
+  -- We now have a copy of the drawing and all its members so now we need to go and reassign references,
+  -- such as refs for tagrules etc, because in the DRTMPL situation, the library is not copied with
+  -- the drawing it may be a separate library stored anywhere in the database.
+
+  DRWG
+
+  var !library coll all liby for ce
+  var !allViews coll all view for ce
+
+  do !view val !allViews
+
+    -- Initialise variables
+    !viewElement = !view.dbref()
+    -- Set idln
+    !!ce = !viewElement
+--      if (!viewElement.idln.badref()) then
+--        skip
+--      endif
+    !idliOrder = !viewElement.idln.order
+    !tempDllb = !viewElement.idln.owne
+    !tempLiby = !viewElement.idln.owne.owne
+    var !allDllbs coll all dllb for $!tempLiby
+    var !allTrlbs coll all trlb for $!tempLiby
+    var !allLayers coll all laye for $!viewElement
+
+    -- 1. Find the number of the dllb that owns the referenced idln
+    do !index index !allDllbs
+      if (!allDllbs[!index].eq(!tempDllb.string())) then
+        !dllbOrder = !index
+        break
+      endif
+    enddo
+    -- Set idln
+    !!ce = !viewElement
+    IDLN IDLI $!idliOrder OF DLLB $!dllbOrder OF $!library[1]
+    handle ANY
+      -- May not be any libraries
+    endhandle
+
+    -- 2. Re-assign all tagruleset to that of the local trst and not the template trst
+    -- but set a link reference to the template trst
+    do !laye val !allLayers
+
+      -- Initialise variables
+      !layerElement = !laye.dbref()
+      !tempTrst = !layerElement.trsf
+
+      -- For any tagruleset reference
+      if (!tempTrst.badref().not()) then
+
+        -- Get trsf data
+        !trstOrder = !layerElement.trsf.order
+        !tempTrlb = !layerElement.trsf.owne
+        var !tempTagrules coll all tagr for $!tempTrst
+
+        -- Find the number of the trlb that owns the referenced trst
+        do !index index !allTrlbs
+          if (!allTrlbs[!index].eq(!tempTrlb.string())) then
+            !trlbOrder = !index
+            break
+          endif
+        enddo
+
+        -- Set tagruleset
+        !!ce = !layerElement
+        TRSF TRST $!trstOrder OF TRLB $!trlbOrder OF $!library[1]
+        handle ANY
+          -- May not be any libraries
+        endhandle
+
+        -- Run round all of the tagrules and set a link reference to the template ones
+        !trst = !layerElement.trsf
+        VAR !allTagrules COLL ALL TAGR FOR $!trst
+
+        do !index ind !allTagrules
+          !allTagrules[!index].dbref().linkref = $!tempTagrules[$!index]
+          handle ANY
+            -- May not be possible
+            break
+          endhandle
+        enddo
+
+      endif
+    enddo
+  enddo
+
+  -- Position at the drawing.
+  DRWG
+
+  -- For all ABA templates we want to unset the SPPURP
+  VAR !allWithABAT COLLECT ALL WITH (SPPURP eq 'ABAT') FOR CE
+  do !i indices !allWithABAT
+    !allWithABAT[!i].dbref().sppurp = ''
+  enddo
+
+  -- Update all attributes & elements from the drawing template
+  -- *************************** WHAT DOES THIS DO? ********************************
+--    !this.upDate('numbered')
+
+  -- update the sheet on the main form
+  -- Temporary run macro call a new function needs writing ******** will be easy.
+  call !!runMacro(|%PDMSUI%/DRA/CLIB/UELEMSEL|, !newSheetName)
+
+  -- Navigate back to the new drawing
+  !!ce = !newSheet
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      createElement
+--
+-- Description: Method to create the new element (like DRA CLIB ICREATE)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      STRING      The prefix for the new element
+--    2    R      STRING      The type of the new element
+--    3    R      STRING      Where to create the new element
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createElement(!prefix is STRING, !elementType is STRING, !where is STRING)
+
+  !stage1 = ''
+  !stage2 = ''
+  !deptCreated = false
+  !regiCreated = false
+
+  -- Some issues
+  -- Explicit claim db or extract - NEW will always work. even if another user has the owner claimed.
+  -- DAC - I think we have a function that can pre predict if this will work
+  -- Read Only DB - Could look for a writeable DB
+
+  -- This method currently will only work when !where is 'ce'
+
+  if (!where.lowcase() eq 'ce') then
+
+    -- First check we are in the correct DB type
+    if (!!ce.dbtype neq 'PADD') then
+      switch
+    endif
+
+    if (!!ce.dbwrite.not()) then
+      !!alert.error('Cannot create ' & !elementType.upcase() & ' here: Read Only Database')
+      return error 1 noalert
+    endif
+
+    -- We could first find out if we are at a suitable place in the hierarchy
+    !currentType = !!ce.type
+
+    if (!elementType.upcase() eq 'SHEE') then
+
+      -- If we're at the world (We could try creating a DEPT, REGI and DRWG) but not a good idea because a DRWG needs proper definition.
+      -- If we're at a DEPT (We could try creating a REGI and DRWG) but not a good idea because a DRWG needs proper definition.
+      -- If we're at a REGI (We could try creating a DRWG) but not a good idea because a DRWG needs proper definition.
+      if (!currentType inset ('WORL', 'DEPT', 'REGI')) then
+        !!alert.error('Navigate to a DRWG element to create a new sheet')
+        return error 1 noalert
+      -- We maybe be OK if the owner is a DRWG
+      elseif (!currentType eq 'DRWG' or !!ce.owner.type eq 'DRWG') then
+        -- OK = Stay where we are
+      else
+        -- Try to go to a DRWG in case we are below
+        DRWG
+        handle ANY
+          -- We must be in an invalid hierarchy
+          !!alert.error('Navigate to a DRWG element to create a new sheet')
+          return error 1 noalert
+        elsehandle NONE
+          -- OK = Stay where we are
+        endhandle
+      endif
+
+      -- We must now be at a valid hierarchy
+
+    elseif (!elementType.upcase() eq 'DRWG') then
+      -- If we're at the world (We could try creating a DEPT, REGI)
+      if (!!ce.type eq 'WORL' or (!!ce.owner.type eq 'WORL' and !!ce.type neq 'DEPT')) then
+        WORL
+        -- Find the first writeable database
+        var !writeRegistry collect all DEPT with (DBWRITE eq true and LOCK eq false) for ce
+        !!ce = !writeRegistry[1].dbref()
+        handle ANY
+          NEW DEPT
+          handle ANY
+            !!alert.error('Navigate to a valid REGI element to create a new drawing')
+            return error 1 noalert
+          elsehandle NONE
+            !stage1 = 'new DEPT also just created'
+            !deptCreated = true
+          endhandle
+        elsehandle NONE
+          !deptName = !!ce.name
+          !stage1 = 'existing DEPT ' & !deptName
+        endhandle
+        -- Find the first writeable database
+        var !writeRegistry collect all REGI with (DBWRITE eq true and LOCK eq false) for ce
+        !!ce = !writeRegistry[1].dbref()
+        handle ANY
+          NEW REGI
+          handle ANY
+            if (!deptCreated) then
+              DELETE DEPT
+            endif
+            !!alert.error('Navigate to a valid REGI element to create a new drawing')
+            return error 1 noalert
+          elsehandle NONE
+            if (!deptCreated.not()) then
+              !stage1 = !stage1 & ' (new REGI)'
+              !regiCreated = true
+            else
+              !stage1 = !stage1 & ' (and new REGI)'
+            endif
+          endhandle
+        elsehandle NONE
+          !regiName = !!ce.name
+          !stage1 = 'existing REGI ' & !regiName
+        endhandle
+      -- If we're at a DEPT (We could try creating a REGI)
+      elseif (!!ce.type eq 'DEPT' or (!!ce.owner.type eq 'DEPT' and !!ce.type neq 'REGI')) then
+        -- Find the first writeable database
+        var !writeRegistry collect all REGI with (DBWRITE eq true and LOCK eq false) for ce
+        !!ce = !writeRegistry[1].dbref()
+        handle ANY
+          NEW REGI
+          handle ANY
+            !!alert.error('Navigate to a valid REGI element to create a new drawing')
+            return error 1 noalert
+          elsehandle NONE
+            !stage1 = 'new REGI also just created'
+            !regiCreated = true
+          endhandle
+        elsehandle NONE
+          !regiName = !!ce.name
+          !stage1 = 'existing REGI ' & !regiName
+        endhandle
+      -- We maybe be OK if the owner is a REGI
+      elseif (!currentType eq 'REGI' or !!ce.owner.type eq 'REGI') then
+        -- OK = Stay where we are
+      else
+        -- Try to go to a REGI in case we are below
+        REGI
+        handle ANY
+          -- We must be in an invalid hierarchy
+          !!alert.error('Navigate to a REGI element to create a new drawing')
+          return error 1 noalert
+        elsehandle NONE
+          -- OK = Stay where we are
+        endhandle
+      endif
+
+      -- We must now be at a valid hierarchy
+
+    endif
+
+    -- So what if we at a valid element but cannot create a new element because of DAC or claim or RO reasons
+
+    -- Create the new element
+    !command = 'NEW ' & !elementType
+    $!command
+    handle ANY
+      !!alert.error('Cannot create ' & !elementType.upcase() & ' here: ' & !!error.text)
+      handle ANY
+        -- In case concatenated text is too long
+        !!alert.error(!!error.text.after(')'))
+      endhandle
+      return error 1 noalert
+    elsehandle NONE
+      !stage2 = 'New ' & !elementType & ' created'
+    endhandle
+
+    -- Assume a set star style concatenated name
+    !owner = !!ce.owner
+    if (!owner.isNamed) then
+      !ownerName = !owner.name.after('/') & '/'
+    else
+      !ownerName = ''
+    endif
+
+    if (!!appDraMain.defaultName.val) then
+      -- Formulate the name
+      do !i
+        !newName = '/' & !ownerName & !prefix & !i
+        !unusedTestNameDefault = object DBREF(!newName)
+        handle ANY
+          -- name not used
+          !command = 'NAME ' & !newName
+          $!command
+          break
+        elsehandle NONE
+          -- name already exists, stay in loop
+        endhandle
+      enddo
+    else
+      !newName = '/' & !prefix
+      !unusedTestName = object DBREF(!newName)
+      handle ANY
+        -- name not used
+        !command = 'NAME ' & !newName
+        $!command
+      elsehandle NONE
+        -- name already exists, Give error (Should not need because of form name check)
+        !!alert.error('Name already exists')
+      endhandle
+    endif
+
+    -- Confirm what has just happened
+    if (!stage2 neq '' and !stage1 neq '') then
+      !answer = !!alert.confirm(!stage2 & ' in ' & !stage1 & '. Do you wish to accept?')
+      if (!answer.boolean().not()) then
+        if (!deptCreated) then
+          DEPT
+          DELETE DEPT
+        elseif (!regiCreated) then
+          REGI
+          DELETE REGI
+        else
+          DRWG
+          DELETE DRWG
+        endif
+        return error 1 noalert
+      endif
+    endif
+
+  endif
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      loadToolbar
+--
+-- Description: load the main form tool bar gadgets to the default template (Only called by MACLOAD)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .loadToolbar()
+
+  -- test to see if !!cdrUdflts.tmpltdef.val is the name of a valid dbref
+  !test = !!cdrUdflts.tmpltdef.val.dbref().string()
+  handle ANY
+    !test = 'invalid'
+  endhandle
+  !dtext = ARRAY()
+  !rtext = ARRAY()
+  !dtext.append('Select...')
+  !rtext.append('Select...')
+  if (!test neq 'invalid') then
+    !dtext.append(!!cdrUdflts.tmpltdef.val)
+    !rtext.append(!!cdrUdflts.tmpltdef.val.dbref().string())
+  endif
+  !!cdrGenApp.optionDefaultTemplate.dtext = !dtext
+  !!cdrGenApp.optionDefaultTemplate.rtext = !rtext
+  !!cdrGenApp.optionDefaultTemplate.select('rtext', !rtext[!rtext.size()])
+  !!cdrGenApp.createDefaultTemplate.active = true
+  if (!test neq 'invalid') then
+    if (!!cdrUdflts.tmpltdef.val.dbref().type eq 'DRWG' or !!cdrUdflts.tmpltdef.val.dbref().type eq 'DRTMPL') then
+      !!cdrGenApp.mbCrDrwg.setActive(|From Default Template...|, TRUE)
+      !!cdrGenApp.mbCrShee.setActive(|From Default Template...|, FALSE)
+    elseif (!!cdrUdflts.tmpltdef.val.dbref().type eq 'SHEE' or !!cdrUdflts.tmpltdef.val.dbref().type eq 'SHTMPL') then
+      !!cdrGenApp.mbCrDrwg.setActive(|From Default Template...|, FALSE)
+      !!cdrGenApp.mbCrShee.setActive(|From Default Template...|, TRUE)
+    else
+      !!cdrGenApp.createDefaultTemplate.active = true
+      !!cdrGenApp.mbCrDrwg.setActive(|From Default Template...|, FALSE)
+      !!cdrGenApp.mbCrShee.setActive(|From Default Template...|, FALSE)
+    endif
+  else
+    !!cdrGenApp.createDefaultTemplate.active = true
+    !!cdrGenApp.mbCrDrwg.setActive(|From Default Template...|, FALSE)
+    !!cdrGenApp.mbCrShee.setActive(|From Default Template...|, FALSE)
+  endif
+
+endmethod
+-- End of method

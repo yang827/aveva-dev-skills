@@ -1,0 +1,436 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            aaagrids.pmlfnc
+--   Type:          Function Definition
+--   Group:         <group>
+--     Keyword:     <keyword>
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         03 June 1999
+--
+--
+-- Description:
+-- Create gridline symbols
+--
+-- METHODOLOGY:
+-- This is only one of many methods to hold gridlines utilised by the PDMS user-base.
+--
+-- The grids are determined and located by reading a keyplan discipline drawlist.
+-- This idli must have attribute function set to the word 'keyplan'.
+-- The contents of this idli point to a set of SCTN elements, one for each gridline.
+-- The SCTN position represents the gridline and the description holds the name
+--
+-------------------------------------------------------------------------------------
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     ARRAY       Array of STRINGs
+--                            1 = Grid line pen
+--                            2 = Label leaderline pen
+--                            3 = Margin from label centre to view limit
+--                            4 = Whether grid lines are to be visible
+--
+-------------------------------------------------------------------------------------
+
+define function !!aaaGrids(!arguments is ARRAY)
+
+  -- Get symbol templates from defaults file section 3
+  !file = object file(!!abaDefaults.DefaultsFile.val)
+   handle (2,751)
+    -- Variable !!ABADEFAULTS does not exist
+    -- In for Batch Mode Operation.
+    !file = object file('%PDMSDFLTS%/DRA-ABA-DEFAULTS')
+   endHandle
+
+  !defaultText = !file.readfile()
+  !start = !defaultText.findfirst('-- Section 3') + 1
+  !end   = !defaultText.findfirst('-- End Section 3')
+  !range = !end - !start
+  !lines = !defaultText.from(!start,!range)
+  !symbNames = ARRAY()
+
+  do !string val !lines
+    skip if (!string.match('--').neq(0))
+    !symbNames.append(!string)
+  enddo
+
+  !tempEW = !symbNames[1]
+  !tempNS = !symbNames[2]
+  !tempVEW = !symbNames[3]
+  !tempVNS = !symbNames[4]
+
+  -- Initialise variables
+  !origView = !!ce
+  !thpo = !origView.thpo.string().before(' WRT')
+  !dir = !origView.dir.string().before(' WRT').upCase()
+  !limits = !origView.idln.limits
+  !rcode = !origView.rcode.upCase()
+  !nlpn = !arguments[1]
+  !llpe = !arguments[2]
+  !margin = !arguments[3]
+  if (!arguments[4].upCase().eq('ON')) then
+    !visible = true
+  else
+    !visible = false
+  endif
+
+  !evaluated = ARRAY()
+  !gridList = ARRAY()
+  !abaView = object ABAVIEW()
+  !topCoords = ARRAY()
+  !leftCoords = ARRAY()
+  !topDdnm = ARRAY()
+  !leftDdnm = ARRAY()
+  !topStartInt = ARRAY()
+  !leftStartInt = ARRAY()
+  !topEndInt = ARRAY()
+  !leftEndInt = ARRAY()
+
+  -- Get view page 3D limits & up/left directions in 3D world
+  var !vlim split vlim
+    handle (64,188)
+      !!abaLogging.warning('View is not suitable for grids - probably an Isometric view')
+      return
+    endhandle
+
+  var !up viewdir u
+  var !left viewdir l
+
+  -- Get keyplan idlist & it's contents
+  var !keyIdli coll all idli wi function eq 'keyplan' for $!!abadefaults.disl.val
+   handle (46,28)
+     -- ERROR - Variable ABADEFAULTS not defined
+     -- Added for batch Mode operation.
+     do !sea value !DefaultText
+       if (!sea.match('abadefaults.disl.val') NE 0) then
+         !dislVal = !sea.split('=')[2].split(|'|)[2]
+       endif
+     enddo
+
+     var !keyIdli coll all idli wi function eq 'keyplan' for $!dislVal
+
+  endhandle
+
+  -- Test for no keyplan idli
+  if (!keyIdli.empty()) then
+    !!abaLogging.warning('      Cannot find keyplan id list')
+    return
+  endif
+
+  -- Get contents of the keyplan
+  var !criteria eval criteria for all adde for $!keyIdli[1]
+
+  -- Expand criteria into elements
+  do !value val !criteria
+    var !eval coll $!value
+    !evaluated.appendArray(!eval)
+  enddo
+
+  -- Get all grid sctn elements
+  do !value val !evaluated
+    var !gridList append coll all SCTN for $!value
+  enddo
+
+  -- Build planes to represent the view -X and Y limits
+  !planeE = object plane(E $!limits[4] N $!limits[5] U $!limits[6], Y is D and Z is E)
+  !planeW = object plane(E $!limits[1] N $!limits[2] U $!limits[3], Y is D and Z is W)
+  !planeN = object plane(E $!limits[4] N $!limits[5] U $!limits[6], Y is D and Z is N)
+  !planeS = object plane(E $!limits[1] N $!limits[2] U $!limits[3], Y is D and Z is S)
+  !planeU = object plane(E $!limits[4] N $!limits[5] U $!limits[6], Y is N and Z is U)
+  !planeD = object plane(E $!limits[1] N $!limits[2] U $!limits[3], Y is N and Z is D)
+
+  !oppUp = !up.direction().opposite()
+  !orthog = !up.direction().orthogonal(!dir.direction())
+  !oppOrth = !orthog.opposite()
+  !varNameU = '!plane' & !up
+  !varNameD = '!plane' & !oppUp.string().before(' WRT')
+  !varNameL = '!plane' & !orthog.string().before(' WRT')
+  !varNameR = '!plane' & !oppOrth.string().before(' WRT')
+  !planeU = $!varNameU
+  !planeD = $!varNameD
+  !planeL = $!varNameL
+  !planeR = $!varNameR
+
+  -- Find intersections of modelled grids with the side planes
+  do !grid val !gridList
+
+    -- Create line to represent grid using the sctn start and end positions
+    !gridLine = object line (!grid.dbref().poss, !grid.dbref().pose)
+
+    -- Check against the top view limit plane
+    !intPoint = !gridLine.intersection(!planeU)
+      handle (2,873)
+        -- Line and plane are parallel
+      elsehandle none
+
+        -- Test for angled lines giving a false intersection
+        !intPos = !intPoint.string().before(' WRT')
+        var !within VSIDE OF $!intPos
+        if (!within.upCase().match('OUTSIDE').eq(0)) then
+
+          -- Store data
+          -- We need the intersection point, sctn dbref, relevant coordinate for sorting
+          !topStartInt.append(!intPoint)
+          !topDdnm.append(!grid.dbref())
+          if (!dir.eq('U') or !dir.eq('D')) then
+            if (!rcode.eq('UP') or !rcode.eq('DOWN')) then
+              !topCoords.append(!intPoint.east)
+            else
+              !topCoords.append(!intPoint.north)
+            endif
+          elseif (!dir.eq('E') or !dir.eq('W')) then
+            if (!rcode.eq('UP') or !rcode.eq('DOWN')) then
+              !topCoords.append(!intPoint.north)
+            else
+              !topCoords.append(!intPoint.east)
+            endif
+          else
+            if (!rcode.eq('UP') or !rcode.eq('DOWN')) then
+              !topCoords.append(!intPoint.east)
+            else
+              !topCoords.append(!intPoint.up)
+            endif
+          endif
+
+          -- Check against the view bottom limit for grid line end
+          !intPoint = !gridLine.intersection(!planeD)
+          !topEndInt.append(!intPoint)
+
+        endif
+
+      endhandle
+
+    -- Check against the left view limit
+    !intPoint = !gridLine.intersection(!planeL)
+      handle (2,873)
+        -- Line and plane are parallel
+        skip
+      elsehandle none
+
+        -- Test for angled lines giving a false intersection
+        !intPos = !intPoint.string().before(' WRT')
+        var !within VSIDE OF $!intPos
+        skip if (!within.upCase().match('OUTSIDE').neq(0))
+
+        -- Store data
+        -- We need the intersection point, sctn dbref, relevant coordinate for sorting
+        !leftStartInt.append(!intPoint)
+        !leftDdnm.append(!grid.dbref())
+        if (!dir.eq('U') or !dir.eq('D')) then
+          if (!rcode.eq('UP') or !rcode.eq('DOWN')) then
+            !leftCoords.append(!intPoint.north)
+          else
+            !leftCoords.append(!intPoint.east)
+          endif
+        elseif (!dir.eq('E') or !dir.eq('W')) then
+          if (!rcode.eq('UP') or !rcode.eq('DOWN')) then
+            !leftCoords.append(!intPoint.up)
+          else
+            !leftCoords.append(!intPoint.east)
+          endif
+        else
+          if (!rcode.eq('UP') or !rcode.eq('DOWN')) then
+            !leftCoords.append(!intPoint.up)
+          else
+            !leftCoords.append(!intPoint.north)
+          endif
+        endif
+
+        -- Check against the view right limit for grid line end
+        !intPoint = !gridLine.intersection(!planeR)
+        !leftEndInt.append(!intPoint)
+
+      endhandle
+
+  enddo
+
+  -- Sort coordinates to remove duplicates
+  var !sortTop sort unique !topCoords
+  var !sortLeft sort unique !leftCoords
+
+  -- Get into position in hierarchy by finding any existing layer
+  var !gridLaye coll all laye wi SpPURP eq 'GRID' for $!origView
+  if (!gridLaye.empty()) then
+
+    -- Create the laye
+    !!ce = !origView
+    !layeName = !origView.flnm & '/Grids'
+    NEW LAYE $!layeName
+    SpPURP GRID  PURP ADSG
+
+  else
+
+    -- Access the existing laye and delete all existing elements
+    !!ce = !gridLaye[1].dbref()
+    DELETE LAYE MEM
+
+  endif
+  !layeRefe = !!ce
+
+  -- Create vnote for the gridlines
+  !vnotName = !origView.flnm & '/GridLines'
+  NEW VNOT $!vnotName
+
+  -- Set the visibility
+  if (not !visible) then
+    LVIS FALSE
+  endif
+  !vnotRefe = !!ce
+
+  -- Create labels for top and left sides
+  do !pass from 1 to 2 by 1
+
+    -- Initialise variables
+    if (!pass.eq(1)) then
+
+      -- Top side
+      !sortArray = !sortTop
+      !startInt = !topStartInt
+      !endInt = !topEndInt
+      !ddRefe = !topDdnm
+
+    else
+
+      -- Eliminate coordinates for elevations
+      skip if (!origView.dir.up.neq(1) and !origView.dir.up.neq(-1))
+
+      -- Left side
+      !sortArray = !sortLeft
+      !startInt = !leftStartInt
+      !endInt = !leftEndInt
+      !ddRefe = !leftDdnm
+
+    endif
+
+    -- For each sorted coordinate
+    do !value val !sortArray
+
+      -- Initialise variables
+      !index = !value.real()
+      !startPos = !startInt[!index].string().before(' WRT')
+      !endPos = !endInt[!index].string().before(' WRT')
+      var !xypo shpo of $!startPos
+      !ddnm = !ddRefe[!index]
+      !gridDir = !ddRefe[!index].drns.string().before(' WRT').upCase()
+
+      -- Access layer
+      !!ce = !layeRefe
+
+      -- Create symbolic label
+      NEW SLAB
+       TPEN TEMP  LFPEN TEMP  CHEI TEMP  LLPEN $!llpe
+       DDNM $!ddnm
+       OSET TRUE  XYPO 0 0  OSET FALSE
+       !xypoA = !!ce.xypo
+       XYPO $!xypo
+       !xypoB = !!ce.xypo
+
+      -- Position the label and calculate the A point offset
+      if (!pass.eq(1)) then
+
+        -- Position to margin
+        BY Y $!margin
+
+        -- Set apof string
+        !apof = !xypoB.north - !xypoA.north
+        if (!origView.rcode.upCase().eq('UP')) then
+          !allApof ='0 ' & !apof
+        elseif (!origView.rcode.upCase().eq('DOWN')) then
+          !allApof = '0 ' & (!apof * -1)
+        elseif (!origView.rcode.upCase().eq('LEFT')) then
+          !allApof = !apof & ' 0'
+        elseif (!origView.rcode.upCase().eq('RIGHT')) then
+          !allApof = (!apof * -1) & ' 0'
+        endif
+
+      else
+
+        -- Position to margin
+        BY X -$!margin
+
+        -- Set apof string
+        !apof = !xypoB.east - !xypoA.east
+        !apof = !xypoB.east - !xypoA.east
+        if (!origView.rcode.upCase().eq('UP')) then
+          !allApof = !apof & ' 0'
+        elseif (!origView.rcode.upCase().eq('DOWN')) then
+          !allApof = (!apof * -1) & ' 0'
+        elseif (!origView.rcode.upCase().eq('LEFT')) then
+          !allApof = '0 ' & (!apof * -1)
+        elseif (!origView.rcode.upCase().eq('RIGHT')) then
+          !allApof ='0 ' & !apof
+        endif
+
+      endif
+      APOF $!allApof
+
+      -- Determine template reference
+      if (!gridDir.eq('E') or !gridDir.eq('W')) then
+        TMRF $!tempEW
+      elseif (!gridDir.eq('N') or !gridDir.eq('S')) then
+        TMRF $!tempNS
+      else
+        if (!dir.eq('E') or !dir.eq('W')) then
+          TMRF $!tempVEW
+        else
+          TMRF $!tempVNS
+        endif
+      endif
+
+      -- Rotate
+      if (!origView.rcode.upCase().eq('UP')) then
+        ADEG 0
+      elseif (!origView.rcode.upCase().eq('DOWN')) then
+        ADEG 180
+      elseif (!origView.rcode.upCase().eq('LEFT')) then
+        ADEG -90
+      elseif (!origView.rcode.upCase().eq('RIGHT')) then
+        ADEG 90
+      endif
+
+
+      -- Access vnote
+      !!ce = !vnotRefe
+
+      -- Test if coordinate is on the view limits
+      if (!up.eq('E') or !up.eq('W')) then
+        if (!pass.eq(1)) then
+          skip if (!startInt[!index].north.eq(!vlim[5].real(!!distanceFMT)))
+          skip if (!startInt[!index].north.eq(!vlim[12].real(!!distanceFMT)))
+        else
+          skip if (!startInt[!index].up.eq(!vlim[7].real(!!distanceFMT)))
+          skip if (!startInt[!index].up.eq(!vlim[14].real(!!distanceFMT)))
+        endif
+      elseif (!up.eq('N') or !up.eq('S')) then
+        if (!pass.eq(1)) then
+          skip if (!startInt[!index].east.eq(!vlim[3].real(!!distanceFMT)))
+          skip if (!startInt[!index].east.eq(!vlim[10].real(!!distanceFMT)))
+        else
+          skip if (!startInt[!index].north.eq(!vlim[5].real(!!distanceFMT)))
+          skip if (!startInt[!index].north.eq(!vlim[12].real(!!distanceFMT)))
+        endif
+      elseif (!up.eq('U') or !up.eq('D')) then
+        if (!pass.eq(1)) then
+          skip if (!startInt[!index].east.eq(!vlim[3].real(!!distanceFMT)))
+          skip if (!startInt[!index].east.eq(!vlim[10].real(!!distanceFMT)))
+        else
+          skip if (!startInt[!index].up.eq(!vlim[7].real(!!distanceFMT)))
+          skip if (!startInt[!index].up.eq(!vlim[14].real(!!distanceFMT)))
+        endif
+      endif
+
+      -- Create straight to represent grid line
+      NEW STRA
+       NLPN $!nlpn
+       FPT $!startPos
+       TPT $!endPos
+
+    enddo
+
+  enddo
+
+endfunction

@@ -1,0 +1,621 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            appformcntrl.pmlobj
+--   Type:          Object Definition
+--   Group:         Application Switching
+--     Keyword:     APP
+--   Module:        common
+--   Replaces:
+--
+-- Author:          Jamie Brunning
+-- Created:         Mon Feb 09 12:07:33 2004
+--
+--
+-- Description:     Controls visibility of forms in different applications
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  appFormCntrl(STRING,STRING)      -                   Constructor method
+--  appsToLoad()                     ARRAY               returns array of applications we need to be loaded before the forms can be shown
+--  constructForms()                 -                   show the forms that were shown on exit
+--  getFormData(FORM)                ARRAY               gets data stored for the form formName
+--  getFormData(STRING)              ARRAY               gets data stored for the form named formName
+--  getFormState(STRING)             -                   finds visibility of forms on application switch
+--  loadFormState()                  -                   loads data from the status file
+--  registerForm(APPFORM)            REAL                register APPFORM object
+--  registerForm(FORM)               REAL                registers form for control
+--  registerForm(FORM,ARRAY,ARRAY,BOOLEAN,BOOLEAN) REAL                register form with all information: apps it's visible in, apps required before it's loaded, whether to reshow on switch, whether to reshow on start-up
+--  registerForm(FORM,STRING)        REAL                register form to be visible in the given application
+--  registerFormDependent(FORM,STRING) REAL                register form, dependent on having application loaded
+--  saveFormState()                  -                   outputs data to the status file
+--  setFormState(STRING)             -                   sets visibility of forms when switching to new application
+--
+------------------------------------------------------------------------
+define object APPFORMCNTRL
+  -- this array contains an array of APPFORM objects for each application
+  member .forms is ARRAY
+
+  -- name of file to save information to
+  member .statusFile is STRING
+
+  -- used to store information retrieved from status file on start-up
+  -- initially set to tell us which forms need to be shown
+  member .formsToConstruct is ARRAY
+  -- initially set to set which apps need to be loaded
+  member .appsToLoad is ARRAY
+  -- stores data for forms
+  member .formData is ARRAY
+
+  -- other options
+  -- restore current element on start-up?
+  member .restoreCe is BOOLEAN
+  -- member to store current element
+  member .ce is DBREF
+
+endobject
+-- End of object definition for APPFORMCNTRL
+
+------------------------------------------------------------------------
+--
+-- Method:      .appFormCntrl()
+--
+-- Description: Constructor method
+--
+-- Method Type: Constructor
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+--    2   R      STRING
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .appFormCntrl(!module is STRING, !project is STRING)
+  !this.restoreCe = true
+  !this.statusFile = |%PDMSUSER%\| & !module.lowcase() & |-| & !project.lowcase() & |-appformcntrl.pmldat|
+
+  -- load state of forms
+  !this.loadFormState()
+
+  -- automatically register !!cadcbth form
+  !this.registerForm(!!cadcbth)
+endmethod
+-- End of method definition for .appFormCntrl(STRING, STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      .getFormData()
+--
+-- Description: gets data stored for the form named formName
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      form name
+-- Return:
+--   [Data Type] [Description]
+--   ARRAY        data stored for the form passed
+--
+------------------------------------------------------------------------
+define method .getFormData(!formName is STRING) is ARRAY
+  !formNum = !this.formsToConstruct.findFirst(!formName.upcase())
+  if (!formNum.set()) then
+    return !this.formData[!formNum]
+  else
+    return ARRAY()
+  endif
+endmethod
+-- End of method definition for .getFormData(STRING) ARRAY
+
+------------------------------------------------------------------------
+--
+-- Method:      .getFormData()
+--
+-- Description: gets data stored for the form formName
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      FORM
+-- Return:
+--   [Data Type] [Description]
+--   ARRAY
+--
+------------------------------------------------------------------------
+define method .getFormData(!form is FORM) is ARRAY
+  return !this.getFormData(!form.name())
+endmethod
+-- End of method definition for .getFormData(FORM) ARRAY
+
+------------------------------------------------------------------------
+--
+-- Method:      .loadFormState()
+--
+-- Description: loads data from the status file
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .loadFormState()
+  !file = object FILE(!this.statusFile)
+  -- don't do anything if file doesn't exist
+  if (!file.exists().not()) then
+    return
+  endif
+
+  -- load file into array
+  !state = !file.readFile()
+
+  -- loop through lines looking for relevant data
+  do !line values !state
+    skip if (!line.trim().empty() or !line.substring(1,1) eq '#')
+    !part1 = !line.part(1, ':').trim().lowcase()
+    -- !part2 = !line.part(2, ':').trim()
+    !part2 = !line.after(':').trim()
+    if (!part1 eq 'ce') then
+      !this.ce = object DBREF(!part2)
+      handle (2,107)
+        -- element not found
+        -- (2,107)   Undefined reference
+      elsehandle (2,813)
+        -- (2,813)   Cannot convert string to DBREF
+      elsehandle (2,118)
+        -- (2,118) Ref is a reference to an illegal element
+      elsehandle ANY
+        -- if anything else is wrong
+      endhandle
+    elseif (!part1 eq 'showform') then
+      !this.formsToConstruct.append(!part2.upcase())
+      !formNum = !this.formsToConstruct.size()
+      !this.formData[!formNum] = ARRAY()
+    elseif (!part1 eq 'requiredapp') then
+      !appName = !part2.upcase()
+      !this.appsToLoad.append(!appName)
+    elseif (!part1 eq 'formdata') then
+      !this.formData[!formNum].append(!part2)
+    endif
+  enddo
+
+  -- remove any duplicates from arrays
+  !this.appsToLoad.unique()
+  !this.formsToConstruct.unique()
+endmethod
+-- End of method definition for .loadFormState()
+
+------------------------------------------------------------------------
+--
+-- Method:      .saveFormState()
+--
+-- Description: outputs data to the status file
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .saveFormState()
+  !out = ARRAY()
+
+  -- output current element
+  !out.append('ce: ' & !!ce)
+
+  -- output list of forms that are shown, along with the applications that need to have been loaded for them to be present
+  do !i indices !this.forms
+    !appForm = !this.forms[!i]
+    !shown = !appForm.form.shown()
+    handle (61,113)
+      skip
+    endhandle
+    -- Do not save Integrator view
+    skip if (!appForm.form.formTitle eq |Integrator 3D View|)
+    if (!shown and !appForm.showOnStartUp) then
+      !requiredApps = !appForm.requiredApps
+      !out.append('showForm: ' & !appForm.form.name().upcase())
+      do !app values !requiredApps
+        !out.append('requiredApp: ' & !app.upcase())
+      enddo
+
+      -- allow form to save an array of data that can be passed back to it on start-up
+      !formData = !appForm.form.saveData()
+      handle any
+        skip
+      endhandle
+      do !data values !formData
+        !out.append('formData: ' & !data)
+      enddo
+    endif
+  enddo
+
+  -- remove duplicate entries in output
+  -- !out.unique()
+
+  !file = object FILE(!this.statusFile)
+  !file.writeFile('OVERWRITE', !out)
+
+  -- Write out the current view definitions if in design
+  !module   = !!module().appkey
+
+  if (!module.upcase() eq 'DES' or !module.upcase() eq 'SPL') then
+  	if not undefined(!!gphviews) then
+      !!gphviews.saveViews()
+    endif
+  	if not undefined(!!gphdrawlists) then
+      !!gphdrawlists.saveAll()
+    endif
+  elseif (!module.upcase() eq 'DRA' ) then
+  	if not undefined(!!draftViewsSave) then
+      !!draftViewsSave()
+    endif
+  endif
+endmethod
+-- End of method definition for .saveFormState()
+
+------------------------------------------------------------------------
+--
+-- Method:      .registerForm()
+--
+-- Description: register APPFORM object
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      APPFORM
+-- Return:
+--   [Data Type] [Description]
+--   REAL
+--
+------------------------------------------------------------------------
+define method .registerForm(!appForm is APPFORM) is REAL
+  -- ensure form not already registered
+  do !index indices !this.forms
+    if (!this.forms[!index].form eq !appForm.form) then
+      !this.forms[!index] = !appForm
+      return !index
+    endif
+  enddo
+     !appForm.form.savelayout = true
+  handle (61,110)
+    -- catches attempts to save layout for non-docking forms
+  endhandle
+  -------------------------------
+  !this.forms.append(!appForm)
+  return !this.forms.maxIndex()
+endmethod
+-- End of method definition for .registerForm(APPFORM) REAL
+
+------------------------------------------------------------------------
+--
+-- Method:      .registerForm()
+--
+-- Description: register APPFORM object
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      APPFORM
+-- Return:
+--   [Data Type] [Description]
+--   REAL
+--
+------------------------------------------------------------------------
+define method .registerForm(!form is FORM) is REAL
+  !appForm = object APPFORM(!form)
+  return !this.registerForm(!appForm)
+endmethod
+-- End of method definition for .registerForm(APPFORM) REAL
+
+------------------------------------------------------------------------
+--
+-- Method:      .registerForm()
+--
+-- Description: register form to be visible in the given application
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+--    2   R      FORM
+-- Return:
+--   [Data Type] [Description]
+--   REAL
+--
+------------------------------------------------------------------------
+define method .registerForm(!form is FORM, !visibleInApp is STRING) is REAL
+  !appForm = object APPFORM(!form)
+  !appForm.visibleInApps.append(!visibleInApp)
+  return !this.registerForm(!appForm)
+endmethod
+-- End of method definition for .registerForm(STRING, FORM) REAL
+
+------------------------------------------------------------------------
+--
+-- Method:      .registerForm()
+--
+-- Description: register form with all information: apps it's visible in, apps required before it's loaded, whether to reshow on switch, whether to reshow on start-up
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      FORM
+--    2   R      ARRAY
+--    3   R      ARRAY
+--    4   R      BOOLEAN
+--    5   R      BOOLEAN
+-- Return:
+--   [Data Type] [Description]
+--   REAL
+--
+------------------------------------------------------------------------
+define method .registerForm(!form is FORM, !visibleInApps is ARRAY, !requiredApps is ARRAY, !showOnSwitch is BOOLEAN, !showOnStartUp is BOOLEAN) is REAL
+  !appForm = object APPFORM(!form, !visibleInApps, !requiredApps, !showOnSwitch, !showOnStartUp)
+  return !this.registerForm(!appForm)
+endmethod
+-- End of method definition for .registerForm(FORM, ARRAY, ARRAY, BOOLEAN, BOOLEAN) REAL
+
+$(
+------------------------------------------------------------------------
+--
+-- Method:      .registerFormDependent()
+--
+-- Description: register form, dependent on having application loaded
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      FORM
+--    2   R      STRING
+-- Return:
+--   [Data Type] [Description]
+--   REAL
+--
+------------------------------------------------------------------------
+define method .registerFormDependent(!form is FORM, !requiredApp is STRING) is REAL
+  !index = !this.registerForm(!form)
+  !this.requiredApps[!index].append(!requiredApp)
+  return !index
+endmethod
+-- End of method definition for .registerFormDependent(FORM, STRING) REAL
+$)
+
+------------------------------------------------------------------------
+--
+-- Method:      .getFormState()
+--
+-- Description: finds visibility of forms on application switch
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getFormState(!appName is STRING)
+  do !i indices !this.forms
+    !appForm = !this.forms[!i]
+    !form = !appForm.form
+    -- change shown flag only if the form is registered to be shown in this app
+    -- visibleInApps[!i] being empty means the form is registered in all apps
+    if (!appForm.visibleInApps.empty() or !appForm.visibleInApps.findFirst(!appName).set()) then
+      !this.forms[!i].shown = !form.shown()
+      handle (61,113)
+        -- F&M: Attempt to reference a non-existent F&M object
+        -- form has been killed, so delete from array
+        !this.forms.deleteFrom(!i, 1)
+      endhandle
+      -- !appForm.shown = !form.shown()
+      -- !visibility[!i] = !this.forms[!i].shown()
+    endif
+  enddo
+  -- !this.shown = !visibility
+endmethod
+-- End of method definition for .getFormState(STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      .setFormState()
+--
+-- Description: sets visibility of forms when switching to new application
+
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setFormState(!appName is STRING)
+  -- get array of all shown forms
+  !shownForms = !!fmSys.shownForms()
+  -- initialise empty array of forms that are registered
+  !registeredForms = ARRAY()
+
+  do !i indices !this.forms
+    !appForm = !this.forms[!i]
+    !form = !appForm.form
+
+    !formIsShown = !form.shown()
+    handle (61,113) $* F&M: Attempt to reference a non-existing F&M object
+      skip $* A non-existing form
+    endhandle
+    -- if form is registered for this app, then get shown status
+    if (!appForm.visibleInApps.empty() or !appForm.visibleInApps.findFirst(!appName).set()) then
+      !shown = !appForm.shown
+    -- otherwise it should not be shown
+    else
+      !shown = false
+    endif
+
+    -- show the form if we want it shown and it's hidden
+    if (!shown and !formIsShown.not()) then
+      -- if for is re-shown on application switch, show it
+      if (!appForm.showOnSwitch) then
+        !form.show()
+      -- if the form isn't re-shown on application switch, mark it as hidden
+      else
+        !this.forms[!i].shown = false
+      endif
+    -- hide the form if we want it hidden and it's shown
+    elseif (!shown.not() and !formIsShown) then
+      !form.hide()
+    endif
+
+    !registeredForms.append(!form)
+  enddo
+
+  -- remove registered forms from array of shown forms, as we've already carried out the required action on them
+  !shownForms = !shownForms.difference(!registeredForms)
+
+  -- if any form is shown as a child of the main form but is not registered, then hide it
+  do !form values !shownForms
+    !formOwner = !form.owner()
+    handle any
+      -- protect against bad data from appformcntrl.pmldat file
+      skip
+    endhandle
+    skip if (!formOwner ne !!appCntrl.mainForm)
+    !form.hide()
+  enddo
+endmethod
+-- End of method definition for .setFormState(STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      .constructForms()
+--
+-- Description: show the forms that were shown on exit
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .constructForms()
+  -- navigate back to CE if the dbref is found
+  -- do this before the form is opened in case the form can use this information
+  -- (it should not depend on this though!)
+  if (!this.ce.set() and !!appCntrl.options.restoreCe) then
+    !!ce = !this.ce
+    handle any
+    endhandle
+  endif
+  -- show all previously shown forms
+  if (!!appCntrl.options.reshowForms) then
+    do !i values !this.formsToConstruct
+      show !!$!i
+      handle ANY
+      endhandle
+    enddo
+  endif
+
+  -- Do we need to reset the views
+if (defined(!!modLoadMethod)) then
+ if (!!modLoadMethod) then
+  !boolean = false
+  -- show all previously shown forms
+  if (!!appCntrl.options.reshowForms) then
+    do !formName values !this.formsToConstruct
+      -- Special case for 3d Views as they are not constructed by a pmlfrm but from a function
+      if (!formName.matchwild('GPH3DDESIGN*')) then
+        !number = !formName.after('GPH3DDESIGN')
+        !realNumber = !number.real()
+        !!gphviews.add(!!gph3DDesign(!realNumber))
+        !boolean = true
+      endif
+    enddo
+    if (!boolean) then
+      !!gphviews.restoreViews()
+      !!gphdrawlists.restoreAll()
+    endif
+
+    !boolean = false
+    do !formName values !this.formsToConstruct
+      -- Special case for 2d Views as they are not constructed by a pmlfrm but from old PML1
+      if (!formName.matchwild('CDRCADCGA*')) then
+        !number = !formName.after('CDRCADCGA')
+        if (!number eq '1') then
+          $m "%PDMSUI%/DRA/GEN/MSINGLEV" $<$> $<MAIN$>
+        else
+          $m "%PDMSUI%/DRA/GEN/MSINGLEV"
+        endif
+        !boolean = true
+      endif
+    enddo
+    if (!boolean) then
+      !project  = current project
+      !projCode = !project.code().lowcase()
+      var !mdb mdb
+      !mdb = !mdb.after('/')
+      !fileName = |%PDMSUSER%\| & |dra-| & !projCode & |-| & !mdb & |-gphviews.pmldat|
+    -- Restore views
+    !!runMacro(|$!fileName|, ||)
+    endif
+
+  endif
+ endif
+endif
+
+--P-3047: Generic Fix to restore the local drawlist for local graphical views by using the firstShownCall for
+--a form. Fix is generic so will work for all forms with a firstShownCall and a local graphical view.
+--Laced with handle any's to make sure that the code is fail safe. Karl Martin-Chambers
+!foundForms     = !!fmsys.shownForms()
+handle any
+elsehandle none
+	!currentElement = !!ce
+	do !form values !foundForms
+		!firstShownFlag = !form.firstShownCall.set() and !form.firstShownCall.neq('')
+		handle any
+		elsehandle none
+			if !firstShownFlag then
+				!fstShown = !form.firstShownCall.after('.')
+				!form.$!fstShown
+				handle any
+				endhandle
+			endif
+		endhandle
+	enddo
+	!!ce = !currentElement
+endhandle
+--EndFix
+
+endmethod
+-- End of method definition for .constructForms()
+
+------------------------------------------------------------------------
+--
+-- Method:      .appsToLoad()
+--
+-- Description: returns array of applications we need to be loaded before the forms can be shown
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--   ARRAY
+--
+------------------------------------------------------------------------
+define method .appsToLoad() is ARRAY
+  if (!!appCntrl.options.reshowForms) then
+    return !this.appsToLoad
+  else
+    return ARRAY()
+  endif
+endmethod

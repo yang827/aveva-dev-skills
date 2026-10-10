@@ -1,0 +1,242 @@
+--  Author:          Undefined
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            autonaming.pmlobj
+--   Type:          Object Definition
+--   Group:         Naming
+--   Keyword:       NAME
+--   Module:        diagrams
+--   Replaces:
+-- Created:         Tue Nov 20 14:40:26 BST 2012
+--
+--
+-- Description:
+-- Autoname object used to autoname CE Offsprings with or without CE
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  autoReNameCeOffspring(BOOLEAN,BOOLEAN) -
+--  createCollection(STRING,STRING,DBREF) ARRAY
+--  populateRulesLists()             -
+--  restoreName(ARRAY,REAL)          -
+--  unnameCollection(ARRAY,DBREF)    ARRAY
+--
+------------------------------------------------------------------------
+-- Define object
+define object AUTONAMING
+
+import 'Aveva.Diagrams'
+handle any
+endhandle
+
+member .forceRename is BOOLEAN
+member .includeCE is BOOLEAN
+member .rulesType is ARRAY
+member .rulesRule is ARRAY
+
+endobject
+-- End of object definition for AUTONAMING
+------------------------------------------------------------------------
+
+--------------------------------------------------------------------
+define method .autoReNameCeOffspring(!includeCE is BOOLEAN, !forceRename is BOOLEAN)
+
+	--initialization------------------
+	using namespace 'Aveva.Diagrams'
+	!this.forceRename = !forceRename
+	!this.includeCE = !includeCE
+	!tool = object PMLDiagramsNaming()
+	!errors = ARRAY()
+
+	-- store current database position
+	!orgPos = !!ce
+
+	PROMPT DISMISS
+	PROMPT OFF
+
+	--determine if the WORLD or something else was passed--
+	if(!orgPos.type neq |WORL|) then
+		!memb[1] = !orgPos
+	else
+		!memb = !orgPos.MEMBERS
+	endif
+	-------------------------------------------------------
+
+	---Populate the List of Rules and Element Types
+	!this.populateRulesLists()
+	
+	
+	--run algorithm for each element (SCGROUP is the highest possible rank) individually (!!collectAllFor hangs up when used on a WORLD element)
+	do !im indices !memb
+		!dbPos = !memb[!im]
+		!!ce = !memb[!im]
+		
+		do !ir indices !this.rulesType
+		
+			-----------create collection
+			!coll = !this.createCollection(!this.rulesType[!ir],!this.rulesRule[!ir],!dbPos)
+			
+			if(!coll.empty()) then
+				skip
+			endif
+			-----------------------------
+			
+			
+			
+			--UNNAME ALL ELEMENTS if ReName flag is set-----------------
+			!oldNames = !this.unnameCollection(!coll,!orgPos)
+			
+			
+			--AUTONAME EVERY ELEMENT -----------------------------------
+			--OF THE CURRENT RULE IN THE CURRENT MEMBER ASPECT----------
+			do !i indices !coll
+					skip if ((!coll[!i] EQ !orgPos) and !includeCE.not())
+				!!ce = !coll[!i]
+				!name = !!namOpt.nameString(!coll[!i], '', false, false)
+				handle any
+					!this.restoreName(!oldNames,!i)
+					!eName = !coll[!i].refno.string()
+					!errors.Append('$!eName UNKNOWN_NAMING_ERROR')
+					skip
+				endhandle
+				
+				if (!name.unset().not() and !name.empty().not()) then
+					
+					if(!name.occurs(' ').gt(0) ) then
+						!this.restoreName(!oldNames,!i)
+						!eName = !coll[!i].refno.string()
+						!errors.Append('$!eName NAME_CONTAINS_SPACES $!name')
+						skip
+					endif
+					
+					!coll[!i].name = '/$!name'
+					handle (41,12)
+						!this.restoreName(!oldNames,!i)
+						!eName = !coll[!i].refno.string()
+						!errors.Append('$!eName NAME_ALREADY_EXISTS $!name')
+						skip
+					elsehandle (2,614)
+						!eName = !coll[!i]
+						!errors.Append('$!eName ELEMENT_READONLY')
+						skip
+					elsehandle any
+						!this.restoreName(!oldNames,!i)
+						!eName = !coll[!i].refno.string()
+						!errors.Append('$!eName UNKNOWN_NAMING_ERROR')
+						skip
+					endhandle
+					
+				else
+					!this.restoreName(!oldNames,!i)	
+					!eName = !coll[!i].refno.string()
+					!errors.Append('$!eName UNKNOWN_NAMING_ERROR')
+				endif
+			enddo
+			--------------------------------------------------------------
+			
+		enddo
+		--end of rules list loop
+		
+	enddo
+	--end of members list loop
+
+	!errors.Append('FINISHED')
+	!tool.SetNameErrors(!errors)
+	!!ce = !orgPos
+
+endmethod
+--------------------------------------------------------------------------------------
+
+
+--Helper methods
+--------------------------------------------------------------------------------------
+define method .unnameCollection(!coll is ARRAY, !orgPos is DBREF) is ARRAY
+
+!oldNames = ARRAY()
+
+if(!this.forceRename) then
+	
+	
+	
+	do !id indices !coll
+			skip if ((!coll[!id] EQ !orgPos) and !this.includeCE.not())
+		!!ce = !coll[!id]
+		
+		if (!coll[!id].isname) then
+			!oldNames[!id] = !coll[!id].name
+		else
+			!oldNames[!id] = ''
+		endif
+		
+		UNNAME
+		handle any
+			--probably the element is read-only. Proper message will be generated later ( handle(2,614) )
+		endhandle				
+	enddo
+	
+endif
+
+return !oldNames
+
+endmethod
+--------------------------------------------------------------------------------------
+define method .createCollection(!rulesType is STRING, !rulesRule is STRING, !dbPos is DBREF) is ARRAY
+
+	!coll = ARRAY()
+	
+	if(!this.forceRename) then
+		!rule = !rulesRule
+	else
+		if(!rulesRule.empty()) then
+			!rule = '(NAME neq FULLNAME)'
+		else
+			!rule = '((NAME neq FULLNAME) and (' + !rulesRule + '))'
+		endif
+	endif
+	
+	!coll = !!collectAllFor(!rulesType, !rule , !dbPos)
+	
+	return !coll
+	
+endmethod
+--------------------------------------------------------------------------------------
+define method .populateRulesLists()
+
+	do !ix indices !!namOpt.rules
+	
+		!ruleObj = !!ruleStore.element.getRule(!!namOpt.rules[!ix].rule)
+		handle any
+			skip
+		endhandle
+		
+		!types = !ruleObj.types.split()
+		
+		do !j indices !types
+			!this.rulesType.Append(!types[!j])
+			!this.rulesRule.Append(!ruleObj.rule)
+		enddo
+		
+	enddo
+
+endmethod
+
+--------------------------------------------------------------------------------------
+define method .restoreName(!oldNames is ARRAY, !i is REAL)
+	if(!this.forceRename) then		
+		if(!oldNames[!i] EQ '') then
+			UNNAME
+			handle any
+			endhandle
+		else
+			!!ce.name = !oldNames[!i]
+			handle any
+			endhandle
+		endif
+	endif
+endmethod

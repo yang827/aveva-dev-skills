@@ -1,0 +1,390 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:		MdsaddbarFR11.pml
+--   Type:		Function Definition
+--   Group:		Multi Discipline Supports Application
+--     Keyword:		MDS
+--   Module:		design
+--
+-- Author:		T.Martin
+-- Created:		23/02/2004 16:40
+--
+-- Description:
+-- function to create support cross-bars
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R        MdsSUPPORT   Support object
+--     2     R        STRING        Method of adding bars. NEW or OLD
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!MdsAddBarFR11(!Support is MdsSUPPORT, !Method is string, !CreateBy is string)
+
+-- Find current units and set the distance unit to metric
+
+    !CurrentUnits = !!KGetSetUnits()
+
+-- Can we write to the spref attribute of the SREF atta
+-- and the stru
+
+
+  !Form = !!MdsFR11
+  if !Support.Datum.badref().not() then
+    !SrefName = !Support.Datum.Name.before('/DATUM') + '/SREF'
+      if !!MdsComClaimDac(!Support.Stru,'DACMOD','POS').not() or !!MdsComClaimDac(!SrefName.dbref(),'DACMOD','SPREF').not() then
+        !Despars = !Srefname.dbref().despar
+        !!MdsResetDims(!Form,!Despars)
+        !!kRestoreUnits(!currentunits)
+        !!Alert.Error('Unable to add a cross bar as write access to the SREF atta is not available')
+        return
+      endif
+  endif
+
+  -- Initialise variables
+    !Name      = !Support.Stru.name
+    --!Clearance = !!MdsOptions.Clear.val
+    !clearance = 25
+    !Overlap   = !!MdsOptions.Overlap.val
+    !Selection = !!MdsSetSteel.Size.Selection('Rtext')
+    !Alias     = !!MdsFR11.Support.Alias
+
+    -- Check that a support has been created
+    if (!Support.Stru.Mcount() eq 0)then
+      !!Alert.error('Create framework before adding bars.')
+      !!kRestoreUnits(!currentunits)
+      return
+    endif
+
+  -- Navigate to structure
+    !!CE = !Support.Stru
+
+
+  -- Get list of all attas already associated with bars
+    !Associated = array()
+    if (!Support.Bars.empty().not())then
+      do !I indices !Support.Bars
+        !Associated.appendarray(!Support.Bars[!I])
+      enddo
+    endif
+
+
+    !Bars = !!KCollectAllFor('SCTN', '((match(name, |-BAR-|) gt 0) and type of owner eq |FRMW|)', !!CE)
+    !Last = !Bars.Size()
+    !Next = !Bars.Size() + 1
+    !!CE = $!<Name>-BAR-$!Last
+    NEW SCTN COPY $!<Name>-BAR-1
+    NAME $!Name-BAR-$!Next
+    !Sctn = !!CE
+
+  -- ************************************************
+  --  Identify attas to be associated with cross bar
+  -- ************************************************
+
+  !References = ''
+
+  if (!Method eq |NEW|)then
+      !ColourList = array()
+      !list       = array()
+      !BarNumber  = array()
+      do
+        PROMPT OFF
+        PROMPT LOAD ESCAPE |Identify atta to support|
+        ID ATTA @
+          handle (61,528) $* user aborts
+            if (!list.empty())then
+              PROMPT DISMISS
+              PROMPT ON
+              !!CE = !Sctn
+              delete SCTN
+              !!CE = !Support.Stru
+              !!kRestoreUnits(!currentunits)
+              return
+            else
+              break
+            endif
+          endhandle
+        !Picked = !!CE
+        if (!list.find(!Picked).size() gt 0)then
+          !!Alert.message('Atta already selected')
+        elseif (!Picked eq !Support.Datum)then
+          !!Alert.message('Datum atta cannot be selected')
+        -- Reject the SREF atta as if the DATUM atta has been selected,
+        -- if picked by identifying the LSTU of the BRANCH
+        elseif (!picked.name.eq(!name & '/SREF')) then
+          !!Alert.message('Datum atta cannot be selected')
+        elseif (!Associated.find(!Picked).size() gt 0)then
+
+        -- Disassociate picked atta with existing bar
+          !BarNumber.append(!!MdsunlinkAtta(!!MdsFR11, !Picked))
+
+          !list.append(!Picked)
+        -- Colour Attas
+          Enhance ce colour 2
+          refresh
+        else
+          !list.append(!Picked)
+        -- Colour Attas
+          Enhance ce colour 2
+          refresh
+        endif
+      enddo
+      PROMPT DISMISS
+      PROMPT ON
+
+    do !I Indices !list
+        !References = !References & ' ' & !list[!I].string()
+    enddo
+
+  else $* method is not new
+      -- get the attas for the bar
+      !list = !Support.Bars[$!Next]
+      -- loop through the bar connections and make a list of connections
+      do !I Indices !list
+        !References = !References & ' ' & !list[!I].string()
+      enddo
+  endif
+
+    -- Set atta reference to section
+    !!CE = !Sctn
+    :MDSAttaRef $!References
+    handle any
+    endhandle
+
+    -- Take additional highlight colour off attas
+    call !!KEnhanceList(!list)
+
+    if !method eq 'OLD' then
+      if !!ce.:MDSAttaRef.size().gt(1) then $* need to find which is the furthest away
+        !dist = -10000
+        !picked = !!ce.:MDSAttaRef[1]
+        do !a values !!ce.:MDSAttaRef
+            !pos1 = pos of $!<Name>-V1 in world
+            !pos2 = !a.position.wrt(/* )
+            handle ANY
+              break
+            endhandle
+            !test = !pos1.distance(!pos2)
+            if !test gt !dist then
+              !dist = !test
+              !picked = !a
+            endif
+        enddo
+      else
+       !picked = !!ce.:MDSAttaRef[1]
+       handle ANY $* the bar has been deleted
+          return
+       endhandle
+      endif
+    endif
+
+    -- at this point the attas may be out of line due to the vertical being moved
+    -- we need to move the atta through the vertical
+    -- as a new section has been created, the stack needs a new refrence
+    !form.support.stack.sctn = $!<Name>-V1
+    !form.support.stack.alignstacks()
+
+    !object = object mdsplines( $!<Name>-V1 , !picked )
+    !!ce.poss = !object.start
+    !!ce.pose = !object.end
+    !!ce.drns = !object.drns
+    !!ce.drne = !object.drne
+
+     -- now adjust the bars to a fixed length  Specific to FR bracket lengths
+
+     !blen = !!Mdsgetsctnlen( !!ce ,!method)
+     reconnect recalc                                $* now takes multiple trays
+     extend end dist $!blen from posstart
+
+  -- ********************************************
+  --  Set correct spref for number of cross bars
+  -- ********************************************
+
+    !!CE = $!<Name>/SREF
+
+    !!MdsDacControl(true)
+    SEL SPREF WITH STYP 'FR11-$!Selection' SPEC /MDF
+    !!MdsSetSuppCode('MODIFY',!Name,!Alias,'FR11-$!Selection')
+    !!MdsDacControl(false)
+
+  -- Get data to update support info held in form
+    !!CE = !Sctn
+    !BarLen = deri length
+
+    -- Update form data
+    if (!Method eq |NEW|)then
+      !!MdsFR11.Support.Bars.append(!list)
+      !!MdsFR11.Support.BarLen.append(!BarLen)
+
+      -- Enhance elements using colour set for highlight
+      !!CE = !Support.Stru
+      !ColourList = array()
+      !ColourList.append(!!CE)
+      !ColourList.append(!list)
+
+      -- Colour Support
+      call !!KEnhanceList(!ColourList)
+    else
+      !!MdsFR11.Support.BarLen[!Next] = !BarLen
+    endif
+
+  -- *******************************************
+  --  Do the connecting sections need extending
+  -- *******************************************
+
+  !!CE = $!<Name>-V1
+
+    -- Adjust for slope on horizontal lines only
+    -- Check to see if the line is sloping
+    !Adjust = 0
+    do !V values !list
+      !!CE = !V
+      skip if !!ce.:mdsrotdir.east.set()
+      !Grad = pl grad
+      if (!grad neq 0)then
+        !StrucElement = array()
+        !Ref = $!Name-BAR-$!Next
+        !StrucElement.append(!Ref)
+        !VHeight = !!MdsAdjustSlope(!StrucElement, !V)
+      else
+        !VHeight = 0
+      endif
+      if (!VHeight gt !Adjust)then
+        !Adjust = !VHeight
+      endif
+    enddo
+
+    -- Adjust required elements
+    !!CE = $!<Name>-BAR-$!<Next>
+    MOVE D WRT WORLD DIST $!Adjust
+     !!CE = $!<Name>/SUBS$!<Next>
+    handle none
+      BY D $!Adjust
+    elsehandle any
+    endhandle
+
+    -- deal with the vertical section
+    !!CE = $!<Name>-V1
+    !Start = Posend wrt world
+    !End   = Posstart wrt world
+
+    PIN 7 AT poss
+    PIN 8 AT pose
+    PIN 7 DIR TO PIN 8
+
+    !ToBar = 0
+    do !Count from 1 to !Next
+      PIN 8 COPY PIN 7
+      PIN 8 plane PIN 8 THRO $!<Name>-BAR-$!Count
+      !Tobar1 = !!KStrReal('CONST DIST PIN 7 TO PIN 8')
+      if (!ToBar1.gt(!ToBar))then
+        !ToBar = !ToBar1
+        !index = !Count
+      endif
+    enddo
+    PIN 8 plane PIN 8 CLEAR 0 BEH $!<Name>-BAR-$!index
+
+    --EXTEND END THRO pin 8
+    --if !!CE.:MdsOlap.eq('OVERLAP') then
+    --  !OverLap = !!CE.:MDSOnum
+    --elseif !!CE.:MdsOlap.eq('FLUSH') then
+    --  !OverLap = 0
+    --endif
+    -- *************************************************************************************
+    -- DON'T NEED TO EXTEND THE END ANY MORE AS ITS ALREADY BUILT TO THE CORRECT LENGTH
+
+    -- extend the end of the vertical section by the overlap value
+    --EXTEND END $!Overlap
+
+    -- Code added for internal connections
+    -- Has the cross bar any connections
+
+    !!CE = $!Name-BAR-1
+    !Jois = Jois
+
+    if !Jois.badref().not() then
+      goto jois
+      snod
+      !Sctnname = !!CE.owner.name
+      new snod $!<SctnName>/S$!<Next> copy prev rename $!<SctnName>/S1 $!<SctnName>/S$!<Next>
+      zdist thro $!<Name>-BAR-$!<Next>
+      !AttaOnBar = (:mdsattaref[1] of $!<Name>-BAR-$!<Next> )
+      sjoi 1
+      !sjoie = !!ce
+      cref $!<Name>-BAR-$!<Next>
+      !jline = object mdsplines($!<Name>-V1 ,!AttaOnBar )
+      posline $!jline.nearest
+      cutp $!jline.drns
+      $!<Name>-BAR-$!<Next>
+      jois $!sjoie
+      reconn recalc
+      !blen = !!Mdsgetsctnlen( !!ce ,!method)
+      if !blen eq 0 then $* we need to delete the bar
+         --delete sctn
+         --return
+      else
+        reconnect recalc                                $* now takes multiple trays
+        extend end dist $!blen from posstart
+      endif
+      -- Reset the zdist of cross bar 1 because the bar may have been moved if the datum is on a higher cross bar
+      !!CE = $!Name-BAR-1
+      goto jois
+      snod
+      zdist thro $!Name-BAR-1
+    endif
+
+    -- go and swap the joints for bars at the same level
+    !!CE = !Sctn
+    stru
+    var !bars coll all sctn with match(name,'BAR') gt (0) for ce
+    var !levels eval ( position[3] ) for all from !bars
+    var !dirs eval drns for all from !bars
+    !new = ARRAY()
+    do !f values !levels
+      !new.append(!f.real())
+    enddo
+    !ind = !new.sortedindices()
+    !bars.reindex(!ind)
+    !dirs.reindex(!ind)
+    !levels.reindex(!ind)
+    do !a from 2 to !bars.size()
+      -- if the current bar is at the same level and opposite then swap the joints
+      if !levels[!a - 1] eq !levels[!a] and !dirs[!a].direction().opposite() eq !dirs[!a - 1].direction() then
+        -- swap the joints
+        !!ce = !bars[!a - 1].dbref().jois
+        handle ANY
+         break
+        endhandle
+        Spref /FRA/PLATE-JOINT-ALT
+        function ''
+               !!ce = !bars[!a].dbref().jois
+        handle ANY
+          break
+        endhandle
+        Spref /FRA/PLATE-JOINT-DUMMY
+        function 'DUMMY'
+      endif
+    enddo
+
+  -- Reset all pins associated with this support
+    call !!MdsResetPins(1,9)
+
+  !!CE = !Sctn
+-- Reset Units
+
+   !!kRestoreUnits(!currentunits)
+
+-- End function
+endfunction
+
+-- End of file MdsaddbarFR11.pml

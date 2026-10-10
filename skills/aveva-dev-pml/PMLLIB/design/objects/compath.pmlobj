@@ -1,0 +1,701 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+------------------------------------------------------------------------
+--
+-- File:            compath.pmlobj
+--   Type:          object Definition
+--   Group:         Utilities
+--     Keyword:     GENERAL
+--   Module:        design
+--   Replaces:
+--
+-- Author:          M.Barlow
+-- Created:         Fri Apr 4 2008
+--
+--
+-- Description:
+--   Interpret RPATH element as array of line and arc objects
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  comPath()                        -                   Constructor
+--  comPath(DBREF)                   -                   Constructor
+--  draw()                           -                   draw path as aid lines
+--  edgeRefPosition(POSITION)        ARRAY               return array of data for edge reference position
+--  edges()                          ARRAY               Get array of edges representing the path
+--  findEdges()                      -                   Get array of edges representing the path
+--  findEdgesNoFillet()              -                   Get array of edges representing the path with FRAD ignored
+--  intersections(PLANE)             ARRAY               return array of intersections between plane and RPATH
+--  near(POSITION)                   POSITION            return nearest position projected onto RPATH edges
+--  normalNear(POSITION)             POINTVECTOR         return normal vector of nearest position projected onto RPATH edges
+--  profile()                        PROFILE             Get PROFILE representing the path with work round for WLOPEN orientation
+--
+
+define object COMPATH
+
+  -- RPATH DBREF
+  member .pathRef             is DBREF
+  -- Array of lines and arcs
+  member .edges               is ARRAY
+  -- Array of RPATH element references for lines and arcs
+  member .edgeRefs            is ARRAY
+  -- Array of lines and arcs - but ignoring FRAD
+  member .edgesNoFillet       is ARRAY
+  -- Array of RPATH element references lines and arcs - but ignoring FRAD
+  member .edgeNoFilletRefs    is ARRAY
+  -- Aid numbers for edge draw
+  member .aidEdge             is REAL
+
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:      comPath
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .comPath()
+
+  -- Initialise Variables
+  -- Aid Number
+  !this.aidEdge   = !!aidNumbers.add('PathEdge')
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      comPath
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .comPath(!element is DBREF)
+
+  -- Initialise Variables
+  !this.comPath()
+  if( badref(!element) ) then
+    return
+  endif
+  if( !element.hardType eq 'RPATH' ) then
+    !path = !element
+  else
+    !saveRef = !!ce
+    !!ce     = !element
+    RPATH 1
+    handle any
+      RPATH
+      handle any
+        -- invalid input argument
+        !!ce = !saveRef
+        return
+      endhandle
+    endhandle
+    !path = !!ce
+    !!ce = !saveRef
+  endif
+  !this.pathRef = !path
+  !this.findEdges()
+  !this.findEdgesNoFillet()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      findEdges
+--
+-- Description: Get array of edges representing the path
+--              Note that this method also fills out an array of references
+--              to the POINTR and CURVE elements used to create the path
+--              Wall openings are only able to process POINTR elements so
+--              should use references collected using the findEdgesNoFillet method
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .findEdges()
+
+  !rawData                = ARRAY()
+  !rawEdgeRef             = ARRAY()
+  !this.edges             = ARRAY()
+  !this.edgeRefs          = ARRAY()
+
+  -- Loop through RPATH members, calculating edges
+  -- This loop creates raw data containing key points and arcs
+  -- The raw data is further processed into lines and arcs
+  do !pathMember values !this.pathRef.members
+
+    !memberType = !pathMember.hardType
+    if( !memberType eq 'POINTR' ) then
+
+			!start = !pathMember.pPos[1].wrt( /* )
+			!center = !pathMember.pPos[3].wrt( /* )
+			
+      -- POINTR
+      if( !pathMember.fRad eq 0 or !start.distance(!center) eq 0 ) then
+        -- POINTR with no fillet radius
+        !rawData.append( !pathMember.position.wrt( /* ) )
+        !rawEdgeRef.append( !pathMember )
+      else
+      	
+        -- POINTR with fillet radius
+
+        !thru  = !pathMember.pPos[4].wrt( /* )
+        !end   = !pathMember.pPos[2].wrt( /* )
+        !plane = !start.plane(!thru, !end)
+        !dir   = !plane.pointVector().direction
+        !arc   = !start.arcThru(!thru,!end,!dir)
+        if( !arc.on(!thru).not() ) then
+          !arc.sense = !arc.sense.not()
+        endif
+        !rawData.append( !start )
+        !rawEdgeRef.append( !pathMember )
+        !rawData.append( !arc )
+        !rawEdgeRef.append( !pathMember )
+        !rawData.append( !end )
+        !rawEdgeRef.append( !pathMember )
+      endif
+
+    elseif( !memberType eq 'CURVE' ) then
+
+      --CURVE
+      !start = !pathMember.pPos[1].wrt( /* )
+      !thru  = !pathMember.pPos[7].wrt( /* )
+      !end   = !pathMember.pPos[2].wrt( /* )
+-- Not handling curves properly. Should be able to cope with straight sections at start and end of the arc
+-- following three commented lines left in to aid future developments
+--      !radLine   = object LINE(!pathMember.pPos[7].wrt( /* ) , !pathMember.pPos[5].wrt( /* ))
+--      !radius = !radLine.length()
+      !plane = !start.plane(!thru, !end)
+      !dir   = !plane.pointVector().direction
+      !arc   = !start.arcThru(!thru,!end,!dir)
+--      !arc   = !start.arcThru(!thru,!end,!dir, !radius)
+      if( !arc.on(!thru).not() ) then
+        !arc.sense = !arc.sense.not()
+      endif
+      !rawData.append( !start )
+      !rawEdgeRef.append( !pathMember )
+      !rawData.append( !arc )
+      !rawEdgeRef.append( !pathMember )
+      !rawData.append( !end )
+      !rawEdgeRef.append( !pathMember )
+
+    endif
+
+  enddo
+
+  -- Loop through the raw data to make final line and arc objects
+  !lastType = 'POSITION'
+  !lastPosition = !rawData[1]
+  !lastEdgeRef  = !rawEdgeRef[1]
+  do !index from 2 to !rawData.size()
+
+    if( !rawData[!index].objectType() eq 'POSITION' ) then
+
+      if( !lastType eq 'POSITION' ) then
+        -- skip if coincident points
+        skip if( !lastPosition eq !rawData[!index] )
+        !this.edges.append( object LINE(!lastPosition, !rawData[!index]))
+        !this.edgeRefs.append( !lastEdgeRef )
+        !lastType     = 'POSITION'
+        !lastPosition = !rawData[!index]
+        !lastEdgeRef  = !rawEdgeRef[!index]
+      elseif( !lastType eq 'ARC' ) then
+        !lastType     = 'POSITION'
+        !lastPosition = !rawData[!index]
+        !lastEdgeRef  = !rawEdgeRef[!index]
+      endif
+
+    elseif( !rawData[!index].objectType() eq 'ARC' ) then
+
+      !this.edges.append(!rawData[!index])
+      !this.edgeRefs.append( !rawEdgeRef[!index] )
+      !lastType     = 'ARC'
+
+    endif
+    if (!index eq !rawData.size()) then
+      !this.edgeRefs.append(!rawEdgeRef[!index])	
+    endif
+  enddo
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      findEdgesNoFillet
+--
+-- Description: Get array of edges representing the path with FRAD ignored
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .findEdgesNoFillet()
+
+  !rawData                = ARRAY()
+  !rawEdgeRef             = ARRAY()
+  !this.edgesNoFillet     = ARRAY()
+  !this.edgeNoFilletRefs  = ARRAY()
+
+  -- Loop through RPATH members, calculating edges
+  -- This loop creates raw data containing key points and arcs
+  -- The raw data is further processed into lines and arcs
+  do !pathMember values !this.pathRef.members
+
+    !memberType = !pathMember.hardType
+    if( !memberType eq 'POINTR' ) then
+
+      -- POINTR ignoring fillet radius
+      !rawData.append( !pathMember.position.wrt( /* ) )
+      !rawEdgeRef.append( !pathMember )
+
+    elseif( !memberType eq 'CURVE' ) then
+
+      --CURVE
+      !start = !pathMember.pPos[1].wrt( /* )
+      !thru  = !pathMember.pPos[7].wrt( /* )
+      !end   = !pathMember.pPos[2].wrt( /* )
+      !plane = !start.plane(!thru, !end)
+      !dir   = !plane.pointVector().direction
+      !arc   = !start.arcThru(!thru,!end,!dir)
+      if( !arc.on(!thru).not() ) then
+        !arc.sense = !arc.sense.not()
+      endif
+      !rawData.append( !start )
+      !rawEdgeRef.append( !pathMember )
+      !rawData.append( !arc )
+      !rawEdgeRef.append( !pathMember )
+      !rawData.append( !end )
+      !rawEdgeRef.append( !pathMember )
+
+    endif
+  enddo
+
+  -- Loop through the raw data to make final line and arc objects
+  !lastType = 'POSITION'
+  !lastPosition = !rawData[1]
+  !lastEdgeRef  = !rawEdgeRef[1]
+
+  do !index from 2 to !rawData.size()
+    !refType = !rawEdgeRef[!index].hardType
+    if( !rawData[!index].objectType() eq 'POSITION' ) then
+      if( !lastType eq 'POSITION' ) then
+        -- skip if coincident points
+        if (!lastEdgeRef.unset()) then
+          --are on the point after a curve... want to store the ref
+          !lastEdgeRef = !rawEdgeRef[!index]
+          --should always skip as positions should be the same, but to be safe...
+          skip
+        endif
+        skip if( !lastPosition eq !rawData[!index] )
+        !this.edgesNoFillet.append( object LINE(!lastPosition, !rawData[!index]))
+        !this.edgeNoFilletRefs.append( !lastEdgeRef )
+        !lastType     = 'POSITION'
+        !lastPosition = !rawData[!index]
+        !lastEdgeRef  = !rawEdgeRef[!index]
+      elseif( !lastType eq 'ARC' and !refType ne 'POINTR' ) then
+        !lastType     = 'POSITION'
+        !lastPosition = !rawData[!index]
+        !lastEdgeRef = object DBREF()
+      endif
+
+    elseif( !rawData[!index].objectType() eq 'ARC' ) then
+
+      !this.edgesNoFillet.append(!rawData[!index])
+      !this.edgeNoFilletRefs.append(!lastEdgeRef )
+      !lastType     = 'ARC'
+
+    endif
+    if (!index eq !rawData.size()) then
+      !this.edgeNoFilletRefs.append(!rawEdgeRef[!index])	
+    endif
+
+  enddo
+endmethod
+
+----------------------------------------------------------------------
+--
+-- Method:      edges
+--
+-- Description: Get array of edges representing the path
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY      Array of line and arc elements
+--
+------------------------------------------------------------------------
+
+define method .edges() is ARRAY
+
+  return !this.edges
+
+endmethod
+
+----------------------------------------------------------------------
+--
+-- Method:      draw
+--
+-- Description: draw path as aid lines
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .draw()
+
+  do !index indices !this.edges
+
+    !this.edges[!index].draw(!this.aidEdge,1,1)
+
+  enddo
+
+endmethod
+
+---------------------------------------------------------------------
+--
+-- Method:      near
+--
+-- Description: return nearest position projected onto RPATH edges
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--   POSITION    nearest position on RPATH
+--
+------------------------------------------------------------------------
+
+define method .near(!position is POSITION) is POSITION
+
+  !nearestDistance = 99999999
+  !nearestPosition = object POSITION()
+
+  do !index indices !this.edges
+
+    if( !this.edges[!index].objectType() eq 'LINE' ) then
+      !nearPos = !this.edges[!index].near(!position)
+      -- check for point on line
+      if(!this.edges[!index].onProjected(!nearPos).not()) then
+        -- allow for point on line end (.on misses this sometimes)
+        skip if(!nearPos.distance(!this.edges[!index].startPosition) gt 0.01mm)
+        skip if(!nearPos.distance(!this.edges[!index].endPosition)   gt 0.01mm)
+      endif
+    else
+      -- ARC
+      skip if(!this.edges[!index].onProjected(!position).not())
+      !nearPos = !this.edges[!index].anglePosition(!this.edges[!index].near(!position))
+     endif
+    !distance = !nearPos.distance(!position)
+    if( !distance lt 0.01mm ) then
+      return !nearPos
+    elseif( !distance lt !nearestDistance ) then
+      !nearestDistance = !distance
+      !nearestPosition = !nearPos
+    endif
+
+  enddo
+
+  return !nearestPosition
+
+endmethod
+---------------------------------------------------------------------
+--
+-- Method:      normalNear
+--
+-- Description: return normal vector of nearest position projected onto RPATH edges
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY of POSITIONS
+--
+------------------------------------------------------------------------
+
+define method .normalNear(!position is POSITION) is POINTVECTOR
+ !nearestDistance = 99999999
+  !nearestPosition = object POSITION()
+  !nearestIndex = 1
+  !nearestAngle = -9999999
+--first find the nearest point. Would like to use .near method but need extra info
+  do !index indices !this.edges
+
+    if( !this.edges[!index].objectType() eq 'LINE' ) then
+      !nearPos = !this.edges[!index].near(!position)
+      -- check for point on line
+      if(!this.edges[!index].onProjected(!nearPos).not()) then
+        -- allow for point on line end (.on misses this sometimes)
+        skip if(!nearPos.distance(!this.edges[!index].startPosition) gt 0.01mm)
+        skip if(!nearPos.distance(!this.edges[!index].endPosition)   gt 0.01mm)
+      endif
+    else
+      -- ARC
+      skip if(!this.edges[!index].onProjected(!position).not())
+      --to save having to find the angle again, store it if necessary
+      !nearAngle = !this.edges[!index].near(!position)
+      !nearPos = !this.edges[!index].anglePosition(!nearAngle)
+     endif
+    !distance = !nearPos.distance(!position)
+    if( !distance lt 0.01mm ) then
+      if (!this.edges[!index].objectType() eq 'ARC') then
+        !nearestAngle = !nearAngle
+      else
+        !nearestAngle = -9999999
+      endif
+      !nearestPosition = !nearPos
+      !nearestIndex = !index
+      break;
+    elseif( !distance lt !nearestDistance ) then
+      !nearestDistance = !distance
+      !nearestPosition = !nearPos
+      !nearestIndex = !index
+      if (!this.edges[!index].objectType() eq 'ARC') then
+        !nearestAngle = !nearAngle
+      else
+        !nearestAngle = -9999999
+      endif
+    endif
+
+  enddo
+
+  --by now should know the nearest position and the index of the edge the point lies on
+  !nearEdge = !this.edges[!nearestIndex]
+  if (!nearEdge.objectType() eq 'LINE') then
+    -- get the plane of the line
+    !bStart = !this.edgeRefs[!nearestIndex].pPos[2]
+    !tStart = !this.edgeRefs[!nearestIndex].pPos[21]
+    !bEnd   = !this.edgeRefs[!nearestIndex + 1].pPos[1]
+
+    !ePlane = !bStart.plane(!tStart, !bEnd)
+    !normal = !ePlane.pointVector()
+    !normal.position = !nearestPosition
+  else
+    -- ARC
+    if (!nearestAngle eq -9999999) then
+    	--should never happen but just in case...
+      !nearestAngle = !this.edges[!nearestIndex].near(!nearestPosition)
+    endif
+    !radialDir = !nearEdge.angleDirection(!nearestAngle)
+    !normal = object POINTVECTOR(!nearestPosition, !radialDir)
+  endif
+  --test to make sure normal is aiming at position passed, not away from it!
+  !basedist = !position.distance(!normal.position)
+  if (!basedist ne 0mm) then
+    !testdist =  !basedist / 10
+    !test1 = !normal.offset(!testdist)
+    if (!position.distance(!test1.position) gt !basedist) then
+      !normal.direction = !normal.direction.opposite()	
+    endif
+  endif
+
+  return !normal	
+
+endmethod
+
+---------------------------------------------------------------------
+--
+-- Method:      intersections
+--
+-- Description: return array of intersections between plane and RPATH
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY of POSITIONS
+--
+------------------------------------------------------------------------
+
+define method .intersections(!plane is PLANE) is ARRAY
+
+  !return = ARRAY()
+
+  do !index indices !this.edges
+
+    !intersections = ARRAY()
+    if( !this.edges[!index].objectType() eq 'LINE' ) then
+      !nearPos = !plane.intersection(!this.edges[!index])
+      handle any
+        skip
+      endhandle
+      -- allow for point on line end (.on misses this sometimes)
+      if(!nearPos.distance(!this.edges[!index].startPosition) lt 0.01mm) then
+        !intersections[1] = !nearPos
+      elseif(!nearPos.distance(!this.edges[!index].endPosition) lt 0.01mm) then
+        !intersections[1] = !nearPos
+      elseif(!this.edges[!index].onProjected(!nearPos).not()) then
+        skip
+      else
+        !intersections[1] = !nearPos
+      endif
+    else
+      -- ARC
+      !arcIntersections = !plane.intersections(!this.edges[!index])
+      -- check that positions are on the arc
+      do !arcIntersection values !arcIntersections
+        skip if(!this.edges[!index].onProjected(!arcIntersection).not())
+        !intersections.append(!arcIntersection)
+      enddo
+    endif
+    !return.appendarray(!intersections)
+
+  enddo
+
+  return !return
+
+endmethod
+
+---------------------------------------------------------------------
+--
+-- Method:      edgeRefPosition
+--
+-- Description: return array of data for edge reference position
+--              Element 1 is POINTR or CURVE element reference
+--              Element 2 is the ZDISTANCE
+--              Fillet radius curves are not handled in core,
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      POSITION    Position near to curve
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       RPATH member ref[1], ZDISTANCE[2]
+--
+------------------------------------------------------------------------
+
+define method .edgeRefPosition(!position is POSITION) is ARRAY
+
+  -- Find nearest position
+  !nearestDistance = 99999999
+  !nearestPosition = object POSITION()
+  !nearestEdge     = 0
+
+  do !index indices !this.edgesNoFillet
+
+    if( !this.edgesNoFillet[!index].objectType() eq 'LINE' ) then
+      !lineEdge = !this.edgesNoFillet[!index]
+      !nearPos  = !lineEdge.near(!position)
+      -- check for point on line
+      if(!this.edgesNoFillet[!index].onProjected(!nearPos).not()) then
+        -- allow for point on line end (.on misses this sometimes)
+        skip if(!nearPos.distance(!this.edgesNoFillet[!index].startPosition) gt 0.01mm)
+        skip if(!nearPos.distance(!this.edgesNoFillet[!index].endPosition)   gt 0.01mm)
+      endif
+    else
+      -- ARC
+      !arcEdge = !this.edgesNoFillet[!index]
+      skip if(!arcEdge.onProjected(!position).not())
+      !nearPos = !arcEdge.anglePosition(!arcEdge.near(!position))
+     endif
+    !distance  = !nearPos.distance(!position)
+    if( !distance lt 0.01mm ) then
+      !nearestDistance = !distance
+      !nearestPosition = !nearPos
+      !nearestEdge = !index
+      break
+    elseif( !distance lt !nearestDistance ) then
+      !nearestDistance = !distance
+      !nearestPosition = !nearPos
+      !nearestEdge     = !index
+    endif
+
+  enddo
+
+  if( !nearestEdge eq 0 ) then
+    return ARRAY()
+  endif
+
+  -- work out reference position and zdistance
+  !return[1] = !this.edgeNoFilletRefs[!nearestEdge]
+  if( !this.edgesNoFillet[!nearestEdge].objectType() eq 'LINE' ) then
+    !return[2] = !this.edgesNoFillet[!nearestEdge].startPosition.distance(!nearestPosition)
+  else
+    -- CURVE
+    !arc = !this.edgesNoFillet[!nearestEdge]
+    !arc.endAngle = !arc.near(!nearestPosition)
+    !return[2] = !arc.length()
+  endif
+  return !return
+
+endmethod
+
+----------------------------------------------------------------------
+--
+-- Method:      profile
+--
+-- Description: Get PROFILE representing the path with work round for WLOPEN orientation
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY      Array of line and arc elements
+--
+------------------------------------------------------------------------
+
+define method .profile() is PROFILE
+
+  if( !this.pathRef.owner.hardType eq 'WLOPEN' ) then
+    !wallOpening = !this.pathRef.owner
+    !wallOpenY   = !wallOpening.orientation.yDir()
+    !wallOpenZ   = !wallOpening.orientation.zDir()
+    !strOri      = 'Z is ' + !wallOpenY.string() + ' and Y is ' + !wallOpenZ.string()
+    !ori         = object ORIENTATION( !strOri )
+    !profile     = object PROFILE( !this.pathRef.owner.position, !ori, !this.edges )
+    handle any
+      !profile   = object PROFILE()
+    endhandle
+  else
+    !profile     = object PROFILE( !this.pathRef )
+    handle any
+      !profile   = object PROFILE()
+    endhandle
+  endif
+
+  return !profile
+
+endmethod

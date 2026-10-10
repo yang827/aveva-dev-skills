@@ -1,0 +1,220 @@
+--------------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            pfpipeconsistencycheck.pmlobj
+--   Type:          Object Definition
+--   Group:         Pipe Fabrication
+--     Keyword:     PF
+--   Module:        Design
+--   Replaces:
+--
+--  Author:         Jaehun Choi(Daniel)
+--  Created:        28 May 2014
+--
+--  Description:    object for check pipe consistency in Pipe Fabrication
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  check(DBREF,BOOLEAN)             BOOLEAN             check element
+--  getFirstCharIndex(STRING)        REAL
+--  pfpipeconsistencycheck()         -                   constructor
+--
+--------------------------------------------------------------------------------
+define object PFPIPECONSISTENCYCHECK
+  member .acceptableErrorCodes    is ARRAY
+  member .resultMessage           is ARRAY
+endobject
+
+--------------------------------------------------------------------------------
+--
+-- Method:      pfpipeconsistencycheck
+--
+-- Description: constructor
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .pfpipeconsistencycheck()
+  !errorContentsFilePath = !!pml.getPathName('pfpipeconsistency.pmldat')
+  handle any
+    !!alert.message(|Cannot find the 'pfpipeconsistency.pmldat' which include error contents|)
+  endhandle
+
+  !errorContentsFile = object FILE(!errorContentsFilePath)
+  if (!errorContentsFile.exists().not()) then
+    !!alert.message(|Cannot find the 'pfpipeconsistency.pmldat' which include error contents|)
+    !errorContentsFile.close()
+  else
+    !errorContents = !errorContentsFile.readFile()
+
+    do !rowData values !errorContents
+      !row = !rowData.trim('L')
+      skip if (substring(!row, 1,2) eq '--')
+
+      !errorCode = !row.before('''').real()
+      handle any
+        skip
+      endhandle
+
+      skip if (!errorCode.string().empty())
+
+      !this.acceptableErrorCodes.append(!errorCode.string())
+    enddo
+  endif
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      check
+--
+-- Description: check
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type] [Description]
+--    1    R      DBREF       element reference to be checked
+--    2    R      BOOLEAN     flag for check full
+--
+-- Return:
+--   [Data Type] [Description]
+--    1    R      BOOLEAN     return to check result
+--
+--------------------------------------------------------------------------------
+define method .check(!element is DBREF, !fullCheck is BOOLEAN) is BOOLEAN
+  !result = true
+
+  if (!fullCheck) then
+    !acceptableErrorCodes = object ARRAY()
+  else
+    !acceptableErrorCodes = !this.acceptableErrorCodes
+  endif
+
+  if (defined(!!pfContext)) then
+    !!pfContext.delete()
+  endif
+
+  !context = object PFCONTEXT()
+  !context.globalInstance()
+
+  if (!!pfContext.disableSkeyMsg) then
+    !acceptableErrorCodes.append('192')
+  endif
+
+  var !tempDir evar temp
+  !path = '$!tempDir\checkCeResult'
+  ALPHA FILE "$!path" OVER
+  CHECK $!element
+  ALPHA FILE END
+
+  !file = object FILE(!path)
+  !contents = !file.readFile()
+
+  CHECK $!element !elements !errorLists
+
+  !revisedContents = object ARRAY()
+  !debugMode = false
+
+  !errorFound = false
+  do !i index !contents
+    !data = !contents[!i]
+    !entryName = trim(!data,'L')
+
+    !checkedElement = object DBREF()
+    if (!entryName ne 'END') then
+      !checkedElement = object DBREF(!entryName)
+      handle (2,813)
+      elsehandle (2,111)(2,113)
+        !checkedElement = object DBREF(!entryName.part(3))
+        handle any
+        endhandle
+      elsehandle ANY
+      endhandle
+    endif
+
+--    if (!checkedElement.badRef().not()) then
+--      !isValidType = NOT(!checkedElement.hardType INSET ('PIPE','PSLIST','PSPOOL','PPLIST','PPIECE'))
+--    endif
+
+    if (!checkedElement.badRef().not()) then
+      !index      = !elements.findFirst(!checkedElement.refNo.string())
+      !errorCodes = !errorLists[!index].split()
+      handle (2,756)
+        !errorCodes = object ARRAY()
+      endhandle
+
+      !subIndex = 1
+      !revisedContents.append(!data)
+
+      if (!errorCodes.set()) then
+        !startCharIndex = !this.getFirstCharIndex(!contents[!i + 1])
+      endif
+
+      skip
+    endif
+
+    !prefix = ''
+    if (defined(!index) and !data ne 'END' and !errorCodes.set()) then
+      !errorCode = !errorCodes[!subIndex]
+
+      if (!acceptableErrorCodes.set() and !acceptableErrorCodes.findFirst(!errorCode).set()) then
+        skip
+      endif
+
+      !errorFound = true
+      if (!debugMode) then
+        !prefix  = !errorCode & '@'
+      endif
+
+      if ((!subIndex + 1) lt !errorCodes.size()) then
+        !charIndex = !this.getFirstCharIndex(!contents[!i + 1])
+        if (!startCharIndex eq !charIndex) then
+          !subIndex = !subIndex + 1
+        endif
+      elseif (!subIndex lt !errorCodes.size()) then
+        !subIndex = !subIndex + 1
+      endif
+    endif
+
+    !revisedContents.append(!prefix & !data)
+  enddo
+
+  !contents = !revisedContents
+
+  if (!errorFound) then
+    !result = false
+  else
+    !result = true
+  endif
+
+  if (!errorLists.unset()) then
+    !this.resultMessage = !contents
+    return !result
+  endif
+
+  !this.resultMessage = !contents
+
+  return !result
+endmethod
+
+define method .getFirstCharIndex(!content is STRING) is REAL
+  !length = !content.length()
+  !startCharIndex = 1
+  do !i to $!length
+    !token = substring(!content, !i, 1)
+    skip if (!token eq ' ')
+    !startCharIndex = !i
+    break
+  enddo
+
+  return !startCharIndex
+endmethod

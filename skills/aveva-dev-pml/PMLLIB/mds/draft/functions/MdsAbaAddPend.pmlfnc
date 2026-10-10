@@ -1,0 +1,323 @@
+--------------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File: MdsAbaAddPend.pmlfnc
+--   Type: Function
+--   Group: Multi Discipline Supports Application
+--     Keyword: MDS
+--   Module: Draft MDS using ABA
+--   Replaces:
+--
+-- Author: Karel Pleschner
+-- Created: 23 March 2005
+--
+--
+-- Description:
+-- Add pipe end symbols to pipe at the place where such pipe crosses the view margin
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]        [Description]
+--     1     R        DBREF             view ID
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+-- Define Function
+
+define function !!mdsabaaddpend(!view is DBREF)
+
+  !!ce = !view
+  if !!ce.title.upcase().match('ISO').gt(0) then
+    return
+  endif
+
+  var !alltube vscan for all TUBI with (stext of text1 of spow eq 'PIPING') in $!view
+    handle ANY
+      return
+    endhandle
+
+  !layer = !view.name + '/MDS_PipeSymb'
+  !tmrf = /MDS/ABA/TAGS/BREAK/PIPE
+  !vsca = !view.vsca
+
+-- get view corners
+  !bl = !view.xypo
+  !bl.east = !bl.east - !view.size[1] / 2
+  !bl.north = !bl.north - !view.size[2] / 2
+  !br = !bl
+  !br.east = !br.east + !view.size[1]
+  !tr = !br
+  !tr.north = !br.north + !view.size[2]
+  !tl = !tr
+  !tl.east = !tr.east - !view.size[1]
+
+-- regarding section planes
+-- if they are within view the concerned corners will be changed
+
+  do !plane values !view.memb
+    skip if !plane.type.neq('VSEC')
+    skip if !plane.plrf.badref()
+    if !plane.plrf.type.eq('SPLA') then
+      !corner = ARRAY()
+      do !point values !plane.plrf.memb
+        !pos = !point.pos.string().before('WRT')
+        var !shpos shpos of $!pos
+        !corner.append(object POSITION(!shpos))
+      enddo
+-- sort corners in following order:
+-- [1] bottom-left
+-- [2] top-left
+-- [3] bottom-right
+-- [4] top-right
+      !corner.sortunique()
+
+      if !corner.size().eq(4) then
+        if !corner[1].east.gt(!bl.east) then
+          !bl.east = !corner[1].east
+        endif
+        if !corner[1].north.gt(!bl.north) then
+          !bl.north = !corner[1].north
+        endif
+        if !corner[3].east.lt(!br.east) then
+          !br.east = !corner[3].east
+        endif
+        if !corner[3].north.gt(!br.north) then
+          !br.north = !corner[3].north
+        endif
+        if !corner[4].east.lt(!tr.east) then
+          !tr.east = !corner[4].east
+        endif
+        if !corner[4].north.lt(!tr.north) then
+          !tr.north = !corner[4].north
+        endif
+        if !corner[2].east.gt(!tl.east) then
+          !tl.east = !corner[2].east
+        endif
+        if !corner[2].north.lt(!tl.north) then
+          !tl.north = !corner[2].north
+        endif
+      endif
+
+      if !corner.size().eq(2) then
+        if !corner[1].east.eq(!corner[2].east) then
+-- only bottom an top margin may be affected
+          if !corner[1].north.gt(!bl.north) then
+            !bl.north = !corner[1].north
+            !br.north = !corner[1].north
+          endif
+          if !corner[2].north.lt(!tl.north) then
+            !tl.north = !corner[2].north
+            !tr.north = !corner[2].north
+          endif
+        elseif !corner[1].north.eq(!corner[2].north) then
+-- only left and right matgins may be affected
+          if !corner[1].east.gt(!bl.east) then
+            !bl.east = !corner[1].east
+            !tl.east = !corner[1].east
+          endif
+          if !corner[2].east.lt(!tr.east) then
+            !br.east = !corner[2].east
+            !tr.east = !corner[2].east
+          endif
+        endif
+      endif
+    endif
+  enddo
+
+-- store view margins as line objects
+  !top = object LINE(!tl,!tr)
+  !bott = object LINE(!bl,!br)
+  !left = object LINE(!bl,!tl)
+  !right = object LINE(!br,!tr)
+
+-- convert all tubes into 2D lines and check if they cross the view margin
+-- if so then store all necessary information for label creation
+
+ !label = ARRAY() $* label attributes
+ !ddnm = ARRAY() $* labeled items
+
+ do !tube values !alltube
+   !tubeRef = !tube.replace('TUBI','ilea tube of').dbref()
+--<wd>may2007<mds12>
+   handle (2,121)
+-- Implied tube does not exist (length < 1mm ) for this component
+     skip
+   endhandle
+--<wd>may2007<mds12>
+
+-- sorting out all tubes that are parallel (+/-10deg) to view direction
+   !tubedir = !tubeRef.mtbe.ldir
+     handle ANY
+       !tubedir = !tubeRef.mtbe.hdir
+         handle ANY
+           skip
+         endhandle
+     endhandle
+   !angle = !tubedir.angle(!view.dir)
+   if !angle.gt(90) then
+     !angle = 180 - !angle
+   endif
+   if !angle.leq(10) then
+-- ignore this tube as it is parallel to view direction
+       skip
+   endif
+
+   if !tubeRef.mtbe.type.eq('BRAN') then
+     !start = 'ph of mtbe of $!tubeRef'
+   else
+     !start = 'pl of mtbe of $!tubeRef'
+   endif
+
+   if !tubeRef.mten.type.eq('BRAN') then
+     !end = 'pt of mten of $!tubeRef'
+   else
+     !end = 'pa of mten of $!tubeRef'
+   endif
+
+   var !startshpos shpos of $!start
+   var !endshpos shpos of $!end
+   !line = object LINE(!startshpos.position(),!endshpos.position())
+   !diam = $!tubeRef.para[2]mm
+   !symbsize = 25.4mm
+
+-- get intersection of projected tube and all margins
+-- if tube is actually crossing the margin then:
+-- store xyposition adeg and scale as array for each crossing and append it to !label array
+-- append dbref of crossing tube to !ddnm array
+
+   !isectop = !line.intersection(!top)
+     handle NONE
+       if !line.onprojected(!isectop).and(!top.onprojected(!isectop)) then
+         !xypo = object XYPOSITION(!isectop.east,!isectop.north)
+         !adeg = 90
+         !angle = !line.direction().angle(!top.direction())
+         if !angle.lt(80).or(!angle.gt(100)) then
+           !scale = (!diam / sin(!angle)) / !symbsize * !vsca
+         else
+           !scale = !diam / !symbsize * !vsca
+         endif
+         !labatt[1] = !xypo
+         !labatt[2] = !adeg
+         !labatt[3] = !scale
+         !label.append(!labatt)
+         !ddnm.append(!tubeRef)
+       endif
+     elsehandle ANY
+     endhandle
+
+   !isecbott = !line.intersection(!bott)
+     handle NONE
+       if !line.onprojected(!isecbott).and(!bott.onprojected(!isecbott)) then
+         !xypo = object XYPOSITION(!isecbott.east,!isecbott.north)
+         !adeg = -90
+         !angle = !line.direction().angle(!bott.direction())
+         if !angle.lt(80).or(!angle.gt(100)) then
+           !scale = (!diam / sin(!angle)) / !symbsize * !vsca
+         else
+           !scale = !diam / !symbsize * !vsca
+         endif
+         !labatt[1] = !xypo
+         !labatt[2] = !adeg
+         !labatt[3] = !scale
+         !label.append(!labatt)
+         !ddnm.append(!tubeRef)
+       endif
+     elsehandle ANY
+     endhandle
+
+   !isecleft = !line.intersection(!left)
+     handle NONE
+       if !line.onprojected(!isecleft).and(!left.onprojected(!isecleft)) then
+         !xypo = object XYPOSITION(!isecleft.east,!isecleft.north)
+         !adeg = 180
+         !angle = !line.direction().angle(!left.direction())
+         if !angle.lt(80).or(!angle.gt(100)) then
+           !scale = (!diam / sin(!angle)) / !symbsize * !vsca
+         else
+           !scale = !diam / !symbsize * !vsca
+         endif
+         !labatt[1] = !xypo
+         !labatt[2] = !adeg
+         !labatt[3] = !scale
+         !label.append(!labatt)
+         !ddnm.append(!tubeRef)
+       endif
+     elsehandle ANY
+     endhandle
+
+   !isecright = !line.intersection(!right)
+     handle NONE
+       if !line.onprojected(!isecright).and(!right.onprojected(!isecright)) then
+         !xypo = object XYPOSITION(!isecright.east,!isecright.north)
+         !adeg = 0
+         !angle = !line.direction().angle(!right.direction())
+         if !angle.lt(80).or(!angle.gt(100)) then
+           !scale = (!diam / sin(!angle)) / !symbsize * !vsca
+         else
+           !scale = !diam / !symbsize * !vsca
+         endif
+         !labatt[1] = !xypo
+         !labatt[2] = !adeg
+         !labatt[3] = !scale
+         !label.append(!labatt)
+         !ddnm.append(!tubeRef)
+       endif
+     elsehandle ANY
+     endhandle
+
+enddo
+
+-- remove duplicate "labels"
+
+  !reg = ARRAY()
+  do !c indices !label
+    if !reg.find(!label[!c]).set() then
+      !label[!c].delete()
+      !ddnm[!c].delete()
+    else
+      !reg.append(!label[!c])
+    endif
+  enddo
+
+
+  !!ce = !layer.dbref()
+    handle ANY
+      new layer
+      !!ce.name = !layer
+    endhandle
+
+  do !c indices !label
+    !xypo = !label[!c][1]
+    !adeg = !label[!c][2]
+    !scale = !label[!c][3]
+    !!scale = !scale
+
+    new slab
+--------------------------------------------
+--<wd>08apr2008 - DUN824 - Defect No. P-4526
+-- CODE modified to use the NEW 12.0 version DRAFT PEN, COLOUR and LINESTYLE attributes
+-- The pen attribute LFPEN no longer has any effect at version 12
+-- At SLAB level
+--    lfpn template
+    lfstyle template
+--<wd>08apr2008 - DUN824 - Defect No. P-4526
+--------------------------------------------
+
+    !!ce.bmar = 0
+    !!ce.llea = false
+    !!ce.tmrf = !tmrf
+    !!ce.ddnm = !ddnm[!c]
+    !!ce.adeg = !adeg
+    $!xypo abs
+    !newscale = !scale.string('D10')
+    xysc $!newscale $!newscale
+
+  enddo
+
+  !!ce = !view
+
+endfunction
+-- End of Function - MdsAbaAddPend.pmlfnc

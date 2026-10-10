@@ -1,0 +1,1054 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:          equipencreate.pmlfrm
+-- Type:          Form Definition
+-- Group:         General Application
+-- Keyword:       Penetration
+-- Module:        Design
+--  Author:          Undefined
+--  Created:         Wed Dec 12 15:37:39 2007
+--
+-- Description:
+-- Create a penetration
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  apply()                          -                   Invoke the hole manager with selected items
+--  close()                          -                   Close form actions
+--  createFixing(ARRAY,REAL)         BOOLEAN             Create the fixing
+--  edgPickPenetrated()              -                   Set EDG to pick penetrated items
+--  edgPickPenetrating()             -                   Set EDG to pick penetrating items
+--  equiPenCreate()                  -                   Constructor
+--  findCurvedPanelPosition(DBREF,POINTVECTOR) POSITION            Find penetration position on a curved panel given CPLATE
+--  findPenetrations()               -                   Find penetrations positions
+--  getPenetrationExtrusion(DBREF)   DBREF               Get penetration extrusion from equipment
+--  getPenetrationProfile(DBREF)     PROFILE             Get penetration profile from equipment
+--  initialiseForm()                 -                   Actions when form is shown
+--  pickPenetrated(EDGPICKDATA)      -                   EDG callback for penetrated items pick
+--  pickPenetrating(EDGPICKDATA)     -                   EDG callback for penetrating items pick
+--  readConfigurationFile()          -                   Read system configuration file (if it exists) and store settings
+--  setPenetrated(BOOLEAN)           -                   Set to True if currently in a penetrated EDG pick cycle
+--  setPenetrating(BOOLEAN)          -                   Set to True if currently in a penetrating EDG pick cycle
+--  tidy()                           -                   Tidy up state of this form
+--  updatePenetrated()               -                   Update penetrated items list and highlight penetrated items
+--  updatePenetrating()              -                   Update penetrating items list and highlight penetrating items
+--
+
+-- Define form
+setup form !!equiPenCreate dialog resize
+
+  --------------------------------- MEMBERS -----------------------------
+  -- List of penetrating items as picked
+  member .penetratingRaw         is ARRAY
+  -- List of penetrating items
+  member .penetrating            is ARRAY
+  -- List of penetrated items as picked
+  member .penetratedRaw          is ARRAY
+  -- List of penetrated items
+  member .penetrated             is ARRAY
+  -- Penetration type (Pipe or HVAC)
+  member .penetrationType        is STRING
+  -- List of elements highlighted in this form
+  member .enhancePenetrating     is ARRAY
+  member .enhancePenetrated      is ARRAY
+
+  -- Penetrating EDG packet
+  member .penetratingPacketDesc  is STRING
+  -- Penetrated EDG packet
+  member .penetratedPacketDesc   is STRING
+
+  -- Is penetrating pick
+  member .isPenetratingPick      is BOOLEAN
+  -- Is penetrated pick
+  member .isPenetratedPick       is BOOLEAN
+
+  -- equi penetration data object
+  member .equiPenetrations       is ARRAY
+  member .penetrationData        is ARRAY
+
+  -- Database item where the fixing will be created
+  member .fixingLocation         is DBREF
+
+  -- Undo event handlers
+  member .undoCreate            is UNDOABLE
+
+  --------------------------------  FORM  ------------------------------
+
+  frame .framePenetrated panel   anchor left + top + right at x0 y0
+    button .butPickPenetrated    anchor left + top         'Pick Penetrated Items'  at x0.5 ymax
+    list   .listPenetrated       anchor left + top + right at xmin ymax+0.5   width 34 length 4
+  exit
+
+  line  .lineSeparator           anchor left + top + right at x0.5 ymax horiz width 36 heigh 0.5
+
+  frame .framePenetrating panel  anchor left + top + right at x0 ymax
+    button .butPickPenetrating   anchor left + top         'Pick Penetrating Items' at x0.5 ymax
+    list   .listPenetrating      anchor left + top + right at xmin ymax+0.5   width 34 length 6
+  exit
+
+  -- Bottom Line
+  button .ok      anchor bottom + left  'OK'     at x0.5 ymax  width 9
+  button .cancel  anchor bottom + right 'Cancel' at xmax form-size ymin  width 9 callback '!this.close()'
+
+-- End of form definition
+exit
+
+------------------------------------------------------------------------
+--
+-- Method:      .equiPenCreate()
+--
+-- Description: Constructor
+--
+------------------------------------------------------------------------
+define method .equiPenCreate()
+
+  -- form properties
+  !this.callback         = |!this.initialiseForm()|
+  !this.formTitle        = 'Create Penetration'
+  !this.iconTitle        = 'Create Penetration'
+  !this.autoScroll       = true
+
+  -- gadget properties
+  !this.ok.callback      = '!this.apply()'
+  !this.cancelCall       = '!this.close()'
+  !this.cancel.callback  = '!this.close()'
+
+  !this.butPickPenetrating.callback = '!this.edgPickPenetrating()'
+  !this.butPickPenetrated.callback  = '!this.edgPickPenetrated()'
+
+  -- EDG
+  !this.penetratingPacketDesc       = 'Pick Penetrating'
+  !this.penetratedPacketDesc        = 'Pick Penetrated'
+  !this.isPenetratingPick           = false
+  !this.isPenetratedPick            = false
+
+  !this.penetrationType = 'EQUI'
+
+  -- Initialise create button undo
+  !this.undoCreate.description('Create Equipment Penetration')
+  !this.ok.setUndoable(!this.undoCreate)
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      initialiseForm
+--
+-- Description: Actions when form is shown
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .initialiseForm()
+
+-- Check the default ASSDEF is configured before continuing
+  !this.readConfigurationFile()
+  if (!!holeManagementConfiguration.equiPenAssdef.unset() ) then
+    return error 1 |Default Hole Management association definition not set. Please contact your system administrator: Check Hole Management configuration file & Project data|
+  endif
+  if (!!hmassogpexists().not()) then
+    return error 1 |Unable to locate ASSOGP to work in (PURP=HOLE)|
+  endif
+
+  -- Initialise common parts of the form
+  -- Make properties and plotfile buttons inactive
+  !this.ok.active         = false
+  !this.listPenetrated.clear()
+  !this.listPenetrating.clear()
+  !this.penetrating.clear()
+  !this.penetrated.clear()
+  !this.penetratingRaw.clear()
+  !this.penetratedRaw.clear()
+  if( !!appCntrl.currentApp() eq 'EQUI' ) then
+    !this.penetrationType = 'EQUI'
+  endif
+
+  !finder = object COLLECTION()
+  !finder.addtype(|STRU|)
+  !finder.filter(object EXPRESSION(|PURP eq 'HOLE' and dbwrite|))
+  !insertPoint = !finder.results()
+  if (!insertPoint.size().lt(1) ) then
+    return error 1 |Unable to locate STRU to work in (PURP=HOLE)|
+  endif
+
+  !ce  = !!ce
+  !!ce = !insertPoint[1]
+
+  -- Move to first STRU or create if not found
+
+  !this.fixingLocation = !!ce
+
+  !!ce = !ce
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .close()
+--
+-- Description: Close form actions
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .close()
+
+  !this.tidy()
+  !this.hide()
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .tidy()
+--
+-- Description: Tidy up state of this form
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .tidy()
+
+  !enhanceList = !this.enhancePenetrated
+  !enhanceList.appendArray(!this.enhancePenetrating)
+  UNENHANCE ALL FROM !enhanceList
+  handle any
+  endhandle
+  !!edgCntrl.remove('Pick Penetrating')
+  !!edgCntrl.remove('Pick Penetrated')
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .edgPickPenetrated()
+--
+-- Description: Set EDG to pick penetrated items
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .edgPickPenetrated()
+
+  !!edgCntrl.remove('Pick Penetrating')
+  -- Define packet for penetrated items
+  !packet                = object EDGPACKET()
+  !packet.elementPick('Pick item in which a hole will be created')
+  !packet.description    = !this.penetratedPacketDesc
+  !packet.priority       = 3
+  !packet.close          = '!!equiPenCreate.setPenetrated(FALSE)'
+  !packet.action         = '!!equiPenCreate.pickPenetrated(!this.return[1])'
+  !packet.pickPacket.picks[1].pick.input[3]   = 'HARDTYPE inset(|PANE|,|HPLATE|,|CPLATE|,|CTWALL|,|BPANEL|) OR HARDTYPE OF OWNER inset(|CTWALL|,|BPANEL|) OR HARDTYPE OF OWNER OF OWNER inset(|CTWALL|,|BPANEL|)'
+  !packet.pickPacket.picks[1].pick.modifiable = false
+
+  -- Add to system
+  !!edgCntrl.add(!packet)
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .edgPickPenetrating()
+--
+-- Description: Set EDG to pick penetrating items
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .edgPickPenetrating()
+
+  -- Define packet for penetrating items
+  !packet                = object EDGPACKET()
+  !packet.elementPick('Pick penetrating item')
+  !packet.description    = !this.penetratingPacketDesc
+  !packet.priority       = 3
+  !packet.close          = '!!equiPenCreate.setPenetrating(FALSE)'
+  !packet.action         = '!!equiPenCreate.pickPenetrating(!this.return[1])'
+  !packet.pickPacket.picks[1].pick.input[3]   = 'TYPE OF OWNER EQ |$!<this.penetrationType>| or TYPE OF OWNER OF OWNER EQ |$!<this.penetrationType>|'
+  !packet.pickPacket.picks[1].pick.modifiable = false
+
+  -- Add to system
+  !!edgCntrl.add(!packet)
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .pickPenetrating()
+--
+-- Description: EDG callback for penetrating items pick
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .pickPenetrating(!data is EDGPICKDATA)
+
+  if( !data.item.dbWrite.not() ) then
+    !!alert.warning('This equipment cannot be selected because it is in a read-only database')
+    return
+  endif
+
+  -- second pick on an item removes it from the list
+  !index = !this.penetratingRaw.findFirst(!data.item)
+  if( !index.set() ) then
+    !this.penetratingRaw.remove(!index)
+  else
+    !equipment = !!dtbFindOwnerOfType(!data.item, 'EQUI', false)
+    if( !equipment.set() ) then
+        -- Ensure the equipment contains an extrusion referenced by a PORT with PURP = HOLE
+      !finder = object COLLECTION()
+      !finder.addtype(|PORI|)
+      !finder.scope(!equipment)
+      !finder.filter(object EXPRESSION(|PURP of OWNER eq 'HOLE' and not badref(tarf)|))
+      !holeExtrusion = !finder.results()
+      if (!holeExtrusion.size() eq 0 ) then
+        !errorString = 'No HOLE extrusions located in selected equipment ' & !equipment.fullname
+        !!alert.error (!errorString)
+      else
+        !this.penetratingRaw.append(!data.item)
+      endif
+    endif
+  endif
+  !this.updatePenetrating()
+
+  !!edgCntrl.remove('Pick Penetrating')
+
+  !this.edgPickPenetrating()
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .pickPenetrated()
+--
+-- Description: EDG callback for penetrated items pick
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .pickPenetrated(!data is EDGPICKDATA)
+
+  !item = !data.item
+  if( !item.hardType eq 'HPLATE' ) then
+    -- add the HPANEL
+    !item = !item.owner
+  elseif( !item.hardType eq 'CPLATE' ) then
+    -- add the CPANEL
+    !item = !item.hrdprx[1]
+    handle any
+      !!alert.error('Selected curved plate does not have a curved hull panel. Only curved hull panels can be penetrated')
+      return
+    endhandle
+  else
+    -- Use selection object to find significant element
+    !selectionObject = object SELECTION()
+    !selectionObject.add(!item)
+    !item = !selectionObject.getSelection()[1]
+    handle any
+      !item = !data.item
+    endhandle
+  endif
+  -- second pick on an item removes it from the list
+  !index = !this.penetratedRaw.findFirst(!item)
+  if( !index.set() ) then
+    !this.penetratedRaw.remove(!index)
+  else
+    !this.penetratedRaw.append(!item)
+  endif
+  !this.updatePenetrated()
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .updatePenetrated()
+--
+-- Description: Update penetrated items list and highlight penetrated items
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .updatePenetrated()
+
+  !dText                  = ARRAY()
+  !rText                  = ARRAY()
+  !this.penetrated        = ARRAY()
+  !oldList                = !this.enhancePenetrated
+  !this.enhancePenetrated = ARRAY()
+
+  -- unenhance old list
+  UNENHANCE ALL FROM !oldList
+
+  do !item values !this.penetratedRaw
+    !this.penetrated.append(!item)
+    !dText.append(!item.fullname)
+    !rText.append(!item.string())
+    -- to avoid bug where HPANEL cannot be highlighted
+    if( !item.hardType eq 'HPANEL' ) then
+      var !temp COLL ALL HPLATE FOR $!item
+      !this.enhancePenetrated.appendArray(!temp)
+    elseif( !item.hardType eq 'CPANEL' ) then
+      var !temp COLL ALL CPLATE FOR $!item
+      !this.enhancePenetrated.appendArray(!temp)
+    elseif( !item.hardType eq 'CTWALL' or !item.hardType eq 'BPANEL') then
+      var !temp COLL $!<item> members
+      !this.enhancePenetrated.appendArray(!temp)
+      !this.enhancePenetrated.append(!item.string())
+    else
+      !this.enhancePenetrated.append(!item.string())
+    endif
+  enddo
+
+  !this.listPenetrated.dText = !dText
+  !this.listPenetrated.rText = !rText
+
+  !this.ok.active = !this.penetrated.empty().not() and !this.penetrating.empty().not()
+
+  -- enhance new list
+  !enhance = !this.enhancePenetrated
+  ENHANCE ALL FROM !enhance COL 2
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .updatePenetrating()
+--
+-- Description: Update penetrating items list and highlight penetrating items
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .updatePenetrating()
+
+  !dText            = ARRAY()
+  !rText            = ARRAY()
+  !this.penetrating = ARRAY()
+
+  -- unenhance old list
+  !oldList = !this.enhancePenetrating
+  UNENHANCE ALL FROM !oldList
+
+  do !item values !this.penetratingRaw
+    !displayedItem = !item.owner
+    !this.penetrating.append(!displayedItem)
+    !dText.append(!displayedItem.fullname)
+    !rText.append(!displayedItem.string())
+  enddo
+
+  !this.listPenetrating.dText = !dText
+  !this.listPenetrating.rText = !rText
+  !this.enhancePenetrating    = !rText
+
+  !this.ok.active = !this.penetrated.empty().not() and !this.penetrating.empty().not()
+
+  -- enhance new list
+  ENHANCE ALL FROM !rText COL 30
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .setPenetrating()
+--
+-- Description: Set to True if currently in a penetrating EDG pick cycle
+--              False otherwise
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .setPenetrating(!state is BOOLEAN)
+
+  !this.isPenetratingPick = !state
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .setPenetrated()
+--
+-- Description: Set to True if currently in a penetrated EDG pick cycle
+--              False otherwise
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .setPenetrated(!state is BOOLEAN)
+
+  !this.isPenetratedPick = !state
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .apply()
+--
+-- Description: Invoke the hole manager with selected items
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .apply()
+
+  -- find new penetrations
+  !this.findPenetrations()
+
+  if(!this.equiPenetrations.empty()) then
+    !!alert.warning('No penetrations found')
+    return
+  endif
+  !this.tidy()
+  !this.hide()
+
+  -- make new penetration
+  !multiPenetrationData = ARRAY()
+
+  -- loop through the list of penetrations and process each one to create virtual hole
+  do !penetrationData values !this.equiPenetrations
+    -- NOTE THAT ALL PENETRATIONDATA OBJECTS MUST SUPPORT THE INTERFACE USED HERE
+    !success = !penetrationData.processData()
+    if( !success.not() ) then
+       -- there has been an error processing the equipment penetration hole
+      !this.tidy()
+      return error 1 |Penetration not created because of an error found while creating the penetration.|
+    endif
+    !multiPenetrationData.append(!penetrationData.getHoleData())
+  enddo
+  !this.penetrationData = !multiPenetrationData
+
+  -- populate the hm form for multi-penetrations
+--  if( not defined(!!hmDefinition) ) then
+--    loadform !!hmDefinition
+--  endif
+--  !!hmDefinition.setPenetrationData(!this.equiPenetrations)
+--  !!hmDefinition.processPenetrationData()
+--  !this.penetrationData = !!hmDefinition.multiPenetrationData
+  -- Create the Fixing Hierarchy for each valid equipment penetration
+  !count = 1
+  do !equiPen values !this.penetrationData
+    !result = !this.createFixing(!equiPen , !count )
+      if (!result) then
+    	
+      -- Create the associations
+      !interface = object HMCONTROL()
+      !result = !interface.createEquiPenHole(!this.penetrationData[!count],'EQUI')
+      if( !result.not() ) then
+        -- error text is set by HMCONTROL
+        !error = !!error.text
+        -- there has been an error processing the equipment penetration hole
+        !this.tidy()
+        return error 1 |$!error|
+      endif
+    else
+      -- delete the HOLE DPSE
+
+      !!ce = !equiPen[4].owner
+      delete DPSE
+    endif
+    !count = !count + 1
+  enddo
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .findPenetrations()
+--
+-- Description: Find penetrations positions
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .findPenetrations()
+
+  -- Save Clash Data and location
+  !!runSynonym(|CALLSTL DCLADAT SET|)
+  !ce = !!ce
+  -- Perform Clash Check between penetrated and penetrating items
+  !this.equiPenetrations = ARRAY()
+
+  -- loop through each penetrated item in turn to find the penetration
+  do !penetratedItem values !this.penetrated
+
+    -- Set Obstructions
+    DESCLASH
+      REMOVE OBST ALL
+      if( !penetratedItem.hardType eq 'HPANEL' ) then
+        do !panelMember values !penetratedItem.members
+          if( !panelMember.hardType eq 'HPLATE' ) then
+            OBST $!<panelMember>
+          endif
+        enddo
+      elseif( !penetratedItem.hardType eq 'CPANEL' ) then
+        do !panelMember values !penetratedItem.smembers
+          if( !panelMember.hardType eq 'CPLATE' ) then
+            OBST $!<panelMember>
+          endif
+        enddo
+      else
+        OBST $!<penetratedItem>
+      endif
+      MIDPOINT ON
+    EXIT
+
+    -- find clash position for each penetrating object
+    do !index indices !this.penetrating
+
+      !penetratingItem = !this.penetrating[!index]
+      DESCLASH CHECK $!<penetratingItem> EXIT
+
+      var !ccnt           clash count all
+      var !ccnt           ($!ccnt A A A )
+      !clashCount = !ccnt.real()
+      skip if(!clashCount eq 0)
+
+      -- find the nearest clash to the original selected component
+      !clashPosition    = ARRAY()
+      !distanceFromPick = ARRAY()
+      do !cIndex from 1 to !clashCount
+        var !cPos  CLASH $!cIndex POS
+        !clashPosition[!cIndex]    = !cPos.position()
+        !distanceFromPick[!cIndex] = !clashPosition[!cIndex].distance(!this.penetratingRaw[!index].position)
+      enddo
+
+      -- use sort to find index of closest clash to the original picked component
+      !indexNearToPick = !distanceFromPick.sortedIndices()
+      !number = !indexNearToPick[1]
+
+      -- find clash data for the selected clash
+      var !cObj  CLASH $!number FIRST
+      var !cTar  CLASH $!number SECOND
+
+      !equipment   = !!dtbFindOwnerOfType(!cObj.dbref(), 'EQUI', false)
+      !holeProfile = !this.getPenetrationProfile(!equipment)
+      skip if( !holeProfile.unset() )
+
+      !clashTarget = !cTar.dbref()
+      if (!clashTarget.type inset ('PANE','SCTN','GENSEC')) then
+        !panel = !clashTarget
+      elseif( !clashTarget.type eq 'CPLATE' ) then
+        -- get the CPANEL owning this CPLATE
+        !panel = !clashTarget.hrdprx[1]
+      else
+        !panel = !clashTarget.owner
+      endif
+--*      if (!cTar.dbref().type eq 'PANE') then
+--*        !panel  = !cTar.dbref()
+--*      else
+--*        !panel = !cTar.dbref().owner
+--*      endif
+
+      -- for CPANEL we now have to look for a penetration on the mould surface
+      if( !panel.type eq 'CPANEL' ) then
+        -- clash position will not be on the mould surface so this has to be adjusted
+        -- by projecting a vector at the mould surface to find the hole position
+        -- this should match the position of the CHOLE when the hole is approved
+        !tempPV          = !holeProfile.plane().pointVector()
+        !tempPV.position = !clashPosition[!number]
+        !holePosition    = !this.findCurvedPanelPosition(!clashTarget, !tempPV)
+      else
+        !holePosition    = !clashPosition[!number]
+      endif
+
+      if (!!hmCheckExistingHole(!equipment, !panel, !holePosition)) then
+        !errorString = 'A hole already exists at the current location for ' & !equipment.fullname
+        !!alert.error(!errorString)
+        !existing = TRUE
+      else
+        !existing = FALSE
+      endif
+
+      if (!existing.not()) then
+        !equiPenetration = object EQUIPENETRATIONDATA(!cObj.dbref(), !cTar.dbref(), !holePosition)
+        !equiPenetration.setPenetrated(!penetratedItem)
+        !this.equiPenetrations.append( !equiPenetration )
+      endif
+
+    enddo
+    DESCLASH MIDPOINT OFF EXIT
+  enddo
+
+  -- Restore Clash Data and location
+  !!runSynonym(|CALLSTL DCLADAT LOAD|)
+  !!ce = !ce
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .createFixing()
+--
+-- Description: Create the fixing
+--
+-- Method Type: Function/Procedure
+--
+-- Return BOOLEAN if fixing created OK
+--
+------------------------------------------------------------------------
+define method .createFixing(!penetrationData is ARRAY, !count is REAL) is BOOLEAN
+
+  -- Ensure the equipment contains an extrusion referenced by a PORT with PURP = HOLE
+  !holeElement = !this.getPenetrationExtrusion(!penetrationData[2])
+  -- get profile - error validation done by .getPenetrationExtrusion(!equipment)
+  !profileElement = LOOP 1 OF $!<holeElement>
+  !profile        = object PROFILE(!profileElement)
+
+  !penetrated  = !penetrationData[1]
+
+    -- Find out if we can get the orientation of the penetrated item
+    if( !penetrated.hardType inset( 'CPLATE', 'CTWALL', 'BPANEL' )) then
+      !vHoleOrientation = object ORIENTATION()
+    elseif( !penetrated.hardType eq 'HPLATE' and !penetrated.knuckl ) then
+      !vHoleOrientation = object ORIENTATION()
+    else
+      !vHoleOrientation = !penetrated.ori.wrt(world)
+      handle ANY
+        !errorString = 'Unable to find orientation for ' & !penetrated.fullname
+        !!alert.error (!errorString)
+        return FALSE
+      endhandle
+    endif
+
+    if (!vHoleOrientation.set()) then
+      -- Find the orientation of the extrusion
+      !vExtrOrientation = !holeElement.ori.wrt(world)
+      handle any
+        !errorString = 'Unable to find orientation for ' & !holeElement.fullname
+        !!alert.error (!errorString)
+        return FALSE
+      endhandle
+      --compare the extrusion orientation with the orientation of the penetrated item
+      !zExtrDir = !vExtrOrientation.zDir()
+      !zHoleDir = !vHoleOrientation.zDir()
+      !dot = !zExtrDir.dot(!zHoleDir)
+      handle any
+        !dot = 1
+      endhandle
+
+      if (abs(!dot) ne 1) then
+        !errorString = 'Unable to create a penetration as the orientation of extrusion ' & !holeElement.fullname & ' is not aligned with the penetrated item ' & !penetrated.fullname   	
+        !!alert.error (!errorString)
+        return FALSE
+      endif
+
+    endif
+
+    -- Find the thickness
+    if (!penetrated.hardType eq 'PANE') then
+      !thickness = (!penetrated.lohe * 2 )
+      !distance  = !penetrated.lohe
+      !pType = 'PANEL'
+    elseif (!penetrated.hardType eq 'CTWALL' or !penetrated.hardType eq 'BPANEL') then
+      !thickness = (!penetrated.wThickness * 2)
+      !distance  = !penetrated.wThickness
+      !pType = 'WALL'
+    else
+      !thickness = (!penetrated.thickness * 2 )
+      !distance  = !penetrated.thickness
+      !pType = 'GEN'
+    endif
+    if( !vHoleOrientation.unset() ) then
+      -- must be a curved element - use ORI of hole extrusion
+      !vHoleOrientation = !holeElement.orientation
+    endif
+    !!ce = !this.fixingLocation
+    NEW FRMW
+    NEW FIXING
+    !penetrationFixing = !!ce
+    !this.penetrationData[!count].append(!!ce)
+    CALL !!autonamece(false)
+    handle ANY
+    endhandle
+    !!ce.pos = !penetrationData[3]
+    NEW TMPL
+    NEW EXTR
+    NEW LOOP
+    !profile.dbWrite(!!ce)
+    !loopVertex = !!ce.members[1]
+    EXTR
+    !!ce.height = !thickness
+    -- centre of new extrusion
+    !centre = !loopVertex.pPosition[2].wrt(worl)
+    !top =  !loopVertex.pPosition[3]
+    !bottom = !loopVertex.pPosition[1]
+      -- direction to shift (default)
+    if (!top ne !bottom) then
+      !extLine = object LINE(!loopVertex.pPosition[3], !loopVertex.pPosition[1])
+      !extDir = !extLine.direction()
+    else
+      !extDir = !!ce.ori.zDir().opposite()
+    endif
+    --plane at midpoint of new extrusion
+    !vPlane = object PLANE(!centre, !!ce.orientation)
+    if (!pType eq 'PANEL') then
+    	-- reset the plane to be parallel with the penetrated object
+    	!vPlane.orientation = !penetrated.ori.wrt(worl)
+      !loop = PLOOP 1 of $!penetrated
+      !pVertex = !loop.members[1]
+      --centre of panel
+      !pCentre = !pVertex.pPosition[2].wrt(worl)
+
+      --create a plane based on the panel
+    	!pPlane = object PLANE(!pCentre, !penetrated.ori.wrt(worl))
+    	--find direction required to shift v.hole onto penetrated item
+    	!cPos = !pPlane.near(!centre)
+    	!dirLine = object LINE(!centre, !cPos)
+    	--override default value defined earlier
+    	!extDir = !dirLine.direction()
+    	
+    	
+      --get how far new extrusion needs to shift to lie properly in panel
+      !projected = !vPlane.near(!pCentre)
+      !distance = !projected.distance(!pCentre)
+      MOVE $!<extDir> dist $!<distance>
+    elseif (!pType eq 'WALL') then
+    	!wall = !penetrated
+    	
+    	
+      -- find position of wall opening on RPATH
+      !rPath   = object COMPATH(!wall)
+
+      --bounce the points back and forth a bit until able to get
+      --the distance of extrusion to the wall RPATH
+      !pointOnPath = !rPath.near(!centre)
+      !pathNormal = !rPath.normalNear(!centre)
+      !pathNormal.direction = !pathNormal.direction.opposite()
+      !pathPlane = !pathNormal.plane()
+      !vPlane.orientation = !pathPlane.orientation
+
+
+      !pointOnExtPlane = !vPlane.near(!pointOnPath)
+      !tempLine = object LINE(!pointOnPath, !pointOnExtPlane)
+      !distance = !tempLine.length()
+      MOVE $!<extDir> DIST $!<distance>
+      --now need to account for width of wall and justification...
+      --first find the wall edge the penetrating position lies on
+
+      !edgeRef = !rPath.edgeRefposition(!pointOnPath)
+      !pointR = !edgeRef[1]
+      --ppoints 22 & 23 represent the exit positions of the bottom left & right of the corner
+      -- of the CTWALL,BPANEL
+      !li = object LINE(!pointR.ppos[22], !pointR.ppos[23])
+      !lineDir = !li.direction().wrt(worl)
+      if (!wall.wjusl eq 'RIGH') then
+    	  !lineDir = !lineDir.opposite()
+      endif
+      !half = !li.length() / 2
+      if (!wall.wjusl ne 'CENT') then
+      	--only need to adjust if wall if not centre justified
+      	MOVE $!<lineDir> DIST $!<half>
+      endif
+
+     else
+     	--for all other cases just project the extrusion directly onto the penetrated item
+      !projected = !vPlane.near(!penetrationData[3])
+      !distance = !projected.distance(!penetrationData[3])
+      !direction = !projected.direction(!penetrationData[3])	
+      MOVE $!<direction> dist $!<distance>
+--    MOVE $!<extDir> dist $!<distance>
+    endif
+
+    if( !pType neq 'WALL') then
+    -- orientate to the hole orientation
+    !penetratedZDirection = !vHoleOrientation.zDir().wrt(world)
+    !virtualZDirection    = !!ce.orientation.zDir().wrt(world)
+    !cosAngle             = !virtualZDirection.dot(!penetratedZDirection)
+    if( abs( 1 - abs(!cosAngle) ) gt 0.00001 ) then
+      -- z directions are not parallel
+      !angle        = acos(!cosAngle)
+      if( !angle le 90 ) then
+        -- case where penetrated item direction is same as virtual hole
+        !rotationAxis = !virtualZDirection.orthogonal(!penetratedZDirection)
+      else
+        -- case where penetrated item direction is opposite to virtual hole
+        !rotationAxis = !virtualZDirection.opposite().orthogonal(!penetratedZDirection)
+        !angle = 180 - !angle
+      endif
+      ROTATE BY $!<angle> THROUGH POS ABOUT $!<rotationAxis>
+    endif
+    endif
+
+    -- Position the DPCA at the FIXING
+    !penetrationData[4].pos = !penetrationData[3]
+    !!ce = !penetrationFixing
+    handle any
+    endhandle
+  return TRUE
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .getPenetrationProfile()
+--
+-- Description: Get penetration profile from equipment
+--
+-- Method Type: Function/Procedure
+--
+-- Return penetration profile if found or unset profile object if not found
+--
+------------------------------------------------------------------------
+define method .getPenetrationProfile(!equipment is DBREF) is PROFILE
+
+  !extrusion = !this.getPenetrationExtrusion(!equipment)
+  if( badref(!extrusion) ) then
+    !profile = object PROFILE()
+  else
+    -- get profile - error validation done by .getPenetrationExtrusion(!equipment)
+    !profileElement = LOOP 1 OF $!<extrusion>
+    !profile        = object PROFILE(!profileElement)
+  endif
+
+  return !profile
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .getPenetrationExtrusion()
+--
+-- Description: Get penetration extrusion from equipment
+--
+-- Method Type: Function/Procedure
+--
+-- Return penetration extrusion if found or unset DBREF if not found
+--
+------------------------------------------------------------------------
+define method .getPenetrationExtrusion(!equipment is DBREF) is DBREF
+
+  -- Ensure the equipment contains an extrusion referenced by a PORT with PURP = HOLE
+  !finder = object COLLECTION()
+  !finder.addtype(|PORI|)
+  !finder.addScope(!equipment)
+  !finder.filter(object EXPRESSION(|PURP of OWNER eq 'HOLE' and not badref(tarf)|))
+  !holeExtrusion = !finder.results()
+
+  !holeElement = object DBREF()
+
+  if (!holeExtrusion.size() eq 0 ) then
+    !errorString = 'No HOLE extrusions located in equipment ' & !equipment.fullname
+    !!alert.error (!errorString)
+  else
+    !holeElement = !holeExtrusion[1].tarf
+    if( !holeElement.hardType inset('EXTR', 'NXTR') ) then
+      !profileElement = LOOP 1 OF $!<holeElement>
+      handle any
+        !errorString = 'No HOLE extrusions located in equipment ' & !equipment.fullname
+        !!alert.error (!errorString)
+        return object DBREF()
+      endhandle
+    else
+      !errorString = 'No HOLE extrusions located in equipment ' & !equipment.fullname
+      !!alert.error (!errorString)
+      return object DBREF()
+    endif
+    -- Get the profile of the HOLE extrusion
+    !unusedProfile = object PROFILE(!profileElement)
+    handle ANY
+      !errorString = 'Unable to find the profile for the HOLE extrusion in ' & !equipment.fullname
+      !!alert.error (!errorString)
+      return object DBREF()
+    endhandle
+  endif
+
+  return !holeElement
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .findCurvedPanelPosition()
+--
+-- Description: Find penetration position on a curved panel given CPLATE
+--              clash target and hit vector(clash position, hole plane normal)
+--              Position adjusted to be in the middle of CPLATE material
+--
+-- Method Type: Function/Procedure
+--
+-- Return Position of penetration
+--
+------------------------------------------------------------------------
+define method .findCurvedPanelPosition(!clashTarget is DBREF, !hitVector is POINTVECTOR) is POSITION
+
+  !temp          = ARRAY()
+  !clashPosition = !hitVector.position
+  !temp[1]       = !clashPosition
+  ---------------------------------------------------------------------
+  -- conversion to string and back to direction should not be necessary
+  -- but SURNOR sometimes gives the wrong answer unless this is done
+  -- DO NOT CHANGE
+  !temp[2]  = !hitVector.direction.wrt(world).string().direction()
+  ---------------------------------------------------------------------
+  !panel = !clashTarget.hrdprx[1]
+  -- fall back to clash position if surface hit not found
+  !useClashPosition = false
+  !panelHit   = !panel.attribute('SURPNT', !temp).wrt(world)
+  handle (2,754)
+    !temp[2]  = !temp[2].opposite()
+    !panelHit = !panel.attribute('SURPNT', !temp).wrt(world)
+    handle any
+      !useClashPosition = true
+    endhandle
+  elsehandle any
+    !useClashPosition   = true
+  endhandle
+
+  if( !useClashPosition ) then
+    !holePosition = !clashPosition
+  else
+    -- move back half plate thickness from mould plane
+    !temp[1]         = !panelHit
+    !panelNormal     = !panel.attribute('SURNOR',!temp).wrt(world)
+    handle any
+      !holePosition  = !panelHit
+    elsehandle none
+      !offsetNormal  = object POINTVECTOR(!panelHit, !panelNormal)
+      !middle        = ( !clashTarget.dist[1] + !clashTarget.dist[2] ) / 2
+      handle any
+        !middle      = !clashTarget.thickn * -0.5
+      endhandle
+      !offsetNormal  = !offsetNormal.offset(!middle)
+      !holePosition  = !offsetNormal.plane().intersection(!hitVector )
+    endhandle
+  endif
+
+  return !holePosition
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      readConfigurationFile
+--
+-- Description: Read system configuration file (if it exists) and store settings
+--              (%PDMSDFLTS%\des-holemgt-config)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .readConfigurationFile()
+
+  if(not defined(!!holeManagementConfiguration)) then
+    !tempConfig = object HMCONFIG()
+    if(!tempConfig.loadConfigurationFile().not()) then
+      return error 1 'Error in configuration file. Please Contact your systems administrator'
+    endif
+  endif
+
+endmethod
+-- End of method definition for .readConfigurationFile()

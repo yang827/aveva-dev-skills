@@ -1,0 +1,158 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            appxload.pmlfnc
+--   Type:          Function Definition
+--   Group:         Application Switching
+--     Keyword:     APP
+--   Module:        common
+--   Replaces:
+--
+-- Author:          Jamie Brunning
+-- Created:         Thu Jan 29 15:30:19 2004
+--
+--
+-- Description:     controls switching between applications
+--
+------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      name of current module
+--    2   R      STRING      name of application to switch to
+--    3   R      BOOLEAN     clear loaded flags of all applications?
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define function !!appxload(!modName is STRING, !appName is STRING, !clear is BOOLEAN)
+  -- if application list is undefined, read application definition files
+  if (undefined(!!appCntrl)) then
+    !!appreadappdefns(!modName)
+  -- clear loaded flags of all applications if flag set
+  elseif (!clear) then
+    !!appCntrl.clearLoadedFlags()
+  endif
+
+  -- get toolbar settings for the current application (this does nothing if we're loading for the first time, because there will be no toolbars registered)
+  !!appTbarCntrl.getToolbarState(!!appCntrl.currentApp)
+  -- get form settings (this does nothing if we're loading for the first time as no forms have been registered)
+  !!appFormCntrl.getFormState(!!appCntrl.currentApp)
+
+  -- get application object for new application
+  !app = !!appCntrl.getApplic(!appName)
+
+  -- die if the application doesn't exist
+  if (!app.name.unset()) then
+    return error 1 'Application $!appName could not be loaded: application definition does not exist.'
+  endif
+
+  -- set the name of the currently loading app in APPLIST object
+  !!appCntrl.loadingApp(!app.name)
+
+  -- !formName = !app.formName
+
+  -- check if this is the first time the application has been loaded
+  if (!app.loaded.not()) then
+
+    -- find title of application
+    !appTitle = !app.title
+
+    if (!clear.not()) then
+      prompt 'Loading $!appTitle Application ...'
+    endif
+
+    -- load the ICONS file (if it exists)
+    $m "%PDMSUI%/$!<modName>/$!<appName>/ICONS"
+    handle ANY
+    endhandle
+
+    -- load !!appmainform if it has not been loaded already
+    if (!!fmsys.main().name().upcase() ne !!appCntrl.mainFormName.upcase()) then
+      pml load form !!$!!appCntrl.mainFormName
+      if (!!appCntrl.mainForm.unset()) then
+        !!appCntrl.setMainForm()
+      endif
+      !!appCntrl.executeModuleStartupCalls()
+    endif
+
+    -- load menus for this application
+    -- !app.modifyMenus()
+
+    do !call values !app.startupCalls
+      $!call
+      handle any
+        !errorLine = !!error.line
+        !errorText = !!error.text
+        var pane _CDCERRMESS_LIST add  'Failed loading $!<appTitle> application ($!<errorText>). $!<errorLine>' exit
+        return error 1 'Failed loading $!<appTitle> application ($!<errorText>). $!<errorLine>'
+      endhandle
+    enddo
+
+    !!appCntrl.setLoadedFlag(!appName, true)
+
+    if (!clear.not()) then
+      prompt dismiss
+    endif
+  endif
+
+  -- set the standard navigate action,
+  -- this may be overridden by the application callback
+  !!edgCntrl.navigateAction('!this.moveToDBref()')
+  handle ANY
+    -- edgCntrl may not exist, that is ok as the navigateAction will be set when
+    -- the object is constructed.
+  endhandle
+
+  -- set toolbar visibilities back to how they were last time the user was in this application (or the default if the user has not been in this application yet)
+  !!appTbarCntrl.setToolbarState(!appName)
+  -- show/hide registered docking forms
+  !!appFormCntrl.setFormState(!appName)
+
+  -- deactivate menus for current app
+  !!appMenuCntrl.activateMenus(!!appCntrl.currentApp, false)
+  -- activate menus for new app
+  !!appMenuCntrl.activateMenus(!appName, true)
+  -- maybe we can deal with it more efficiently if the same menu options are present in both the application I'm switching from and the application I'm switching to, but I'm not going to do it now!
+
+  -- set main form to !!appmainform
+  -- (this is done before running callbacks as they might refer to the main form)
+  if (!!fmsys.main().name().upcase() ne !!appCntrl.mainFormName.upcase()) then
+    !!fmsys.setMain(!!appCntrl.mainForm)
+  endif
+
+  -- run callbacks for application
+  !callbacks = !app.switchCalls
+  do !call values !callbacks
+    if (!call.lowcase().match('call') eq 1) then
+      !!runsynonym(!call)
+    else
+      $!call
+    endif
+  enddo
+
+  -- run .initialiseForm method
+  !app.initialiseForm()
+
+  -- finish off loading the application
+  !!appCntrl.appLoaded()
+
+  --Licencing Checks for Cable Design & Room Design
+  !licenceError = 0
+  if (!appName EQ 'CABLINGSYSTEM') then
+    !licenceCheck = object MDRLICENCEMANAGER()
+    !licenceError = !licenceCheck.getLicence('CABLES')
+    !errorMessage = !licenceCheck.lastError()
+  elseif (!appName EQ 'ROOMDESIGN') then
+    !licenceCheck = object MDRLICENCEMANAGER()
+    !licenceError = !licenceCheck.getLicence('ROOMDESIGN')
+    !errorMessage = !licenceCheck.lastError()
+  endif
+
+  if (!licenceError LT 0) then
+    !!alert.error(!errorMessage)
+  endif
+
+endfunction

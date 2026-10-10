@@ -1,0 +1,667 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            abaview.pmlobj
+--   Type:          Object Definition
+--   Group:         <group>
+--     Keyword:     <keyword>
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Martin Wright
+-- Created:         <day> <date> <time> <year>
+--
+--
+-- Description:
+-- This object contains the definition for a Graphical report view
+-- The constructor argument is a dbref to a IDLI containing area limits.
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  abaView(DBREF,DBREF)             -                   Sets basic attributes area startpos and endpos
+--  abaview(DBREF)                   -                   Sets basic attributes area startpos and endpos
+--  buildplanes()                    -                   calculates a limits box and builds appropriate section planes
+--  drawKeyplan()                    -
+--  drawView(BOOLEAN)                -                   sets view attributes, creates idlists, updates design
+--  positions(DBREF)                 -                   extracts area positions from IDLI data
+--  readScales(FILE,STRING)          -                   Sets this object scaleList with defaults file list
+--  setScale(REAL)                   -                   Sets the view scale and frame size
+--  setSize(BOOLEAN,BOOLEAN)         -                   Sets view size and thpo to match the limits
+--
+------------------------------------------------------------------------
+define object ABAVIEW
+
+-- Used
+  member .startPos  is POSITION
+  member .endPos    is POSITION
+  member .area      is DBREF
+  member .sideLines is ARRAY
+  member .scaleList is ARRAY
+  member .view      is DBREF
+
+-- Not Used
+  member .thpos     is POSITION
+  member .direction is STRING
+  member .region    is ARRAY
+  member .regionPos is POSITION
+  member .vscale    is REAL
+  member .tasklist  is ARRAY
+
+endobject
+
+------------------------------------------------------------------------
+--
+-- Method:      .abaView
+--
+-- Description: Sets basic attributes area startpos and endpos
+--
+-- Method Type: constructor method
+--
+------------------------------------------------------------------------
+define method .abaView(!area is DBREF, !view is DBREF)
+
+  !this.view = !view
+  !this.area = !area
+
+  !this.positions(!area)
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .abaview
+--
+-- Description: Sets basic attributes area startpos and endpos
+--
+-- Method Type: constructor method
+--
+------------------------------------------------------------------------
+define method .abaview(!area is DBREF)
+
+  !this.area = !area
+  !this.positions(!area)
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .drawView(!update)
+--
+-- Description: sets view attributes, creates idlists, updates design
+--              and executes the view tasks.
+--
+-- Method Type: public method
+--
+------------------------------------------------------------------------
+define method .drawView(!update is BOOLEAN)
+
+  !testForInterrupt = !!FMSYS.Interrupt()
+    handle any
+    elsehandle NONE
+      if (!!FMSYS.INTERRUPT()) then
+        return
+      endif
+    endhandle
+
+  -- this function is called from view level
+  !view = !!ce
+
+  if(!!ce.SpPURP eq 'ABAK') then
+    !this.drawkeyplan()
+    return
+  endif
+
+  GOTO IDLN
+    handle any
+      !!abaLogging.error('  Current View has no ILDLIST - View Update Aborted')
+    endhandle
+
+  !l = !this.area.limits
+
+  LIMITS FROM E $!l[1] N $!l[2] U $!l[3] to E $!l[4] N $!l[5] U $!l[6]
+
+  $!view
+
+  -- Store original set scale
+  !origScale = !view.vsca
+
+  !!abaPrompt('Auto limits of Drawing List',2)
+  AUTO LIMITS OF IDLN
+
+  -- Set view scale
+  !!abaPrompt('Setting View Scale',2)
+  !this.setScale(!origScale)
+
+  -- Create section planes
+  !!abaPrompt('create section planes',2)
+
+  !this.buildplanes()
+
+  !testForInterrupt = !!FMSYS.interrupt()
+    handle any
+    elsehandle NONE
+      if (!!FMSYS.INTERRUPT()) then
+        return
+      endif
+    endhandle
+
+  if (!update) then
+
+    !!abaPrompt('Update Design - for ' & !!ce.name,2)
+
+    !desc[1] = '  Updating Design on ' & !!ce.name
+
+    !!abaLogging.addToLog(!desc)
+
+    !updatestart = object datetime()
+
+    !!abalogging.prompt('Starting Update Design at $!updatestart')
+
+    -- Test for MDS update attribute
+    !testForUpdate = !!ce.:ABAUpdate
+      handle any
+        UPDATE DESIGN
+          handle(64,153)
+            !!abaLogging.error('  No Items found For Drawlist - please check area')
+          endhandle
+      elsehandle none
+
+        if (!testForUpdate) then
+          UPDATE DESIGN
+            handle(64,153)
+              !!abaLogging.error('  No Items found For Drawlist - please check area')
+            endhandle
+        else
+          !!abaLogging.error('  Design graphics of current view has not been updated as the update flag :ABAUpdate is off')
+        endif
+
+      endhandle
+
+    !updateEnd = object DATETIME()
+    !!abalogging.prompt('End of Update Design at $!updateEnd')
+
+    SAVEWORK
+
+    !testForInterrupt = !!FMSYS.Interrupt()
+      handle any
+      elsehandle NONE
+        if (!!FMSYS.INTERRUPT()) then
+          return
+        endif
+      endhandle
+
+    !!abaPrompt('update tagging on ' & !!ce.name,2)
+
+    !desc[1] = '  Updating Tagging on ' & !!ce.name
+
+    !!abaLogging.addToLog(!desc)
+
+    UPDATE TAGGING
+      handle any
+      endhandle
+
+    SAVEWORK
+
+    -- Ensure all elements are tagged
+    !desc[1] = '  Ensuring that all elements are tagged for ' & !!ce.name
+
+    !!abaLogging.addToLog(!desc)
+
+    !!abaMissLabel(!view)
+
+    SAVEWORK
+
+    -- Run all view tasks
+    !desc[1] = ' '
+    !desc[2] = '  Applying tasks for ' & !!ce.name
+
+    !!abaLogging.addToLog(!desc)
+
+    !tasklist = object ABATASKLIST()
+
+    !tasklist.applyTasks(!view)
+
+    -- Free memory
+    !tasklist.delete()
+
+    SAVEWORK
+
+  endif
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .drawkeyplan()
+--
+-- Description: draws the keyplan view
+--
+-- Method Type: public method
+--
+------------------------------------------------------------------------
+define method .drawKeyplan()
+
+  !testForInterrupt = !!FMSYS.Interrupt()
+    handle any
+    elsehandle NONE
+      if (!!FMSYS.INTERRUPT()) then
+        return
+      endif
+    endhandle
+
+  !view = !!ce
+
+  GOTO IDLN
+    handle any
+      !!abaLogging.error('  Current View has no ILDLIST - View Update Aborted')
+      return
+    endhandle
+
+  !l = !!ce.limits
+
+  SAME
+
+  !!abaPrompt('Set view limits, thpos etc',2)
+
+  if(!l.size() neq 1)then
+
+    AUTO FROM E $!l[1] N $!l[2] U $!l[3] to E $!l[4] N $!l[5] U $!l[6]
+      handle(64,277)
+      endhandle
+
+  else
+    AUTO IDLN
+
+  endif
+
+  -- Build drawing
+  !testForInterrupt = !!FMSYS.interrupt()
+    handle any
+    elsehandle NONE
+      if (!!FMSYS.INTERRUPT()) then
+        return
+      endif
+    endhandle
+
+  !testForUpdate = !!ce.:ABAUpdate
+    handle any
+      UPDATE DESIGN
+         handle(64,153)
+           !!abaLogging.error('  No Items found For Drawlist - please check area')
+         endhandle
+     elsehandle none
+       if !TestForUpdate then
+         update design
+           handle(64,153)
+             !!abaLogging.error('  No Items found For Drawlist - please check area')
+           endhandle
+       else
+         !!abaLogging.error('  Design graphics of current view has not been updated as the update flag :ABAUpdate is off')
+       endif
+     endhandle
+
+   !testForInterrupt = !!FMSYS.interrupt()
+      handle any
+      elsehandle NONE
+        if (!!FMSYS.INTERRUPT()) then
+          return
+        endif
+      endhandle
+
+  !!abaPrompt('Update tagging',2)
+
+  UPDATE TAGGING
+    handle any
+    endhandle
+
+  !!abaPrompt('Execute view tasks',2)
+
+  !tasklist = object ABATASKLIST()
+
+  !tasklist.applyTasks(!view)
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .positions()
+--
+-- Description: extracts area positions from IDLI data
+--
+-- Method Type: public method
+--
+------------------------------------------------------------------------
+define method .positions(!area is DBREF)
+
+  !pos = !area.limits
+  !this.startpos.east  = min(!pos[1],!pos[4])
+  !this.startpos.north = min(!pos[2],!pos[5])
+  !this.startpos.up    = min(!pos[3],!pos[6])
+  !this.endpos.east    = max(!pos[1],!pos[4])
+  !this.endpos.north   = max(!pos[2],!pos[5])
+  !this.endpos.up      = max(!pos[3],!pos[6])
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .buildplanes()
+--
+-- Description: calculates a limits box and builds appropriate section planes
+--
+-- Method Type: public method
+--
+------------------------------------------------------------------------
+define method .buildplanes()
+
+  !!abaPrompt('Find a plane liby',2)
+  !view = !!ce
+  -- standard plane names if created with cadc appware
+  $!!ce.name/PLANES
+  handle any
+    liby1 of drwg
+    new pllb $!view.name/PLANES
+  endhandle
+  !!abaPrompt('Creating Trimming Planes',2)
+  $!view.name/spla1
+  handle (2,109)
+    -- Doesnt Exist.
+    NEW SPLA $!view.name/spla1
+  elsehandle none
+    delete SPLA
+    $!view.name/spla2
+    handle any
+    elsehandle none
+      delete SPLA
+    endhandle
+    NEW SPLA $!view.name/spla1
+  endhandle
+
+  gtype closed dir u
+  if(!this.startpos.east gt !this.endpos.east)then
+     !minx = !this.endpos.east
+     !maxx = !this.startpos.east
+  else
+     !maxx = !this.endpos.east
+     !minx = !this.startpos.east
+  endif
+  if(!this.startpos.north gt !this.endpos.north)then
+     !miny = !this.endpos.north
+     !maxy = !this.startpos.north
+  else
+     !maxy = !this.endpos.north
+     !miny = !this.startpos.north
+  endif
+  if(!this.startpos.up gt !this.endpos.up)then
+     !minz = !this.endpos.up
+     !maxz = !this.startpos.up
+  else
+     !maxz = !this.endpos.up
+     !minz = !this.startpos.up
+  endif
+
+  new wpos pos e $!minx n $!miny u0
+  new wpos pos e $!minx n $!maxy u0
+  new wpos pos e $!maxx n $!maxy u0
+  new wpos pos e $!maxx n $!miny u0
+
+  new spla $!view.name/spla2
+  gtype closed dir e
+
+  new wpos pos e $!minx n $!miny u $!maxz
+  new wpos pos e $!minx n $!maxy u $!maxz
+  new wpos pos e $!minx n $!maxy u $!minz
+  new wpos pos e $!minx n $!miny u $!minz
+
+  $!view
+  $!view.name/vsec1
+
+  handle (2,109)
+    -- Doesnt exist
+    NEW VSEC $!view.name/vsec1
+  elsehandle None
+      delete vsec
+      $!view.name/vsec2
+      delete vsec
+      new vsec $!view.name/vsec1
+  endhandle
+
+  plrf $!view.name/spla1
+  new vsec $!view.name/vsec2
+  plrf $!view.name/spla2
+  -- pmode reversed
+  $!view
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      setSize()
+--
+-- Description: Sets view size and thpo to match the limits
+--
+------------------------------------------------------------------------
+define method .setSize(!setFrame is BOOLEAN, !setThpo is BOOLEAN)
+
+  -- Initialise variables
+  !viewRefe = !!ce
+  !minPos = !this.startpos
+  !maxPos = !this.endpos
+
+  -- Set size
+  if (!setFrame) then
+
+    -- Calculate view size depending on view direction
+    if (!viewRefe.dir.east.eq(1) or !viewRefe.dir.east.eq(-1)) then
+      !xLen = abs((!maxPos.north - !minPos.north) * !viewRefe.vsca)
+      !yLen = abs((!maxPos.up - !minPos.up) * !viewRefe.vsca)
+    elseif (!viewRefe.dir.north.eq(1) or !viewRefe.dir.north.eq(-1)) then
+      !xLen = abs((!maxPos.east - !minPos.east) * !viewRefe.vsca)
+      !yLen = abs((!maxPos.up - !minPos.up) * !viewRefe.vsca)
+    elseif (!viewRefe.dir.up.eq(1) or !viewRefe.dir.up.eq(-1)) then
+      !xLen = abs((!maxPos.east - !minPos.east) * !viewRefe.vsca)
+      !yLen = abs((!maxPos.north - !minPos.north) * !viewRefe.vsca)
+    else
+      !xLen = !viewRefe.size[1]
+      !yLen = !viewRefe.size[2]
+    endif
+    !xLen = !xLen.abs()
+    !yLen = !yLen.abs()
+
+    -- Set a minimum size for the view side, allowing for units
+    if (!!isImperialLength('DIST')) then
+      !sideLength = 0.4
+      !warningText = |0.4"|
+    else
+      !sideLength = 10
+      !warningText = |10mm|
+    endif
+
+    -- Test sides for too small to draw
+    if (!xLen.lt(!sideLength)) then
+      !xlen = !sideLength
+      !!abaLogging.warning('The area coordinates have an X axis that is too small to draw - Setting it to $!warningText')
+    endif
+    if (!yLen.lt(!sideLength)) then
+      !ylen = !sideLength
+      !!abaLogging.warning('The area coordinates have a Y axis that is too small to draw - Setting it to $!warningText')
+    endif
+    !oldsize = !!ce.size
+    if !this.view.adeg.eq(90) or !this.view.adeg.eq(-90)then
+      size $!ylen $!xlen
+      handle (64,358)
+        !!abalogging.error('Illegal paper size $!xlen $!ylen')
+        !!ce.size = !oldsize
+      endhandle
+    else
+      SIZE $!xLen $!yLen
+      handle (64,358)
+        !!abalogging.error('Illegal paper size $!xlen $!ylen')
+        !!ce.size = !oldsize
+      endhandle
+   endif
+  endif
+
+  -- Set through point
+  if (!setThpo) then
+
+    -- Calculate through point
+    !thpo = 'E' & (!minPos.east + ((!maxPos.east - !minPos.east) / 2)) & $
+            ' N' & (!minPos.north + ((!maxPos.north - !minPos.north) / 2)) & $
+            ' U' & (!minPos.up + ((!maxPos.up - !minPos.up) / 2))
+    THPO $!thpo
+
+  endif
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      readScales()
+--
+-- Description: Sets this object scaleList with defaults file list
+--
+------------------------------------------------------------------------
+define method .readScales(!file is FILE, !match is STRING)
+
+-- variable file is the file to read
+-- variable match is the word to look for
+
+-- Initialise variables
+   !scales = array()
+
+-- Read permitted scales from  defaults file
+   !defaultText = !file.readfile()
+   !start = !defaultText.findfirst('-- Section 2') + 1
+   !end   = !defaultText.findfirst('-- End Section 2')
+   !range = !end - !start
+   !lines = !defaultText.from(!start,!range)
+
+-- Extract relevant bits for form gadget
+   do !text val !lines
+     if (!text.match(!match).neq(0)) then
+       !split = !text.split('\')
+       !scales.append(!split[5].split(',')[1])
+     endif
+   enddo
+   !this.scaleList = !scales
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      setScale()
+--
+-- Description: Sets the view scale and frame size
+--
+------------------------------------------------------------------------
+define method .setScale(!origScale is REAL)
+
+  -- Initialise variables
+  !viewRefe = !!ce
+  !scaleBits = !viewRefe.func.split()
+  !scaleChoice = !scaleBits[1].upCase()
+  handle any
+   !!abalogging.error('Unable To Set Scale - Invalid Function')
+   return error 1
+  endhandle
+  !scaleType = !scaleBits[2].upCase()
+  !message = false
+
+  -- Read relevant scales from the defaults file
+  if (!!BatchMode eq TRUE) then
+      !file = object file(!!BatchParam[1])
+  else
+      !file = object file(!!abaDefaults.DefaultsFile.val)
+  endif
+  !this.readScales(!file,!scaleType)
+  !scales = !this.scaleList
+
+  -- Test view for orthogonal
+  !orth = abs(!viewRefe.dir.east + !viewRefe.dir.north + !viewRefe.dir.up)
+  if !orth eq 1 then
+    !orthog = true
+  else
+    !orthog = false
+  endif
+
+  -- Retry setting scale
+  label /tryAgain
+
+  -- Set scale depending on scale choice set on the template
+  if (!scaleChoice.eq('MAXIMUM')) then
+
+    -- Leave scale and thpo at auto value
+    !setFrame = true
+    !setThpo = false
+
+  elseif (!scaleChoice.eq('NEAREST')) then
+
+    -- Set scale to nearest in scale list to the auto value
+    !useScale = real()
+
+    -- Cycle through scales to find one that is lt the current value
+    do !index ind !scales
+      break if (!index.eq(!scales.size()))
+      if (!viewRefe.vsca.leq(!scales[!index].real()) and !viewRefe.vsca.geq(!scales[!index + 1].real())) then
+        !useScale = !scales[!index + 1].real()
+        break
+      endif
+    enddo
+
+    -- Allow for gt the first and lt the last
+    if (!useScale.unset()) then
+      if (!viewRefe.vsca.gt(!scales[1].real())) then
+        !useScale = !scales[1].real()
+      endif
+      if (!viewRefe.vsca.lt(!scales[!scales.size()].real())) then $* it needs to be autoed
+        !message = true
+        auto limits of idln
+        !useScale = !!ce.vscale
+        -- !useScale = !origScale
+        -- !useScale = !scales[!scales.size()].real()
+      endif
+    endif
+
+    -- Set both frame and thpo, and scale to calculated
+    !setFrame = true
+    !setThpo = true
+    VSCA $!useScale
+
+    -- Test for message requirement
+    if (!message) then
+      !wasScale = !origScale.string('D4')
+      !setScale = !useScale.string('D4')
+      !!abaLogging.error('  The chosen scale $!wasScale is too large - selecting $!useScale')
+    endif
+
+  else  $* The scale choice is specific
+
+    -- Check for a chosen scale larger than the view region allows
+    if (!origScale.lt(!viewRefe.vsca)) then
+      !message = true
+      !scaleChoice = 'NEAREST'
+      golabel /tryAgain
+    endif
+
+    -- Set both frame and thpo and leave scale as set
+    !setFrame = true
+    !setThpo = true
+    VSCA $!origScale
+
+  endif
+
+  -- Test for non-orthogonal view direction
+  if (not !orthog) then
+    !setFrame = false
+    !setThpo = false
+  endif
+
+  -- Set view size and through point to match limits box
+  !this.setSize(!setFrame, !setThpo)
+
+endmethod

@@ -1,0 +1,1797 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--   File:        stlprofmitre.pmlobj
+--   Type:        Object Definition
+--   Group:       Beams and Columns Application
+--   Keyword:     STEEL
+--   Module:      design
+--   Replaces:
+--
+--   Author:      G.Somasundaram
+--   Created:
+--
+--   Description:
+--  Application to mitre profile with another profile or panel element by graphical pick
+--  Also supports trim to panel function
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  checkCommonPlane()               BOOLEAN
+--  checkMinLength(DBREF,STRING,POSITION) BOOLEAN
+--  extendProfile()                  BOOLEAN             Modifying the DB elements:  extending  up to the intersection point
+--  findGensecEnd(LINE,POSITION,REAL) STRING
+--  findSctnEnd(LINE,POSITION)       STRING
+--  intersectionData(STRING,LINE,POSITION,POINTVECTOR) ARRAY               Find details of picked end of line
+--  intersectionDetail(LINE,POSITION,POINTVECTOR) ARRAY               Find which end of line to mitre
+--  lineExtend(DBREF,STRING)         ARRAY
+--  lineInterSectPt(LINE,LINE)       POSITION
+--  mitreAngle(PLANE,LINE,LINE,DIRECTION,DIRECTION) -
+--  panIntersect()                   ARRAY
+--  panelProfile(DBREF)              PROFILE             Return boundary PROFILE for given object
+--  panelSurfaces(DBREF)             ARRAY
+--  pickPacket ()                    -
+--  pickProfiles(BOOLEAN)            -                   edg method to pick the first element
+--  profMitreCallback()              -                   Call back from EDG second pick
+--  proportion(LINE,POSITION)        REAL
+--  registerGraphics(LINE)           -                   Draw line graphic aid
+--  registerGraphics(LINE,LINE,LINE,ARC) -
+--  sortAndChk(ARRAY)                BOOLEAN             Sort picked elements based on the type and check the criterion
+--  sortType(ARRAY)                  BOOLEAN             Sort elements based on type in the order SCTN / Gensec / Panel
+--  stlIntersect()                   ARRAY
+--  stlProfMitre()                   -                   Constructor
+--  stopContinuousMitre()            -                   Tidy up the graphical aids
+--  tidy()                           -
+--  trimCallback()                   -                   Call back from EDG trim pick
+--  trimToPanel(DBREF)               -                   call back for trim to function with target panel reference
+--  trimToPickPacket()               -                   configure pick for Section elements
+--  trimToProfile()                  BOOLEAN             Modifying the DB elements:  trim to the intersection point
+--  ydir(DBREF)                      DIRECTION
+--
+------------------------------------------------------------------------
+
+define object STLPROFMITRE
+
+  -- Array to store both the picked elements
+  member .profile is ARRAY
+
+  -- active Packet
+  member .packet is EDGPACKET
+  -- array of Edg packets
+  member .pickData is ARRAY
+
+  -- common Plane direction
+  member .cmnDir is DIRECTION
+
+  -- plane on the Mitre
+  member .mitrePlane is PLANE
+
+  -- aid number to display aids
+  member .aidNumber is REAL
+
+  -- continuous mitre mode is true
+  member .continuousMitre  is BOOLEAN
+
+  -- target panel
+  member .targetPanel   is DBREF
+
+  -- highlight manager
+  member .enhanceTarget is COMENHANCE
+
+endobject
+-- End of object definition for STLPROFMITRE
+------------------------------------------------------------------------
+--
+-- Method:      stlProfMitre
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .stlProfMitre()
+
+  -- Initialise aidNumber
+  !this.aidNumber = !!aidnumbers.add('stlProfileMitre')
+  -- start with continuous mitre disabled
+  !this.continuousMitre = false
+  if( not defined(!!stlProfMitre) ) then
+   !!stlProfMitre = !this
+  endif
+
+ endmethod
+
+-- =====================================================================
+-- The following group of methods support the Trim To function
+-- =====================================================================
+
+------------------------------------------------------------------------
+--
+-- Method:      trimToPanel
+--
+-- Description: call back for trim to function with target panel reference
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF of panel
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .trimToPanel(!panel is DBREF)
+
+  !this.tidy()
+  !this.targetPanel = !panel
+  !this.enhanceTarget.addItem(!this.targetPanel)
+  !this.continuousMitre = true
+  !this.trimToPickPacket()
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      trimToPickPacket
+--
+-- Description: configure pick for Section elements
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .trimToPickPacket()
+
+  !pickPacket                 =   object EDGPACKET()
+  !pickPacket.elementPick('Pick element to trim. <ESC> to exit:')
+  !pickPacket.action          =   '!!stlProfMitre.pickData[1] = !this.return[1]'
+  !pickPacket.escape          =   '!!stlProfMitre.stopContinuousMitre()'
+  !pickPacket.description     =   'Pick End to trim'
+  !pickPacket.priority        =   2
+  !pickPacket.remove          = true
+
+  !pickPacket.pickPacket.picks[1].pick.input[3]     =   'HARDTYPE INSET(|SCTN|,|GENSEC|)'
+  !pickPacket.pickPacket.picks[1].pick.modifiable   =   FALSE
+  !pickPacket.continue = '!!stlProfMitre.trimCallback()'
+
+  -- add the packet to EDG
+  !!edgCntrl.add(!pickPacket)
+
+endmethod
+-- End of method definition for pickPacket
+
+------------------------------------------------------------------------
+--
+-- Method:     trimCallback
+--
+-- Description: Call back from EDG trim pick
+--              Handles errors before EDG catches them
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .trimCallback()
+
+  !this.profile[1] = !this.pickData[1].item
+  !this.profile[2] = !this.targetPanel
+  !createdMitre    = !this.trimToProfile()
+  !this.tidy()
+
+  -- Tidy up before closing
+  if( !createdMitre ) then
+    if( !this.continuousMitre ) then
+      !this.enhanceTarget.addItem(!this.targetPanel)
+      !this.trimToPickPacket()
+    endif
+  else
+    !this.stopContinuousMitre()
+  endif
+
+endmethod
+
+-- ================ End of Trim to interaction =====================
+
+------------------------------------------------------------------------
+-- Method:      pickProfiles
+--
+-- Description: edg method to pick the first element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pickProfiles(!continuous is BOOLEAN)
+
+  -- initialise for next pick sequence
+  !this.continuousMitre = !continuous
+  !this.tidy()
+
+ -- possible profile type of elements that can be picked
+  !sctnTypes[1]  = 'SCTN'
+  !sctnTypes[2]  = 'GENSEC'
+
+ -- possible Panel type of elements that can be picked
+  !paneTypes[1]  = 'PANE'
+  !paneTypes[2]  = 'WALL'
+  !paneTypes[3]  = 'GWALL'
+  !paneTypes[4]  = 'STWALL'
+  !paneTypes[5]  = 'SCREED'
+  !paneTypes[6]  = 'FLOOR'
+  !paneTypes[7]  = 'HPLATE'
+  !paneTypes[8]  = 'HBRCKT'
+  !paneTypes[9]  = 'HDOPLA'
+  !paneTypes[10] = 'HRSOF'
+
+ -- List of elements that can be picked
+  !validTypeStr = |SCTN,GENSEC,PANE,WALL,GWALL,STWALL,SCREED,FLOOR,HPLATE,HBRCKT,HDOPLA,HRSOF|
+
+ -- rule that restricts the pick type and access
+  !rule = |(match('| & !validTypeStr & |',TYPE) gt 0)|
+
+  -- Define EDG packet for picking elements to be split
+  !firPacket                 =   object EDGPACKET()
+  !firPacket.elementPick('Pick first element to mitre. <ESC> to exit:')
+  !firPacket.action          =   '!!stlProfMitre.pickData.append(!this.return[1])'
+  !firPacket.escape          =   '!!stlProfMitre.stopContinuousMitre()'
+
+  !firPacket.description     =   'Mitre Ends First Pick'
+  !firPacket.priority        =   2
+  !firPacket.remove          =   TRUE
+
+ -- store information to use in the next pick
+  !firPacket.input[1] = !rule
+  !firPacket.input[2] = !paneTypes
+
+  -- Add filter for Pick
+  !firPacket.pickPacket.picks[1].pick.input[3]   = !rule
+  !firPacket.pickPacket.picks[1].pick.modifiable = FALSE
+
+  !firPacket.continue = '!!stlProfMitre.pickPacket()'
+
+  !!edgCntrl.add(!firPacket)
+  !this.packet  =  !firPacket
+
+endmethod
+-- End of method definition for .pickProfiles()
+
+------------------------------------------------------------------------
+--
+-- Method:      pickPacket
+--
+-- Description: pick second element based on the first pick
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA Data from EDG pick
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pickPacket ()
+
+  !firItem                    = !!stlProfMitre.pickData[1].item
+  !this.profile[1]            = !firItem
+  !this.enhanceTarget.addItem(!firItem)
+
+  !secondPick                 =   object EDGPACKET()
+  !secondPick.elementPick('Pick second element to mitre. <ESC> to exit:')
+  !secondPick.action          =   '!!stlProfMitre.pickData.append(!this.return[1])'
+  !secondPick.escape          =   '!!stlProfMitre.stopContinuousMitre()'
+  !secondPick.description     =   'Mitre Ends Second pick'
+  !secondPick.priority        =   2
+  !secondPick.remove = TRUE
+
+  -- read the input from first pick
+  !rule      = !this.packet.input[1]
+  !paneTypes = !this.packet.input[2]
+
+  -- eliminate the item of first pick
+  !rule = |ref neq $!firItem and | & !rule
+
+  -- if first pick is of Panel type then do not allow to pick another Panel type
+  if (!paneTypes.findfirst(!firItem.type).unset().not() ) then
+      do !i indices !paneTypes
+         !rule = !rule.replace( ',' & !paneTypes[!i]  , '')
+      enddo
+  endif
+
+  !secondPick.pickPacket.picks[1].pick.input[3]     =   !rule
+  !secondPick.pickPacket.picks[1].pick.modifiable   =   FALSE
+  !secondPick.continue = '!!stlProfMitre.profMitreCallback()'
+
+  -- add the packet to EDG
+  !!edgCntrl.add(!secondPick)
+
+endmethod
+-- End of method definition for pickPacket
+
+------------------------------------------------------------------------
+--
+-- Method:     profMitreCallback
+--
+-- Description: Call back from EDG second pick
+--              Handles errors before EDG catches them
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .profMitreCallback()
+
+  !createdMitre   = !this.extendProfile()
+  handle any
+    !createdMitre = false
+  endhandle
+  !this.tidy()
+
+  -- Tidy up before closing
+  if( !createdMitre ) then
+    if( !this.continuousMitre ) then
+      !this.pickProfiles(true)
+    endif
+  else
+    !this.stopContinuousMitre()
+  endif
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:     sortAndChk
+--
+-- Description: Sort picked elements based on the type and check the criterion
+-- of the picked elements
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#]           [R/RW] [Data Type] [Description]
+--  edgPickData   Read    Array        Array of picked elements
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     true if all pick data gathered
+--
+------------------------------------------------------------------------
+-- Define method
+define method .sortAndChk(!edgPickData is ARRAY) is BOOLEAN
+
+  if (!edgPickData.size() eq 2 ) then
+    do !i to 2
+       !this.profile[!i] = !edgPickData[!i].item
+    enddo
+
+   -- Array to check the valid pick types
+    !sctnTypes[1] = 'SCTN'
+    !sctnTypes[2] = 'GENSEC'
+
+    !paneTypes[1]  = 'PANE'
+    !paneTypes[2]  = 'WALL'
+    !paneTypes[3]  = 'GWALL'
+    !paneTypes[4]  = 'STWALL'
+    !paneTypes[5]  = 'SCREED'
+    !paneTypes[6]  = 'FLOOR'
+    !paneTypes[7]  = 'HPLATE'
+    !paneTypes[8]  = 'HBRCKT'
+    !paneTypes[9]  = 'HDOPLA'
+    !paneTypes[10] = 'HRSOF'
+
+    !validTypes = !sctnTypes
+    !validTypes.appendarray(!paneTypes)
+
+    -- Sort based on the order in validTypes so that profile type element is first
+    if ( !this.sortType(!validTypes) ) then
+    	-- is the second profile after sort not a Pane type then check whether both of them are same gtype
+      if  ( !paneTypes.findfirst(!this.profile[2].type).unset()) then
+        if (!this.profile[1].catref.gtype.neq(!this.profile[2].catref.gtype)) then
+          !!alert.warning('Picked elements are not of the same Gtype - use UNDO if mitre not correct')
+        endif
+      endif
+    else
+      return FALSE
+    endif
+  -- come out if both the elements are not picked
+  elseif(!edgPickData.size() eq 1 ) then
+   !!alert.error('Second element has not been picked, Aborting Mitre')
+   return FALSE
+  endif
+
+ return TRUE
+
+endmethod
+-- End of method definition for sortAndChk
+
+------------------------------------------------------------------------
+-- Method:     sortType
+--
+-- Description: Sort elements based on type in the order SCTN / Gensec / Panel
+--
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#]            [R/RW] [Data Type] [Description]
+--    1              R       Array    Valid element  types
+-- Return:
+--   [Data Type] [Description]
+--   Boolean       Returns true if correct combination of elements are picked
+------------------------------------------------------------------------
+define method .sortType(!validTypes is ARRAY) is BOOLEAN
+
+  !prfTypOrd[1] = !validTypes.findfirst(!this.profile[1].type)
+  !prfTypOrd[2] = !validTypes.findfirst(!this.profile[2].type)
+  !sortOrd      = !prfTypOrd.sortedindices()
+
+  -- leave original for  later reference
+  !uniqueType   = !prfTypOrd
+  !uniqueType.unique()
+
+  -- skip if elements of same type
+  if (!prfTypOrd.size() eq !uniqueType.size()) then
+      !this.profile.reindex(!sortOrd)
+      !this.pickData.reindex(!sortOrd)
+  endif
+
+  return TRUE
+
+endmethod
+-- End of method definition for sortType
+
+------------------------------------------------------------------------
+-- Method:   checkCommonPlane
+--
+-- Description: Identify the direction of Mitre plane
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--   BOOLEAN      Return true if common mitre direction found
+--
+------------------------------------------------------------------------
+define method .checkCommonPlane() is BOOLEAN
+
+ -- Identify the direction in which it can be mitred.
+ !parallelFlg = ''
+ if (!this.profile[1].ori.xdir().wrt(world).isParallel(!this.profile[2].ori.xdir().wrt(world)) ) then
+    !parallelFlg = !parallelFlg  & 'xdir'
+ endif
+ if (!this.ydir(!this.profile[1]).isParallel(!this.ydir(!this.profile[2]) ) ) then
+    !parallelFlg = !parallelFlg  & 'ydir'
+ endif
+
+ -- Identify the direction in which it can be mitred.
+ if (!parallelFlg.empty() ) then
+  !!alert.error('Picked elements are not coplanar, can not Mitre these elements')
+      return false
+ elseif (!parallelFlg.length().eq(8) ) then
+  !!alert.error('Picked elements are parallel, can not Mitre these elements')
+     return false
+ endif
+
+ if (!parallelFlg.match('xdir').gt(0) ) then
+    !this.cmnDir = !this.profile[1].ori.xdir().wrt(world)
+ elseif (!parallelFlg.match('ydir').gt(0) ) then
+    !this.cmnDir = !this.profile[1].ori.ydir().wrt(world)
+ endif
+
+ return true
+endmethod
+-- End of method definition for checkCommonPlane
+
+----------------------------------------------------------------------------
+
+-- Method:  stlIntersect
+--
+-- Description: Find mitre intersection for profile with profile
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    Array        Intersection point information
+--     1              First element End to be mitred
+--     2              Second element end to be mitred
+--     3              Intersection point
+--     4              Direction of the Intersection plane
+------------------------------------------------------------------------
+define method .stlIntersect() is ARRAY
+
+   -- getting a line from a Sctn NA
+  !sctnFrmLines = !this.lineExtend(!this.profile[1] , 'NA')
+  !sctnToLines  = !this.lineExtend(!this.profile[2] , 'NA')
+
+  -- retain the original lines as the calculation is based on the NA
+  if ( !this.profile[1].jusl.empty().not()   and !this.profile[1].jusl.neq('NA') ) then
+     !oriSctnFrmLines = !this.lineExtend(!this.profile[1] , !this.profile[1].jusl )
+  else
+     !oriSctnFrmLines = !sctnFrmLines
+  endif
+
+  if ( !this.profile[2].jusl.empty().not()   and !this.profile[2].jusl.neq('NA') ) then
+     !oriSctnToLines = !this.lineExtend(!this.profile[2] , !this.profile[2].jusl)
+  else
+    !oriSctnToLines = !sctnToLines
+  endif
+
+  !parallelFlg = ''
+
+  if (!this.ydir(!this.profile[1]).isParallel(!this.ydir(!this.profile[2]))  ) then
+      !parallelFlg = !parallelFlg  & 'ydir'
+  endif
+
+  -- find out which leg picked if GENSEC
+  !overrideEnd1     = 'ANY'
+  if( !sctnFrmLines.size() eq 2 ) then
+    !dist1          = !this.pickData[1].pickLine.line(1000mm).distance(!sctnFrmLines[1])
+    !dist2          = !this.pickData[1].pickLine.line(1000mm).distance(!sctnFrmLines[2])
+    if( !dist1 lt !dist2 ) then
+      !fromIndex    = 1
+      !overrideEnd1 = 'POSS'
+    else
+      !fromIndex    = 2
+      !overrideEnd1 = 'POSE'
+    endif
+  else
+    !fromIndex      = 1
+  endif
+  !sctnLine1        = !sctnFrmLines[!fromIndex]
+  !origLine1        = !oriSctnFrmLines[!fromIndex]
+  !overrideEnd2     = 'ANY'
+  if( !sctnToLines.size() eq 2 ) then
+    !dist1          = !this.pickData[2].pickLine.line(1000mm).distance(!sctnToLines[1])
+    !dist2          = !this.pickData[2].pickLine.line(1000mm).distance(!sctnToLines[2])
+    if( !dist1 lt !dist2 ) then
+      !toIndex      = 1
+      !overrideEnd2 = 'POSS'
+    else
+      !toIndex      = 2
+      !overrideEnd2 = 'POSE'
+    endif
+  else
+    !toIndex        = 1
+  endif
+  !sctnLine2        = !sctnToLines[!toIndex]
+  !origLine2        = !oriSctnToLines[!toIndex]
+
+  -- find the weld depth tolerance
+  !weldDepth = !!stlTolEdit.settings.mitreOffset
+
+  -- skip line intersection if they are parallel
+  if( !sctnLine1.direction().isParallel(!sctnLine2.direction()) ) then
+    !!alert.error('Picked elements are parallel, cannot Mitre these elements')
+    return ARRAY()
+  endif
+
+  !lineDirFlg    = !parallelFlg
+  if (!sctnLine1.direction().cross(!this.ydir(!this.profile[1])).isParallel(!sctnLine2.direction().cross(!this.ydir(!this.profile[2]))) ) then
+     !lineDirFlg = !lineDirFlg  & 'xdir'
+  endif
+
+  if (!lineDirFlg.empty() ) then
+    !!alert.warning('Y direction of picked elements are not aligned - use UNDO if mitre not correct')
+  elseif (!lineDirFlg.length().eq(8) ) then
+    !!alert.error('Picked elements are parallel, cannot Mitre these elements')
+    return ARRAY()
+  endif
+
+  if (!lineDirFlg.match('xdir').gt(0) ) then
+     !this.cmnDir = !this.profile[1].ori.xdir().wrt(world)
+  elseif (!lineDirFlg.match('ydir').gt(0) ) then
+     !this.cmnDir = !this.ydir(!this.profile[1])
+  else
+     !this.cmnDir = !sctnLine1.direction().cross(!sctnLine2.direction())
+  endif
+
+  -- get the intersection points
+  !intPt         =  !this.lineInterSectPt(!sctnLine1,!sctnLine2)
+
+  -- verify whether an intersection is possible within the weld range
+  if (!intPt.unset() ) then
+
+    -- working out a plane in case elements are offset in ydir
+    !commonPlaneDirection  = !this.cmnDir
+    !profileDirection      = !sctnLine1.direction()
+    !frmPlaneOri           = object ORIENTATION(|y is | + !profileDirection.string() + | and z is | + !commonPlaneDirection.string())
+
+    !offsetLine  = object LINE(!sctnLine1.startPosition.offset(!this.cmnDir,!weldDepth) , !sctnLine1.startPosition.offset(!this.cmnDir.opposite(),!weldDepth))
+    !offsetIntPt = !offsetLine.intersection(!sctnLine2)
+    -- handle if lines are parallel
+    handle (2,870)
+      !!alert.error('Picked elements are parallel, cannot Mitre these elements')
+      return ARRAY()
+    endhandle
+
+    -- check whether the plane is within the weld tolerance
+    if(!sctnLine1.startPosition.distance(!offsetIntPt) leq !weldDepth) then
+      !frmPlane  = object PLANE(!offsetIntPt ,!frmPlaneOri  )
+      !sctnLine1 = !sctnLine1.projected(!frmPlane)
+      !sctnLine2 = !sctnLine2.projected(!frmPlane)
+      !intPt     = !sctnLine1.intersection(!sctnLine2)
+      !!alert.warning('Picked elements are not coplanar but are within offset tolerance - use UNDO if mitre not correct')
+    else
+      !!alert.error('Offset distance between the picked profile is more than the permissible value of ' + !weldDepth.string() + '. For a different value set the mitre offset depth in Section Tolerances form.')
+      return ARRAY()
+    endif
+  endif
+
+  -- get intersection data
+  !fromData         = !this.intersectionData(!overrideEnd1, !sctnLine1, !intPt, !this.pickData[1].pickLine)
+  if( !fromData.empty() ) then
+    return ARRAY()
+  endif
+  -- Which end to modify (POSS, POSE)
+  !intEnd[1]        = !fromData[1]
+  !pvFrom           = !fromData[2]
+  !toData           = !this.intersectionData(!overrideEnd2, !sctnLine2, !intPt, !this.pickData[2].pickLine)
+  if( !toData.empty() ) then
+    return ARRAY()
+  endif
+  -- Which end to modify (POSS, POSE)
+  !intEnd[2]        = !toData[1]
+  !pvTo             = !toData[2]
+
+  -- check that SCTN end to be modified is not connected
+  if( !intEnd[1] eq 'POSS' ) then
+    if( !this.profile[1].joiStart.set() ) then
+      !!alert.error( 'Start of profile cannot be mitred because it is connected to another profile' )
+      return ARRAY()
+    endif
+  elseif( !intEnd[1] eq 'POSE' ) then
+    if( !this.profile[1].joiEnd.set() ) then
+      !!alert.error( 'End of profile cannot be mitred because it is connected to another profile' )
+      return ARRAY()
+    endif
+  endif
+  if( !intEnd[2] eq 'POSS' ) then
+    if( !this.profile[2].joiStart.set() ) then
+      !!alert.error( 'Start of profile cannot be mitred because it is connected to another profile' )
+      return ARRAY()
+    endif
+  elseif( !intEnd[2] eq 'POSE' ) then
+    if( !this.profile[2].joiEnd.set() ) then
+      !!alert.error( 'End of profile cannot be mitred because it is connected to another profile' )
+      return ARRAY()
+    endif
+  endif
+
+  -- bisector between direction of profile lines
+  !pvBisector            = !pvFrom
+  !pvBisector.direction  = !pvFrom.direction.bisect(!pvTo.direction)
+  -- Calculate and store the angle to be cut
+  !incDir                = !pvBisector.direction.cross(!this.cmnDir)
+
+  -- create a plane at the intersection point
+  !this.mitrePlane.position    = !intPt
+  -- get the orientation from the common direction
+  !this.mitrePlane.orientation = object ORIENTATION(|y is | + !this.cmnDir.string() + | and z is | + !incDir.string())
+
+  -- draw aid lines
+  !this.mitreAngle(!this.mitrePlane,!sctnLine1, !sctnLine2, !pvFrom.direction, !pvTo.direction)
+
+  -- Work out the Extension points in case the profiles are at Offset
+  !intEnd[3] = !this.mitrePlane.intersection(!origLine1)
+--  !this.checkMinLength(!this.profile[1] , !intEnd[1] , !intEnd[3] )
+  !intEnd[4] = !this.mitrePlane.intersection(!origLine2)
+--  !this.checkMinLength(!this.profile[2] , !intEnd[2] , !intEnd[4] )
+  !intEnd[5] = !incDir
+
+  return !intEnd
+
+endmethod
+-- End of method definition for stlIntersect
+------------------------------------------------------------------------
+--
+-- Method:     findSctnEnd
+--
+-- Description: Find SCTN the end to be trimmed
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type]   [Description]
+--    1    R      LINE         Terminal line of the Steel profile
+--    2    R      POSITION     Intersection point
+-- Return:
+--   [Data Type] [Description]
+--    STRING      POSS or POSE
+------------------------------------------------------------------------
+define method .findSctnEnd(!line is LINE , !intersection  is POSITION) is STRING
+
+  -- find which end intersects
+  if (!line.startPosition.distance(!intersection) lt !line.endPosition.distance(!intersection)  ) then
+      !intEnd = 'POSS'
+  else
+      !intEnd = 'POSE'
+  endif
+
+  return !intEnd
+
+endmethod
+-- End of method definition for findSctnEnd
+------------------------------------------------------------------------
+--
+-- Method:     findGensecEnd
+--
+-- Description:Finding the end to be trimmed
+--
+--   [#]  [R/RW] [Data Type]   [Description]
+--    1    R      LINE         Terminal line of the Steel profile
+--    2    R      POSITION     Intersection point
+--    3    R      REAL         index of the line of Gensec ( 1 - line from START end and 2 from END)
+-- Return:
+--   [Data Type] [Description]
+--    STRING      POSS or POSE
+------------------------------------------------------------------------
+define method .findGensecEnd(!secLn is LINE , !intPt  is POSITION , !index is REAL) is STRING
+
+ -- find which end intersects
+       !nearPt  = !secLn.near(!intPt)
+       !lineDir = !secLn.direction()
+       if (!secLn.startPosition.direction(!nearPt).eq(!lineDir) ) then
+          if (!index.eq(1) ) then
+             !intEnd = 'POSS'
+          else
+       --reverse to help in panIntersect
+       !secLn  = !secLn.reverseSense()
+             !intEnd = 'POSE'
+          endif
+       else
+            !intEnd = object STRING()
+       endif
+
+  return !intEnd
+
+endmethod
+-- End of method definition for findGensecEnd
+------------------------------------------------------------------------
+--
+-- Method:   panIntersect
+--
+-- Description: Find mitre intersection between the profile and Panel
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Intersection data (Only array members 1, 3 & 5 set
+--
+------------------------------------------------------------------------
+define method .panIntersect() is ARRAY
+
+  -- use JUSL to Identify intersection point
+  if (!this.profile[1].jusl.unset() or !this.profile[1].jusl.empty() ) then
+     !jusl = 'NA'
+  else
+     !jusl = !this.profile[1].jusl
+  endif
+
+  -- Get the line along JUSL of Profile
+  !sctnFrmLines = !this.lineExtend(!this.profile[1], !jusl)
+
+  -- get graphical pick point vector
+  !pickVector = !this.pickData[1].pickLine
+
+  -- find out which leg picked if GENSEC
+  !overrideEnd      = 'ANY'
+  if( !sctnFrmLines.size() eq 2 ) then
+    !dist1          = !pickVector.line(1000mm).distance(!sctnFrmLines[1])
+    !dist2          = !pickVector.line(1000mm).distance(!sctnFrmLines[2])
+    if( !dist1 lt !dist2 ) then
+      !fromIndex    = 1
+      !overrideEnd  = 'POSS'
+    else
+      !fromIndex    = 2
+      !overrideEnd  = 'POSE'
+    endif
+  else
+    !fromIndex      = 1
+  endif
+  !sectionLine      = !sctnFrmLines[!fromIndex]
+
+  -- get profile for panel like object
+  !loopProfile  = !this.panelProfile(!this.profile[2])
+
+  -- get plane and opposite side plane for panel like object
+  !planes       = !this.panelSurfaces(!this.profile[2])
+  if( !planes.empty() ) then
+    return ARRAY()
+  endif
+
+    !curIntersectionData    = ARRAY()
+    -- look for hit on object as default values
+    if( !!isImperialLength('DIST') ) then
+      -- work round for units bug in point vector intersections
+      !mmFormat           = object FORMAT()
+      !mmFormat.dimension = 'L'
+      !mmFormat.units     = 'MM'
+      !mmFormat.dp        = 6
+      !pvPos              = !sectionLine.startPosition.string(!mmFormat)
+      !saveUnits = object COMUNITS(true)
+      -- bug in point vector intersection - only works in mm
+      UNITS MM DIST
+      !pv                 = object POINTVECTOR(!pvPos.position(), !sectionLine.direction())
+      !pvMetricHits       = !pv.intersections(!this.profile[2],true)
+      !saveUnits.restoreSavedUnitsByPtype('DIST')
+      !pvIntersections    = ARRAY()
+      do !index indices !pvMetricHits
+        !pvIntersections[!index]           = object POINTVECTOR()
+        !pvIntersections[!index].position  = !pvMetricHits[!index].position
+        !pvIntersections[!index].direction = !pvMetricHits[!index].direction
+      enddo
+    else
+      !pv                     = !sectionLine.pointVector()
+      !pvIntersections        = !pv.intersections(!this.profile[2],true)
+    endif
+
+    if( !sectionLine.direction().dot(!planes[1].direction()) eq 0 ) then
+      -- line is parallel to surface - return hit on object if any
+      if( !pvIntersections.empty() ) then
+        !!alert.error('Profile is parallel to panel')
+        return ARRAY()
+      endif
+      if( !pvIntersections.size() eq 2 ) then
+        -- two hits on object - use these as entry and exit points
+        !planeIntersection    = !pvIntersections[1]
+        !altPlaneIntersection = !pvIntersections[2]
+      else
+        -- more than two hits means that there is a concavity in the panel boundary
+        -- find out where the selected profile is with respect to the boundary
+        !hitProportions = ARRAY()
+        do !pvHit values !pvIntersections
+          !hitProportions.append(!this.proportion(!sectionLine, !pvHit.position))
+        enddo
+        !pickProportion = !this.proportion(!sectionLine, !sectionLine.intersection(!pickVector))
+        if( !pickProportion lt !hitProportions[1] or !pickProportion gt !hitProportions.last() ) then
+          -- picked segment of profile is outside of boundary
+          !planeIntersection    = !pvIntersections[1]
+          !altPlaneIntersection = !pvIntersections.last()
+        else
+          -- picked segment of profile is inside a concavity in the boundary
+          -- Lots of tricky scenarios here
+          -- if there are any intersections within the profile - use them
+          !profileCrossingBoundary = ARRAY()
+          !lastBeforeStart         = 1
+          !firstAfterEnd           = !pvIntersections.maxIndex()
+          do !index indices !hitProportions
+            if( !hitProportions[!index] lt 0 ) then
+              !lastBeforeStart = !index
+              skip
+            elseif( !hitProportions[!index] gt 1 ) then
+              !firstAfterEnd = !index
+              break
+            endif
+            !profileCrossingBoundary.append(!index)
+          enddo
+          if( !profileCrossingBoundary.size() eq 0 ) then
+            -- profile sits entirely within a cavity
+            -- select hit nearest to picked end of profile
+            if( !pickProportion lt 0.5 ) then
+              !planeIntersection    = !pvIntersections[!lastBeforeStart]
+              !altPlaneIntersection = object POINTVECTOR( !planeIntersection.position, !planeIntersection.direction.opposite() )
+            else
+              !planeIntersection    = !pvIntersections[!firstAfterEnd]
+              !altPlaneIntersection = object POINTVECTOR( !planeIntersection.position, !planeIntersection.direction.opposite() )
+            endif
+          else
+            -- use first and last crossing point on profile
+            !planeIntersection    = !pvIntersections[!profileCrossingBoundary[1]]
+            if( !profileCrossingBoundary.size() eq 1 ) then
+              !altPlaneIntersection = object POINTVECTOR( !planeIntersection.position, !planeIntersection.direction.opposite() )
+            else
+              !altPlaneIntersection = !pvIntersections[!profileCrossingBoundary.last()]
+            endif
+          endif
+        endif
+
+      endif
+    else
+      -- Position where the line from the sctn exactly intersects with the plane
+      !intersection         = !planes[1].intersection(!sectionLine)
+      handle any
+        !!alert.error('Profile is parallel to panel')
+        return ARRAY()
+      endhandle
+      !planeIntersection    = object POINTVECTOR(!intersection,!planes[1].direction())
+      !intersection         = !planes[2].intersection(!sectionLine)
+      !altPlaneIntersection = object POINTVECTOR(!intersection,!planes[2].direction())
+    endif
+
+    if(!loopProfile.set()) then
+      -- intersection should be in bounds of profile
+      if( !loopProfile.isWithout(!planeIntersection.position) ) then
+        if( !pvIntersections.empty().not() ) then
+          !planeHit = !planeIntersection.position
+          if( !planeHit.distance(!pvIntersections[1].position) lt !planeHit.distance(!pvIntersections.last().position) ) then
+            !planeIntersection = !pvIntersections[1]
+          else
+            !planeIntersection = !pvIntersections.last()
+          endif
+        endif
+      else
+
+      endif
+      if( !loopProfile.isWithout(!altPlaneIntersection.position) ) then
+        if( !pvIntersections.empty().not() ) then
+          !planeHit = !altPlaneIntersection.position
+          if( !planeHit.distance(!pvIntersections[1].position) lt !planeHit.distance(!pvIntersections.last().position) ) then
+            !altPlaneIntersection = !pvIntersections[1]
+          else
+            !altPlaneIntersection = !pvIntersections.last()
+          endif
+        endif
+      endif
+    endif
+
+    if( !loopProfile.isWithout(!planeIntersection.position) and !loopProfile.isWithout(!altPlaneIntersection.position ) ) then
+      -- intersection outside of profile boundary
+      !!alert.error('Profile intersection not within the panel boundary')
+      return ARRAY()
+    endif
+
+    !sectionLineData        = !this.intersectionData(!overrideEnd, !sectionLine, !planeIntersection.position,    !this.pickData[1].pickLine)
+    if( !sectionLineData.empty() ) then
+      return ARRAY()
+    endif
+    !altSectionLineData     = !this.intersectionData(!overrideEnd, !sectionLine, !altPlaneIntersection.position, !this.pickData[1].pickLine)
+    if( !altSectionLineData.empty() ) then
+      return ARRAY()
+    endif
+
+    !line1                  = !sectionLineData[2].line(2000mm)
+    !otherIntersectionProp  = !this.proportion(!line1, !altSectionLineData[2].position)
+    if( !otherIntersectionProp gt 0 ) then
+      !curIntersectionData[1] = !altSectionLineData[1]
+      !curIntersectionData[3] = !altSectionLineData[2].position
+      !curIntersectionData[5] = !altPlaneIntersection.direction
+      !curIntersectionVector  = !altSectionLineData[2]
+    else
+      !curIntersectionData[1] = !sectionLineData[1]
+      !curIntersectionData[3] = !sectionLineData[2].position
+      !curIntersectionData[5] = !planeIntersection.direction
+      !curIntersectionVector  = !sectionLineData[2]
+    endif
+
+    -- check for end already connected
+    if( !curIntersectionData[1] eq 'POSS' ) then
+      if( !this.profile[1].joiStart.set() ) then
+        !!alert.error( 'Start of profile cannot be mitred because it is connected to another profile' )
+        return ARRAY()
+      endif
+    elseif( !curIntersectionData[1] eq 'POSE' ) then
+      if( !this.profile[1].joiEnd.set() ) then
+        !!alert.error( 'End of profile cannot be mitred because it is connected to another profile' )
+        return ARRAY()
+      endif
+    endif
+
+  -- graphical feedback
+  !line             = !curIntersectionVector.line(1000mm)
+  !startProp        = !this.proportion(!line, !sectionLine.startPosition)
+  !endProp          = !this.proportion(!line, !sectionLine.endPosition)
+  !maxProp          = !startProp.max(!endProp)
+  if( !maxProp gt 1 ) then
+    -- extend line to maximum of line start and end position
+    !line.endPosition = !line.proportion(!maxProp)
+  endif
+
+  !this.registerGraphics(!line)
+  !pv = object POINTVECTOR(!curIntersectionData[3], !curIntersectionData[5])
+  !gmfIntBox = object GPHPLANE(!pv.plane())
+  !gmfIntBox.x = 200mm
+  !gmfIntBox.y = 200mm
+  !gmfIntBox.draw(!this.aidNumber, false)
+  !aidVector = object GPHPOINTVECTOR(!pv)
+  !aidVector.draw(!this.aidNumber, false)
+
+  return !curIntersectionData
+
+endmethod
+-- End of method definition for panIntersect
+------------------------------------------------------------------------
+--
+-- Method:  lineExtend
+--
+-- Description: Generate equivalent lines to Pline of a picked element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#]     [R/RW] [Data Type] [Description]
+--    1       R      DBREF       Picked element
+--    2       R      STRING      P-Line name
+-- Return:
+--   [Data Type] [Description]
+--    Array       Array of terminal lines
+------------------------------------------------------------------------
+define method .lineExtend(!profile is DBREF , !profPline is STRING) is ARRAY
+
+  !plNames  = !profile.plna
+  if (!plNames.findfirst(!profPline.upcase()).set()) then
+      !jusl = !profPline
+  else
+      !!alert.warning('Using NA because element ' + !profile.fullname + ' does not have PLINE ' + !profPline)
+      !jusl = 'NA'
+  endif
+
+  !endLine = object LINE()
+   if (!profile.hardType.eq('SCTN') ) then
+   -- include the cut/uncut factor
+     !plst =  !profile.plst.attribute(!jusl)
+     !plen =  !profile.plen.attribute(!jusl)
+     !startLine = object LINE(!plst,!plen)
+   elseif (!profile.hardType.eq('GENSEC') ) then
+        -- Straight Gensec with 2 POINSP members
+        !spine     = !!dtbMemberOfType(!profile, 'SPINE', 1)
+        if (!spine.members.size().eq(2) ) then
+              !plst =  !profile.plst.attribute(!jusl)
+              !plen =  !profile.plen.attribute(!jusl)
+              !startLine = object LINE(!plst,!plen)
+      -- There is a curved portion in the GENSEC  get the straight ends
+        else
+          !curCount  = !spine.mcount('CURVE')
+          !firCurve  = !!dtbMemberOfType(!spine, 'CURVE', 1)
+          !lastCurve = !!dtbMemberOfType(!spine, 'CURVE', !curCount)
+
+        -- find lines that are used to find the intersection points at which mitre should happen
+          if( !firCurve.ppos[3].distance(!firCurve.ppos[1]) eq 0 ) then
+            !pv        = object POINTVECTOR(!firCurve.ppos[1], !firCurve.pdir[1].opposite())
+            !startLine = !pv.line(1mm)
+          else
+            !startLine = object LINE(!firCurve.ppos[3],!firCurve.ppos[1])
+          endif
+          if( !lastCurve.ppos[4].distance(!lastCurve.ppos[2]) eq 0 ) then
+            !pv        = object POINTVECTOR(!lastCurve.ppos[4], !lastCurve.pdir[4])
+            !endLine   = !pv.line(1mm)
+          else
+            !endLine   = object LINE(!lastCurve.ppos[4],!lastCurve.ppos[2])
+          endif
+        endif
+   else
+ -- Not handled case for future
+        return ARRAY()
+   endif
+
+   !sctnExtLines[1] = !startLine
+   --  find whether end line is defined
+   if( !endLine.set() ) then
+     !sctnExtLines[2] = !endLine
+   endif
+
+   return !sctnExtLines
+
+endmethod
+-- End of method definition for lineExtend
+------------------------------------------------------------------------
+--
+-- Method:     lineInterSectPt
+--
+-- Description:Find and assess the intersection point between the lines of the elements
+--
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#]   [R/RW] [Data Type]   [Description]
+--    1     R      LINE         Terminal line 1 of the Steel profile
+--    2     R      LINE         Terminal line 2 of the Steel profile
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    Intersection position
+--
+------------------------------------------------------------------------
+define method .lineInterSectPt(!firLn is LINE , !secLn is LINE) is POSITION
+
+  !intPt  = !firLn.intersection(!secLn)
+  handle (2,878)
+     -- Both lines are parallel
+       !intPt = object POSITION()
+       return !intPt
+  endhandle
+
+  !newFirln = object LINE(!firLn.startPosition, !intPt)
+  -- in case intersection point and startPosition are coincident
+  if (!newFirln.length() lt 1mm ) then
+   !newFirln = object LINE(!firLn.endPosition, !intPt)
+  endif
+
+  !newSecln = object LINE(!secLn.startPosition, !intPt)
+
+  if (!newSecln.length() lt 1mm ) then
+    !newSecln = object LINE(!secLn.endPosition, !intPt)
+  endif
+
+  -- Checking whether the intersection point lies in both the lines
+  if ( ( !newFirln.direction().angle(!firLn.direction() ) lt 0.005 )  or ( !newFirln.direction().opposite().angle(!firLn.direction() ) lt 0.005 ) )then
+       if ( ( !newSecln.direction().angle(!secLn.direction() ) lt 0.005 )  or ( !newSecln.direction().opposite().angle(!secLn.direction() ) lt 0.005 ) )then
+         return !intPt
+       endif
+  endif
+
+   --  making it undefined in case the intersection point is not lying in both the lines
+   !intPt = object POSITION()
+   return !intPt
+
+endmethod
+-- End of method definition for lineInterSectPt
+------------------------------------------------------------------------
+--
+-- Method:     extendProfile
+--
+-- Description: Modifying the DB elements:  extending to the intersection point
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .extendProfile() is BOOLEAN
+
+  -- check picked elements are fit enough to Mitre by types and gtype
+  -- sort data into order for trim operation.
+  if (!this.sortAndChk(!this.pickData).not() ) then
+  	 return false
+  endif
+
+  return !this.trimToProfile()
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:     trimToProfile
+--
+-- Description: Modifying the DB elements:  trim to the intersection point
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .trimToProfile() is BOOLEAN
+
+  if(!this.profile[1].hardType inset('SCTN', 'GENSEC')) then
+    -- test for bad catalogue reference
+    !firstSpre = !this.profile[1].attribute('SPRE')
+    if (!firstSpre.badRef()) then
+      !!alert.error('Cannot mitre a profile with unset specification')
+      return false
+    endif
+    if( !!dbrefupdatable(!this.profile[1]).not() ) then
+      !!alert.error('Database modification permission is denied: Cannot mitre profile')
+      return false
+    endif
+
+  endif
+
+  if (!this.profile.size() eq 2 ) then
+    -- test for bad catalogue reference
+    if(!this.profile[2].hardType inset('SCTN', 'GENSEC')) then
+      !firstSpre = !this.profile[2].attribute('SPRE')
+      if(!firstSpre.badRef()) then
+        !!alert.error('Cannot mitre a profile with unset specification')
+        return false
+      endif
+      if( !!dbrefupdatable(!this.profile[2]).not() ) then
+        !!alert.error('Database modification permission is denied: Cannot mitre profile')
+        return false
+      endif
+      !item      = !this.profile[2]
+      !this.enhanceTarget.addItem(!item)
+      -- calculate intersection
+      !extendPts = !this.stlIntersect()
+    else
+      !extendPts = !this.panIntersect()
+    endif
+
+    if (!extendPts.size() gt 0) then
+      -- Collect all element types if passed type
+      !members = !this.profile[1].members
+      !warningTypes[1] = 'FITT'
+      !warningTypes[2] = 'CMFI'
+      !warningTypes[3] = 'SNOD'
+      !warningTypes[4] = 'JLDATU'
+      !typeWarning     = false
+      do !member values !members
+        skip if( !warningTypes.findfirst(!member.type).unset() )
+        !typeWarning   = true
+        break
+      enddo
+      if(!typeWarning.not() and !this.profile[2].hardType inset('SCTN', 'GENSEC')) then
+        !members = !this.profile[2].members
+        do !member values !members
+          skip if( !warningTypes.findfirst(!member.type).unset() )
+          !typeWarning   = true
+          break
+        enddo
+      endif
+      if( !typeWarning ) then
+        !message = 'Warning: mitre element contains joints or fittings. OK to mitre selected elements?'
+        !confirmMitre = true
+      else
+        !message = 'OK to mitre selected elements?'
+        !confirmMitre = !this.continuousMitre.not()
+      endif
+      if( !confirmMitre ) then
+      !confirm = !!alert.confirm(!message)
+      if ( !confirm.boolean().not() ) then
+        -- user has aborted mitre
+          return false
+        endif
+      endif
+    else
+      -- an error has been found and reported to the user
+      return false
+    endif
+
+    -- Setting the Undo object
+       !mitreMark = object UNDOABLE()
+       !undoDesc = 'Mitre' & ' ' & !this.profile[1].name & ' ' &  !this.profile[2].name
+       !mitreMark.description(!undoDesc)
+       !mitreMark.undoAction('!!stlProfMitre.stopContinuousMitre()')
+       !mitreMark.redoAction('!!stlProfMitre.stopContinuousMitre()')
+
+       !mitreMark.add()
+       -- !extendPts[1] - End of first profile to modify
+       !firPrfEnd = !extendPts[1]
+
+       if ( !firPrfEnd.eq('POSS') ) then
+         !firPrfAng = 'DRNS'
+       else
+         !firPrfAng = 'DRNE'
+       endif
+
+       -- !extendPts[3] - new position of end of first profile
+       !this.profile[1].attribute(!firPrfEnd) = !extendPts[3]
+       -- !extendPts[5] - new cut plane of end of first profile
+       !this.profile[1].attribute(!firPrfAng) = !extendPts[5]
+
+       -- !extendPts[2] - end of second profile - or undefined if second element is a panel
+       if( defined(!extendPts[2])) then
+         !secPrfEnd = !extendPts[2]
+         if ( !secPrfEnd.eq('POSS') ) then
+           !secprfang = 'DRNS'
+         else
+           !secprfang = 'DRNE'
+         endif
+         -- !extendPts[4] - new position of end of second profile
+         !this.profile[2].attribute(!secPrfEnd) = !extendPts[4]
+         !this.profile[2].attribute(!secprfang) = !extendPts[5].opposite()
+       endif
+
+       !mitreMark.endundoable()
+
+  endif
+
+  return true
+
+endmethod
+-- End of method definition for extendProfile
+------------------------------------------------------------------------
+--
+-- Method:      mitreAngle
+--
+-- Description: Graphical feedback for profile to profile mitre
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .mitreAngle( !mitrePlane is PLANE, !firstLine is LINE, !secondLine is LINE, !fromDirection is DIRECTION, !toDirection is DIRECTION  )
+
+  !pvFrom           = !mitrePlane.pointVector()
+  !pvFrom.direction = !fromDirection
+  !lineFrom         = !pvFrom.line(1000mm)
+  !startProp        = !this.proportion(!lineFrom, !firstLine.startPosition)
+  !endProp          = !this.proportion(!lineFrom, !firstLine.endPosition)
+  !maxProp          = !startProp.max(!endProp)
+  if( !maxProp gt 1 ) then
+    -- extend line to maximum of first line start and end position
+    !lineFrom.endPosition = !lineFrom.proportion(!maxProp)
+  endif
+
+  !pvTo             = !pvFrom
+  !pvTo.direction   = !toDirection
+  !lineTo           = !pvTo.line(1000mm)
+  !startProp        = !this.proportion(!lineTo, !secondLine.startPosition)
+  !endProp          = !this.proportion(!lineTo, !secondLine.endPosition)
+  !maxProp          = !startProp.max(!endProp)
+  if( !maxProp gt 1 ) then
+    -- extend line to maximum of second line start and end position
+    !lineTo.endPosition = !lineTo.proportion(!maxProp)
+  endif
+
+  !radius           = !lineFrom.length().min(!lineTo.length()) / 2
+  !arcStart         = !pvFrom.offset(!radius).position
+  !arcEnd           = !pvTo.offset(!radius).position
+  !pvMid            = !pvFrom
+  !pvMid.direction  = !mitrePlane.orientation.xdir()
+  !arcThrough       = !pvMid.offset(!radius).position
+  !comArc           = object GMFARC()
+  !arc              = !comArc.through3Points(!arcStart, !arcThrough, !arcEnd)
+
+  -- draw graphical aids
+  !this.registerGraphics(!lineFrom , !lineTo , object LINE(), !arc)
+
+endmethod
+-- End of method definition for mitreAngle
+
+------------------------------------------------------------------------
+-- Method:      ydir
+--
+-- Description: find the ydir of the passed element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       SCTN or GENSEC reference
+-- Return:
+--   [Data Type] [Description]
+--    DIRECTION   Y direction of given element
+--
+------------------------------------------------------------------------
+define method .ydir(!profile is DBREF) is DIRECTION
+
+  if (!profile.hardType.eq('SCTN') ) then
+     !ydir = !profile.ori.ydir().wrt(world)
+  elseif(!profile.hardType.eq('GENSEC')) then
+     !ydir = !profile.ydir.wrt(world)
+  else
+     !ydir = object DIRECTION()
+  endif
+
+  return !ydir
+
+endmethod
+-- End of method definition for ydir
+
+------------------------------------------------------------------------
+-- Method:      stopContinuousMitre
+--
+-- Description: Tidy up the graphical aids
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .stopContinuousMitre()
+
+  !this.continuousMitre = false
+  !this.tidy()
+
+endmethod
+-- End of method definition for tidy
+------------------------------------------------------------------------
+-- Method:      tidy
+--
+-- Description: Tidy up the graphical aids
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .tidy()
+
+  !this.enhanceTarget.clear()
+  !!aidnumbers.hide(!this.aidNumber)
+  !this.pickData = ARRAY()
+  !this.profile = ARRAY()
+  -- Remove applications events from system
+  !!edgCntrl.remove('Mitre Ends First Pick')
+  handle any
+  endhandle
+  !!edgCntrl.remove('Mitre Ends Second Pick')
+  handle any
+  endhandle
+  !!edgCntrl.remove('Pick End to trim')
+  handle any
+  endhandle
+
+   return
+endmethod
+-- End of method definition for tidy
+
+------------------------------------------------------------------------
+-- Method:      registerGraphics
+--
+-- Description: Draw graphic aids for profile to profile mitre
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .registerGraphics(!line1 is LINE , !line2 is LINE , !mitreLine is LINE , !arc is ARC )
+
+  -- draw aid lines
+  !this.registerGraphics(!line1)
+  !this.registerGraphics(!line2)
+  !this.registerGraphics(!mitreLine)
+
+  -- draw arc dimension line
+  if( !arc.set() ) then
+    !gphArc = object GPHCIRCLE(!arc)
+    !gphArc.draw(!this.aidNumber, false)
+  endif
+
+  if( !this.mitrePlane.set() ) then
+    !gmfIntBox = object GPHPLANE(!this.mitrePlane)
+    !gmfIntBox.x = 1000mm
+    !gmfIntBox.y = 1000mm
+    !gmfIntBox.draw(!this.aidNumber, false)
+  endif
+
+endmethod
+------------------------------------------------------------------------
+-- Method:      registerGraphics
+--
+-- Description: Draw line graphic aid
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      LINE        Line to be drawn
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .registerGraphics(!line is LINE)
+
+  -- display aid line
+  if( !line.set() ) then
+    !gphLine = object GPHLINE(!line)
+    !gphLine.draw(!this.aidNumber, false)
+  endif
+
+endmethod
+------------------------------------------------------------------------
+-- Method:      checkMinLength
+--
+-- Description: Check whether the new SCTN is more than the minimum length
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     true if profile is longer than minimum length
+--
+------------------------------------------------------------------------
+define method .checkMinLength(!profile is DBREF , !trimEnd is STRING , !intPt is POSITION) is BOOLEAN
+
+     if (!trimEnd.eq('POSS') ) then
+      !retainEnd = 'POSE'
+     else
+      !retainEnd = 'POSS'
+     endif
+
+     !length = !profile.attribute(!retainEnd).distance(!intPt)
+
+      -- Check for minimum allowable length
+     if(defined(!!stlTolEdit) and !!stlTolEdit.minimumlock.val  )then
+        !minLenOfSctn   =  !!stlTolEdit.minimum.val
+     else
+        !minLenOfSctn   =  200mm
+     endif
+
+     if (!minLenOfSctn.gt(!length))  then
+      !moreThanMin = FALSE
+     else
+       !moreThanMin = TRUE
+     endif
+
+     return !moreThanMin
+
+endmethod
+---------------------------------------------------------------------
+--
+-- Method:   intersectionDetail
+--
+-- Description: Find which end of line to mitre
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      LINE        Profile line
+--    2   R      POSITION    Intersection point
+--    3   R      POINTVECTOR Pick vector
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       [1] STRING: POSS or POSE
+--                [2] POINTVECTOR: from intersection to retained profile end
+--
+------------------------------------------------------------------------
+define method .intersectionDetail(!line is LINE, !intersectionPoint is POSITION, !pickVector is POINTVECTOR) is ARRAY
+ -- Find whether the input is on any one of the line.
+
+  -- eliminate cases where intPt is coincident with any of the terminal points.
+  !proportion           = !this.proportion(!line, !intersectionPoint)
+  !pvFrom               = !line.pointVector()
+  !pvFrom.position      = !intersectionPoint
+  if( !proportion leq 0 ) then
+    -- intersection off start of line
+    !fromEnd            = 'POSS'
+  elseif( !proportion geq 1 ) then
+    -- intersection off end of line
+    !fromEnd            = 'POSE'
+    !pvFrom.direction   = !pvFrom.direction.opposite()
+  else
+    -- calculate which bit of line is selected
+    !pickPoint          = !line.intersection(!pickVector)
+    !pickProportion     = !this.proportion(!line, !pickPoint)
+    if(!pickProportion gt !proportion) then
+      !fromEnd          = 'POSS'
+    else
+      !fromEnd          = 'POSE'
+      !pvFrom.direction = !pvFrom.direction.opposite()
+    endif
+  endif
+
+  -- return section 1 ent to cut (POSS,POSE), section 2 end to cut (POSS,POSE)
+  -- bisector of two sections which will lie in the plane of the cut planes
+  !return[1]            = !fromEnd
+  !return[2]            = !pvFrom
+
+  return !return
+
+endmethod
+-- End of method definition for intersectionDetail
+
+------------------------------------------------------------------------
+-- Method: proportion
+--
+-- Description: Return parametric position on line
+--              < 0 = before start   > 1 = beyond end
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      LINE        Line
+--    2   R      POSITION    Point on (infinite) line
+-- Return:
+--   [Data Type] [Description]
+--    REAL        Parametric value for position on line
+--
+------------------------------------------------------------------------
+define method .proportion(!line is LINE , !point is POSITION) is REAL
+
+  !pointOnLine = !line.near(!point)
+  !lineLength  = !line.length()
+  if( !lineLength eq 0mm ) then
+    -- return unset real if line is zero length
+    return object REAL()
+  endif
+
+  !startDistance = !pointOnLine.distance(!line.startPosition)
+  if( !startDistance eq 0mm ) then
+    -- point at start
+    !prop = 0
+  elseif( !pointOnLine.distance(!line.endPosition) eq 0mm ) then
+    -- point at end
+    !prop = 1
+  else
+    !prop = !startDistance / !lineLength
+    if( !pointOnLine.direction(!line.startPosition).angle(!line.direction()).abs() lt 0.01 ) then
+      -- point before start of line
+      !prop = !prop * -1
+    endif
+  endif
+
+   return !prop
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      panelProfile
+--
+-- Description: Return boundary PROFILE for given object
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Object from which a boundary profile can be derived
+-- Return:
+--   [Data Type] [Description]
+--    PROFILE     boundary PROFILE for given object
+--
+------------------------------------------------------------------------
+define method .panelProfile(!panel is DBREF) is PROFILE
+
+  if( !panel.type inset('HPLATE','HBRCKT','HDOPLA','HRSOF') ) then
+
+    -- hull types
+    !profile = object PROFILE(!panel)
+    handle any
+      return object PROFILE()
+    endhandle
+
+  else
+
+    -- outfit/design types
+    if( !panel.hardType eq 'PANE' ) then
+      !block = object BLOCK( 'PLOOP 1 OF ' + !panel.string() )
+    elseif( !panel.hardType eq 'EXTR' ) then
+      !block = object BLOCK( 'LOOP 1 OF ' + !panel.string() )
+    elseif( !panel.hardType eq 'GENSEC' ) then
+      !block = object BLOCK( 'SPINE 1 OF ' + !panel.string() )
+    else
+      return object PROFILE()
+    endif
+    !loop    = !panel.evaluate(!block)
+    handle any
+      return object PROFILE()
+    endhandle
+    !profile = object PROFILE(!loop)
+    handle any
+      return object PROFILE()
+    endhandle
+
+  endif
+
+  return !profile
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      panelPlanes
+--
+-- Description: Return two PLANE objects for two sides of given object
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Outfit or Hull element with surface planes
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Two planes - one of each side
+--
+------------------------------------------------------------------------
+define method .panelSurfaces(!panel is DBREF) is ARRAY
+
+  !result = ARRAY()
+
+  if( !panel.type inset('HPLATE','HBRCKT','HDOPLA','HRSOF') ) then
+
+    -- hull objects
+    !pv                  = object POINTVECTOR()
+    !pv.position         = !panel.position
+    handle any
+      return ARRAY()
+    endhandle
+    !pv.direction        = !panel.orientation.zDir()
+    !result[1]           = !pv.plane()
+
+    -- offset the plane in the opposite direction to zdir by the thickness
+    !thickness           = !panel.loHeight
+    handle any
+      !thickness         = 0
+    endhandle
+    !pv                  = !pv.offset( -1 * !thickness )
+    !pv.direction        = !pv.direction.opposite()
+    !result[2]           = !pv.plane()
+
+  elseif( !panel.hardType eq 'GENSEC' ) then
+
+    !profile   = !this.panelProfile(!panel)
+    if( !profile.unset() ) then
+      return ARRAY()
+    endif
+    !result[1] = !profile.plane()
+    !pv        = object POINTVECTOR(!profile.position, !profile.orientation.zDir().opposite())
+    !result[2] = !pv.plane()
+
+  else
+
+    -- outfit/design objects
+    -- default to position and orientation
+    !result[1]           = object PLANE(!panel.position, !panel.orientation)
+    !pv                  = object POINTVECTOR(!panel.position, !panel.orientation.zDir().opposite())
+    !result[2]           = !pv.plane()
+    -- At least one vertex must exist to find top and bottom planes
+    if( !panel.hardType eq 'PANE' ) then
+      !block = object BLOCK( 'PAVE 1 OF PLOOP 1 OF ' + !panel.string() )
+    elseif( !panel.hardType eq 'EXTR' ) then
+      !block = object BLOCK( 'VERT 1 OF LOOP 1 OF ' + !panel.string() )
+    else
+      return !result
+    endif
+    !vertex  = !panel.evaluate(!block)
+    handle any
+      return ARRAY()
+    endhandle
+    -- top plane
+    !pv        = object POINTVECTOR(!vertex.pPosition[3], !vertex.pDirection[3])
+    !result[1] = !pv.plane()
+    -- bottom plane
+    !pv        = object POINTVECTOR(!vertex.pPosition[1], !vertex.pDirection[1])
+    !result[2] = !pv.plane()
+
+  endif
+
+  return !result
+
+endmethod
+-- End of method definition
+
+---------------------------------------------------------------------
+--
+-- Method:      intersectionData
+--
+-- Description: Find details of picked end of line
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      ANY, POSS, POSE
+--    2   R      LINE        Profile line
+--    3   R      POSITION    Intersection point
+--    4   R      POINTVECTOR Pick vector
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       [1] STRING: POSS or POSE
+--                [2] POINTVECTOR: from intersection to retained profile end
+--
+------------------------------------------------------------------------
+define method .intersectionData(!overrideEnd is STRING, !line is LINE, !intersectionPoint is POSITION, !pickVector is POINTVECTOR) is ARRAY
+
+  -- get intersection data
+  if( !overrideEnd eq 'ANY' ) then
+    -- get intersection data for single segment profile
+    !intersectData    = !this.intersectionDetail(!line, !intersectionPoint, !pickVector)
+  else
+    -- get intersection data for GENSEC start or end
+    !proportion       = !this.proportion(!line, !intersectionPoint)
+    if( !proportion lt 0 ) then
+       -- intersection hitting first curve
+       !!alert.error('Mitre to GENSEC is permitted only at the start or end of the GENSEC')
+       !intersectData = ARRAY()
+    else
+      !intersectData[1]           = !overrideEnd
+      !intersectData[2]           = object POINTVECTOR()
+      !intersectData[2].position  = !intersectionPoint
+      !intersectData[2].direction = !line.direction().opposite()
+    endif
+
+  endif
+
+  return !intersectData
+
+endmethod
+-- End of method definition

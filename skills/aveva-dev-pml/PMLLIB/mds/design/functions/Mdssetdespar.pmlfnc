@@ -1,0 +1,175 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            Mdssetdespar.pmlfnc
+--    Type:          Function Definition
+--    Group:         Undefined
+--      Keyword:     Undefined
+--    Module:        Undefined
+--------------------------------------
+--
+-- File             : Mdssetdespar.pmlfnc
+--   Type           : Function Definition
+--   Group          : Multi Discipline Supports Application
+--     Keyword      : MDS
+--   Module         : design
+--   Replaces       :
+--
+-- Author:          : Steve Robinson
+-- Created:         : Oct 7 1997
+--
+--
+-- Description:
+-- set design individual design parameters for a given attachment type
+--
+----------------------------------------------------------------------------------
+-- Arguments:
+--    [#]   [R/RW] [Data Type] [Description]
+--     1     R      DBREF       Reference of ATTA at which design params will be set
+--     2     R      REAL        Design parameter number to be set
+--     3     R      STRING      Value of design parameter (DPs can be WORDs...)
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+-- Define Function
+define function !!mdsSetDesPar(!atta is DBREF, !number is REAL, !value is REAL) is BOOLEAN
+
+  !currentunits = !!kgetsetunits()
+
+  -- Initialise variables
+  !startRef = !!ce
+
+  -- Function main
+
+  -- check that passed atta exists
+  if (!atta.badRef()) then
+    !!alert.error('[!!mdsSetDesPar] Could not navigate to Attachment "$!atta"')
+    !!kRestoreUnits(!currentunits)
+    return false
+  endif
+
+  -- check passed element type is an ATTA
+  if (!atta.type neq 'ATTA' and !atta.type neq 'PLAT' and !atta.type neq 'CTSUPP') then
+    !!alert.error('[!!mdsSetDesPar] Passed element type is not an Atta/Plate')
+    !!kRestoreUnits(!currentunits)
+    return false
+  endif
+
+  -- Navigate to !atta
+  !!ce = !atta
+
+  !stype = !!ce.styp
+  handle any
+    !!alert.error('[!!mdsSetDesPar] Unable to determine Atta selection type from spec')
+    !!ce = !startRef
+    !!kRestoreUnits(!currentunits)
+    return false
+  endhandle
+
+  if(!stype.eq('SP01A') or !stype.eq('SP02A')) then
+    !stype = !stype.before('A')
+  endif
+
+  --> DO NOT Substring 'STYPE' variable if Guide TYPE is 'GT04'
+  if (match(!stype,'GT04') gt 0) then
+  elseif !stype.length().eq(6) then
+    !stype = !stype.substring(1,6)
+  else
+    !stype = !stype.substring(1,5)
+  endif
+
+  -- Determine atta nominal bore
+  !nomBore = !atta.catref.param[1]
+
+  -- Determine the MDS Standard DEFAULT DATA Object for a SINGLE BORE SIZE
+  !attastype = !atta.stype
+  if (!attastype.matchwild('TT*')) then
+    !branch = !atta.owner
+    !brahbor = !branch.hbor
+    !mds$!<stype>defs = object MDSREADTRUNDATA()
+    !mdstrundata = !mds$!<stype>defs.mdstrundata(!attastype, !brahbor.real().value())
+    --true check
+    if (!mdstrundata.not()) then
+      -- ERROR with the MDS DEFAULTS in the PARAGON CATALOGUE "SECTION" or "CATEGORY" element
+      if (!mdstrunobj.mdsstd.sactive.not()) then
+        -- ERROR with the MDS DEFAULTS in the PARAGON CATALOGUE "SECTION" element
+        !errormessage = !mdstrunobj.mdsstd.smess
+      elseif (!mdstrunobj.mdsstd.cactive.not()) then
+        -- ERROR with the MDS DEFAULTS in the PARAGON CATALOGUE "CATEGORY" element
+        !errormessage = !mdstrunobj.mdsstd.cmess
+      endif
+      !!kRestoreUnits(!currentunits)
+      !!ce = !startRef
+      !!alert.error(!errormessage)
+      return FALSE
+    endif
+
+  else
+    !mds$!<stype>defs = object MDSREADPARSDATA()
+    !mdscheckdefs = !mds$!<stype>defs.mdsdefsdata(!attastype, !nomBore)
+    if (!mdscheckdefs.not()) then
+      !!kRestoreUnits(!currentunits)
+      !!ce = !startRef
+      return FALSE
+    endif
+  endif
+
+  -- Get DESPARS for this BORE size and MDS Standard type
+  !desPars = !mds$!<stype>defs.desPars
+
+  handle any
+
+    -- Ignore Warning if !atta.stype is a TRUNNION SREF atta
+    -- '.desPars' object member DOES NOT exist in the MDSTRUN object
+    if (!stype.matchwild('TT*').not()) then
+      !!alert.warning('Design parameters have not been defined for this type of support with N.b. $!nomBore')
+      !!ce = !startRef
+      !!kRestoreUnits(!currentunits)
+      return false
+    endif
+  endhandle
+
+  -- move to attachment and set passed DP
+  $!atta
+  !!mdsDacControl(true)
+
+  DESPAR N $!number $!value
+  handle ANY
+    if (!number.neq(0)) then
+      !!alert.error('Invalid Design parameters number or value: $!!error.text')
+      !!mdsDacControl(false)
+      $!startRef
+      !!kRestoreUnits(!currentunits)
+      return FALSE
+    endif
+
+  endhandle
+  !!mdsDacControl(false)
+
+  -- cycle through default design parameter values and re-execute any DP expressions
+  do !index index !desPars
+    if (!desPars[!index].match('(') neq 0) then
+      -- this DP is an expression, re-execute in case DP set above is contained in the expression
+      !!mdsDacControl(true)
+      DESPAR N $!index $!desPars[$!index]
+      handle any
+        --$p Invalid Design parameters expression: !desPars[!index]
+        !!mdsDacControl(false)
+        $!startRef
+        !!kRestoreUnits(!currentunits)
+        return false
+      endhandle
+
+    endif
+  enddo
+  !!mdsDacControl(true)
+
+  -- move back to start element
+  $!startRef
+
+  !!kRestoreUnits(!currentunits)
+  return true
+
+endfunction

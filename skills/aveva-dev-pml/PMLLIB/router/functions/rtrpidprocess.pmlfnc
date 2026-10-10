@@ -1,0 +1,1049 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            rtrpidprocess.pmlfnc
+--   Type:          Function Definition
+--   Group:         Router application
+--     Keyword:     RTR
+--   Module:        router
+--   Replaces:      MPID
+--
+-- Author:          Patricia Gardener
+-- Created:
+--
+--
+-- Description:
+-- Process P&ID input file :-
+--
+-- Reads in flat file produced by P&ID system and creates piping components.
+-- It creates a file called pid????.tmp in PDMSWK. This is a macro that does
+-- the actual NEW PIPE, NEW BRANCH, NEW TEE. Error checking is built into
+-- the macro. Its filename is unique so 2 or more users would not overwrite
+-- each others files.
+--
+-- Some simple checking is done to see if a component already exists - it
+-- tries to navigate to it. If it can't, it creates it. If it does, it asks
+-- the user if it can delete it. If the users says No, the import is stopped.
+-- The function rtrpidreplace is called to check if the component exists.
+--
+-- When this function runs, it assumes the user has navigated to the correct
+-- position in the hierarchy. All items are created below this point.
+--
+-- The pipes are added to the main Router form by calling MADDCE.
+--
+-------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      FILE        The file produced by P&ID in neutral format
+--    2   R      FILE        The log file; can be unset
+--    3   R      BOOLEAN     Flag whether Tees should be unNamed
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define function !!rtrPIDprocess( !importFile is FILE, !logFile is FILE, $
+                                 !ask is BOOLEAN, !unNameTees is BOOLEAN, $
+                                 !keepFile is BOOLEAN, !replaced is ARRAY)
+
+-- onerror golabel /END
+
+-- check can make a pipe, user maybe at incorrect place in the hierarchy
+
+!oldCe = !!ce
+
+NEW PIPE
+handle (2,500) (2,501) (2,502) (2,503) (2,504)
+  -- DAC errors
+  !!alert.error(!!error.text)
+   return
+elsehandle ANY
+  !!messageFile.error(162, 48)
+  return
+elsehandle none
+  DELETE PIPE
+endhandle
+
+-- Are we working in Appware or Command line?
+
+var !device DEV
+
+-- Initialise Variables to defaults
+
+!pipeName      = ||               $* Holds name of pipe currently in
+!branchName    = ||               $* Holds name of branch currently in
+!branchCount   = 0                $* store number of branches in a pipe
+!replaced      = ARRAY()          $* Names of replaced pipes & branches
+!newBranches   = ARRAY()          $* Names of new branches, plus heads & tails
+
+!rlock = 1
+!isTee = false                    $* does ORIF TRUE, POSF TRUE need to be written out?
+!currentBore  = 0                 $* Changes as bore of pipe changes.
+
+-- Default PSPE selected by user
+if ( defined(!!cdPIPE) ) then
+  !defaultPspec = !!cdPIPE.pspe
+else
+  !defaultPspec = ''
+endif
+
+-- ******************************************************************
+-- Open file for reading and create file that will be the
+-- macro run generate pipes.
+-- Unique is used in the filename to make sure 2 users can not
+-- overwrite each others macro
+-- *****************************************************************
+
+if ( !logFile.set() ) then
+  !logFile.open( 'OVERWRITE' )
+endif
+
+var !unique    unique
+!dir    = !!evarSplit('PDMSWK')[1]
+!macroFileName = !dir + '/pid' + !unique + '.tmp'
+
+!macroFile = object FILE( !macroFileName )
+!macroFile.open( 'OVERWRITE' )
+
+handle ANY
+  if(!device ne 'TTY') then
+    !!messageFile.error(162, 49)
+  else
+    !string = !!messageFile.messageString(162,49)
+    !!rtrWriteLog( !logFile, !string)
+  endif
+
+  return
+endhandle
+!macroFile.writeRecord( '!oldCe = !!ce' )
+
+--------------------------------------------------------------------
+-- Output nice message/start off log.
+--------------------------------------------------------------------
+
+!importFileName = !importFile.name()
+!string = 'BANNER ' + !importFileName
+!!rtrWriteLog( !logFile, !string)
+
+if ( !logFile.set() ) then
+  !logFileName = '|' + !logFile.name() + '|'
+else
+  !logFileName = '||'
+endif
+
+!macroFile.writeRecord( '!logFile = OBJECT FILE( $!logFileName ) ' )
+!macroFile.writeRecord( 'if ( !logFile.set() ) then' )
+!macroFile.writeRecord( '  !logFile.open(|APPEND|)' )
+!macroFile.writeRecord( 'endif' )
+
+--------------------------------------------------------------------
+-- Load in import file into array
+--------------------------------------------------------------------
+
+!string = !!messageFile.messageString(162,61)
+!!rtrWriteLog( !logFile, !string)
+!!rtrWriteLog( !logFile, '')
+
+!lines   = !importFile.readFile()
+
+if(!lines.unset()) then
+
+  !string = !!messageFile.messageString(162,62)
+  !!rtrWriteLog( !logFile, !string)
+  !macroFile.close()
+  !logFile.close()
+  return
+endif
+
+--------------------------------------------------------------------
+-- Pass 1
+--------------------------------------------------------------------
+
+!string = !!messageFile.messageString(162,63)
+!!rtrWriteLog( !logFile, !string)
+!!rtrWriteLog( !logFile, '')
+
+if( not !!rtrPIDPreprocess(!lines, !logFile) ) then
+
+  !macroFile.close()
+  !logFile.close()
+  return
+endif
+
+!!rtrWriteLog( !logFile, '')
+
+
+--------------------------------------------------------------------
+-- Pass 2
+-- Loop and parse input file line by line, generate macro
+--------------------------------------------------------------------
+
+!string = !!messageFile.messageString(162,64)
+!!rtrWriteLog( !logFile, !string)
+!!rtrWriteLog( !logFile, '')
+
+-- Want to create array of Tees
+!macroFile.writeRecord( |!tees = ARRAY()|)
+
+do !lineNumber to !lines.maxIndex()
+
+  !line    = !lines[!lineNumber]
+  handle (2,752)
+    -- index !lineNumber does not exist
+    skip
+  endhandle
+
+  !words = !line.split()
+
+  if (!line eq ||) then
+    skip
+    -- blank line so ignore it
+
+  elseif (!words[1] eq |--|) then
+    skip
+    -- Its a comment so ignore it
+
+  --------------------------------------------------------------------
+  -- Starting new PIPE/BRANCH etc
+  --------------------------------------------------------------------
+
+  elseif (!line.match(|START|) gt 0) then
+
+    if (!words[2].match(|PIPE|) gt 0) then
+
+      !string = !!messageFile.messageString(162,65,!words[3] )
+      !!rtrWriteLog( !logFile, !string )
+
+      !pipeName = !words[3]
+      !pipeBore = !line.after( 'BORE' )
+      !pipeBore = !pipeBore.part( 1 )
+
+      !currentBore = !pipeBore.real()
+
+      !pspe = !line.after(|PSPE|).part(1)
+
+      -- If it has been spelt PSPEC (not PSPE), get second part
+
+      if( !pspe eq |C|) then
+        !pspe = !line.after(|PSPEC|).part(1)
+      endif
+
+      if ( !pspe eq ||) then
+        !string = 'WARNING: '
+        !string = !string + !!messageFile.messageString(162,66,!pipeName )
+        !string = !string + !!messageFile.messageString(162,58,!lineNumber.string() )
+        !string = !string + !!messageFile.messageString(162,67 )
+        !!rtrWriteLog( !logFile, !string )
+
+        if ( !defaultPspec ne '' ) then
+          !line = !line + ' PSPE /' + !defaultPspec
+        endif
+        !pspe = !defaultPspec
+      endif
+
+      !oldSize = !replaced.size()
+      if ( not !!rtrPIDreplace( !pipeName, !ask, !replaced ) ) then
+        !string = !!messageFile.messageString(162,73 )
+        !!rtrWriteLog( !logFile, !string)
+
+        break
+      elseif ( !replaced.size() gt !oldSize ) then
+        !pipe = !pipeName.dbRef()
+        !oldBranches = !pipe.members
+        !string = !!messageFile.messageString(162,68,!pipeName )
+        !!rtrWriteLog( !logFile, !string)
+        !string = !!messageFile.messageString(162,69,!pipeName )
+        !newOrOld = 'OLD '
+      else
+        !oldBranches = ARRAY()
+        !string = !!messageFile.messageString(162,70,!pipeName )
+        !newOrOld = 'NEW '
+      endif
+
+      !details = !line.after(|PIPE|)
+
+      !macroFile.writeRecord( || )
+      !macroFile.writeRecord( |    !!rtrWriteLog( !logFile, '' ) | )
+      !macroFile.writeRecord( |    !!rtrWriteLog( !logFile, '$!string' ) | )
+
+      !macroFile.writeRecord( |$!newOrOld PIPE $!details| )
+
+      -- ERROR checking after "NEW PIPE /XXX PSPEC /mmm"
+
+      !macroFile.writeRecord( |  handle ANY| )
+      !string = 'ERROR: Pipe ' + !pipeName + ' (Line ' + !lineNumber.string() + ') '
+      !string = !string + !!messageFile.messageString(162,71)
+      !macroFile.writeRecord( |    !!rtrWriteLog( !logFile, '$!string' ) | )
+      !macroFile.writeRecord( |    !!rtrWriteLog( !logFile, !!error.text ) | )
+      !macroFile.writeRecord( |  endhandle| )
+
+      !branchCount = 0
+
+    ----------------------------------
+    -- BRANCH
+    ----------------------------------
+
+    elseif ( !words[2].match(|BRANCH|) gt 0) then
+
+      if(!pipeName eq ||) then
+        !string = 'ERROR: ' + !!messageFile.messageString(162,72,!lineNumber.string() )
+        !!rtrWriteLog( !logFile, !string )
+        break
+      endif
+
+      !branchName = !words[3]
+      !teeNumber = 0
+
+      !oldSize = !replaced.size()
+      if ( not !!rtrPIDreplace( !branchName, !ask, !replaced ) ) then
+        !string = !!messageFile.messageString(162,73)
+        !!rtrWriteLog( !logFile, !string )
+        break
+      elseif ( !replaced.size() gt !oldSize ) then
+        !branch = !branchName.dbRef()
+        !branchIndex = !oldBranches.findFirst(!branch)
+        if ( !branchIndex.set() ) then
+          !oldBranches.remove(!branchIndex)
+        endif
+        !oldMembers = ARRAY()
+        !oldMemberNames = ARRAY()
+        !currentIndex = 0
+        if ( !branch.owner ne !pipeName.dbRef() ) then
+          !string = !!messageFile.messageString(162,74,!branchName)
+          !!rtrWriteLog( !logFile, !string )
+          !string = 'Pipe   ' + !branch.owner.name
+          !replaced.append( !string )
+          -- Delete the branch
+          !!ce = !branch
+          DELETE BRANCH
+          !newOrOld = 'NEW '
+        else
+          !string = !!messageFile.messageString(162,75,!branchName)
+          !!rtrWriteLog( !logFile, !string )
+          !newOrOld = 'OLD '
+          !oldMembers = !branch.members
+          do !x to !oldMembers.size()
+            !oldMemberNames[!x] = !oldMembers[!x].name
+          enddo
+        endif
+      else
+        !newOrOld = 'NEW '
+      endif
+
+      !branchPspec = !line.after(|PSPE|).part(1)
+
+      if ( !branchPspec eq |C| ) then
+        !branchPspec = !line.after(|PSPEC|).part(1)
+      endif
+
+      if ( !branchPspec eq || ) then
+        !branchSpec = !pspe
+      else
+        !branchSpec = !branchPspec
+      endif
+
+      !hRef = !line.after(|HREF|).part(1)
+      !tRef = !line.after(|TREF|).part(1)
+
+      if ( !hRef eq ||  or  !hRef eq |/| ) then
+        !string = 'ERROR: ' + !!messageFile.messageString(162,76,!branchName)
+        !string = !string + !!messageFile.messageString(162,58,!lineNumber.string())
+        !!rtrWriteLog( !logFile, !string )
+        !hRef = 'NO_HREF'
+      endif
+
+      if ( !tRef eq || or !tRef eq |/|) then
+        !string = 'WARNING: ' + !!messageFile.messageString(162,77,!branchName)
+        !string = !string + !!messageFile.messageString(162,58,!lineNumber.string())
+        !!rtrWriteLog( !logFile, !string )
+        !tRef = 'NO_TREF'
+      endif
+
+      !newBranches.append ( !branchName + ' ' + !hRef + ' ' + !tRef )
+
+      ------------------------------------------------
+      -- strip out START, HREF, TREF & PSPE (or PSPEC)
+      -- from the !line just read in
+      ------------------------------------------------
+
+      !hRefIndex = !words.findFirst('HREF')
+      !tRefIndex = !words.findFirst('TREF')
+
+      if(!hRefIndex.set() and !hRefIndex gt 0) then
+
+        !words[!hRefIndex].delete()
+        !words[!hRefIndex + 1].delete()
+      endif
+
+      if(!tRefIndex.set() and !tRefIndex gt 0 ) then
+
+        !words[!tRefIndex].delete()
+        !words[!tRefIndex + 1].delete()
+      endif
+
+      !words.compress()
+      !newLine = ''
+
+      do !ind from 2 to !words.maxIndex()
+        !newLine = !newLine & ' ' & !words[!ind]
+      enddo
+
+      !macroFile.writeRecord( || )
+      if ( !newOrOld eq 'NEW ' ) then
+        !string = !!messageFile.messageString(162,79,!branchName)
+      else
+        !string = !!messageFile.messageString(162,78,!branchName)
+
+      endif
+      !macroFile.writeRecord( |  !!rtrWriteLog( !logFile, '$!string' ) | )
+
+      if ( !line.after(|BORE|) eq ||) then
+        if ( !pipeBore ne || ) then
+          !macroFile.writeRecord( | $!newOrOld $!newLine HBORE $!pipeBore| )
+        else
+          !string = 'ERROR: ' + !!messageFile.messageString(162,80,!pipeName)
+          !string = !string + !!messageFile.messageString(162,81,!branchName)
+          !string = !string + !!messageFile.messageString(162,58,!lineNumber.string())
+          !!rtrWriteLog( !logFile, !string )
+          !macroFile.close()
+          !logFile.close()
+          return
+        endif
+      else
+        if( !line.after(|HBORE|) eq ||) then
+
+          !newLine = !newLine.before(|BORE|) + | HBORE | + !newLine.after(|BORE|)
+        endif
+        !macroFile.writeRecord( | $!newOrOld $!newLine| )
+        !currentBore = !newLine.after(|HBORE|).part( 1 ).real()
+      endif
+
+      !macroFile.writeRecord( |  handle ANY| )
+      !string = 'ERROR: Branch ' + !branchName + ' (Line ' + !lineNumber.string() + ') '
+      !string = !string + !!messageFile.messageString(162,71)
+      !macroFile.writeRecord( |    !!rtrWriteLog( !logFile, '$!string' ) | )
+      !macroFile.writeRecord( |    !!rtrWriteLog( !logFile, !!error.text ) | )
+      !macroFile.writeRecord( |  endhandle| )
+
+      !branchCount = !branchCount + 1
+
+    ------------------------------------------------
+    -- START 'unknown'
+    ------------------------------------------------
+
+    elseif (match(|$!words[2]|, ||) gt 0) then
+      !string = 'ERROR: ' + !!messageFile.messageString(162,82)
+      !string = !string + !!messageFile.messageString(162,58,!lineNumber.string())
+      !!rtrWriteLog( !logFile, !string)
+      skip
+
+    endif
+
+  elseif ( !line.match(|END|) gt !line.match(|/|) ) then
+
+    if ( !branchName ne || ) then
+      if ( !newOrOld eq 'OLD ' and !oldMembers.size() ne !currentIndex ) then
+        do !x from !currentIndex + 1 to !oldMembers.size()
+          !!ce = !oldMembers[!x]
+          !deleteType = !!ce.type
+          DELETE $!deleteType
+        enddo
+      endif
+      !branchName = ||
+      !oldMembers = ARRAY()
+    else
+      if ( !branchCount eq 0 ) then
+        !string = 'WARNING: ' + !!messageFile.messageString(162,83,!pipeName)
+        !!rtrWriteLog( !logFile, !string )
+      endif
+
+      !oldBranches.compress()
+      if ( !oldBranches.size() gt 0 ) then
+        do !x to !oldBranches.size()
+          !string = 'Branch ' + !oldBranches[!x].name
+          !replaced.append( !string )
+          !!ce = !oldBranches[!x]
+          DELETE BRAN
+        enddo
+      endif
+
+      !pipeName = ||
+      !oldBranches = ARRAY()
+    endif
+
+    skip
+
+  -------------------------------------------------------------------
+  -- If we're in a PIPE and a BRANCH, this must be an COMPONENT
+  -------------------------------------------------------------------
+
+  elseif (!pipeName ne ||) then
+
+    if (!branchName ne ||) then
+
+      ------------------------------------------------
+      -- strip out ISPEC, TSPEC and their values
+      -- from the !line just read in
+      ------------------------------------------------
+
+      !iSpec = ''
+      !tSpec = ''
+
+      !iSpecIndex = !words.findFirst('ISPEC')
+      !tSpecIndex = !words.findFirst('TSPEC')
+
+      if(!iSpecIndex.set() AND !iSpecIndex gt 0) then
+        !iSpec = !words[!iSpecIndex + 1]
+
+        !words[!iSpecIndex].delete()
+        !words[!iSpecIndex + 1].delete()
+      endif
+
+      if(!tSpecIndex.set() AND !tSpecIndex gt 0 ) then
+        !tSpec = !words[!iSpecIndex + 1]
+
+        !words[!tSpecIndex].delete()
+        !words[!tSpecIndex + 1].delete()
+      endif
+
+      !words.compress()
+      !line = ''
+
+      do !ind indices !words
+        !line = !line & ' ' & !words[!ind]
+      enddo
+
+
+      ------------------------------------------------------
+      -- sort out type, name, styp and attributes on !line
+      ------------------------------------------------------
+      !type = !words[1]
+      if ( !type eq 'TEE' ) then
+        !teeNumber = !teeNumber + 1
+      endif
+      !newOrOldComponent = 'NEW '
+
+      if(!words.size() eq 1) then
+        !componentName = ''
+        !words[2] = ''
+        !attributes = ''
+      else
+        !componentName = !words[2]
+        if ( !componentName.subString(1,1) eq '/' ) then
+          !attributes = !line.after(!componentName)
+          if ( !!exists( !componentName, STRING(), STRING() ) ) then
+            if ( !newOrOld eq 'NEW ') then
+              !string = 'WARNING: ' + !!messageFile.messageString(162,84,!componentName)
+              !!rtrWriteLog( !logFile, !string)
+              !componentName = ''
+            elseif ( !type eq 'TEE' and !unNameTees ) then
+              !string = 'WARNING: ' + !!messageFile.messageString(162,86,!componentName)
+              !!rtrWriteLog( !logFile, !string)
+              !componentName = ''
+            else
+              !oldComponent = !componentName.dbRef()
+              !oldComponentType = !oldComponent.type
+              if ( !oldComponent.owner ne !branch ) then
+                !string = 'WARNING: ' + !!messageFile.messageString(162,84,!componentName)
+                !!rtrWriteLog( !logFile, !string)
+                !componentName = ''
+              elseif ( !oldComponentType ne !type ) then
+                !string = 'WARNING: ' + !!messageFile.messageString(162,85,!componentName)
+                !!rtrWriteLog( !logFile, !string)
+                -- Delete the component
+                !!ce = !oldComponent
+                DELETE $!oldComponentType
+              else
+                !index = !oldMemberNames.findFirst(!componentName)
+                if ( !index.unset() or !index le !currentIndex ) then
+                  !string = 'WARNING: ' + !!messageFile.messageString(162,87,!componentName)
+                  !!rtrWriteLog( !logFile, !string)
+                else
+                  !newOrOldComponent = 'OLD '
+                  if ( !index ne !currentIndex + 1 ) then
+                    do !x from !currentIndex + 1 to !index - 1
+                      !!ce = !oldMembers[!x]
+                      !deleteType = !!ce.type
+                      DELETE $!deleteType
+                    enddo
+                  endif
+                  !currentIndex = !index
+                  if ( !oldComponent.rloc eq 0 ) then
+                    !rlock = 0
+                  endif
+                endif
+              endif
+            endif
+          elseif ( !newOrOld eq 'OLD ' and $
+                   !type eq 'TEE' and $
+                   !unNameTees and $
+                   !oldMembers.size() gt !currentIndex ) then
+            do !x from !currentIndex + 1 to !oldMembers.size()
+              if ( !oldMembers[!x].type eq 'TEE') then
+                !newOrOldComponent = 'OLD '
+                !componentName = !teeNumber.string() + ' OF BRANCH ' + !branchName
+                !currentIndex = !x
+                if ( !oldMembers[!x].rloc eq 0 ) then
+                  !rlock = 0
+                endif
+                break
+              elseif ( !oldMembers[!x].rloc ne 2 ) then
+                break
+              endif
+            enddo
+          endif
+        else
+          !string = 'WARNING: ' + !!messageFile.messageString(162,88,!type)
+          !string = !string + !!messageFile.messageString(162,58,!lineNumber.string())
+          !!rtrWriteLog( !logFile, !string)
+          !componentName = ''
+          !attributes = !line.after(!type)
+        endif
+      endif
+
+     !selectText = ' SELECT'
+
+      ----------------------------------
+      -- REDU
+      ----------------------------------
+
+      if ( !type eq |REDU|) then
+
+        !selectText = ' SELECT WITH '
+
+        -- Ignore PBORE0 - stupid on a REDU!
+
+        !p0Index = !words.findFirst('PBORE0')
+
+        if(!p0Index.set() and !p0Index gt 0) then
+
+          !words[!p0Index].delete()
+          !words[!p0Index + 1].delete()
+          !words.compress()
+        endif
+
+        -- if BORE keyword present, new flat file syntax
+        !boreIndex = !words.findFirst('BORE')
+
+        if(!words.size() eq 1) then
+          !string = 'ERROR: ' + !!messageFile.messageString(162,89)
+          !string = !string + !!messageFile.messageString(162,58,!lineNumber.string())
+          !!rtrWriteLog( !logFile, !string)
+          skip
+
+        elseif(!words.size() eq 2 and !words[2].subString(1, 1) eq '/') then
+          !string = 'ERROR: ' + !!messageFile.messageString(162,90)
+          !string = !string + !!messageFile.messageString(162,58,!lineNumber.string())
+          !!rtrWriteLog( !logFile, !string)
+          skip
+
+        elseif(!boreIndex.set() and !boreIndex gt 0) then
+
+          if(!words.size() lt !boreIndex + 1) then
+            !string = 'ERROR: ' + !!messageFile.messageString(162,91)
+            !string = !string + !!messageFile.messageString(162,58,!lineNumber.string())
+            !!rtrWriteLog( !logFile, !string)
+            skip
+          endif
+
+          !reduBore = !words[!boreIndex + 1].real()
+          handle ANY
+            !string = 'ERROR: ' + !!messageFile.messageString(162,91)
+            !string = !string + !!messageFile.messageString(162,58,!lineNumber.string())
+            !!rtrWriteLog( !logFile, !string)
+            skip
+          endhandle
+
+          !words[!boreIndex].delete()
+          !words[!boreIndex + 1].delete()
+          !words.compress()
+
+          if(!words.size() gt 2) then
+            !selectText = !selectText + 'STYP ' + !words[3]
+            !words[3].delete()
+            !words.compress()
+          endif
+
+        elseif(!words.size() eq 2) then
+          !string = 'ERROR: ' + !!messageFile.messageString(162,89)
+          !string = !string + !!messageFile.messageString(162,58,!lineNumber.string())
+          !!rtrWriteLog( !logFile, !string)
+          skip
+        else
+          -- bore number must be old fixed format - 3rd or forth field
+          -- (forth if STYP present)
+
+          if(!words.size() gt 3) then
+            !selectText = !selectText + 'STYP ' + !words[3]
+            !words[3].delete()
+            !reduBore = !words[4].real()
+            handle ANY
+              !string = 'ERROR: ' + !!messageFile.messageString(162,90)
+              !string = !string + !!messageFile.messageString(162,58,!lineNumber.string())
+              !!rtrWriteLog( !logFile, !string)
+              skip
+            endhandle
+
+            !words[4].delete()
+
+          elseif(!words.size() eq 3) then
+            !reduBore = !words[3].real()
+            handle ANY
+              !string = 'ERROR: ' + !!messageFile.messageString(162,90)
+              !string = !string + !!messageFile.messageString(162,58,!lineNumber.string())
+              !!rtrWriteLog( !logFile, !string)
+              skip
+            endhandle
+
+            !words[3].delete()
+          endif
+
+          !words.compress()
+
+        endif
+
+        !attributes = ''
+        do !loop from 3 to !words.size()
+          !attributes = !attributes + !words[!loop] + ' '
+        enddo
+
+        if ( !currentBore lt !reduBore ) then
+          !selectText  = !selectText + | PBORE1 | + !reduBore.string()
+        else
+          !selectText  = !selectText + | PBORE2 | + !reduBore.string()
+        endif
+
+        -- is it an enlarger?
+
+        if ( !currentBore lt !reduBore ) then
+          !selectText = ' FLIP' + !selectText
+        endif
+
+        !currentBore = !reduBore
+
+      ----------------------------------
+      -- TEE
+      ----------------------------------
+
+      elseif (!words[1] eq |TEE|) then
+
+        -- Get P3 bore depending on different syntax;
+        --   TEE /T 50   -or-   TEE /T PBORE3 50
+        -- Assuming NO STYP - Tees don't exist in PIDs.
+
+        if(!words.size() ge 3) then
+
+          !selectText = ' SELECT WITH '
+
+          !p3   = !words[3]
+          -- Try converting to real (so know if it was not)
+          !unusedTest = !words[3].real()
+          handle (2, 441)
+            -- It was a word (like 'PBOREx')
+
+            !p1 = ''
+            !p2 = ''
+            !p3 = ''
+
+            !p1Index = !words.findFirst('PBORE1')
+            !p2Index = !words.findFirst('PBORE2')
+            !p3Index = !words.findFirst('PBORE3')
+
+            -- If the defaultBore is the same as Px, don't bother outputting value
+
+            !defaultBore = !currentBore
+
+            if(!p1Index.set() AND !p1Index gt 0) then
+
+              if( !defaultBore  ne !words[!p1Index + 1].real() ) then
+                !p1          = 'PBORE1 ' + !words[!p1Index + 1]
+                !defaultBore = !words[!p1Index + 1].real()
+              endif
+
+              !words[!p1Index].delete()
+              !words[!p1Index + 1].delete()
+            endif
+
+            if(!p2Index.set() AND !p2Index gt 0) then
+              -- only set P2Bore if different from P1
+
+              if( !defaultBore  ne !words[!p2Index + 1].real() ) then
+                !p2 = 'PBORE2 ' + !words[!p2Index + 1]
+              endif
+
+              !words[!p2Index].delete()
+              !words[!p2Index + 1].delete()
+            endif
+
+            if(!p3Index.set() AND !p3Index gt 0) then
+              -- only set P3Bore if different from P1
+
+     --         if( !defaultBore  neq !words[!P3Index + 1].real() ) then
+                !p3 = 'PBORE3 ' + !words[!p3Index + 1]
+     --         endif
+
+              !words[!p3Index].delete()
+              !words[!p3Index + 1].delete()
+
+            endif
+
+            !words.compress()
+            !bores = !p1 + ' ' + !p2 + ' ' + !p3
+          elsehandle none
+            !bores = 'PBORE3 ' + !words[3]
+            !words[3].delete()
+            !words.compress()
+          endhandle
+        else
+          !bores = ''
+        endif
+
+        !selectText = !selectText + !bores
+        if ( !newOrOldComponent eq 'OLD ' and !unNameTees ) then
+          !attributes = 'NAME ' + !words[2]
+        else
+          !attributes = ''
+        endif
+        do !loop from 3 to !words.size()
+          !attributes = !attributes + !words[!loop] + ' '
+        enddo
+
+        !isTee = true
+
+      ----------------------------------
+      -- All other components
+      -- compose and write record to macro file
+      ----------------------------------
+
+      else
+
+        if ( !attributes ne '' ) then
+          !selectText = !selectText + ' WITH STYP ' + !attributes.part(1)
+          !attributes = !attributes.after( !attributes.part(1) )
+        endif
+
+      ----------------------------------
+      -- Don't know this component...
+      ----------------------------------
+
+     -- else
+      endif
+
+      !record = !newOrOldComponent + !type + ' ' + !componentName + !selectText
+      !macroFile.writeRecord( !record )
+
+      ------------------------------------------------------------------
+      -- Create error trapping for every component that has been created
+      ------------------------------------------------------------------
+
+      !macroFile.writeRecord( |  handle (42,66) (42,64) (42,52) (42,501) (42,502) | )
+      !macroFile.writeRecord( |    var !type type| )
+      !string = 'ERROR: ' + !type + ' ' + !words[2] + ' (Line ' + !lineNumber.string() + ') '
+      !string = !string + !!messageFile.messageString(162,92,!branchSpec)
+      !macroFile.writeRecord( |    !!rtrWriteLog( !logFile, '$!string' ) | )
+
+      !macroFile.writeRecord( |  elsehandle (42,54) (42,53)| )
+      !macroFile.writeRecord( |    var !type type| )
+      !string = 'WARNING: ' + !type + ' ' + !words[2] + ' (Line ' + !lineNumber.string() + ') '
+      !string = !string + !!messageFile.messageString(162,93)
+      !macroFile.writeRecord( |    !!rtrWriteLog( !logFile, '$!string' ) | )
+      !macroFile.writeRecord( |    !!rtrWriteLog( !logFile, !!error.text ) | )
+
+      !macroFile.writeRecord( |  elsehandle ANY| )
+      !string = 'ERROR: ' + !type + ' ' + !words[2] + ' (Line ' + !lineNumber.string() + ') '
+      !string = !string + !!messageFile.messageString(162,94)
+      !macroFile.writeRecord( |    !!rtrWriteLog( !logFile, '$!string' ) | )
+      !macroFile.writeRecord( |    !!rtrWriteLog( !logFile, !!error.text ) | )
+      !macroFile.writeRecord( |  endhandle| )
+
+      !macroFile.writeRecord( |  RLOCK $!rlock| )
+
+      if( !iSpec ne ||) then
+        !macroFile.writeRecord( |  ISPEC $!iSpec| )
+      endif
+
+      if(!tSpec ne ||) then
+        !macroFile.writeRecord( |  TSPEC $!tSpec| )
+      endif
+
+      if ( !isTee ) then
+        !macroFile.writeRecord( |   ORIF TRUE| )
+        !macroFile.writeRecord( |   POSF TRUE| )
+        !macroFile.writeRecord( |   !tees.append( !!ce ) | )
+        !isTee = false
+      endif
+
+      if ( !attributes ne '' ) then
+        !macroFile.writeRecord( !attributes )
+      endif
+
+      !macroFile.writeRecord( '' )
+
+      !rlock = 1
+    endif
+
+  else
+
+    !string = 'ERROR: ' + !!messageFile.messageString(162,82)
+    !string = !string + !!messageFile.messageString(162,58,!lineNumber.string())
+    !!rtrWriteLog( !logFile, !string )
+    !!rtrWriteLog( !logFile, !line )
+
+    if(!device ne |TTY|) then
+      !!messageFile.error(162, 95, !lineNumber.string())
+    endif
+
+    break
+
+  endif
+enddo
+
+
+--------------------------------------------------------------------
+-- Created components, now set HREF and TREF
+--------------------------------------------------------------------
+
+!!rtrWriteLog( !logFile, '' )
+!string = !!messageFile.messageString(162,96)
+!!rtrWriteLog( !logFile, !string )
+!!rtrWriteLog( !logFile, '' )
+
+!macroFile.writeRecord( |!branches = ARRAY()|)
+
+do !x indices !newBranches
+  !branchName = !newBranches[!x].part( 1 )
+  !hRef       = !newBranches[!x].part( 2 )
+  !tRef       = !newBranches[!x].part( 3 )
+
+  !macroFile.writeRecord( || )
+  !macroFile.writeRecord( |$!branchName| )
+  !macroFile.writeRecord( |!flag = 0| )
+
+  if ( !hRef ne |NO_HREF| ) then
+    !macroFile.writeRecord( |HREF $!hRef| )
+    !macroFile.writeRecord( |handle ANY| )
+    !string = 'WARNING: ' + !!messageFile.messageString(162,97,!branchName) + !hRef.string()
+    !macroFile.writeRecord( |  !!rtrWriteLog( !logFile, '$!string') | )
+    !string = !!messageFile.messageString(162,98)
+    !macroFile.writeRecord( |  !!rtrWriteLog( !logFile, '$!string') | )
+    !macroFile.writeRecord( |  !flag = 1| )
+    !macroFile.writeRecord( |elsehandle none| )
+    !macroFile.writeRecord( |  !flag = 0| )
+    !macroFile.writeRecord( |endhandle| )
+    !macroFile.writeRecord( || )
+  else
+    !macroFile.writeRecord( |!flag = 1| )
+  endif
+
+  if ( !tRef ne |NO_TREF|) then
+    !macroFile.writeRecord( |TREF $!tRef| )
+    !macroFile.writeRecord( |handle (73,3)| )
+    !macroFile.writeRecord( |  | )
+    !macroFile.writeRecord( |elsehandle ANY| )
+    !string = 'WARNING: ' + !!messageFile.messageString(162,99,!branchName) + !tRef.string()
+    !macroFile.writeRecord( |  !!rtrWriteLog( !logFile, '$!string') | )
+    !string = !!messageFile.messageString(162,98)
+    !macroFile.writeRecord( |  !!rtrWriteLog( !logFile, '$!string') | )
+    !macroFile.writeRecord( |  !flag = 1| )
+    !macroFile.writeRecord( |endhandle| )
+
+  endif
+
+  !macroFile.writeRecord( || )
+  !macroFile.writeRecord( |if( !flag eq 0 ) then| )
+  !macroFile.writeRecord( |  !branches.append ( !!ce )| )
+  !macroFile.writeRecord( |endif| )
+  !macroFile.writeRecord( || )
+enddo
+
+
+--------------------------------------------------------------------
+-- MADDCE adds new branches to Router form. Navigate to new BRANCH,
+-- then MADDCE checks HREF's etc to see if it can route it. If it
+-- can't, it puts out an error message and does not add it to the
+-- list.
+--------------------------------------------------------------------
+
+!macroFile.writeRecord( |if ( defined(!!cdRouter) ) then| )
+!macroFile.writeRecord( |  do !c indices !branches| )
+!macroFile.writeRecord( |    !!ce = !branches[!c]| )
+!macroFile.writeRecord( |    callr MADDCE| )
+!macroFile.writeRecord( |  enddo| )
+!macroFile.writeRecord( |endif| )
+!macroFile.writeRecord( || )
+
+
+--------------------------------------------------------------------
+-- un-name Tees
+--------------------------------------------------------------------
+
+if (!unNameTees) then
+  !macroFile.writeRecord( |do !c indices !tees| )
+  !macroFile.writeRecord( |  !!ce = !tees[!c]| )
+  !macroFile.writeRecord( |  unname| )
+  !macroFile.writeRecord( |  handle (41, 25)| )
+  !macroFile.writeRecord( |  endhandle| )
+  !macroFile.writeRecord( |enddo| )
+  !macroFile.writeRecord( || )
+endif
+
+
+--------------------------------------------------------------------
+-- macro to return to old Current element
+--------------------------------------------------------------------
+!macroFile.writeRecord( |!!ce = !oldCe| )
+
+--------------------------------------------------------------------
+-- run the macro created.
+--------------------------------------------------------------------
+
+!macroFile.writeRecord( |!logFile.close()| )
+!macroFile.close()
+-- close logFile, so generated macro can open & append to it
+!logFile.close()
+
+$M "$!macroFileName"       $* Run macro to create components
+
+
+--------------------------------------------------------------------
+-- Close everything in case of error earlier
+-- ONERROR GOLABEL /END  has been set
+--------------------------------------------------------------------
+
+-- label /END
+handle ANY
+  if ( !logFile.set() ) then
+    !logFile.open('APPEND')
+  endif
+  !string = !!messageFile.messageString(162,100)
+  !!rtrWriteLog( !logFile, !string)
+  !macroFile.writeRecord( |    !!rtrWriteLog( !logFile, !!error.text ) | )
+elsehandle none
+  if ( !logFile.set() ) then
+    !logFile.open('APPEND')
+  endif
+  !!rtrWriteLog( !logFile, 'FINISH')
+endhandle
+
+!importFile.close()
+!macroFile.close()
+!logFile.close()
+
+--------------------------------------------------------------------
+-- Delete macro created?
+--------------------------------------------------------------------
+
+if (not !keepFile) then
+  !macroFile.deleteFile()
+endif
+
+!!ce = !oldCe
+handle ANY
+-- component which was ce has been deleted
+endhandle
+
+endfunction
+-- End of function definition for !!rtrPIDprocess(!importFile is FILE, !logFile is FILE, !ask is BOOLEAN, !unNameTees is BOOLEAN, !keepFile is BOOLEAN)

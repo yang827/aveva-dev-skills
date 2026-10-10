@@ -1,0 +1,914 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:                MdscreateFR13.pmlfnc
+--   Type:              Function Definition
+--   Group:             Multi Discipline Supports Application
+--     Keyword:         MDS
+--   Module:            design
+--   Replaces:          MPS127
+--
+-- Author:              T.Martin
+-- Created:             19-nov-2003
+--
+--
+-- Description:
+-- function to create support frame
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         STRING       Method of creating support
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!MdsCreateFR13(!Method is string)
+
+-- Find current units and set the distance unit to metric
+  !CurrentUnits = !!KGetSetUnits()
+
+  -- Initialise variables
+    call !!MdsResetPins(1,9)
+    !Support    = !!MdsFR13.Support
+    !IDType = 'SBFI'
+    -- !Clearance  = !!MdsOptions.Clear.val
+    !Clearance  = 25
+    !Overlap    = !!MdsOptions.Overlap.val
+    !Selection  = !!MdsSetSteel.Size.Selection('Rtext')
+    !Datum      = !Support.Datum
+    !Stru       = !Support.Stru
+    !Name       = !Stru.name
+    !P10Dir     = !Support.P10Dir
+    !P11Dir     = !Support.P11Dir
+    !Alias      = !Support.Alias
+----------------------------- **** connections **** -----------------------------
+    !Refe       = !!CE
+    !Form       = !!MdsFR13
+
+
+  if !support.connections.set() then
+     !connection  = !support.connections[1]
+     !connection1 = !support.connections[2]
+     handle ANY
+        !connection1 = object DBREF()
+     endhandle
+  endif
+
+
+-- Can we write to the spref attribute of the SREF atta
+-- and the stru
+  if !Support.Datum.badref().not() then
+    !SrefName = !Support.Datum.Name.before('/DATUM') + '/SREF'
+      if !!MdsComClaimDac(!Support.Stru,'DACMOD','POS').not() or !!MdsComClaimDac(!SrefName.dbref(),'DACMOD','SPREF').not() then
+        !Despars = !Srefname.dbref().despar
+        !!MdsResetDims(!Form,!Despars)
+        !!kRestoreUnits(!currentunits)
+        !!Alert.Error('Unable to change the support as write access to the SREF atta is not available')
+        return
+      endif
+  endif
+
+  !HaveJoints = FALSE
+  if(!Form.Support.Joints.unset().not()) then
+     !Joints     = !Support.Joints
+     !Attributes = array()
+     !HaveJoints = !!KRestoreJoints(!Joints,!Attributes,'SAVE','')
+      handle ANY
+       !HaveJoints = FALSE
+       !Support.Joints.Clear()
+       -- in case they have been deleted and cancel is used
+      endhandle
+  endif
+---------------------------------------------------------------------------------
+   -- Check that Datum atta has been created
+    if (!Datum.set().not())then
+      !!Alert.message('Datum support atta has not been created')
+      !!kRestoreUnits(!currentunits)
+      return
+    endif
+
+   -- Check that Datum atta has been positioned
+    if (!Support.position.not())then
+      !!Alert.message('Position atta before identifying supporting steelwork')
+      !!kRestoreUnits(!currentunits)
+      return
+    endif
+
+    !NoEquiv = false
+
+   -- Check which attas to work from
+    if (!Support.Bars.size().leq(1))then
+      !Atta = !Support.Atta
+    else
+      !Atta = !Support.Bars[1]
+    endif
+
+   -- Set up Orientation
+    !Ddir = U wrt world
+    !Udir = D wrt world
+
+   -- Store section name and matref for each member
+   -- for reseting later
+    !StoreMat = array()
+    !StoreMat = !!MdsStoreMat(!Name)
+
+    -- Check for framework orientation
+    -- get the horizontal direction to and from the vertical member
+    if (!Support.RotateCur)then
+      !ToVert   = !P11Dir
+      !FromVert = !p10Dir
+    else
+      !ToVert   = !P10Dir
+      !fromVert = !p11Dir
+    endif
+
+
+if !method eq |PICK| then
+
+   ------------ *** Connection Warnings *** -------------
+       !ErrorMessage = string()
+       !DummyS       = ''
+
+    if(!!kErrorsForConns(!Form, !ErrorMessage, !DummyS).eq('UNJOINTED')) then
+       -- nothing to do
+    elseif(!!kErrorsForConns(!Form, !ErrorMessage, !DummyS).eq('WARNING')) then
+       !Continue = !!Alert.Confirm(!ErrorMessage)
+       if(!Continue.eq('NO')) then
+          !!kRestoreUnits(!currentunits)
+          return
+       endif
+    elseif(!!kErrorsForConns(!Form, !ErrorMessage, !DummyS).eq('ERROR')) then
+        !!Alert.Error(!ErrorMessage)
+        !!kRestoreUnits(!currentunits)
+        return
+    endif
+
+
+     --!connection = !!mdsFR13.sbfi
+     --!support.connections[1] = !!ce
+     if !!mdsFR13.sbfi.set() then
+       if !!mdsFR13.sbfi.type.eq('SBFI') then
+          !connection = !!mdsFR13.sbfi
+          !connection1 = object dbref()
+       else
+          !connection = object dbref()
+          !connection1 = object dbref()
+       endif
+     else
+       !connection = object dbref()
+       !connection1 = object dbref()
+     endif
+     !support.connections[1] = !connection
+     !support.connections[2] = !connection1
+
+
+     !!ce = !!MdsFR13.Support.Stru
+
+     !frameType = !!CE.:MDSSuppType
+     !suppattas = ARRAY()
+     if !!mdsFR13.support.stack.stack1.size() eq 0 then
+       -- the support has not been built yet
+       !suppattas = !support.atta
+     else
+       -- the support is in modify mode
+       do !a values !!mdsFR13.support.stack.stack1
+          !suppattas.append(!a.atta)
+       enddo
+     endif
+
+
+      if !!mdsFR13.Dim4.Val.eq(0) then
+        !!mdsFR13.Dim4.Val = 700
+      endif
+      -- work out the offset from the plate
+      !vector = object pointvector()
+      !datumpos = !datum.position.wrt(/* )
+      !vector.position = !!mdsFR13.plane.position.wrt(/* )
+      !vector.direction = !!mdsFR13.plane.orientation.zdir()
+      !offsetposition = !vector.through(!datumpos).position
+      !!MdsFR13.Dim1.Val = !!mdsFR13.plane.position.wrt(/* ).distance(!offsetposition) - 90
+      -- work out the vertical offset from the plate
+      !locationpos = !!mdsFR13.sbfi.position.wrt(/* )
+      !vertoffset = !locationpos.up - !datumpos.up
+      !!MdsFR13.Dim2.Val = !vertoffset
+
+
+      -- can't calculate dimension 3 because we dont have a member yet
+      -- need to move the creation code up to here so that we can use the plines object
+       !!CE = !Stru
+
+  -- Pins now in position create framework
+
+    delete STRU MEM
+      handle (41,66) (2,113) (2,113)
+      endhandle
+
+    !mdstemp = /MDS/$!Alias/$!Selection
+    :mdscheck $!mdstemp.:mdscheck
+    AT $!Datum
+
+    NEW FRMW $!NAME/MAIN
+    !FrmwSupport = !!CE
+
+    !!CE = /MDS/$!Alias/$!Selection
+    !Desc = desc of /MDS/$!Alias/$!Selection
+    !Type = 'HORI'
+
+    !Subs = !!KCollectAllFor('SUBS', '', !!CE)
+    !Frmw = !!KCollectAllFor('FRMW', '', !!CE)
+    !FrameFormat = before(!Frmw[1].name, '-FRMW')
+
+  -- Navigate back to support and create template elements
+    !!CE = !FrmwSupport
+    COPY ATTRIB OF $!Frmw[1]
+    COPY MEM OF $!Frmw[1] RENAME $!FrameFormat $!NAME
+    do !I indices !Subs
+      NEW SUBS $!NAME/SUBS$!I COPY ATTRIB OF $!Subs[$!I]
+      COPY MEM OF $!Subs[$!I] RENAME $!FrameFormat $!NAME
+    enddo
+
+    -- Get direction of P9 of datum atta and dist between p9 and p0
+    !!CE = !Stru
+
+    -- Set stru description for template recognition
+    desc '$!desc'
+
+    -- move thr stru u thro the datum
+    MOVE $!Udir THRO P9 OF $!Datum
+    !ORIZ = !Ddir
+    -- set the structure orientation
+    VAR !ORIX CONST DIR PIN 9 TO PIN 8
+    if !Support.RotateCur then
+        ORI X IS p10 of $!Datum  AND Z IS $!ORIZ
+    else
+        ORI X IS p11 of $!Datum  AND Z IS $!ORIZ
+    endif
+    -- connect H1
+    !!CE = $!<Name>-H1
+    :mdsconn $!connection $* connect to the panel
+    handle ANY
+        -- the connection does not exist
+    endhandle
+
+    -- connect H2
+    !!CE = $!<Name>-H2
+    :mdsconn $!connection1 $* connect to the panel
+    handle ANY
+        -- the connection does not exist
+    endhandle
+
+    !!CE = $!<Name>-V1
+
+    !adjustpl = object mdsplines(!!ce)
+    if !method eq 'PICK' then
+      !moveamount = !adjustpl.setclearance($!datum,!clearance )
+    else
+      !moveamount = !adjustpl.setdistance($!datum,!!MdsFR13.Dim1.val.real() )
+    endif
+    move $!moveamount
+    !!MdsFR13.Dim1.Val = !adjustpl.getdistance($!datum)
+
+    -- now get dimension 3
+
+    !aobj = object mdsplines(!!ce,!form.plane,!locationpos.up)
+    !!MdsFR13.Dim3.Val = !aobj.dim1
+    !!ce = $!<Name>-H1
+    !!ce.pose = !aobj.start
+    !!ce.poss = !aobj.end
+    !!ce.drne = !aobj.drns
+    !!ce.drns = !aobj.drne
+    goto joie
+    handle ANY
+    elsehandle NONE
+      !!ce.cutplane = !aobj.drne
+      !!ce.posline  = !aobj.nearest
+    endhandle
+
+
+    !!ce = $!<Name>-H1
+    extend start dist 20
+    !!ce = $!<Name>-H2
+    extend start dist 20
+
+    !!mdsFR13.support.stack = object mdslevelstack($!<Name>-V1 , !form )
+
+    if !aobj.drns eq !!mdsFR13.support.stack.directions[3] then $* its a straight line
+       !val = 1
+    elseif !aobj.drns eq !!mdsFR13.support.stack.directions[2] then $* its to the left
+       !val = 2
+    elseif !aobj.drns eq !!mdsFR13.support.stack.directions[1] then $* its over the top of the datum
+       !val = 3
+    elseif !aobj.drns eq !!mdsFR13.support.stack.directions[4] then $* its a straight line
+       !val = 4
+    else
+       !!alert.error('Support.config invalid')
+    endif
+
+    !!CE = $!<Name>-V1
+    !aobj = object mdsplines(!!ce,!form.plane,!locationpos.up - !!mdsfr13.dim4.val)
+    !!ce = $!<Name>-H2
+    !!ce.pose = !aobj.start
+    !!ce.poss = !aobj.end
+    !!ce.drne = !aobj.drns
+    !!ce.drns = !aobj.drne
+    goto joie
+    handle ANY
+    elsehandle NONE
+      !!ce.cutplane = !aobj.drne
+      !!ce.posline  = !aobj.nearest
+    endhandle
+
+    !!ce = $!<Name>-H2
+    extend start dist 20
+
+    !!mdsFR13.support.config = !val
+    !!mdsFR13.config.val = !val.string()
+    !!mdsfrconfig.options.val = !val
+    !!mdsfrconfig.init()
+    !!ce = $!<Name>-H1
+    reconn recalc
+    fitt 1
+    zdist 0
+    cref $!connection
+    handle ANY
+    elsehandle NONE
+       if !connection.set() then
+         if !connection.type.eq('SBFI') then
+            -- connect the fitting using :mdsancref
+            !obj = object mdsbplateconn(!!ce,!connection)
+          endif
+       endif
+    endhandle
+
+
+    !!ce = $!<Name>-H2
+    reconn recalc
+    fitt 1
+    zdist 0
+    cref $!connection1
+    handle ANY
+    elsehandle NONE
+      if !connection1.set()then
+       if !connection1.type.eq('SBFI') then
+          -- connect the fitting using :mdsancref
+          !obj = object mdsbplateconn(!!ce,!connection1)
+        endif
+      endif
+    endhandle
+
+
+--------------------------------- dimension generation -------------------------------------------
+elseif (!Method eq |DIMENSION|)then
+
+
+    if !!mdsFR13.support.config.unset() then
+       !!mdsFR13.support.config = !!mdsFR13.config.val.real()
+    endif
+
+      -- Initialise variables for dimension check
+      !D1 = !!MdsFR13.Dim1.Val
+      !D2 = !!MdsFR13.Dim2.Val
+      !D3 = !!MdsFR13.Dim3.Val
+      !D4 = !!MdsFR13.Dim4.Val
+
+      if (!D1.eq(0) or !d3.eq(0) or !d4.eq(0))then
+        !!Alert.error('Not all of the dimensions have been completed.')
+        !!kRestoreUnits(!currentunits)
+        return
+      endif
+
+      !!MdsCreateMess(true)
+
+    -- Position pins
+      !!CE = !Datum
+
+      -- PIN 9 TAKES P9 OF THE DATUM ATTA (DATUM ATTA POSITION POINTING DOWN)
+      PIN 9 COPY P9
+      -- PIN 9 DIRECTION SET TO P1O OF THE DATUM ATTA (NORTH IF NOT ROTATED)
+      PIN 9 DIR $!ToVert
+      PIN 8 COPY PIN9
+      -- PIN 8 SET TO THE P11 DIR (SOUTH IF NOT ROTATED)
+      PIN 8 DIR $!FromVert
+      -- THE FOLLOWING PLANE COMMANDS APPEAR TO DO NOTHING
+      PIN 9 plane PIN 9 THRO CE
+      PIN 8 plane PIN 8 THRO CE
+      -- POSITION PIN 9 DIMENSION 1 DISTANCE AWAY FROM THE DATUM
+      PIN 9 DIST $!D1
+      -- SET THE PIN 9 DIRECTION TO !DDIR (UP)????????????????????
+      PIN 9 DIR $!Ddir
+      PIN 7 COPY PIN 9
+      PIN 7 DIST $!D2
+      PIN 7 DIR $!Udir
+      -- PIN 7 IS SET AT DIMENSION 2 UP FROM THE DATUM ATTA AND SHOULD BE THE POSITION OF THE FITTING
+
+      -- NOW SWAP THE DIRECTIONS OF PIN8 AND 9
+      PIN 9 DIR FROM PIN 8 TO PIN 9
+      -- PIN 9 IS NOW POINTING TOWARDS THE VERTICAL MEMBER BACK TOWARDS THE DATUM ATTA
+      PIN 8 DIR FROM PIN 9 TO PIN 8
+      -- PIN 8 IS NOW POINTING AWAY FROM THE VERTICAL MEMBER
+
+
+      -- LOOP THROUGH THE ATTAS AND FIND THE LARGEST DIMENSION
+      !Dim = 0
+      do !I values !Atta
+        PIN 4 COPY PIN 8
+        PIN 4 AT $!Datum
+        PIN 4 plane PIN 4 CLEAR $!Clearance BEH $!I
+          handle (2,109)
+            BREAK
+          endhandle
+        VAR !CDIR CONST DIR P0 of $!Datum TO PIN 4
+         !Cdim = !!KStrReal('CONST DIST P0 of $!Datum TO PIN 4')
+
+        -- Set object definition
+        !Direction = object KEQUALDIR()
+        !Direction.DirectionA = !CDIR.direction()
+        !Direction.DirectionB = !FromVert
+        !Direction.Tolerance  = 0.05
+
+        if (!Cdim.gt(!Dim) and !!KDirEqualDir(!Direction)) then
+          PIN 4 AT $!Datum
+          PIN 4 DIST $!CDIM
+          !Dim = !Cdim
+        else
+          PIN 4 AT $!Datum
+          PIN 4 DIST $!DIM
+        endif
+      enddo
+      -- PIN 4 IS NOW AT THE POSITION OF THE GREATEST OFFSET AWAY FROM THE DATUM
+      -- SET PIN 4 DIRECTION TO PIN 9 DIR
+      PIN 4 DIR FROM PIN 8 TO PIN 9
+
+-- endif
+-- end of if statement to set pin positions
+-- pins should now be in position and we can begin
+
+  !!CE = !Stru
+
+  -- Pins now in position create framework
+
+    delete STRU MEM
+      handle (41,66) (2,113) (2,113)
+      endhandle
+
+    !mdstemp = /MDS/$!Alias/$!Selection
+    :mdscheck $!mdstemp.:mdscheck
+    AT $!Datum
+
+    NEW FRMW $!NAME/MAIN
+    !FrmwSupport = !!CE
+
+    !!CE = /MDS/$!Alias/$!Selection
+    !Desc = desc of /MDS/$!Alias/$!Selection
+    !Type = 'HORI'
+
+    !Subs = !!KCollectAllFor('SUBS', '', !!CE)
+    !Frmw = !!KCollectAllFor('FRMW', '', !!CE)
+    !FrameFormat = before(!Frmw[1].name, '-FRMW')
+
+  -- Navigate back to support and create template elements
+    !!CE = !FrmwSupport
+    COPY ATTRIB OF $!Frmw[1]
+    COPY MEM OF $!Frmw[1] RENAME $!FrameFormat $!NAME
+    do !I indices !Subs
+      NEW SUBS $!NAME/SUBS$!I COPY ATTRIB OF $!Subs[$!I]
+      COPY MEM OF $!Subs[$!I] RENAME $!FrameFormat $!NAME
+    enddo
+
+    -- Get direction of P9 of datum atta and dist between p9 and p0
+    !!CE = !Stru
+
+    -- Set stru description for template recognition
+    desc '$!desc'
+
+    -- move thr stru u thro the datum
+    MOVE $!Udir THRO P9 OF $!Datum
+
+    if !Support.RotateCur then
+        ORI X IS p10 of $!Datum  AND Z IS u
+    else
+        ORI X IS p11 of $!Datum  AND Z IS u
+    endif
+
+    !!CE = $!<Name>-H1
+    :mdsconn $!connection $* connect to the panel
+    handle ANY
+        -- the connection does not exist
+    endhandle
+
+    !!CE = $!<Name>-H2
+    :mdsconn $!connection1 $* connect to the panel
+    handle ANY
+        -- the connection does not exist
+    endhandle
+
+    !!CE = $!<Name>-V1
+
+
+    !adjustpl = object mdsplines(!!ce)
+    !moveamount = !adjustpl.setdistance($!datum,!!MdsFR13.Dim1.val.real() )
+    --$p moveamount is $!moveamount
+    --$p method is $!method
+    move $!moveamount
+   -- !!MdsFR13.Dim1.Val = !adjustpl.getdistance($!datum)
+   -- $p val set to $!!MdsFR13.Dim1.Val
+    !!mdsFR13.support.stack = object mdslevelstack($!<Name>-V1 , !form )
+    -- now we need to work out the direction of the support beam according to the stack
+    -- should we make this a method of the stack???????????????????????????????????????
+    if !!mdsFR13.support.config eq 1 then $* its a straight line
+       !ydir = !!mdsFR13.support.stack.directions[3]
+    elseif !!mdsFR13.support.config eq 2 then $* its to the left
+       !ydir = !!mdsFR13.support.stack.directions[2]
+    elseif !!mdsFR13.support.config eq 3 then $* its over the top of the datum
+       !ydir = !!mdsFR13.support.stack.directions[1]
+    elseif !!mdsFR13.support.config eq 4 then $* its a straight line
+       !ydir = !!mdsFR13.support.stack.directions[4]
+    else
+        !!alert.error('Support.config not set')
+    endif
+
+    !!CE = $!<Name>-V1
+    -- construct plane
+    !pv = object pointvector()
+    !pv.position = !!ce.poss.wrt(/* )
+    !pv.direction = !ydir
+    !pv = !pv.offset(!!MdsFR13.Dim3.Val + 40)
+    !pv.direction = !pv.direction.opposite()
+    !plane = !pv.plane()
+    !uppos = !datum.position.up + !!MdsFR13.Dim2.Val
+
+    -- position and orientate H1
+    !aobj = object mdsplines(!!ce,!plane,!uppos)
+    -- !!MdsFR13.Dim3.Val = !aobj.dim1
+    !!ce = $!<Name>-H1
+    !!ce.pose = !aobj.start
+    !!ce.poss = !aobj.end
+    !!ce.drne = !aobj.drns
+    !!ce.drns = !aobj.drne
+    goto joie
+    handle ANY
+    elsehandle NONE
+      !!ce.cutplane = !aobj.drne
+      !!ce.posline  = !aobj.nearest
+    endhandle
+
+    !!ce = $!<Name>-H1
+    reconn recalc
+    extend start dist 60
+
+    fitt 1
+    zdist 0
+    cref $!connection
+    handle ANY
+    elsehandle NONE
+      if !connection.type.eq('SBFI') then
+          -- connect the fitting using :mdsancref
+          !obj = object mdsbplateconn(!!ce,!connection)
+      endif
+    endhandle
+
+    !!ce = $!<Name>-H2
+    reconn recalc
+    extend start dist 60
+    fitt 1
+    zdist 0
+    cref $!connection1
+    handle ANY
+    elsehandle NONE
+      if !connection1.set() then
+        if !connection1.type.eq('SBFI') then
+          -- connect the fitting using :mdsancref
+          !obj = object mdsbplateconn(!!ce,!connection1)
+         endif
+      endif
+    endhandle
+
+   !!CE = $!<Name>-V1
+
+    !uppos = !uppos - !!MdsFR13.Dim4.Val
+    !aobj = object mdsplines(!!ce,!plane,!uppos)
+    -- position and orientate H1
+    -- !!MdsFR13.Dim3.Val = !aobj.dim1
+    !!ce = $!<Name>-H2
+
+    !!ce.pose = !aobj.start
+    !!ce.poss = !aobj.end
+    !!ce.drne = !aobj.drns
+    !!ce.drns = !aobj.drne
+    goto joie
+    handle ANY
+    elsehandle NONE
+      !!ce.cutplane = !aobj.drne
+      !!ce.posline  = !aobj.nearest
+    endhandle
+
+
+    !!ce = $!<Name>-H2
+    reconn recalc
+    extend start dist 60
+
+    fitt 1
+    zdist 0
+    cref $!connection1
+    handle ANY
+    elsehandle NONE
+      if !connection1.set() then
+        if !connection1.type.eq('SBFI') then
+          -- connect the fitting using :mdsancref
+          !obj = object mdsbplateconn(!!ce,!connection1)
+        endif
+      endif
+    endhandle
+
+
+endif
+-- end of dimension settings
+
+    !!ce = $!<Name>-V1
+    !Flush = :MdsOlap
+    if !Flush neq 'FLUSH' then
+      EXTEND end $!Overlap
+    endif
+
+
+    -- Extend and move bar 1
+    !!CE = $!<Name>-BAR-1
+    !Flush = :MDSOlap
+
+    PIN 9 plane PIN 9 CLEAR 0 inf $!NAME-V1
+    pin 4 copy pin 8
+    PIN 4 plane PIN 4 CLEAR 0 beh $!datum
+
+    -- extend bar
+    EXTEND START THRO PIN 9
+    reconn recalc
+    if !Support.RotateCur then
+        EXTEND END THRO p10 of $!Datum
+    else
+        EXTEND END THRO p11 of $!Datum
+    endif
+    reconn recalc
+
+
+   ---*********************************************8
+   !sctnlen = !!Mdsgetsctnlen(!!ce,'OLD')
+   reconnect recalc
+   -- bar 1
+   -- if the required section length is too long for bar1 we need to put something in
+   if !sctnlen eq 0 then
+     extend end dist 100 from posstart
+   else
+     extend end dist $!sctnlen from posstart
+
+   endif
+   reconnect recalc
+  -- Select correct spref
+    !!CE = $!<Name>/SREF
+    !!MdsDacControl(true)
+
+    SEL SPREF WITH STYP 'FR13-$!Selection' SPEC /MDF
+    !!MdsSetSuppCode('MODIFY',!Name,!Alias,'FR13-$!Selection')
+    !!MdsSetIspe()
+    !!MdsSelLstu(!!CE)
+    !!MdsDacControl(false)
+    !!CE = !Stru
+
+  -- If cross-bars existed replace them
+    if (!Support.Bars.empty().not())then
+      if !support.bars.size() eq 1 then
+        $!NAME-V1
+        extend start dist 20 inf $!<Name>-BAR-1
+        -- extend end dist 20 behind  $!<Name>-BAR-1
+        !!CE = !Stru
+      else
+      -- line up the attas with the vertical bar
+      do !I indices !Support.Bars
+       if !i eq 1 then
+        $!NAME-V1
+          extend start dist 20 inf $!<Name>-BAR-1
+          extend end dist 20 behind  $!<Name>-BAR-1
+        else
+          call !!MdsAddBarFR13(!Support, 'OLD', !Method)
+        endif
+      enddo
+    endif
+      !Support.BarLen = !!MdsFR13.Support.BarLen
+    endif
+    !list = !Support.Bars[1]
+    !References = ''
+    do !I Indices !list
+      !References = !References & ' ' & !list[!I].string()
+    enddo
+
+    -- Set atta reference to datum cross bar
+    !!CE = $!<Name>-BAR-1
+    :MDSAttaRef $!References
+    handle any
+    endhandle
+    !Support.BarLen[1] = deri length of CE
+    !!CE = !Stru
+
+    -- Adjust for slope on horizontal lines only
+    if (!Type eq |HORI|)then
+
+       -- Check to see if the line is sloping
+      !Adjust = 0
+      do !V values !Atta
+        !!CE = !V
+         skip if !!ce.:mdsrotdir.east.set()
+        !Grad = pl grad
+        if (!grad neq 0)then
+          !StrucElement = array()
+          !Ref = $!Name-BAR-1
+          !StrucElement.append(!Ref)
+          !VHeight = !!MdsAdjustSlope(!StrucElement, !V)
+        else
+          !VHeight = 0
+        endif
+        if (!VHeight gt !Adjust)then
+          !Adjust = !VHeight
+        endif
+      enddo
+
+      -- Adjust required elements
+      !!CE = $!<Name>-BAR-1
+      MOVE D WRT WORLD DIST $!Adjust
+
+      !!CE = $!<Name>-V1
+      !Start = Posstart wrt world
+      !End   = Posend wrt world
+
+      PIN 7 AT $!End
+      PIN 8 AT $!Start
+      PIN 7 DIR TO PIN 8
+      !ToBar = 0
+      do !Indx indices !Support.Bars
+        PIN 8 COPY PIN 7
+        PIN 8 plane PIN 8 THRO $!<Name>-BAR-$!Indx
+         !Tobar1 = !!KStrReal('CONST DIST PIN 7 TO PIN 8')
+        if (!ToBar1 gt !ToBar)then
+          !ToBar = !ToBar1
+          !index = !Indx
+        endif
+      enddo
+      PIN 8 plane PIN 8 CLEAR 0 BEH $!<Name>-BAR-$!index
+  endif
+
+  ---- if type = 'hori' endif
+
+    !!CE = $!<Name>/SREF
+    !!MdsDacControl(true)
+    DESPAR $!!MdsFR13.Dim1.Val $!!MdsFR13.Dim2.Val $!!MdsFR13.Dim3.Val $!!MdsFR13.Dim4.Val
+    !!MdsDacControl(false)
+
+  -- Reset materials of sections
+--<wd>29mar2004    !!MdsResetMat(!StoreMat)
+
+    !!CE = !Stru
+
+-- Reset the zdist for all joints
+   var !Sjois coll all sjoi for $!Name
+
+   do !ResetZdist values !Sjois
+     !!CE = !ResetZdist.dbref()
+     snod
+     zdist thro cref of same
+     handle ANY
+     endhandle
+   enddo
+
+-- Navigate to Main Structure of Framework
+    !!CE = !Stru
+
+------------------------***** connexions *****--------------------------
+ if(!HaveJoints) then
+    do !index indices !Joints
+     if(!Joints[!index].badref().not() and !Attributes[!index][8].dbref().:MDSConn.eq(!Joints[!index].owner.owner)) then
+        !Mainstl = !Attributes[!index][8].dbref().:MDSConn
+        !Support.Joints[!index] =  !!MdsCreateJoint(!MainStl, !Attributes[!index][8].dbref(),!Joints[!index],!Attributes[!index])
+     else
+        !Dummy = object dbref()
+        !DummyA = array()
+        !Mainstl = !Support.Connections[!index]
+        !Support.Joints[!index] =  !!MdsCreateJoint(!MainStl, !Attributes[!index][8].dbref(),!Dummy,!DummyA)
+     endif
+    enddo
+ endif
+----------------------------------------------------------------------
+
+-- Creation is complete, so we now need to extend the start and ends to suit the bracket and the bars.
+-- Check that the fitting is inside the existing section length
+-- if it is then do nothing
+-- else adjust the appropriate length to suit
+-- might as well adjust the top and bottom to suit the bars at the same time
+
+
+-- find out if the bracket is higher or lower than the current members
+-- take the volume of the bracket and check to see if its within the start and end points of the
+-- main section
+-- if it does, do nothing
+-- if its above, extend the end clearance xxx above the bracket
+-- if its below, extend the start clearance xxx above the bracket
+  !!CE = $!<Name>-V1
+
+  -- calculate the up position of the fitting
+  !pos = !datum.position.wrt(/* )
+  !pos.up = !pos.up + !!mdsFR13.dim2.val.real()
+
+
+  -- get fitting volume to identify the up and down limits
+
+  !!CE = $!<Name>-H1
+  !fittvol = object volume(!!ce)
+  !!CE = $!<Name>-V1
+  if !!ce.poss.wrt(/* ).up lt !fittvol.to.up and !!ce.pose.wrt(/* ).up lt !fittvol.from.up  then $* need to extend the start past the bracket
+     !up = !fittvol.to.up + 10
+     extend start thro u $!up wrt /*
+  elseif !!ce.pose.wrt(/* ).up gt !fittvol.from.up and !!ce.poss.wrt(/* ).up gt !fittvol.to.up  then $* need to extend the start past the bracket
+     !up = !fittvol.from.up - 10
+     extend end thro u $!up wrt /*
+  endif
+
+  -- reposition the fitting because the section length might have changed and the zdist is wrong
+
+  !!ce = !stru
+  -- Reset the zdist for all joints
+  var !Sjois coll all sjoi for $!Name
+
+   do !ResetZdist values !Sjois
+     !!CE = !ResetZdist.dbref()
+     snod
+     zdist thro cref of same
+     handle ANY
+     endhandle
+   enddo
+
+  -- now that we have done the major part of everything we need to extend V1 above the top bracket
+  -- and below the bottom bracket
+  !!CE = $!<Name>-V1
+  var !platejoints coll all sjoi for ce
+  !ja = ARRAY()
+  do !jo values !platejoints
+    !ja.append(!jo.dbref().position.wrt(/* ).up)
+  enddo
+  !ind = !ja.sortedindices()
+  !platejoints.reindex(!ind)
+  !lowbracket = !platejoints[1].dbref()
+  !highbracket = !platejoints[!platejoints.size()].dbref()
+
+   extend end distance 20 behind $!lowbracket
+   handle (61,93)
+      !hpos = !lowbracket.position.wrt(/* ).up - 60
+       extend end thro u $!hpos wrt /*
+   endhandle
+   extend start distance 20 inf $!highbracket
+   handle (61,93)
+     !hpos = !highbracket.position.wrt(/* ).up + 60
+     extend start thro u $!hpos wrt /*
+   endhandle
+  -- reset the config to what the form says it is
+  !support.config = !!mdsfrconfig.options.val
+
+  -- end of length setting
+
+  -- Enhance elements using colour set for highlight
+    !ColourList = array()
+    !ColourList.append(!!CE)
+    !ColourList.appendarray(!Support.Atta)
+    !colourlist.appendarray(!support.joints)
+
+  -- Colour Support
+    call !!KEnhanceList(!ColourList)
+
+  -- Reset all pins associated with this support
+   call !!MdsResetPins(1,9)
+
+  -- reset :mdsancref attributes if set
+  !Support.plateconns.restoreconns()
+
+  -- Update support data held in form
+  !!MdsFR13.Support = !Support
+
+  -- remove the create message
+  !!MdsCreateMess(false)
+
+-- Show dimensions on graphics if required
+   if !!MdsFR13.GraphicalDim then
+     !!Mdsshowdim(!!MdsFR13)
+   endif
+
+-- Reset Units
+   !!kRestoreUnits(!currentunits)
+
+-- End function
+endfunction
+
+-- End of file MdscreateFR13.pml

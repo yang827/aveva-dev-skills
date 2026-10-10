@@ -1,0 +1,987 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            dbegextrusion.pmlobj
+--   Type:          Object Definition
+--   Group:         Database routines
+--     Keyword:     DTB
+--   Module:        design
+--   Replaces:
+--
+-- Author:          N.Holmes
+-- Created:         Thu Sep 24 17:50:12 BST 1998
+--
+--
+-- Description:
+--  Generic extrusion object for database element, PANEL, FLOOR, EXTRU, NXTRU....
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  arcBoundary()                    ARRAY               Returns the definition of the loop in terms of an of arcs. Always returns the definition in an anti-clock-wise direction
+--  basicDefinition()                ARRAY               Returns the basic definition of the loop in terms of lines and arc. Always returns the definition in an anti-clock-wise direction
+--  clockwise()                      BOOLEAN             Returns true is the orientation of the path is clock-wise
+--  dbeGExtrusion(DBREF)             -                   Constructor using passed extrusion element
+--  edge(REAL)                       LINE                Return passed edge definition
+--  findCoincident()                 ARRAY               Finds coincident points from the extrusion loop
+--  offsetEdges(REAL,BOOLEAN)        -                   Offset edges of extrusion
+--  point(REAL)                      DBREF               Return vertex at passed position, if out of bounds of the loop, then it returns the first or last
+--  removeCoincident()               BOOLEAN             Remove coincident points from the extrusion loop, always asks if point are to be removed
+--  removeCoincident(BOOLEAN)        BOOLEAN             Remove coincident points from the extrusion loop
+--  selectEdge(POINTVECTOR,STRING)   DBREF               Derive edge nearest to point vector
+--  selectEdge(STRING,STRING)        -                   Define edg event picked an edge of a polygon, return the two indices of the edge
+--  selectPoint(EDGPICKDATA,STRING)  DBREF               Derive point nearest to point vector
+--  selectPoint(POINTVECTOR,STRING)  DBREF               Derive point nearest to point vector
+--  selectPoint(STRING,STRING)       -                   Define edg event the returns the nearest point to the pick on the polygon
+--  selectPoints(GMFPOLYGON,STRING,REAL) DBELOOPGROUP        Completion of picking screen
+--  selectPoints(POINTVECTOR,GMFPOLYGON,REAL) -                   Add intersection of point vector and plane into positions member
+--  selectPoints(STRING,STRING)      -                   Created and EDG event that allows the selection of points within a screen defined polygon
+--  spine()                          GMFSPINE            Returns the definition of the loop in terms of a gmfSpine Always returns the definition in an anti-clock-wise direction
+--  vertexDefinition()               ARRAY               Returns the basic definition of the loop in terms of an array of dbeVertex objects
+--
+------------------------------------------------------------------------
+
+define object DBEGEXTRUSION
+
+  -- Extrusion name
+  member .extrusion        is DBREF
+
+  -- Loop name
+  member .loop             is DBREF
+
+  -- Extrusion Type
+  member .type             is STRING
+
+  -- Vertex Type
+  member .vertexType       is STRING
+
+  -- Reference Plane (should be same as GMFPOLYGON)
+  member .plane            is PLANE
+
+  -- Polygon Definition
+  member .polygon          is GMFPOLYGON
+
+  -- Aid graphics sphere size
+  member .aidSphereSize    is REAL
+
+  -- Aid graphics translucency
+  member .aidTranslucency  is REAL
+
+endobject
+-- End of object definition for DBEGEXTRUSION
+
+------------------------------------------------------------------------
+--
+-- Method:      dbeGExtrusion
+--
+-- Description: Constructor using passed extrusion element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Extrusion element
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .dbeGExtrusion(!extrusion is DBREF)
+
+  !this.aidSphereSize = 100mm
+  !this.aidTranslucency = 0
+  -- Panel or panel based extrusion passed
+  if(!extrusion.list.findFirst('PLOO').set()) then
+    !this.vertexType = 'PAVE'
+    !this.loop       = !!dtbMemberOfType(!extrusion,'PLOO',1)
+
+  -- Extrusion based elements
+  elseif (!extrusion.list.findFirst('LOOP').set()) then
+    !this.vertexType = 'VERT'
+    !this.loop       = !!dtbMemberOfType(!extrusion,'LOOP',1)
+  elseif ( !extrusion.list.findFirst('RPATH').set()) then
+  	!this.vertexType = 'POINTR'
+  	!this.loop       = !!dtbMemberOfType(!extrusion,'RPATH',1)
+  else
+    return
+  endif
+
+  -- Set Data
+  !this.extrusion  = !extrusion
+  !this.type       = !extrusion.fullType
+
+  -- Define polygon of extrusion
+  if(!this.loop.set()) then
+    !this.polygon.gmfPolygon(!this.loop)
+    !this.plane    = !this.polygon.plane
+
+  -- No loop defined, only set plane
+  else
+    !this.plane    = object PLANE(!this.extrusion.position, !this.extrusion.orientation)
+  endif
+
+endmethod
+-- End of method definition for .dbeGExtrusion(DBREF)
+
+------------------------------------------------------------------------
+--
+-- Method:      offsetEdges
+--
+-- Description: Offset edges of extrusion
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      REAL        Offset
+--    2   R      BOOLEAN     Recalculate radii
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .offsetEdges(!offset is REAL, !recalculate is BOOLEAN)
+
+  -- Initialise Variables
+  !reference = !!ce
+
+  -- First of all, check for coincident points
+  if(!this.findCoincident().empty().not()) then
+    !!alert.warning('Unable to offset edges as there are coincident points within the loop definition.')
+    return
+  endif
+
+  -- Define Polygon of panel
+  !polygon   = !this.polygon
+
+  -- Offset edges of polygon
+  !polygon.offsetEdges(!offset)
+
+  -- Calculate all new radius, THIS MUST BE DONE BEFORE RE-POSITIONING
+  do !i indices !polygon.positions
+    !newPosition[!i] = !polygon.plane.threeDPosition(!polygon.positions[!i])
+
+      if(!recalculate) then
+       -- If there is a FRAD, then re-calculate radius
+      if(!this.loop.members[!i].fRadius gt 0) then
+        !polar         = !polygon.plane.near(!this.loop.members[!i].pPosition[1])
+        !centre        = !polygon.plane.near(!this.loop.members[!i].pPosition[9])
+        !tangent       = !polygon.plane.near(!this.loop.members[!i].pPosition[5])
+        !angle         = !centre.angle(!polar, !tangent)
+        handle any
+          !newRadius[!i] = 0
+        elsehandle none
+          !newRadius[!i] = COS(!angle) * !newPosition[!i].distance(!centre)
+        endhandle
+      else
+        !newRadius[!i] = 0
+      endif
+    endif
+
+  enddo
+
+  -- Re-define points of loop
+  do !i indices !polygon.positions
+    !!ce         = !this.loop.members[!i]
+    if(!recalculate) then
+      AT $!<newPosition[$!<i>]> FRADIUS $!<newRadius[$!<i>]>
+    else
+      AT $!<newPosition[$!<i>]>
+    endif
+  enddo
+
+  !!ce = !reference
+
+  -- Redefine polygon
+  !this.polygon.gmfPolygon(!this.loop)
+
+endmethod
+-- End of method definition for .offsetEdges(REAL, BOOLEAN)
+
+------------------------------------------------------------------------
+--
+-- Method:      point
+--
+-- Description: Return vertex at passed position, if out of bounds of the loop, then it returns the first or last
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      REAL        Vertex number
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       Vertex
+--
+------------------------------------------------------------------------
+
+define method .point(!index is REAL) is DBREF
+
+  -- Initialise Variables
+  if(!index gt !this.loop.members.size()) then
+    !number = 1
+  elseif (!index le 0) then
+    !number = !this.loop.members.size()
+  else
+    !number = !index
+  endif
+
+  -- Return
+  return  !this.loop.members[!number]
+
+endmethod
+-- End of method definition for .point(REAL) DBREF
+
+------------------------------------------------------------------------
+--
+-- Method:      edge
+--
+-- Description: Return passed edge definition
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      REAL        Edge number
+-- Return:
+--   [Data Type] [Description]
+--    LINE        Edge definition
+--
+------------------------------------------------------------------------
+
+define method .edge(!edgeNumber is REAL) is LINE
+
+  -- Initialise Variables
+
+  -- Last edge
+  if(!edgeNumber eq !this.loop.members.size()) then
+    !current = !edgeNumber
+    !next    = 1
+
+  -- Passed last member
+  elseif(!edgeNumber gt !this.loop.members.size()) then
+    !current = !edgeNumber - 1
+    !next    = 1
+
+  -- Last edge
+  elseif (!edgeNumber le 0) then
+    !current = !this.loop.members.size()
+    !next    = 1
+  else
+    !current = !edgeNumber
+    !next    = !edgeNumber + 1
+  endif
+
+  !line   = object LINE(!this.plane.near(!this.loop.members[!current].position), !this.plane.near(!this.loop.members[!next].position))
+
+  -- Return
+  return !line
+
+endmethod
+-- End of method definition for .edge(REAL) LINE
+
+------------------------------------------------------------------------
+--
+-- Method:      selectEdge
+--
+-- Description: Define edg event picked an edge of a polygon, return the two indices of the edge
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Action on completion
+--    2   R      STRING      Packet description to be added into EDG system with
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .selectEdge(!action is STRING, !description is STRING)
+
+  -- Initialise Variables
+
+  -- Packet definition
+  !packet                 = object EDGPACKET()
+  !packet.key             = 'definePolygon'
+  !packet.description     = !description
+  !packet.type            = 'polygon'
+  !packet.priority        = 3
+  !packet.input[1]        = !this
+  !packet.input[2]        = !action
+  !packet.action          = '!this.input[1].selectEdge(!this.return[1], !this.input[2])'
+  !packet.pickPacket.stdScreen('Pick near edge')
+  !packet.pickPacket.picks[1].pick.cursor     = 'pick'
+  !packet.remove          = true
+  !!edgCntrl.add(!packet)
+
+endmethod
+-- End of method definition for .selectEdge(STRING, STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      selectEdge
+--
+-- Description: Derive edge nearest to point vector
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      POINTVECTOR Pick direction
+--    2   R      STRING      Action to be carried out
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       Vertex nearest to point
+--
+------------------------------------------------------------------------
+
+define method .selectEdge(!pointVector is POINTVECTOR, !action is STRING) is DBREF
+  -- Initialise Variables
+  !return   = object DBREF()
+  !sequence = !this.polygon.nearestEdge(!pointVector)
+  if (!sequence eq 0) then
+    --could output a message here but may just as well let it run through... will use default edge
+    $!<action>
+    handle any
+      !!alert.error(!!error.text)
+    endhandle
+    return !return
+  endif
+  !return   = !this.loop.members[!sequence]
+  -- Carry out action
+  $!<action>
+  handle any
+    !!alert.error(!!error.text)
+  endhandle
+
+  -- Return a group in case the method is used on its own
+  return !return
+
+endmethod
+-- End of method definition for .selectEdge(POINTVECTOR, STRING) DBREF
+
+------------------------------------------------------------------------
+--
+-- Method:      selectPoint
+--
+-- Description: Define edg event the returns the nearest point to the pick on the polygon
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Action on completion
+--    2   R      STRING      Packet description to be added into EDG system with
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .selectPoint(!action is STRING, !description is STRING)
+
+
+  -- Initialise Variables
+
+  -- Packet definition
+  !packet                 = object EDGPACKET()
+
+  !testProfile						= object PROFILE(!this.loop)
+  handle ANY
+  	!badloop 							= true
+  elsehandle NONE
+  	!badloop							= !testProfile.isValidClosed()
+  endhandle
+  	
+  --if(!this.loop.own.type eq 'NXTR')then
+  --  !nVolume = !this.loop.own.own.nVolume
+  --else
+  --  !nVolume = !this.loop.own.nVolume
+  --endif
+  -- If the geometry of the loop is bad, then we need to derive using the screen position
+  if(!badloop) then
+    !packet.pickPacket.stdScreen('Pick screen position')
+    !packet.pickPacket.picks[1].pick.cursor     = 'pick'
+  else
+    !packet.pickPacket.stdPpoint('Pick Vertex')
+    !packet.pickPacket.picks[1].pick.input[3]   = 'refe eq ' & !this.extrusion.refe
+    !packet.pickPacket.picks[1].pick.modifiable = false
+  endif
+
+  !packet.key             = 'definePolygon'
+  !packet.description     = !description
+  !packet.type            = 'polygon'
+  !packet.priority        = 3
+  !packet.input[1]        = !this
+  !packet.input[2]        = !action
+  !packet.action          = '!this.input[1].selectPoint(!this.return[1], !this.input[2])'
+  !packet.remove          = true
+
+  !!edgCntrl.add(!packet)
+
+endmethod
+-- End of method definition for .selectPoint(STRING, STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      selectPoint
+--
+-- Description: Derive point nearest to point vector
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      POINTVECTOR Pick direction
+--    2   R      STRING      Action to be carried out
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       Vertex nearest to point
+--
+------------------------------------------------------------------------
+
+define method .selectPoint(!pointVector is POINTVECTOR, !action is STRING) is DBREF
+
+  -- Initialise Variables
+  !return   = object DBREF()
+  !sequence = !this.polygon.nearestPoint(!pointVector)
+  !return   = !this.loop.members[!sequence]
+
+  -- Carry out action
+  $!<action>
+  handle any
+    !!alert.error(!!error.text)
+  endhandle
+
+  -- Return a group in case the method is used on its own
+  return !return
+
+endmethod
+-- End of method definition for .selectPoint(POINTVECTOR, STRING) DBREF
+
+------------------------------------------------------------------------
+--
+-- Method:      selectPoint
+--
+-- Description: Derive point nearest to point vector
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA Pick Data
+--    2   R      STRING      Action to be carried out
+-- Return:
+--   [Data Type] [Description]
+--    DBREF      Vertex picked
+--
+------------------------------------------------------------------------
+
+define method .selectPoint(!pickData is EDGPICKDATA, !action is STRING) is DBREF
+
+  -- Initialise Variables
+  !return   = object DBREF()
+
+  -- Get vertex
+  if(!pickData.point eq 0) then
+    !return = !this.loop.members[1]
+  else
+    !return = !this.loop.members[!pickData.point]
+  endif
+
+  -- Carry out action
+  $!<action>
+  handle any
+    !!alert.error(!!error.text)
+  endhandle
+
+  -- Return a group in case the method is used on its own
+  return !return
+
+endmethod
+-- End of method definition for .selectPoint(EDGPICKDATA, STRING) DBREF
+
+------------------------------------------------------------------------
+--
+-- Method:      selectPoints
+--
+-- Description: Created and EDG event that allows the selection of points within a screen defined polygon
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Action on completion
+--    2   R      STRING      Packet description to be added into EDG system with
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .selectPoints(!action is STRING, !description is STRING)
+  -- Initialise Variables
+  !extrusion              = !this
+  !polygon                = object GMFPOLYGON()
+  !polygon.plane          = !this.plane
+
+  -- Packet definition
+  !packet                 = object EDGPACKET()
+  !packet.pickPacket.stdScreen('Pick points, <escape> to select')
+  !packet.key             = 'selectPoints'
+  !packet.description     = !description
+  !packet.type            = 'dbe'
+  !packet.priority        = 3
+  !packet.input[1]        = !extrusion
+  !packet.input[2]        = !polygon
+  !packet.input[3]        = !action
+  !packet.input[4]        = !!aidNumbers.add('Extrusion Group')
+  !packet.action          = '!this.input[1].selectPoints(!this.return[1], !this.input[2], !this.input[4])'
+  !packet.close           = '!this.input[1].selectPoints(!this.input[2], !this.input[3], !this.input[4])'
+  !packet.remove          = false
+  !!edgCntrl.add(!packet)
+
+endmethod
+-- End of method definition for .selectPoints(STRING, STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      selectPoints
+--
+-- Description: Add intersection of point vector and plane into positions member
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      POINTVECTOR Pick vector
+--    2   R      GMFPOLYGON  Polygon to be updated
+--    3   R      REAL        Aid number to tag polygon with
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .selectPoints(!pointVector is POINTVECTOR, !polygon is GMFPOLYGON, !aidNumber is REAL)
+  -- Add to polygon
+  !polygon.positions.append(!this.plane.xyOffset(!this.plane.intersection(!pointVector)))
+  -- Draw polygon
+  !gPolygon = object GPHPOLYGON(!polygon)
+  !gPolygon.sphereTranslucency = !this.aidTranslucency
+  !gPolygon.sphereSize =  !this.aidSphereSize
+  !gPolygon.draw(!aidNumber)
+endmethod
+-- End of method definition for .selectPoints(POINTVECTOR, GMFPOLYGON, REAL)
+
+
+------------------------------------------------------------------------
+--
+-- Method:      selectPoints
+--
+-- Description: Completion of picking screen
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      GMFPOLYGON  Polygon to be updated
+--    2   R      STRING      Action to be carried out
+--    3   R      REAL        Aid number to tag polygon with
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .selectPoints(!polygon is GMFPOLYGON, !action is STRING, !aidNumber is REAL) is DBELOOPGROUP
+  -- Remove aid
+  !!aidNumbers.remove(!aidNumber)
+  handle any
+  endhandle
+
+  -- Initialise Variables
+  !return     = object DBELOOPGROUP()
+
+  -- If there are less than 2 points, we can't define a polygon to work with
+  if(!polygon.positions.size() le 2) then
+    return !return
+  endif
+
+  -- Get the vertices which lie within the polygon
+  !indices    = !this.polygon.within(!polygon)
+  -- If there are no vertices
+  if(!indices.unset()) then
+    !!alert.warning('No points lie within the defined group.')
+    return !return
+  endif
+
+  -- Define group of items
+  !return.dbeLoopGroup(!this.loop, !indices)
+  -- Carry out action
+  $!<action>
+  handle any
+    !!alert.error(!!error.text)
+  endhandle
+  -- Return a group in case the method is used on its own
+  return !return
+endmethod
+-- End of method definition for .selectPoints(GMFPOLYGON, STRING, REAL) DBELOOPGROUP
+
+------------------------------------------------------------------------
+--
+-- Method:      findCoincident
+--
+-- Description: Finds coincident points from the extrusion loop
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY     Returns true if vertices have been removed
+--
+------------------------------------------------------------------------
+
+define method .findCoincident() is ARRAY
+
+  -- Initialise Variables
+  !deleteList = ARRAY()
+  !list       = !this.polygon.positions
+  !list.append(!this.polygon.positions[1])
+
+  -- Loop through all points
+  do !i indices !this.polygon.positions
+    !j = !i + 1
+    --skip if((!list[!i].x - !list[!j].x) ne 0 or (!list[!i].y - !list[!j].y) ne 0)
+    skip if (!this.plane.threeDPosition(!list[!i]).near(!this.plane.threeDPosition(!list[!j]), 0.1mm).not())
+    !deleteList.append(!this.loop.members[!i])
+  enddo
+
+  -- Return coincident points
+  return !deleteList
+
+endmethod
+-- End of method definition for .findCoincident() ARRAY
+
+------------------------------------------------------------------------
+--
+-- Method:      removeCoincident
+--
+-- Description: Remove coincident points from the extrusion loop, always asks if point are to be removed
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     Returns true if vertices have been removed
+--
+------------------------------------------------------------------------
+
+define method .removeCoincident() is BOOLEAN
+
+  -- Initialise Variables
+  return !this.removeCoincident(true)
+
+endmethod
+-- End of method definition for .removeCoincident() BOOLEAN
+
+
+------------------------------------------------------------------------
+--
+-- Method:      removeCoincident
+--
+-- Description: Remove coincident points from the extrusion loop
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      BOOLEAN     true is user is to be assed if they want to remove any coincident points
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     Returns true if vertices have been removed
+--
+------------------------------------------------------------------------
+
+define method .removeCoincident(!ask is BOOLEAN) is BOOLEAN
+
+  -- Initialise Variables
+  !rebuilt      = false
+
+  !deleteList   = !this.findCoincident()
+  if(!deleteList.empty().not()) then
+
+    -- Get an aid number
+    !aidNumber  = !!aidNumbers.add('Coincident points')
+
+    if(!ask) then
+      do !i indices !deleteList
+        !position = !deleteList[!i].position
+        !index    = !deleteList[!i].sequence
+        AID TEXT NUMBER $!<aidNumber> 'Coincident [$!index]' AT $!<position>
+      enddo
+      if(!!alert.confirm('OK to remove coincident points?').boolean().not()) then
+        !!aidNumbers.remove(!aidNumber)
+        return false
+      endif
+      !!aidNumbers.remove(!aidNumber)
+    endif
+
+    !reference  = !!ce
+
+    -- Remove vertices
+    do !i indices !deleteList
+      !!ce = !deleteList[!i]
+      DELETE $!<this.vertexType>
+    enddo
+    !!ce        = !reference
+    handle any
+    endhandle
+
+    -- Rebuild the polygon
+    !this.polygon.gmfPolygon(!this.loop)
+    !rebuilt    = true
+
+
+  endif
+
+  -- Return
+  return !rebuilt
+
+endmethod
+-- End of method definition for .removeCoincident(BOOLEAN) BOOLEAN
+
+------------------------------------------------------------------------
+--
+-- Method:      clockwise
+--
+-- Description: Returns true is the orientation of the path is clock-wise
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     Returns true for clock wise path
+--
+------------------------------------------------------------------------
+
+define method .clockwise() is BOOLEAN
+
+  -- Initialise Variables
+  return !this.polygon.clockwise()
+
+endmethod
+-- End of method definition for .clockwise() BOOLEAN
+
+------------------------------------------------------------------------
+--
+-- Method:      basicDefinition
+--
+-- Description: Returns the basic definition of the loop in terms of lines and arc. Always returns the definition in an anti-clock-wise direction
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Array of line and arc definitions defining the boundary
+--
+------------------------------------------------------------------------
+
+define method .basicDefinition() is ARRAY
+
+  -- Initialise Variables
+  !return    = ARRAY()
+
+  -- Get arc of boundary
+  !arcs      = !this.arcBoundary()
+
+  -- if there is only 1 member then it must be a complete arc so just return that
+  if (!arcs.size() eq 1) then
+    !arcs[1].startAngle = 0
+    !arcs[1].endAngle = 360
+    !return.append(!arcs[1])
+    return !return
+  endif
+
+  !arcs.append(!arcs[1])
+
+  -- Loop through the spine definition and get the arc
+  do !i from 1 to !arcs.size() - 1
+    !j = !i + 1
+
+    -- Define Arc if required
+    if(!arcs[!i].radius ne 0) then
+      !return.append(!arcs[!i])
+      !startPosition = !arcs[!i].anglePosition(!arcs[!i].endAngle)
+    else
+      !startPosition = !arcs[!i].position
+    endif
+
+    -- Define Leave line
+    if(!arcs[!j].radius ne 0) then
+      !endPosition   = !arcs[!j].anglePosition(!arcs[!j].startAngle)
+    else
+      !endPosition   = !arcs[!j].position
+    endif
+
+    -- If line is zero (or near) then ignore it
+    if(!startPosition.near(!endPosition, 1mm).not()) then
+      !return.append(!startPosition.line(!endPosition))
+    endif
+
+  enddo
+
+  return !return
+
+endmethod
+-- End of method definition for .basicDefinition() ARRAY
+
+------------------------------------------------------------------------
+--
+-- Method:      arcBoundary
+--
+-- Description: Returns the definition of the loop in terms of an of arcs. Always returns the definition in an anti-clock-wise direction
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Array of arcs definitions defining the boundary
+--
+------------------------------------------------------------------------
+
+define method .arcBoundary() is ARRAY
+
+  -- Initialise Variables
+  !return    = ARRAY()
+
+  -- Define list of member + the first to close the loop
+  !list      = !this.loop.members
+  !list.append(!this.loop.members[1])
+
+  -- Determine the direction of definition
+  !clockwise = !this.clockwise()
+
+  -- Clock wise definition
+  if(!clockwise) then
+    !list.invert()
+  endif
+
+
+  -- Loop through the loop members
+  do !i indices !list
+
+    -- Get Ppoint of cornet and convert ppoint into arc
+    !pPoint = object DBEPPOINT(!list[!i])
+    !arc    = !pPoint.arc()
+
+    -- Reverse the arc if loop has been built in a clock-wise direction
+    if(!clockwise) then
+      if(!arc.radius ne 0) then
+        !direction       = !arc.angleDirection(!arc.endAngle)
+        !arc.orientation = object ORIENTATION('X is ' & !direction & ' and Z is ' & !arc.orientation.zDir().opposite())
+      endif
+    endif
+
+    -- Map arc position onto plane of extrusion
+    !arc.position = !this.plane.near(!arc.position)
+
+    -- If there is no previous arc, the assign the arc to it
+    if(undefined(!previous)) then
+      !previous          = !arc
+
+    -- If the arc has the same position and radius, then we will modify the
+    -- endAngle to the previous arc
+    elseif (!arc.position.near(!previous.position,1mm) and !arc.radius eq !previous.radius) then
+      !previous.endAngle = !previous.near(!arc.anglePosition(!arc.endAngle))
+      handle any
+        break
+      endhandle
+
+    -- Append the previous to the return
+    else
+      !return.append(!previous)
+
+      -- Remember the new arc definition
+      !previous          = !arc
+    endif
+
+  enddo
+
+  -- if the return is empty and !previous is undefined then, we must have a complete circle.
+  if (!return.empty() and defined(!previous)) then
+    !return.append(!previous)
+  else
+
+    -- End point definition
+    !previous.radius     = 0
+    !previous.startAngle = 0
+    !previous.endAngle   = 0
+
+    if(!clockwise) then
+      !previous.position = !this.plane.near(!list[1].pPosition[4])
+    else
+      !previous.position = !this.plane.near(!list[1].pPosition[6])
+    endif
+
+    !return.append(!previous)
+  endif
+
+
+  return !return
+
+endmethod
+-- End of method definition for .arcBoundary() ARRAY
+
+------------------------------------------------------------------------
+--
+-- Method:      vertexDefinition
+--
+-- Description: Returns the basic definition of the loop in terms of an array of dbeVertex objects
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Array of dbeVertex objects
+--
+------------------------------------------------------------------------
+
+define method .vertexDefinition() is ARRAY
+
+  -- Initialise Variables
+  !return    = ARRAY()
+
+  -- Loop through loop
+  do !i indices !this.loop.members
+    !return.append(object DBEVERTEX(!this.loop.members[!i]))
+  enddo
+
+  return !return
+
+endmethod
+-- End of method definition for .vertexDefinition() ARRAY
+
+------------------------------------------------------------------------
+--
+-- Method:      spine
+--
+-- Description: Returns the definition of the loop in terms of a gmfSpine Always returns the definition in an anti-clock-wise direction
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    GMFSPINE    Boundary defined as a spine
+--
+------------------------------------------------------------------------
+
+define method .spine() is GMFSPINE
+
+  -- Initialise Variables
+
+  -- Get arc of boundary
+  !arcs  = !this.arcBoundary()
+
+  -- Convert array of arcs into a spine
+  !spine = object GMFSPINE(!arcs)
+
+  return !spine
+
+endmethod
+-- End of method definition for .spine() GMFSPINE

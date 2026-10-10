@@ -1,0 +1,1613 @@
+-------------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:                VNETWriteXML.pmlobj
+--   Type:              Function Definition
+--   Group:             AVEVA NET
+--     Keyword:         Export
+--   Module:            Design
+--   Replaces:
+--
+-- Author:           D. Laird
+-- Created:          March 2003
+--
+--
+-- Description:
+-- Output AVEVA(formally Cadcentre) PDMS data into XML format
+-- Data output from user specified hierarchy position or list of hierarchy elements
+-- Output hierarchy list stored in VNETExport member ".HierList"
+
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  DefIncItems()                    -
+--  GetAttributes(string,string)     -
+--  GetConnections(string)           -
+--  IncludeAtts()                    -
+--  IncludeItems()                   -
+--  OtherNames(dbref,string)         -
+--  Output()                         -
+--  TransClass(string,string)        -
+--  VNETWriteXML()                   -
+--  logfile(string,string)           -
+--  logfilehead(string,file)         -
+--  ovpercomplete(real,real,real)    -
+--  percomplete(real,real)           -
+--
+--------------------------------------------------------------------------------
+
+define object VNETWriteXML
+
+  -- Used as a temporary store to store results
+  member .result is string
+
+  -- Used as a temporary store to store results
+  member .resultarray is array
+
+  -- Used as a counter so we can display progress on the main form
+  member .totalcount is real
+
+  -- Used to store the type of the main Looping element
+  member .Eletype is string
+
+  -- Attributes and UDAs
+  member .IncludedAttribs is array
+  member .IncludedAttribsTyp is array
+
+  -- Psuedo Attributes
+  member .IncludedPsuedos is array
+  member .IncludedPsuedosTyp is array
+
+  -- Items
+  member .IncludeItem is array
+
+  -- VNETXMLOutFile
+  member .VNETXMLOutFile is file
+
+  -- Attributes found for item
+  member .CEAttName is array
+  member .CEAttDesc is array
+  member .CEAttValue is array
+  member .CEAttDefVal is array
+
+  -- LinkDocuments
+  member .LinksToDocs is array
+
+  -- Logfiles
+  member .NormalLog is file
+  member .FullLog is file
+
+  -- Previous Item Type
+  member .PrevItemType is string
+
+  -- Character encoding
+  member .CharEnc is string
+
+  -- Original CE Container
+  member .ce is DBREF
+
+  -- CE Container
+  member .currentDBref is DBREF
+
+  member .logtime is string
+
+endobject
+
+-- End of object definition for VNETWriteXML()
+
+--------------------------------------------------------------------------------
+
+define method .VNETWriteXML()
+
+ -- Switch off echoing of navigation through db
+  trace off
+
+ -- Remember the current element
+  !this.ce = object DBREF()
+  !this.currentDBref = object DBREF()
+
+  !this.ce = !!ce
+  !this.currentDBref = !!ce
+
+	-- jump to proper world: DESIGN or MANU
+	if !!VNETExport.hierprefix eq 'SITE' then
+		var !sites collect all site
+        -- Get Blocks as well
+        if (!!VNETExport.marine) then
+           !splittyp = !!VNETExport.MarineTypes.split()
+           do !martypes values !splittyp
+              var !allitmref collect all $!martypes
+              !sites.appendarray(!allitmref)
+           enddo
+        endif
+		if !sites.empty() then
+			!!Alert.Warning('cannot jump to DES world')
+			return error 1 noalert
+		endif
+		$!sites[1]
+		end
+	elseif !!VNETExport.hierprefix eq 'MANU' then
+        !splitManuTyps = !!VNETExport.ManuTypes.split()
+		!manuRefs = object array()
+        do !manutype values !splitManuTyps
+			var !manuTypeRefs collect all $!manutype
+			handle any
+				!manuTypeRefs = object array()
+			endhandle
+			!manuRefs.appendArray(!manuTypeRefs)
+		enddo
+		if !manuRefs.empty() then
+			!!Alert.Warning('cannot jump to MANU world')
+			return error 1 noalert
+		endif
+        $!manuRefs[1]
+		end
+	endif
+
+
+ -- Reload Classes
+  !!VNETExport.ClassRead()
+
+ -- Set Error text
+  if undefined (!!VNETError) then
+     pml load object VNETErrorStore
+     !!VNETError = object VNETErrorStore()
+     !!VNETError.Reset()
+  endif
+
+ -- Check folder destinations exist
+  !!VNETxsettings.checkdir('output')
+  !!VNETxsettings.checkdir('outputlnk')
+
+  prompt |Exporting VNET XML (Please Wait...)|
+
+ -- Empty Temporary User Class storage areas
+  !!VNETExport.UserClassStore1.clear()
+  !!VNETExport.UserClassStore2.clear()
+  !!VNETExport.UserClassStore3.clear()
+  !!VNETExport.UserClassStore4.clear()
+  !!VNETExport.UserClassStore5.clear()
+  !!VNETExport.UserClassStore6.clear()
+  !!VNETExport.UserClassStore7.clear()
+  !!VNETExport.UserClassStore8.clear()
+  !!VNETExport.UserClassStore9.clear()
+  !!VNETExport.UserClassStore10.clear()
+
+ -- Determine the mapping file
+  !this.IncludeAtts()
+
+ -- Determine the Included Items
+  !this.IncludeItems()
+
+-- Check if items where selected to output in DES-VNET-ITEMS file
+   if !this.IncludeItem.empty() then
+      !!VNETError.SetErrorFlag('No collection criteria found - Using Default. Check ' & !!VNETxsettings.incitemname.val)
+      !this.DefIncItems()
+   endif
+
+   -- Unable to export Manufacturing Items.. Need to declare the sitename and siteref globally instead of declaring in else condition
+   var !siteref collect all site
+   var !sitename eval fullname for all from !siteref
+  -- Read in the hierarchy list to dump from and re-order into PDMS order....
+   if (!!VNETExport.marine and !!VNETExport.designtype.val eq 3) then
+		!splitManuTyps = !!VNETExport.ManuTypes.split()
+		!manuRefs = object array()
+		do !manutype values !splitManuTyps
+			var !manuTypeRefs collect all $!manutype
+			handle any
+				!manuTypeRefs = object array()
+			endhandle
+			!manuRefs.appendArray(!manuTypeRefs)
+		enddo
+		!siteref = !manuRefs
+   else
+      --Commenting the below two variable as they are local variables declared in Else block
+      var !siteref collect all site
+   endif
+      var !sitename eval fullname for all from !siteref
+
+      -- Get Blocks as well
+      if (!!VNETExport.marine) then
+         !splittyp = !!VNETExport.MarineTypes.split()
+         do !loop values !splittyp
+            var !allitmref collect all $!loop
+            var !allitmname eval fullname for all from !allitmref
+            !sitename.appendarray(!allitmname)
+         enddo
+   endif
+
+  -- Check to see if it is the Whole MDB...
+   if (!!VNETExport.HierList[1] eq '/*') then
+      !VNETTopItems = !sitename
+   else
+      !VNETTopItems = !sitename.intersect(!!VNETExport.HierList)
+   endif
+
+   if !VNETTopItems.size() eq 0 then
+     !!Alert.Warning('No Items where exported as there are none in the currently selected MDB')
+     return error 1 noalert
+   endif
+
+  -- Set the progress bar gadgets
+   !!VNETExport.FProgress.active = true
+   !this.percomplete( 1 , 1 )
+
+  -- Set back to grey the progress bar gadgets
+   !!VNETExport.Progtxt.val = 'Overall Progress'
+   !!VNETExport.Prog0.val = '0%'
+   !!VNETExport.Prog100.val = '100%'
+   !this.ovpercomplete( 100 , 100 , 0 )
+
+  -- Loop through each element in the list and dump out everything below it
+  -- Grouped generically.  Further filtering for Class identification is done later.
+
+   !this.logtime = !!VNETLogTime()
+
+   if (!!VNETExport.marine and !!VNETExport.designtype.val eq 3) then
+      !OutFile = !!VNETxsettings.logfile.val & '/VNETExport-MANU_' & !this.logtime & '.log'
+   else
+      !OutFile = !!VNETxsettings.logfile.val & '/VNETExport-DES_' & !this.logtime & '.log'
+   endif
+
+   !this.NormalLog  = object file(!OutFile)
+   !this.NormalLog.open('OVERWRITE')
+   handle any
+     !!VNETExport.Progtxt.val = ''
+     !!VNETExport.Prog0.val = ''
+     !!VNETExport.Prog100.val = ''
+     !!Alert.error('Error Creating standard file : $!OutFile')
+     $p $!!ERROR.TEXT
+     prompt dismiss
+     return
+   endhandle
+
+  -- Character Encoding
+   !this.CharEnc = !!VNETCharEncode()
+
+  -- Write out logfile header lines...
+   !this.logfilehead('',!this.NormalLog)
+
+  -- Counters
+   !Elemcount = 0
+   !sitecount = 0
+
+  -- Output the "Plant" 3 character code....
+   var !proj proj code
+
+  -- Write Logfile entry
+   !this.logfile('StdLog','   $!proj is class:Plant')
+   !this.logfile('StdLog','')
+
+ -- Export Charactersics Classes XML
+   if !!vnetxsettings.IncludeCharClass.val and (!this.IncludedAttribs.empty().not() or !this.IncludedPsuedos.empty().not()) then
+      !!VNETExAttrClass(!proj,'DESIGN',!this.IncludedAttribs,!this.IncludedPsuedos,!!VNETExport.marine)
+   endif
+
+   do !VNETTopItm values !VNETTopItems
+
+    -- Navigate to Top Item
+     $!VNETTopItm
+     !this.currentDBref = !!ce
+
+    -- Get its fullname
+     var !VNETTopItmFNM ( fullname of $!VNETTopItm )
+     !VNETTopItmNM = !!VNETFileName(!VNETTopItmFNM)
+
+    -- Get its type
+     var !VNETTopItmTY ( type of $!VNETTopItm )
+     !FilePrefix = !VNETTopItmTY.substring(1,1) & !VNETTopItmTY.substring(2).lowcase()
+
+    -- Start the counter of TopItems
+     !sitecount = !sitecount + 1
+
+    -- Check that site/Manufacturing Type is correctly named
+     if (!VNETTopItmNM.match(' of WORLD') gt 0) then
+		
+		!match = false
+		 if (!!VNETExport.marine and !!VNETExport.designtype.val eq 3) then
+
+	        !splitManuTyps = !!VNETExport.ManuTypes.split()
+			do !manutype values !splitManuTyps
+				!match = !VNETTopItmNM.match(!manutype) gt 0
+				if !match then
+					break
+				endif
+			enddo
+
+		 else
+			!match = !VNETTopItmNM.match('SITE') gt 0
+		 endif
+
+		 if !match then
+
+			if !!VNETxsettings.IncludeUnNamedSite.val.not() then
+			   !!VNETError.SetErrorFlag(!VNETTopItmFNM & ' ' + !VNETTopItmTY + ' is not Named - NOT Exported')
+			   !this.logfile('StdLog','      ' & !VNETTopItmFNM & ' ' + !VNETTopItmTY + ' is not Named')
+			   !this.logfile('StdLog','           WARNING: ' + !VNETTopItmTY +  ' not Exported as Unnamed Main Items Export setting is set to FALSE')
+			   !this.logfile('StdLog','')
+			   skip
+			else
+			   !VNETTopItmNM = !VNETTopItmNM.before(' of WORLD').trim().replace(' ','-')
+			endif
+
+		endif
+
+     endif
+
+    -- Setup output file for each site/Manufacturing Types...
+     if (!!VNETExport.marine and !!VNETExport.designtype.val eq 3) then
+        !OutFile = !!VNETxsettings.outputmanu.val & '/' & !FilePrefix & '_' & !VNETTopItmNM & '_VPD.xml'
+     else
+        !OutFile = !!VNETxsettings.output.val & '/' & !FilePrefix & '_' & !VNETTopItmNM & '_VPD.xml'
+     endif
+
+     !this.VNETXMLOutFile = object file(!OutFile)
+     !this.VNETXMLOutFile.open('OVERWRITE')
+     handle any
+       !!VNETExport.Prog0.val = ''
+       !!VNETExport.Prog100.val = ''
+       !!Alert.error('Error Creating VNET XML Output file : $!OutFile')
+       $p $!!ERROR.TEXT
+       prompt dismiss
+       return
+     endhandle
+
+    -- Remove logfiles if they exist otherwise users could get wrong information
+     !OutFileLog = !!VNETxsettings.logfile.val & '/' & !FilePrefix & '_' & !VNETTopItmNM & '_' & !this.logtime & '.log'
+     !this.FullLog = object file(!OutFileLog)
+     if !this.FullLog.exists() then
+        !this.FullLog.DeleteFile()
+     endif
+
+    -- Now create the file if required
+     if !!VNETxsettings.FullLog.val then
+        !this.FullLog.open('OVERWRITE')
+        handle any
+          !!Alert.warning('Error Creating Output log file : $!OutFileLog - Only Standard Logfile will be generated')
+          $p $!!ERROR.TEXT
+          !this.FullLog = object file('')
+        endhandle
+     else
+         !this.FullLog = object file('')
+     endif
+
+    -- Write out logfile header lines...
+     !this.logfilehead('FullLog',!this.VNETXMLOutFile)
+
+    -- Counter for progress reporting
+     !Elemcount  = !Elemcount + 1
+     !TotalCount = !VNETTopItems.size()
+
+    -- Set progress bar gadgets...
+     !this.percomplete( 1 , 1 )
+
+    -- Loop through the listed collection selections and collect the items
+    -- Add then to an array that has sub-arrays for each selection
+
+     !totalitems = 0
+
+     !itemtypecnt = 1
+
+     if !!VNETxsettings.FullLog.val then
+        !this.logfile('FullLog','Selection Criteria :')
+        !this.logfile('FullLog','')
+     endif
+
+     do !collitem values !this.IncludeItem
+
+        var !select collect all $!collitem for $!VNETTopItm
+        handle any
+           !this.logfile('','      **************************************************************')
+           !this.logfile('','      *************                                    *************')
+           !this.logfile('','      *************             ERROR WARNING          *************')
+           !this.logfile('','      *************                                    *************')
+           !this.logfile('','      **************************************************************')
+           !this.logfile('','      ' + !!Error.Text)
+           !this.logfile('','      ' + !!Error.Line)
+           !this.logfile('','      ' + !!Error.Command)
+           !this.logfile('','      **************************************************************')
+           !this.logfile('','      Error in ' & !!VNETxsettings.incitemname.val )
+           !this.logfile('','      **************************************************************')
+
+           !!VNETError.SetErrorFlag('Error in ' & !!VNETxsettings.incitemname.val)
+
+           skip
+       -- error message to log file
+        endhandle
+
+       -- List selection criteria if full logging is on
+        if !select.size() gt 0 then
+           !this.logfile('FullLog','      ' & !collitem.vtext())
+           !this.logfile('FullLog','           ' & !select.size() & ' : Items found')
+        endif
+
+       -- get total list of items found
+        !totalitems = !totalitems + !select.size()
+
+        !SelectedItems[!itemtypecnt] = !select
+
+        !itemtypecnt = !itemtypecnt + 1
+        if defined(!!VNETDebug) then
+           var !tempcol |$!collitem|
+
+           var !selectt eval type for all from !select
+
+           !selectt.unique()
+           $P Collection Syntax : $!tempcol
+           $P Items Types Found
+
+           if !selectt.size() gt 0 then
+              do !tempcnt indices !selectt
+                 $P     >>>  $!selectt[$!tempcnt]
+              enddo
+           else
+              $P     *** Nothing Selected ***
+           endif
+
+        endif
+
+     enddo
+
+     !this.logfile('FullLog','')
+     !this.logfile('FullLog','--------------------------------------------------------------------------------')
+
+    -- Write out header lines
+     !this.VNETXMLOutFile.WriteRecord(|<?xml version="1.0" encoding="| & !this.CharEnc & |"?>|)
+     !this.VNETXMLOutFile.WriteRecord(|<vl:VNETList xmlns:vl="http://www.aveva.com/VNET/List" xmlns="http://www.aveva.com/VNET/eiwm">|)
+
+     !this.VNETXMLOutFile.WriteRecord(|<!--Exported by | & !!VNETExport.user & | - | & !this.logtime & |-->|)
+
+     !this.VNETXMLOutFile.WriteRecord(|  <Template>|)
+     !this.VNETXMLOutFile.WriteRecord(|   <ID>VPD elements</ID>|)
+     !this.VNETXMLOutFile.WriteRecord('   <Object>')
+     !this.VNETXMLOutFile.WriteRecord('      <ID>$!proj</ID>')
+     !this.VNETXMLOutFile.WriteRecord('      <Context>')
+     !this.VNETXMLOutFile.WriteRecord('         <ID>VPD</ID>')
+     !this.VNETXMLOutFile.WriteRecord('      </Context>')
+     !this.VNETXMLOutFile.WriteRecord('      <ClassID>Plant</ClassID>')
+     !this.VNETXMLOutFile.WriteRecord('   </Object>')
+
+    -- Write Logfile entry
+
+     !this.logfile('FullLog','')
+     !this.logfile('FullLog','   $!proj is class:Plant')
+     !this.logfile('FullLog','')
+
+    -- Get the current element type
+     !this.eletype = !!ce.type
+     !this.PrevItemType = !!ce.type
+
+    -- Check for funny chars in names
+     !outname = !!VNETStripName(!VNETTopItmFNM)
+     !this.logfile('','')
+     !this.logfile('','      Outputting data for $!VNETTopItmTY: $!outname')
+     !this.logfile('','')
+
+     $p Exporting VNET data for $!VNETTopItmTY $!VNETTopItmFNM
+
+     if !!VNETxsettings.FullLog.val then
+        !this.logfile('FullLog','      Total number of items found : ' & !totalitems )
+        !this.logfile('FullLog','')
+        !this.logfile('FullLog','      Exporting : ' & !this.PrevItemType)
+        !this.logfile('FullLog','')
+     endif
+
+     !this.logfile('StdLog','           Total number of items found : ' & !totalitems )
+     !this.logfile('StdLog','')
+
+    -- Output it as the top level element
+     !!ce = !this.currentDBref
+     !this.Output()
+
+    -- Set the total number of items
+     !this.totalcount = !totalitems
+     !this.ovpercomplete( ( !sitecount / 2 ) , !VNETTopItems.size() , 7)
+
+     if !this.totalcount neq 0 then
+
+         prompt |Exporting VNET XML for $!VNETTopItmFNM (Please Wait...)|
+
+         -- Update Progress Text
+         !text = 'Main Item(s) $!elemcount' & ' of ' & '$!totalcount' & ' ( $!this.eletype ' &  !outname & ' )'
+         if (!text.length() gt 55) then
+            !text = !text.substring(1,46) & '...)'
+         endif
+         !!VNETExport.progress.val = '$!text'
+         !!VNETExport.NumberOfItems.val = 'Exporting ' & !this.totalcount.string() & ' items'
+         refresh !!VNETExport.progress
+         refresh !!VNETExport.NumberOfItems
+
+
+         -- Loop through items to export
+         !amount = 0
+         do !loop indices !SelectedItems
+
+            !found = !SelectedItems[!loop]
+
+            do !item values !found
+               $!item
+               !this.currentDBref = !!ce
+
+               !miss = true
+
+               if (!!VNETExport.marine and !!VNETExport.designtype.val eq 3) then
+                  !splitManuTypes = !!VNETExport.ManuTypes.split()
+                  do !manuType values !splitManuTypes
+                     $!manuType
+                     handle (2,111)
+                     elsehandle none
+                        !miss = false
+                        break
+                     endhandle
+                  enddo
+
+               else
+
+                  site
+                  handle (2,111)
+                     --This is not an element owned by a major item SITE/BLOCK/Manufacturing Types so miss it... e.g. it's a template
+
+                     if (!!VNETExport.marine) then
+
+                        !splitwtyp = !!VNETExport.MarineTypes.split()
+                        do !worldtype values !splitwtyp
+                           $!worldtype
+                           handle (2,111)
+                           elsehandle none
+                              !miss = false
+                              break
+                           endhandle
+                        enddo
+                     endif
+
+                  elsehandle none
+                     !miss = false
+                  endhandle
+   	
+               endif
+
+               if !miss then
+                  !!VNETExport.progress.val = '$!amount'
+                  refresh !!VNETExport.progress
+                  skip
+               endif
+
+               $!item
+               !this.currentDBref = !!ce
+
+               !amount = !amount + 1
+               !this.percomplete(!amount, !this.totalCount)
+
+               !this.Output()
+
+
+               -- Create Document Links
+               if !this.LinksToDocs.empty().not() then
+                  !!VNETExport.LogfileMes.clear()
+
+                  -- Filenames replace / with a _ and replace (spaces) with a ~
+                  !ItemFileName = !!VNETFileName(!!ce.namn.replace('/','_').replace(' ','~'))
+
+                  !!VNETLinkDocs(!!CE,!ItemFileName)
+                  !this.logfile('','ARRAY')
+               endif
+
+
+               -- If an error occured then quit out
+               if !!VNETError.OrigNameError then
+                  break
+               endif
+
+            enddo
+
+            -- If an error occured then quit out
+            if !!VNETError.OrigNameError then
+               break
+            endif
+
+         enddo
+
+      endif
+
+    -- Add finishing code to Xml file
+     !this.VNETXMLOutFile.WriteRecord('  </Template>')
+     !this.VNETXMLOutFile.WriteRecord('</vl:VNETList>')
+
+     !this.VNETXMLOutFile.Close()
+     !this.VNETXMLOutFile = object file('')
+
+    -- Display status of export
+     if !!VNETError.SiteErrors then
+
+        !SiteErrorMess = '           >>> Errors Occured - Check Full Log files for details <<<'
+        if !this.FullLog.unset() then
+           !SiteErrorMess = '           >>> Errors Occured - Re-run with Full Logging option set to see errors <<<'
+        endif
+
+        !this.logfile('StdLog',!SiteErrorMess)
+        !this.logfile('StdLog','')
+
+        !!VNETError.SiteErrors = false
+
+        $p $!SiteErrorMess
+        $p
+     endif
+
+     if !this.FullLog.unset().not() then
+        var !time clock
+        !this.logfile('FullLog','')
+        !this.logfile('FullLog','--------------------------------------------------------------------------------')
+        !this.logfile('FullLog','')
+        !this.logfile('FullLog','Export Finished: $!time')
+        !this.logfile('FullLog','')
+        !this.logfile('FullLog','--------------------------------------------------------------------------------')
+        !this.FullLog.Close()
+        !this.FullLog = object file('')
+     endif
+
+     !this.ovpercomplete( !sitecount , !VNETTopItems.size() , 7)
+
+     site
+     handle any
+     endhandle
+
+  enddo
+
+  var !time clock
+
+  !this.logfile('','')
+  !this.logfile('','--------------------------------------------------------------------------------')
+  !this.logfile('','')
+  !this.logfile('','Export Finished: $!time')
+  !this.logfile('','')
+  !this.logfile('','--------------------------------------------------------------------------------')
+
+ -- Store file name before closing
+  !logfilename = !this.NormalLog.fullname()
+
+  !this.NormalLog.Close()
+  !this.NormalLog = object file('')
+
+ -- Reset the gadgets after export
+  !!VNETExport.Progress.val = ''
+  !!VNETExport.NumberOfItems.val = ''
+  refresh !!VNETExport.Progress
+  refresh !!VNETExport.NumberOfItems
+
+ -- Set progress bar gadgets...
+  !this.percomplete( 1 , 1 )
+  !this.ovpercomplete( 100 , 100, 0 )
+
+  !!VNETExport.Progtxt.val = ''
+  !!VNETExport.Prog0.val = ''
+  !!VNETExport.Prog100.val = ''
+
+  !!VNETExport.FProgress.active = false
+
+ -- Empty Temporary User Class storage areas
+  !!VNETExport.UserClassStore1.clear()
+  !!VNETExport.UserClassStore2.clear()
+  !!VNETExport.UserClassStore3.clear()
+  !!VNETExport.UserClassStore4.clear()
+  !!VNETExport.UserClassStore5.clear()
+  !!VNETExport.UserClassStore6.clear()
+  !!VNETExport.UserClassStore7.clear()
+  !!VNETExport.UserClassStore8.clear()
+  !!VNETExport.UserClassStore9.clear()
+  !!VNETExport.UserClassStore10.clear()
+
+ -- Return to original Current Element
+  !!ce = !this.ce
+
+ -- Finish off by refreshing the screen
+  prompt dismiss
+
+  if defined(!!VNETBatchMode) then
+     $p Export Complete
+     $p $!logfilename
+  endif
+
+endmethod
+
+-- End of method definition for .VNETWriteXML()
+
+---------------------------------------------------------------------------
+-- Method:           .Output
+-- Author:           D. Laird
+-- Created:          Fri March 28
+--
+--
+-- Description:
+-- Filter out unnamed items and start output for the rest
+----------------------------------------------------------------------------
+
+define method .Output()
+
+   -- ( N.b. list position only works for piping items or other items at the lowest level
+   --  in the db )
+
+       !!ce = !this.currentDBref
+
+    -- now output pdms item data to specified device
+       !type  = !!CE.type
+       !owndb = !!CE.owner.name
+       !owner = !owndb.string()
+       !outputit = 'yes'
+
+     -- Check if the CE is a SITE/BLOCK/Manufacturing Types or other Top Level VM item as VNET doesnt show the WORLD element.
+       if (!!VNETExport.marine and !!VNETExport.designtype.val eq 3) then
+          if !!VNETExport.ManuTypes.occurs(type) gt 0 then
+             !owner = ''
+          endif
+       else
+          if ( type eq 'SITE' ) or ( !!VNETExport.Marinetypes.occurs(type) gt 0) then
+             !owner = ''
+          endif
+       endif
+       !fullname = !!CE.fullname
+       !name = !!CE.name
+
+    -- Check for funny chars in names
+       !outname = !!VNETStripName(!fullname)
+
+       prompt |Exporting VNET XML (Please Wait...)|
+
+       -- Check if NOZZ is owned by EQUI or SUBE as VNET shows the EQUI as the owner
+       -- only include if the owning equipment is named
+
+       -- !!! NON MANUFACTURING DATA
+       if (NOT !!VNETExport.marine or (!!VNETExport.marine and !!VNETExport.designtype.val neq 3)) then
+
+          if ( type eq 'NOZZ' ) then
+             if (fullname of owner eq name of owner) then
+                var !owner ( fullname of owner )
+                !outputit = 'yes'
+             else
+               !outputit = 'no'
+             -- Check if a template then create as normal
+               if type of owner eq 'TMPL' then
+                  if (fullname of owner of tmpl eq name of owner of tmpl) then
+                     var !owner ( fullname of owner of tmpl )
+                     !outputit = 'yes'
+                  endif
+                endif
+            endif
+          endif
+
+          -- If the equi or pipe compt has no explicit name - don't output the item unless it's a TEE (important for connectivity)
+          -- If ( (type of owner) eq 'BRAN' or type eq 'EQUI' and fullname neq name and type neq 'TEE' ) then
+          if ( (type of owner) eq 'BRAN' or type eq 'EQUI' ) then
+            if ( fullname neq name and type neq 'TEE' ) then
+              !outputit = 'no'
+            endif
+          endif
+
+       endif
+
+       if !type neq !this.PrevItemType then
+          !this.PrevItemType = !type
+          !this.logfile('FullLog','      Exporting : ' & !this.PrevItemType)
+          !this.logfile('FullLog','')
+       endif
+
+    -- write file record
+
+       if ( !outputit eq 'yes' ) then
+
+      -- convert any invalid XML chars found in the name
+         !OrigID = object VNETOriginalID(!this.currentDBRef, !fullname)
+         !this.result = !OrigID.result
+
+         if !OrigID.result.lowcase() eq 'ignore_this_item' then
+            !this.logfile('FullLog','         $!outname is ignored via mapping')
+            return
+         endif
+
+         if !!VNETError.OrigNameError then
+            !!VNETError.SetErrorFlag('Error in OriginalName pmlobj file')
+--            !!VNETError.SetErrorFlag(!!VNETErrOrNa.Text)
+--            !this.logfile('','      **************************************************************')
+--            !this.logfile('','      *************                                    *************')
+--            !this.logfile('','      *************             ERROR WARNING          *************')
+--            !this.logfile('','      *************                                    *************')
+--            !this.logfile('','      **************************************************************')
+--            !this.logfile('','      ' + !!VNETErrOrNa.Text)
+--            !this.logfile('','      ' + !!VNETErrOrNa.Line)
+--            !this.logfile('','      ' + !!VNETErrOrNa.Command)
+--            !this.logfile('','      **************************************************************')
+--            return
+         endif
+         !this.VNETXMLOutFile.WriteRecord('   <Object>')
+         !this.VNETXMLOutFile.WriteRecord('       <ID>$!this.result</ID>')
+         !this.VNETXMLOutFile.WriteRecord('       <Context>')
+         !this.VNETXMLOutFile.WriteRecord('          <ID>PROJECTCONTEXT</ID>')
+         !this.VNETXMLOutFile.WriteRecord('       </Context>')
+
+         if (!fullname neq !OrigID.result) then
+              !this.logfile('FullLog','         $!outname is renamed to: $!this.result')
+         endif
+
+      -- Get Class of object
+         !this.TransClass(!type, !name)
+         !this.VNETXMLOutFile.WriteRecord('       <ClassID>$!this.result</ClassID>')
+
+      -- add alias for PDMS-style name
+         !this.result = !!VNETStripXML(!fullname)
+
+         !this.VNETXMLOutFile.WriteRecord('       <Association type="is identified by">')
+         !this.VNETXMLOutFile.WriteRecord('          <Object>')
+         !this.VNETXMLOutFile.WriteRecord('             <ID>$!this.result</ID>')
+         !this.VNETXMLOutFile.WriteRecord('             <Context>')
+         !this.VNETXMLOutFile.WriteRecord('                <ID>VPD</ID>')
+         !this.VNETXMLOutFile.WriteRecord('                <Context>')
+         !this.VNETXMLOutFile.WriteRecord('                   <ID>PROJECTCONTEXT</ID>')
+         !this.VNETXMLOutFile.WriteRecord('                </Context>')
+         !this.VNETXMLOutFile.WriteRecord('             </Context>')
+         !this.VNETXMLOutFile.WriteRecord('          </Object>')
+         !this.VNETXMLOutFile.WriteRecord('       </Association>')
+
+      -- add alias for Other Systems
+      -- The result is in the form of an array e.g [1] = C-9001 ~ PEGS
+      -- Where the new name is out put and seperated by a ~ with the context it is in
+
+         if !!VNETExport.OtherNames then
+            !this.OtherNames(!this.currentDBRef, !fullname)
+            if (!this.resultarray.empty().not()) then
+
+               do !loop indices !this.resultarray
+                  skip if !this.resultarray[!loop].before('~').trim() eq ''
+
+                  !this.result = !!VNETStripXML(!this.resultarray[!loop].part(1,'~').trim())
+
+                  !itemcontext = !this.resultarray[!loop].part(2,'~').trim()
+
+                  !itemassociation = !this.resultarray[!loop].part(3,'~').trim()
+
+                  if (!itemcontext eq '') or (!itemcontext eq 'PROJECTCONTEXT') then
+
+                     !this.VNETXMLOutFile.WriteRecord('       <Association type="$!itemassociation">')
+                     !this.VNETXMLOutFile.WriteRecord('          <Object>')
+                     !this.VNETXMLOutFile.WriteRecord('             <ID>$!this.result</ID>')
+                     !this.VNETXMLOutFile.WriteRecord('             <Context>')
+                     !this.VNETXMLOutFile.WriteRecord('                <ID>PROJECTCONTEXT</ID>')
+                     !this.VNETXMLOutFile.WriteRecord('             </Context>')
+                     !this.VNETXMLOutFile.WriteRecord('          </Object>')
+                     !this.VNETXMLOutFile.WriteRecord('       </Association>')
+
+                  else
+
+                     !this.VNETXMLOutFile.WriteRecord('       <Association type="$!itemassociation">')
+                     !this.VNETXMLOutFile.WriteRecord('          <Object>')
+                     !this.VNETXMLOutFile.WriteRecord('             <ID>$!this.result</ID>')
+                     !this.VNETXMLOutFile.WriteRecord('             <Context>')
+                     !this.VNETXMLOutFile.WriteRecord('                <ID>$!itemcontext</ID>')
+                     !this.VNETXMLOutFile.WriteRecord('                <Context>')
+                     !this.VNETXMLOutFile.WriteRecord('                   <ID>PROJECTCONTEXT</ID>')
+                     !this.VNETXMLOutFile.WriteRecord('                </Context>')
+                     !this.VNETXMLOutFile.WriteRecord('             </Context>')
+                     !this.VNETXMLOutFile.WriteRecord('          </Object>')
+                     !this.VNETXMLOutFile.WriteRecord('       </Association>')
+
+                  endif
+
+                  !this.logfile('FullLog','         $!outname $!itemassociation $!this.result in the context of: $!itemcontext')
+
+               enddo
+            endif
+         endif
+
+      -- add in the association to its owner
+         if (!owner neq '=0/0') then
+
+           !res = false
+           if (!!VNETExport.marine and !!VNETExport.designtype.val eq 3) then
+			
+              !res = !!VNETExport.ManuTypes.occurs(type) gt 0
+           else
+              !res = ( type eq 'SITE' ) or ( !!VNETExport.Marinetypes.occurs(type) gt 0)
+           endif
+           if !res then
+
+             -- Output association to the "Plant" if current element is a SITE/Manufacturing Types....
+             var !proj proj code
+
+             !this.result = !!VNETStripXML(!proj)
+
+             -- Note the the Project is the same as the Top Object so must not be given a context
+             !this.VNETXMLOutFile.WriteRecord('       <Association type="is a part of">')
+             !this.VNETXMLOutFile.WriteRecord('          <Object>')
+             !this.VNETXMLOutFile.WriteRecord('             <ID>$!this.result</ID>')
+             !this.VNETXMLOutFile.WriteRecord('          </Object>')
+             !this.VNETXMLOutFile.WriteRecord('       </Association>')
+
+           else
+             !OrigID = object VNETOriginalID(!this.currentDBRef.owner, !owner)
+             !this.result = !OrigID.result
+
+             !this.VNETXMLOutFile.WriteRecord('       <Association type="is a part of">')
+             !this.VNETXMLOutFile.WriteRecord('          <Object>')
+             !this.VNETXMLOutFile.WriteRecord('             <ID>$!this.result</ID>')
+             !this.VNETXMLOutFile.WriteRecord('             <Context>')
+             !this.VNETXMLOutFile.WriteRecord('                <ID>PROJECTCONTEXT</ID>')
+             !this.VNETXMLOutFile.WriteRecord('             </Context>')
+             !this.VNETXMLOutFile.WriteRecord('          </Object>')
+             !this.VNETXMLOutFile.WriteRecord('       </Association>')
+
+           endif
+         endif
+
+       -- output the connections for this object
+         !this.GetConnections(!fullname)
+
+         !connections = !!VNETConns
+
+         !!VNETConns.delete()
+
+         do !conn values !connections
+         -- $P Outputting conn name for $!conn
+            if ( !conn eq 'unset' ) or ( !conn eq 'Unknown Reference' )then
+               skip
+            endif
+            !OrigID = object VNETOriginalID(!conn.dbref(), !conn)
+            handle any
+               !!VNETError.SetErrorFlag('')
+               !this.logfile('FullLog','               GETCONNECTIONS >> CREF is Unknown / Invalid for $!conn - $!fullname')
+            elsehandle none
+               !this.result = !OrigID.result
+
+               !this.VNETXMLOutFile.WriteRecord('       <Association type="is logically connected to">')
+               !this.VNETXMLOutFile.WriteRecord('          <Object>')
+               !this.VNETXMLOutFile.WriteRecord('             <ID>$!this.result</ID>')
+               !this.VNETXMLOutFile.WriteRecord('             <Context>')
+               !this.VNETXMLOutFile.WriteRecord('                <ID>PROJECTCONTEXT</ID>')
+               !this.VNETXMLOutFile.WriteRecord('             </Context>')
+               !this.VNETXMLOutFile.WriteRecord('          </Object>')
+               !this.VNETXMLOutFile.WriteRecord('       </Association>')
+            endhandle
+
+         enddo
+
+       -- output the attributes for this object
+       -- navigate back to the original object
+         !!ce = !this.currentDBref
+
+         !this.LinksToDocs = !!ce.lnkdoc
+
+         if !this.LinksToDocs.empty().not() then
+            do !lnkcnt indices !this.LinksToDocs
+
+               !this.VNETXMLOutFile.WriteRecord('      <Association type="is referenced in">')
+               !this.VNETXMLOutFile.WriteRecord('        <Object>')
+               !this.VNETXMLOutFile.WriteRecord('          <ID>' & !this.LinksToDocs[!lnkcnt].flnn & '</ID>')
+               !this.VNETXMLOutFile.WriteRecord('          <Context>')
+               !this.VNETXMLOutFile.WriteRecord('            <ID>PROJECTCONTEXT</ID>')
+               !this.VNETXMLOutFile.WriteRecord('          </Context>')
+               !this.VNETXMLOutFile.WriteRecord('        </Object>')
+               !this.VNETXMLOutFile.WriteRecord('      </Association>')
+
+            enddo
+         endif
+
+       -- output the attributes for this object
+       -- navigate back to the original object
+         !!ce = !this.currentDBref
+
+
+       -- Are any attributs set for exporting
+         if !this.IncludedAttribs.empty().not() or !this.IncludedPsuedos.empty().not() then
+
+            !this.GetAttributes(!fullname, !type)
+
+            do !i indexes !this.CEAttDesc
+
+               !this.VNETXMLOutFile.WriteRecord('       <Characteristic>')
+
+               !this.result = !!VNETStripXML(!this.CEAttDesc[$!i])
+               !this.VNETXMLOutFile.WriteRecord('         <Name>$!this.result</Name>')
+
+               !this.result = !!VNETStripXML(!this.CEAttValue[$!i])
+
+         -- Handle the length of string, if needed split into several lines
+               if !this.result.length() le 210 then
+                  !this.VNETXMLOutFile.WriteRecord('         <Value>$!this.result</Value>')
+               else
+                  !lsplit=(!this.result.length() / 210)
+                  if !lsplit gt !lsplit.int() then
+                     !lsplit = (!lsplit.int() + 1)
+                  endif
+
+                  !this.VNETXMLOutFile.WriteRecord('         <Value>' & !this.result.substring(1,210))
+                  do !n from 1 to (!lsplit - 1)
+                     !this.VNETXMLOutFile.WriteRecord(!this.result.substring((1 + (!n * 210)),(210 + (!n * 210))))
+                  enddo
+                  !this.VNETXMLOutFile.WriteRecord('         </Value>')
+               endif
+
+               !this.VNETXMLOutFile.WriteRecord('       </Characteristic>')
+
+            enddo
+
+         endif
+
+       -- Complete object XML
+         !this.VNETXMLOutFile.WriteRecord('   </Object>')
+
+       endif
+
+endmethod
+
+-- End of method definition for .Output()
+
+--------------------------------------------------------------------------------
+-- Method:           .OtherNames(!object is DBREF,!name is String)
+-- Author:           I.Stanbrook
+-- Created:          Sun 7 March
+--
+--
+-- Description:
+-- Derive original external identifier from PDMS name (e.g. to match P&ID name)
+
+--------------------------------------------------------------------------------
+
+define method .OtherNames(!object is dbref, !name is string)
+
+   !this.resultarray.clear()
+
+   !!ce = !this.currentDBref
+
+ -- Object to get OtherNames for item for this project name found
+   !OtherName = object VNETxmlOtherName$!!currentproject(!object, !name)
+   !this.resultarray = !OtherName.result
+
+endmethod
+
+-- End of method definition for .OtherNames(!object is dbref, !name is string)
+
+------------------------------------------------------------------------------
+-- Method:           .TransClass()
+-- Author:           D. Laird
+-- Created:          Fri March 28
+--
+--
+-- Description:
+-- Output hierarchy list stored in VNETExport member ".HierList"
+--------------------------------------------------------------------------------
+
+define method .TransClass(!type is string, !name is string)
+
+-- Translate PDMS class into VNET class from a default list specified in a file
+
+-- Get list of classes from VNETExport form member .Classes
+-- Part1 (Left side) is the PDMS value
+-- Part2 (Right side) is the VNET value
+
+-- After setting OUR default class we allow users to write their owne code
+-- to do some post processing for their own class definitions....
+
+-- Set default type (Class) if no match is found...
+   !this.Result = !type
+
+-- Check for funny chars in names
+   !outname = !!VNETStripName(!name)
+
+   -- Loop through defined classes to find match to set default...
+   do !line values !!VNETExport.Classes
+      !ClassPDMS = !line.Before('+')
+      !ClassVNET = !line.After('+')
+      if ( !ClassPDMS eq 'Otherwise' ) then
+         -- found default
+         !this.Result = !ClassVNET
+         break
+      endif
+   enddo
+
+   -- Loop through defined classes to find match...
+   do !line values !!VNETExport.Classes
+      !ClassPDMS = !line.Before('+')
+      !ClassVNET = !line.After('+')
+      if ( !Type eq !ClassPDMS ) then
+         -- found a match
+         !this.Result = !ClassVNET
+         break
+      endif
+   enddo
+
+   -- Now allow user to overwrite our choice...
+   -- First check the Users Function is set in the settings form...
+   if (!!VNETxsettings.uclass.val eq 'Unset') then
+      -- No user function, so stick with our AVEVA choice.
+      !this.logfile('FullLog','               $!outname is class: $!ClassVNET')
+      return
+   endif
+
+   -- If we got here then they have a user function defined...
+   -- Just realised this bit is a bit pointless as a function MUST be in the PMLLIB seearch path
+   -- anyway, so the system will already know about it... Still, needs to know the name though!
+
+   if !!VNETExport.UserClass then
+   -- Object to get Originalname for items for this project name found
+
+      !!ce = !this.currentDBref
+
+      !UserObject = object $!!VNETExport.UserClassFileName(!type, !name, !this.result)
+      handle (46,58)
+       -- Error Mapping file not found
+         !!VNETError.SetErrorFlag('')
+         !this.logfile('FullLog','         $!outname is class: $!ClassVNET')
+         !this.logfile('FullLog','               ERROR: Mapping file Not Found - $!!VNETExport.uclass')
+         return
+      elsehandle any
+       -- Error in Mapping file code
+         !!VNETError.SetErrorFlag('')
+         !this.logfile('FullLog','         $!outname is class: $!ClassVNET')
+         !this.logfile('FullLog','               ERROR: In Mapping file - Check syntax')
+         return
+      endhandle
+
+      !this.Result = !UserObject.result
+
+      if (!ClassVNET neq !UserObject.result) then
+         !this.logfile('FullLog','         $!outname is class: $!UserObject.result >> $!!VNETExport.uclass')
+      else
+         !this.logfile('FullLog','         $!outname is class: $!ClassVNET')
+      endif
+
+   endif
+
+endmethod
+
+-- End of method definition for .TransClass(!type is string, !name is string)
+
+-----------------------------------------------------------------------------------
+-- File:                .GetConnections(!fullname is STRING)
+-- Author:           D. Laird
+-- Created:          Fri March 20
+--
+--
+-- Description:
+-- Output VantagePD data into XML format
+--------------------------------------------------------------------------------
+
+define method .GetConnections(!fullname is string)
+
+   -- For the current element find its connected items.
+   -- The IDs of the connected items for the current element must be returned in array !!VNETconns
+   !Connections = object array()
+
+   !!ce = !this.currentDBref
+
+-- Check for funny chars in names
+   !outname = !!VNETStripName(!fullname)
+
+   if (type of owner eq 'BRAN') then
+     -- dealing with a branch component
+     if ( type eq 'TEE' ) then
+        -- check the CREF for a connection
+        if ( CREF neq =0/0 ) then
+           -- the CREF is set BUT maybe "Unknown", so handle it...
+           var !connections append (fullname of CREF)
+           handle (2, 107)(47,15)
+             var !connections append 'Unknown Reference'
+             if !!VNETxsettings.ConErr.val.not() then
+                !!VNETError.SetErrorFlag('')
+                !this.logfile('FullLog','               GETCONNECTIONS Branch Members >> CREF is Unknown for $!outname')
+             endif
+           endhandle
+        endif
+     endif
+
+ -- we have a branch component - look for its adjacent, connected branch mems
+     do
+       next
+       handle any
+         -- have found end of list - connected to branch tail
+         var !tref (TREF of owner)
+         handle any
+           -- the TREF is inaccessible - ignore connection
+           if !!VNETxsettings.ConErr.val.not() then
+              !!VNETError.SetErrorFlag('')
+              !this.logfile('FullLog','               GETCONNECTIONS Branch Members >> TREF data inaccessible for $!outname')
+           endif
+           break
+         elsehandle none
+           if ('!tref' neq '=0/0') then
+             -- the tref is set BUT check for "Unknown Ref" error
+             var !connections append (fullname of $!tref )  $* note space required after $!tref to terminate name atom
+             handle (2, 107)(47,15)
+               var !connections append 'Unknown Reference'
+               if !!VNETxsettings.ConErr.val.not() then
+                  !!VNETError.SetErrorFlag('')
+                  !this.logfile('FullLog','               GETCONNECTIONS Branch Members >> TREF is Unknown for $!outname')
+               endif
+             endhandle
+           endif
+           break
+         endhandle
+       elsehandle none
+         -- We've moved to the next element
+         -- check current item is acceptable as the connected item
+
+         if (type neq 'FTUB' and type neq 'TUBI' and type neq 'GASK' and type neq 'FLAN') then
+           if (name eq fullname or type eq 'TEE') then
+              -- it's either named or a TEE (important for connectivity) and hence a significant branch member
+              var !connections append fullname
+              break
+           endif
+         endif
+       endhandle
+     enddo
+
+   elseif (type eq 'NOZZ') then
+     -- will only get here if the nozzle is owned by a named equip
+     -- only interested if the CREF set
+     if ( CREF neq =0/0 ) then
+        -- Have to provide a handle in case of the "Unknown Ref" error...
+        var !connections append (fullname of cref)
+        handle (2, 107)(47,15)
+          var !connections append 'Unknown Reference'
+          if !!VNETxsettings.ConErr.val.not() then
+             !!VNETError.SetErrorFlag('')
+             !this.logfile('FullLog','               GETCONNECTIONS Nozzle >> CREF is Unknown for $!outname')
+          endif
+        endhandle
+     endif
+
+  elseif (type eq 'BRAN') then
+     -- deal with branch href and tref connections
+     -- only need to deal with connections to other branches as conns to nozzles and pcomps
+     -- will have been generated from the other end
+     if ( HREF neq =0/0 ) then
+        var !hreftype (type of HREF)
+        handle any
+           if !!VNETxsettings.ConErr.val.not() then
+              !!VNETError.SetErrorFlag('')
+              !this.logfile('FullLog','               GETCONNECTIONS Branch >> HREF unset for $!outname')
+           endif
+        elsehandle none
+           if ( !hreftype eq 'BRAN' ) then
+              -- the conn is to another branch
+              var !connections append (fullname of HREF )
+           endif
+        endhandle
+     endif
+     if ( TREF neq =0/0 ) then
+        var !treftype (type of TREF)
+        handle any
+           if !!VNETxsettings.ConErr.val.not() then
+              !!VNETError.SetErrorFlag('')
+              !this.logfile('FullLog','               GETCONNECTIONS Branch >> TREF unset for $!outname')
+           endif
+        elsehandle none
+           if ( !treftype eq 'BRAN' ) then
+              -- the conn is to another branch
+              var !connections append (fullname of TREF )
+           endif
+        endhandle
+     endif
+  endif
+
+  !!VNETConns = !connections
+
+endmethod
+
+-- End of method definition for .GetConnections(!fullname is STRING)
+
+-------------------------------------------------------------------------------
+-- Method:           .GetAttributes(!fullname is STRING, !type is STRING)
+-- Author:           D.Laird
+-- Created:          Fri March 28
+--
+--
+-- Description:
+-- Get the necessary attribrutes for current element
+--------------------------------------------------------------------------------
+
+define method .GetAttributes(!fullname is string, !type is string)
+
+   !!ce = !this.currentDBref
+
+   !this.CEAttName.clear()
+   !this.CEAttDesc.clear()
+   !this.CEAttValue.clear()
+   !this.CEAttDefVal.clear()
+
+   !CEAttrs = object VNETGetAttributes(!fullname, !type, !this.IncludedAttribs, !this.IncludedAttribsTyp, !this.IncludedPsuedos, !this.IncludedPsuedosTyp )
+
+   if !CEAttrs.CEAttDesc.empty().not() then
+      !this.CEAttDesc = !CEAttrs.CEAttDesc
+      !this.CEAttValue = !CEAttrs.CEAttValue
+   endif
+
+   if !CEAttrs.CEErrors.empty().not() and !!VNETxsettings.AttrErr.val.not() then
+      !!VNETError.SetErrorFlag('')
+      do !loop indices !CEAttrs.CEErrors
+         !this.logfile('FullLog',!CEAttrs.CEErrors[!loop])
+      enddo
+   endif
+
+endmethod
+
+-- End of method definition for .GetAttributes(!fullname is STRING, !type is STRING)
+
+--------------------------------------------------------------------------------
+-- Method:           .percomplete(!progresscount is REAL, !totalcount is REAL)
+-- Author:           C. Pearson
+-- Created:          Fri March 28
+--
+--
+-- Description:
+-- Display progress on main form....
+--------------------------------------------------------------------------------
+
+define method .percomplete( !progresscount is real , !totalcount is real )
+
+  -- Update Progress Bar
+   if !progresscount eq 1 and !totalcount eq 1 then
+      !!fmsys.setprogress(0)
+   else
+      !percomplete  = (( !progresscount / !totalcount ) * 100)
+      !!fmsys.setprogress(!percomplete)
+   endif
+
+endmethod
+
+-- End of method definition .percomplete(!progresscount is REAL, !totalcount is real)
+
+--------------------------------------------------------------------------------
+-- Method:           .ovpercomplete(!progresscount is REAL, !totalcount is REAL , !colour is REAL)
+-- Author:           I. Stanbrook
+-- Created:          Fri March 28
+--
+--
+-- Description:
+-- Display progress on main form....
+--------------------------------------------------------------------------------
+
+define method .ovpercomplete( !progresscount is real , !totalcount is real , !colour is real )
+
+-- Convert into a percentage then into 13 parts(no of segments on the progress bar)
+-- First change overall counter gadget
+
+-- Update Progress Bar
+  !bar = (!progresscount / !totalcount) * 13
+  !bar.nint()
+
+  if !colour eq 0 then
+     !vis = false
+  else
+     !vis = true
+  endif
+
+  do !a to !bar
+     !gadget1 = '!!VNETExport.prog' & $!a & '.visible = ' & !vis
+     $!gadget1
+     !gadget = '!!VNETExport.prog' & $!a & '.background'
+     $!gadget = !colour
+     refresh !!VNETExport.prog$!a
+  enddo
+  refresh !!VNETExport.Progtxt
+  refresh !!VNETExport.Prog0
+  refresh !!VNETExport.Prog100
+
+endmethod
+
+-- End of method definition .ovpercomplete(!progresscount is REAL, !totalcount is REAL, !colour is REAL)
+
+--------------------------------------------------------------------------------
+
+-- Method:           .IncludeAtts()
+-- Author:           Ian Stanbrook
+-- Created:          Fri December 05
+--
+--
+-- Description:
+-- Find out the mapping file to use
+
+--------------------------------------------------------------------------------
+
+define method .IncludeAtts()
+
+   !this.IncludedAttribs.clear()
+   !this.IncludedAttribsTyp.clear()
+   !this.IncludedPsuedos.clear()
+   !this.IncludedPsuedosTyp.clear()
+
+   !IncludedAttrs = !!VNETLoadAttrib(!!VNETxsettings.incattrsname)
+   handle any
+      return
+   endhandle
+
+   !this.IncludedAttribs = !IncludedAttrs[1]
+   !this.IncludedAttribsTyp = !IncludedAttrs[2]
+   !this.IncludedPsuedos = !IncludedAttrs[3]
+   !this.IncludedPsuedosTyp = !IncludedAttrs[4]
+
+endmethod
+
+-- End of method definition for .IncludeAtts()
+
+-------------------------------------------------------------------------------
+
+-- Method:           .IncludeItems()
+-- Author:           Ian Stanbrook
+-- Created:          Fri December 05
+--
+--
+-- Description:
+-- Find out the mapping file to use
+
+--------------------------------------------------------------------------------
+
+define method .IncludeItems()
+
+   !this.IncludeItem.clear()
+
+   !IncludedItems = !!VNETLoadItems(!!VNETxsettings.incitemname)
+   handle any
+      return
+   endhandle
+
+   !this.IncludeItem = !IncludedItems
+
+endmethod
+
+-- End of method definition for .IncludeItems()
+
+-------------------------------------------------------------------------------
+
+-- Method:           .DefIncItems()
+-- Author:           Ian Stanbrook
+-- Created:          Fri December 05
+--
+--
+-- Description:
+-- Set default items and there selection to output
+
+--------------------------------------------------------------------------------
+
+define method .DefIncItems()
+
+   !ItemsArray = object ARRAY()
+
+  -- Zone
+   !ItemsArray.append(|ZONE|)
+
+ -- Pipes and Piping items
+   !ItemsArray.append(|PIPE|)
+   !ItemsArray.append(|BRANCH with (TYPE of OWNER neq 'HVAC')|)
+   !ItemsArray.append(|BRANCH MEM with ( TYPE of OWNER of BRAN neq 'HVAC' and TYPE neq 'TUBI' and TYPE neq 'FTUB' and TYPE neq 'GASK' and TYPE neq 'FLAN' )|)
+
+ -- Equipment and Nozzles
+   !ItemsArray.append(|EQUI|)
+   !ItemsArray.append(|NOZZLE|)
+
+ -- Sections and Panels
+   !ItemsArray.append(|SCTN with (TYPE of OWNER neq 'TMPL')|)
+   !ItemsArray.append(|PANEL with (TYPE of OWNER neq 'TMPL')|)
+
+ -- HVAC and HVAC items
+   !ItemsArray.append(|HVAC|)
+   !ItemsArray.append(|HVAC MEMBERS|)
+   !ItemsArray.append(|BRANCH MEMBERS with (TYPE of OWNER of BRAN eq 'HVAC' and TYPE neq 'TUBI' and TYPE neq 'FTUB' and TYPE neq 'STIF')|)
+
+ -- Finally set them to the main store .IncludeItem
+   !this.IncludeItem = !ItemsArray
+
+endmethod
+
+-- End of method definition for .DefIncItems()
+
+-------------------------------------------------------------------------------
+
+-- Method:           .logfile()
+-- Author:           Ian Stanbrook
+-- Created:          Fri December 05
+--
+--
+-- Description:
+-- Output the data to the relevent log file or files depending on the settings
+
+--------------------------------------------------------------------------------
+
+define method .logfile(!whichfile is string, !message is string)
+
+   if !whichfile eq '' or (!whichfile eq 'StdLog') then
+      if !message eq 'ARRAY' then
+         do !loop indices !!VNETExport.LogfileMes
+            !this.NormalLog.WriteRecord(!!VNETExport.LogfileMes[!loop])
+         enddo
+      else
+         !this.NormalLog.WriteRecord(!message)
+      endif
+   endif
+
+   if !this.FullLog.unset().not() and (!whichfile neq 'StdLog') then
+      if !message eq 'ARRAY' then
+         do !loop indices !!VNETExport.LogfileMes
+            !this.FullLog.WriteRecord(!!VNETExport.LogfileMes[!loop])
+            handle any
+            endhandle
+         enddo
+      else
+         !this.FullLog.WriteRecord(!message)
+         handle any
+         endhandle
+      endif
+   endif
+
+   !!VNETExport.LogfileMes.clear()
+
+endmethod
+
+-- End of method definition for .logfile(!whichfile is string, !message is string)
+
+-------------------------------------------------------------------------------
+
+-- Method:           .logfilehead(!logtype is string, !Filename is file)
+-- Author:           Ian Stanbrook
+-- Created:          Fri December 05
+--
+--
+-- Description:
+-- Output the data to the relevent log file or files depending on the settings
+
+--------------------------------------------------------------------------------
+
+define method .logfilehead(!logtype is string, !Filename is file)
+
+     var !time clock
+
+     -- Write Logfile entries
+     !this.logfile('$!logtype','')
+     !this.logfile('$!logtype','--------------------------------------------------------------------------------')
+     !this.logfile('$!logtype','')
+
+     !this.logfile('FullLog','Creating XML output file: $!Filename')
+     !this.logfile('FullLog','')
+     !this.logfile('$!logtype','XML Encoding : ' & !this.CharEnc )
+     !this.logfile('$!logtype','')
+
+     !this.logfile('$!logtype','Export Started: $!time')
+     !this.logfile('$!logtype','')
+     !this.logfile('$!logtype','--------------------------------------------------------------------------------')
+     !this.logfile('$!logtype','')
+     !this.logfile('$!logtype','--------------------------------------------------------------------------------')
+     !this.logfile('$!logtype','Original Name Routine  : ' + !!VNETxsettings.origname.val)
+     !this.logfile('$!logtype','User Class Map Routine : ' + !!VNETxsettings.uclass.val)
+     !this.logfile('$!logtype','Other Names Routine    : ' + !!VNETxsettings.OtherName.val)
+     !this.logfile('$!logtype','Items to Include       : ' + !!VNETxsettings.incitemname.val.string())
+     !this.logfile('$!logtype','Attributes to Export   : ' + !!VNETxsettings.incattrsname.val.string())
+     !this.logfile('$!logtype','--------------------------------------------------------------------------------')
+     !this.logfile('$!logtype','')
+     !this.logfile('$!logtype','--------------------------------------------------------------------------------')
+     !this.logfile('$!logtype','Include Settings:')
+
+     !this.logfile('$!logtype','UnNamed Sites         : ' + !!VNETxsettings.IncludeUnNamedSite.val.string())
+     !this.logfile('$!logtype','Unset values          : ' + !!VNETxsettings.IncludeUnsetValue.val.string())
+     !this.logfile('$!logtype','Nulref values         : ' + !!VNETxsettings.IncludeNulrefValue.val.string())
+     !this.logfile('$!logtype','0 values              : ' + !!VNETxsettings.IncludeZeroValue.val.string())
+     !this.logfile('$!logtype','Positions WRT to World: ' + !!VNETxsettings.IncludeWorldPosValue.val.string())
+     !this.logfile('$!logtype','E 0 N 0 U 0 Positions : ' + !!VNETxsettings.IncludeZeroPosValue.val.string())
+     !this.logfile('$!logtype','--------------------------------------------------------------------------------')
+
+     !this.logfile('$!logtype','')
+     !this.logfile('$!logtype','--------------------------------------------------------------------------------')
+     !this.logfile('$!logtype','Contents of : ' + !!VNETxsettings.incitemname.val.string())
+     !this.logfile('$!logtype','--------------------------------------------------------------------------------')
+
+     do !loop indices !this.IncludeItem
+        !this.logfile('$!logtype','$!loop) ' + !this.IncludeItem[!loop])
+     enddo
+
+     !this.logfile('$!logtype','--------------------------------------------------------------------------------')
+
+endmethod
+
+-- End of method definition for .logfilehead(!logtype is string, !Filename is file)
+
+-------------------------------------------------------------------------------
+-- End of File

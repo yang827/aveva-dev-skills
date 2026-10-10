@@ -1,0 +1,712 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            pfWeldGapConfig.pmlfrm
+--    Type:          Form Definition
+--    Group:         Pipe Fabrication
+--      Keyword:     PF
+--    Module:        Design
+--  Author:          Jaehun Choi(Daniel)
+--  Created:         11 January 2013
+--
+--  Description:     Configuration form for weld gap
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  afterCellUpdateCallback(ARRAY)   -                   after cell update callback
+--  apply()                          -                   apply
+--  applyOption()                    -                   apply option
+--  closeOption()                    -                   close option
+--  evaluatePipeBoreWallThicknessFromSPEC(STRING,ARRAY,ARRAY) -                   evaluate pipe bore wall thickness from spec
+--  evaluateWeldGapTable(ARRAY,ARRAY) ARRAY               evaluate weld gap table
+--  evaluateWeldGaps(STRING,ARRAY,ARRAY,ARRAY) -                   evaluate weld gaps
+--  initialise()                     -                   initialise
+--  loadOption()                     -                   load option
+--  pfweldgapconfig()                -                   constructor
+--  populateGridTable()              -                   populate grid table
+--  setCompSpec()                    -                   out of spec validation
+--  setRefImage()                    -                   set reference image
+--  setSocketWeldGadget()            -
+--  specChange()                     -                   spec change
+--
+------------------------------------------------------------------------
+import 'GridControl'
+handle any
+endhandle
+
+import 'PMLFileBrowser'
+handle any
+endhandle
+
+--- form definition
+setup form !!pfweldgapconfig dialog varchars
+  !this.formTitle = 'Weld Gap Config'
+  !this.initcall  = |!this.initialise()|
+
+  frame .weldgapConfig tabset width 40
+    frame .weldGapTable 'Weld Gap Table'
+      option .pipeSpecs tagwid 10 'Specification' callback '!this.specChange()' width 20
+      button .refresh 'Refresh' at xmax0.5 width 10 callback '!this.initialise()'
+      path down
+
+      using namespace 'Aveva.Pdms.Presentation'
+      container .gridContainer PMLNetControl anchor all at x0    'weldGapList' width 45 height 22
+
+      path down
+      button .apply   'Apply' anchor b+l callback |!this.apply()|
+      path right
+      button .dismiss 'Dismiss' anchor b+l at xMax form-size cancel
+    exit
+
+    frame .weldGapOption 'Weld Gap Options'
+      frame .stypeFrame 'Specification Selection Type(STYPE) for Butt Welds' width 45
+        text .shopStype     'SHOP'  tagwidth 5  width 4 is STRING
+        path right
+        text .fieldStype    'FIELD' tagwidth 5  width 4 is STRING
+        text .siteStype     'SITE'  tagwidth 5  width 4 is STRING
+        path down
+      exit
+
+      toggle .swFromSpec  'Create Welds for Socket Weld Fitting from Spec' callback |!this.setSocketWeldGadget()|
+
+      frame .socketStypeFrame 'Specification Selection Type(STYPE) for Socket Weld Fittings' width 45
+        text .socketShopStype     'SHOP'  tagwidth 5  width 4 is STRING
+        path right
+        text .socketFieldStype    'FIELD' tagwidth 5  width 4 is STRING
+        text .socketSiteStype     'SITE'  tagwidth 5  width 4 is STRING
+        path down
+      exit
+
+      toggle .swCompOutOfSpec 'If component is Out of Spec, use the same source' callback |!this.setCompSpec()|
+
+      frame .fittingConnectionFrame 'Welds for Fitting to Fitting Connection' width 45
+        rToggle .noWeldForFittings        tagwidth 35 'Do Not Create Welds'
+        rToggle .zeroWeldGapForFittings   tagwidth 35 'Welds with Zero Weld Gap'
+        rToggle .weldGapInData            tagwidth 35 'Welds with Weld Gap from Spec or Weld Gap Table'
+      exit
+
+      frame .slipOnFrame 'Welds for Slip-On Flanges' width 45 height 17
+        rToggle .singleWeld tagwidth 9 'Inner Weld'          callback '!this.setRefImage()'
+        path right
+        rToggle .bothWeld   tagwidth 14 'Inner/Outer Welds'  callback '!this.setRefImage()'
+        toggle  .slipOnFromSpec tagwidth 9 'From Spec'
+        path down
+
+        para .refImage at x0 pixmap width 250 height 330
+      exit
+
+      path down
+
+      button .applyOption   'Apply' callback |!this.applyOption()|
+      path right
+      button .dismissOption 'Dismiss' at xMax form-size callback |!this.closeOption()|
+    exit
+  exit
+
+  member .dataGrid            is NETGRIDCONTROL
+  member .headings            is ARRAY
+  member .aidNumber           is REAL
+  member .weldControl         is PFWELDCONTROL
+  member .pipeWeldGapData     is ARRAY
+  member .checkDbWriteObject  is COMCHECKDBWRITE
+
+  member .errorList           is ARRAY
+
+  member .optionFile          is FILE
+  member .sTypes              is ARRAY
+exit
+
+------------------------------------------------------------------------
+--
+-- Method:      pfweldgapconfig
+-- Description: constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pfweldgapconfig()
+  !this.headings = split('Nominal Bore,Wall Thickness,Weld Gap',',')
+
+  using namespace 'Aveva.Pdms.Presentation'
+
+  !this.dataGrid            = object NETGRIDCONTROL()
+  !this.gridContainer.control = !this.dataGrid.handle()
+
+  !this.dataGrid.outlookGroupStyle(false)
+  !this.dataGrid.editableGrid(true)
+
+  !this.dataGrid.addEventHandler('AfterCellUpdate',   !this, 'afterCellUpdateCallback')
+
+  !pdmsDefaultPath = !!evarSplit('PDMSDFLTS')[1]
+  !optionFilePath = !pdmsDefaultPath & |\| & 'pfmWeldOption.pmldat'
+  !this.optionFile = object FILE(!optionFilePath)
+
+  !this.shopStype.val  = 'SWN'
+  !this.fieldStype.val = 'FWN'
+  !this.siteStype.val  = 'FWS'
+
+  --Default Stypes for socket welds
+  !this.socketShopStype.val = 'SKN'
+  !this.socketFieldStype.val = 'SKF'
+  !this.socketSiteStype.val = 'SKS'
+
+  !this.sTypes = split('SWN,FWN,FWS',',')
+
+  !this.slipOnFrame.val = 1
+  !this.fittingConnectionFrame.val = 1
+  !this.loadOption()
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      setRefImage
+-- Description: set reference image
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setRefImage()
+  if (!this.singleWeld.val) then
+    !this.refImage.addPixmap(!!pml.getPathName('flangeinnerweld.png'))
+  else
+    !this.refImage.addPixmap(!!pml.getPathName('flangeoutterweld.png'))
+  endif
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      initialise
+-- Description: initialise
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .initialise()
+  !this.weldControl.evaluateConfigureTable()
+
+  !this.weldControl = object PFWELDCONTROL()
+
+  !validSpecNames       = !this.evaluateWeldGapTable(!this.weldControl.pipingSpecNames, !this.pipeWeldGapData)
+  !this.pipeSpecs.dText = !validSpecNames
+
+  !this.populateGridTable()
+
+  !context = object PFCONTEXT()
+--  !context.globalInstance()
+  !context.loadDefaults()
+
+  if (!context.editable.unset()) then
+    !editable = false
+  else
+    !editable = !context.editable
+  endif
+
+
+  !this.apply.active         = !editable
+  !this.dataGrid.editableGrid(!editable)
+
+  !this.applyOption.active   = !editable
+--  !this.dismissOption.active = !editable
+  !this.stypeFrame.active    = !editable
+
+  !this.swFromSpec.active = !editable
+  !this.swCompOutOfSpec.active = !editable
+
+  !this.fittingConnectionFrame.active = !editable
+  !this.slipOnFrame.active = !editable
+
+  !this.loadOption()
+  !this.setSocketWeldGadget()
+  !this.setCompSpec()
+  !this.setRefImage()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      specChange
+-- Description: spec change
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .specChange()
+  !this.initialise()
+  !this.populateGridTable()
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      evaluateWeldGapTable
+-- Description: evaluate weld gap table
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       source pipe spec names
+--    2   W      ARRAY       array to store weld gab table
+-- Return:
+--   [Data Type] [Description]
+--    1   R       valid spec names
+------------------------------------------------------------------------
+define method .evaluateWeldGapTable(!pipeSpecNames is ARRAY, !storyArrayName is ARRAY) is ARRAY
+  -- set pipe spec
+--  !pipeSpecList = !!collectAllFor('SPEC',|purp eq 'PIPE'|, world)
+--  !pipeSpecNames = !pipeSpecList.evaluate(object BLOCK(|!pipeSpecList[!evalIndex].name|))
+
+  !storyArrayName.clear()
+  !this.errorList.clear()
+
+  !validPipeSpecList = object ARRAY()
+  do !specName values !pipeSpecNames
+    !boreSizeData       = object ARRAY()
+    !wallThicknessData  = object ARRAY()
+
+    skip if (!specName.dbRef().purp ne 'PIPE')
+
+    !this.evaluatePipeBoreWallThicknessFromSPEC(!specName, !boreSizeData, !wallThicknessData)
+    skip if (!boreSizeData.unset())
+    !validPipeSpecList.append(!specName)
+
+    !weldGap         = object ARRAY()
+    !weldGapElements = object ARRAY()
+
+    !this.evaluateWeldGaps(!specName, !boreSizeData, !weldGap, !weldGapElements)
+
+    !weldGapData = object PFWELDGAPDATA(!specName, !boreSizeData, !wallThicknessData, !weldGap, !weldGapElements)
+    !storyArrayName.append(!weldGapData)
+  enddo
+
+  return !validPipeSpecList
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      evaluatePipeBoreWallThicknessFromSPEC
+-- Description: evaluate pipe bore wall thickness from spec
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     STRING      pipe spec name
+--    2    R     ARRAY       bore size data
+--    3    R     ARRAY       wall thickness data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .evaluatePipeBoreWallThicknessFromSPEC(!pipeSpecName is STRING, !boreSizeData is ARRAY, !wallThicknessData is ARRAY)
+  !pipeSpecRef = !pipeSpecName.dbRef()
+  handle any
+    return
+  endhandle
+
+  if (!pipeSpecRef.badRef()) then
+    !this.errorList.append('Pipe Specification ' & !pipeSpecName & ' is invalid reference')
+    return
+  endif
+
+  !pipeDataTableRef = !pipeSpecRef.pdaRef
+  if (!pipeDataTableRef.unset()) then
+    !this.errorList.append('Pipe Specification ' & !pipeSpecName & ' has no pipe data table.')
+    return
+  elseif (!pipeDataTableRef.badRef()) then
+    !this.errorList.append('Pipe Specification ' & !pipeSpecName & ' has no pipe data table.')
+    return
+  endif
+
+  !pipeDataMembers  = !pipeDataTableRef.members
+
+  if (!pipeDataMembers.size() eq 0) then
+    !this.errorList.append('Pipe Specification ' & !pipeSpecName & ' has empty pipe data table.')
+    return
+  endif
+
+  do !entry values !pipeDataMembers
+    !bore = !entry.nBore.string()
+    !wallThickness = !entry.wthRef.name
+
+    !boreSizeData.append(!bore)
+    !wallThicknessData.append(!wallThickness)
+  enddo
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      evaluateWeldGaps
+-- Description: evaluate weld gaps
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     STRING      pipe spec
+--    2    R     ARRAY       bore size data
+--    3    R     ARRAY       weld gap
+--    4    R     ARRAY       weld gap elements
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .evaluateWeldGaps(!pipeSpec is STRING, !boreSizeData is ARRAY, !weldGap is ARRAY, !weldGapElements is ARRAY)
+  !specIndex = !this.weldControl.pipingSpecNames.findFirst(!pipeSpec)
+  if (!specIndex.unset()) then
+    do !i index !boreSizeData
+      !weldGap.append('0')
+      !weldGapElements.append('=0/0')
+    enddo
+
+    return
+  endif
+
+  !selectedSpec = !this.weldControl.configSpecMembers[!specIndex]
+  !boreMembers  = !selectedSpec.members
+  handle any
+    return
+  endhandle
+  !boreSizes    = !boreMembers.evaluate(object BLOCK(|!boreMembers[!evalIndex].number.string()|))
+
+  do !i index !boreSizeData
+    !specBore = !boreSizeData[!i].real().bore()
+    !stringConfBore = !boreSizes[!i].string() & 'mm'
+    !confBore = !stringConfBore.real().bore()
+
+    if (!specBore eq !confBore) then
+      !weldGapValue = !boreMembers[!i].members[1].ddProp.after(|( '|).before(|' )|)
+      !weldGapEntry = !boreMembers[!i].members[1]
+    else
+      !weldGapValue = '0'
+      !weldGapEntry = nulref
+    endif
+
+    !weldGap.append(!weldGapValue)
+    !weldGapElements.append(!weldGapEntry)
+  enddo
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      populateGridTable
+-- Description: populate grid table
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .populateGridTable()
+  !index = !this.pipeSpecs.val
+
+  !this.dataGrid.clearGrid()
+
+  if (!index lt 1) then
+    --!!alert.message('There is no data')
+    return error 1 noAlert
+  endif
+
+  !weldData = !this.pipeWeldGapData[!index]
+  !contents = !weldData.evaluateWeldContents()
+
+  using namespace 'Aveva.Pdms.Presentation'
+  !nds          = object NETDATASOURCE('Search Result', !this.headings, !contents)
+  !this.dataGrid.bindToDataSource(!nds)
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      afterCellUpdateCallback
+-- Description: after cell update callback
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     ARRAY       data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .afterCellUpdateCallback(!data is ARRAY)
+  if (!data.unset()) then
+    return
+  endif
+
+  !row = !data[0].real()
+
+  !rowData = !this.dataGrid.getRow(!row)
+  !weldGap = !rowData[3].real()
+  handle any
+    !!alert.error('Input Weld Gap as Number')
+    !this.dataGrid.setCellValue(!row, 3, '0')
+    return
+  endhandle
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      apply
+-- Description: apply
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .apply()
+  if (!this.dataGrid.getRows().unset()) then
+    return
+  endif
+
+  !spec      = !this.pipeSpecs.displayText()
+  !specIndex = !this.weldControl.pipingSpecNames.findFirst(!spec)
+
+  if (!specIndex.unset()) then
+    !saveCe = !!ce
+
+    if (!!alert.confirm('Do you wish to create weld gap data for the spec [' & !spec & ']') eq 'NO') then
+      return
+    endif
+
+    --!!alert.confirm('There is no spec for weld gap')
+    !!ce = !this.weldControl.configSpecMembers[!this.weldControl.configSpecMembers.size()]
+
+    if (!this.checkDbWriteObject.checkDbWrite(!!ce).not()) then
+      return
+    endif
+
+    NEW APPLDA
+    !name = name of owner & !spec
+    name $!name
+    handle any
+      DELETE APPLDA
+      return
+    endhandle
+
+    func |$!spec|
+
+    !rowData = !this.dataGrid.getRows()
+    do !i index !rowData
+      !bore = !rowData[!i][1]
+      !wallThickness = !rowData[!i][2]
+      !weldGap = !rowData[!i][3].real()
+
+      NEW DDSE
+      !name = name of owner & '/' & !bore
+      name $!name
+
+      !boreVal = !bore.real()
+      number $!boreVal
+
+      NEW DDAT
+      !name = name of owner & !wallThickness
+      name $!name
+
+      dtitle |$!wallThickness|
+      ddProp |$!weldGap|
+      handle any
+        ddProp |'0'|
+      endhandle
+    enddo
+
+    !!ce = !saveCe
+    handle any
+    endhandle
+  else
+    !selectedSpec = !this.weldControl.configSpecMembers[!specIndex]
+    !boreMembers  = !selectedSpec.members
+
+    !rowData = !this.dataGrid.getRows()
+    do !i index !rowData
+      !weldGap = !rowData[!i][3].real()
+      !boreMembers[!i].members[1].ddProp = |'$!weldGap'|
+    enddo
+  endif
+
+  !this.weldControl.evaluateConfigureTable()
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      loadOption
+-- Description: load option
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .loadOption()
+  if !this.optionFile.exists().not() then
+    return
+  endif
+
+  !readData = !this.optionFile.readFile()
+  handle ANY
+    !!alert.error(|$!!error.text|)
+    return
+  endhandle
+
+  !this.shopStype.val  = !readData[1].upCase()
+  !this.fieldStype.val = !readData[2].upCase()
+  !this.siteStype.val  = !readData[3].upCase()
+
+  !this.sTypes[1] = !readData[1].upCase()
+  !this.sTypes[2] = !readData[2].upCase()
+  !this.sTypes[3] = !readData[3].upCase()
+
+  !this.fittingConnectionFrame.val = !readData[4].real()
+  handle any
+    !this.fittingConnectionFrame.val = 1
+  endhandle
+
+  !this.slipOnFrame.val = !readData[5].real()
+  handle any
+    !this.slipOnFrame.val = 1
+  endhandle
+
+  !this.swFromSpec.val = !readData[6].boolean()
+  handle any
+  endhandle
+
+  !this.slipOnFromSpec.val = !readData[7].boolean()
+  handle any
+  endhandle
+
+  !this.swCompOutOfSpec.val = !readData[8].boolean()
+  handle any
+  endhandle
+
+  !this.socketShopStype.val = !readData[9].upCase()
+  handle any
+  endhandle
+
+  !this.socketFieldStype.val = !readData[10].upCase()
+  handle any
+  endhandle
+
+  !this.socketSiteStype.val = !readData[11].upCase()
+  handle any
+  endhandle
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      applyOption
+-- Description: apply option
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .applyOption()
+  !this.optionFile.open('OVER')
+  handle any
+    !!alert.error('Error Saving Option File')
+    return
+  endhandle
+
+  !shopStype  = !this.shopStype.val.upCase()
+  !fieldStype = !this.fieldStype.val.upCase()
+  !siteStype  = !this.siteStype.val.upCase()
+
+  !socketShopStype = !this.socketShopStype.val.upCase()
+  !socketFieldStype = !this.socketFieldStype.val.upCase()
+  !socketSiteStype = !this.socketSiteStype.val.upCase()
+
+  !this.shopStype.val  = !shopStype
+  !this.fieldStype.val = !fieldStype
+  !this.siteStype.val  = !siteStype
+
+  !this.socketShopStype.val = !socketShopStype
+  !this.socketFieldStype.val = !socketFieldStype
+  !this.socketSiteStype.val = !socketSiteStype
+
+  !this.optionFile.writeRecord('$!shopStype')
+  !this.optionFile.writeRecord('$!fieldStype')
+  !this.optionFile.writeRecord('$!siteStype')
+  !this.optionFile.writeRecord('$!this.fittingConnectionFrame.val')
+  !this.optionFile.writeRecord('$!this.slipOnFrame.val')
+  !this.optionFile.writeRecord('$!this.swFromSpec.val')
+  !this.optionFile.writeRecord('$!this.slipOnFromSpec.val')
+  !this.optionFile.writeRecord('$!this.swCompOutOfSpec.val')
+  !this.optionFile.writeRecord('$!socketShopStype')
+  !this.optionFile.writeRecord('$!socketFieldStype')
+  !this.optionFile.writeRecord('$!socketSiteStype')
+
+  !this.optionFile.close()
+endmethod
+
+define method .setSocketWeldGadget()
+  !this.socketShopStype.active = !this.swFromSpec.val
+  !this.socketFieldStype.active = !this.swFromSpec.val
+  !this.socketSiteStype.active = !this.swFromSpec.val
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      setCompSpec
+-- Description: set Comp Spec based on out of spec validation
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setCompSpec()
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      closeOption
+-- Description: close option
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .closeOption()
+  !this.hide()
+endmethod

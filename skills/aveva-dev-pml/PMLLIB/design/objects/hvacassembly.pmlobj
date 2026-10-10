@@ -1,0 +1,1707 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            hvacassembly.pmlobj
+--   Type:          Object Definition
+--   Group:         HVAC Applications
+--     Keyword:     HVAC
+--   Module:        Design
+--   Replaces:
+--
+-- Author:          Tony Martin (S.Bentley)
+--  Created:         Wed Mar 26 13:34:25 2008
+--
+-- Description:
+--    Assembly object for handling HVAC assemblies in branches
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  assemblyconnect()                BOOLEAN
+--  assemblyconnect(EDGPICKDATA)     -
+--  assemblyselection()              BOOLEAN
+--  assemblyselection(EDGPICKDATA)   -
+--  build()                          -
+--  buildfromlist(ARRAY,STRING,REAL,BOOLEAN,POSITION) -
+--  buildfromselection(DBREF,ARRAY,DBREF,ARRAY,ARRAY) -
+--  buildintube(POSITION,DBREF,REAL,BOOLEAN) -
+--  buildnewassembly(STRING)         -
+--  buildtee(DBREF,STRING,REAL)      -
+--  calculatelengths(ARRAY)          -
+--  componentgroup()                 BOOLEAN
+--  connectBranch(BASECOMPONENT)     -
+--  copydesignitems()                -
+--  copyheadtail(DBREF,DBREF,STRING) -
+--  countbranches()                  REAL
+--  createbran(DBREF,STRING)         -
+--  createcomponent(DBREF,STRING,DBREF,REAL) -
+--  getactivecomps(ARRAY)            ARRAY
+--  getdatavalues()                  -
+--  getitems()                       -
+--  getoricommands(DBREF)            BOOLEAN
+--  getpmlname(STRING,REAL)          STRING
+--  getpositioncommand(DBREF,STRING,STRING) BOOLEAN
+--  hvacassembly(DBREF)              -
+--  inlinebranch(DBREF,DBREF)        -
+--  markelements()                   -
+--  markorigin()                     -
+--  moveorigin()                     -
+--  movetonewposition(REAL,POSITION) -
+--  orientatecomponent(DBREF,REAL,DBREF) -
+--  orientatefirst(DBREF,REAL,DBREF) -
+--  positioncomponent(DBREF,REAL,DBREF,STRING) -
+--  resolverefs()                    -
+--  setbranchstatus(ARRAY,ARRAY)     ARRAY
+--  setdespars(DBREF)                -
+--  setorder(ARRAY)                  ARRAY
+--  setoriginpoints(REAL)            -
+--  settail(DBREF)                   -
+--  settolerances()                  -
+--  update()                         -
+--
+define object HVACASSEMBLY
+
+  member .name                  is STRING
+  member .varid                 is STRING
+  member .assemblyitems         is ARRAY
+  member .designitems           is ARRAY
+  member .primaryorigin         is DBREF
+  member .primarypoint          is REAL
+  member .secondaryorigin       is DBREF
+  member .secondarypoint        is REAL
+  member .appdataarea           is DBREF
+  member .appldata              is DBREF
+  member .dataset               is DBREF
+  member .zone                  is DBREF
+  member .hvac                  is DBREF
+  member .componentgroup        is ARRAY
+  member .grouparrive           is POINTVECTOR
+  member .groupleave            is POINTVECTOR
+  member .groupparallel         is BOOLEAN
+  member .groupconcentric       is BOOLEAN
+  member .description           is STRING
+  -- Tolerances (private members)
+  member .distancetolerance     is REAL
+  member .angletolerance        is REAL
+  member .selection             is SELECTION
+  member .form                  is STRING
+  member .func                  is STRING
+  member .type                  is STRING
+  member .tees                  is ARRAY
+  member .builtitems            is ARRAY
+  member .insertelement         is DBREF
+  member .commandstring         is ARRAY
+  member .branches              is ARRAY
+  member .insertposition        is POSITION
+  member .originoffset          is REAL
+  member .assemblylength        is REAL
+  member .components            is ARRAY
+  member .undo                  is UNDOABLE
+  member .originoffset2         is REAL
+  member .secondaryoffset       is REAL
+  member .undoswitch            is BOOLEAN
+  member .savedcomponent        is DBREF
+  member .savedoriginal         is DBREF
+  member .assemblycomponent     is HVACASSEMBLYCOMPONENT
+  member .moddate               is DATETIME
+  member .moved                 is BOOLEAN
+  member .branchcount           is REAL
+  member .connected             is BOOLEAN
+  member .moveddistance         is REAL
+  member .newprimary            is DBREF
+  member .newsecondary          is DBREF
+  member .readonly              is BOOLEAN
+  member .locked                is BOOLEAN
+
+endobject
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- Basic constructor for a hvacassembly must be at an APPLDA element
+define method .hvacassembly(!current is DBREF)
+
+  !!save = !!ce
+  !!ce = !current
+  !this.locked = FALSE
+  !this.readonly = FALSE
+  if !!ce.dbwrite.not() then
+    !this.readonly = TRUE
+  endif
+  if !!ce.lock then
+    !this.locked = TRUE
+  endif
+  if !current.type.neq('APPLDA') then
+     !!alert.error('Item is not an assembly')
+     return
+  else
+     !this.branchcount = !this.countbranches()
+  endif
+
+  !this.build()
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+define method .countbranches()is REAL
+
+  var !bran coll all bran for ce
+  if !bran.unset() then
+    return 0
+  else
+    return !bran.size()
+  endif
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- continuation method from the constructor to allow rebuilds if the assembly
+-- has been modified during the design session.
+define method .build()
+
+  -- get the modified time so that we get the latest version
+  !this.moddate = object DATETIME(!!ce.lastmod.hier)
+
+  !this.appldata = !!ce
+  !this.appdataarea = !!ce.owner
+  !this.settolerances()
+  !this.undoswitch = TRUE
+
+  -- get all of the items in the assembly
+  !this.getitems()
+
+  do !a values !this.designitems
+    if !a.type.eq('DDSE') then
+      if !this.dataset.unset() then
+        !this.dataset = !a
+      endif
+    elseif !a.type.eq('ZONE') then
+      if !this.zone.unset() then
+        !this.zone = !a
+      endif
+    elseif !a.type.eq('HVAC') then
+      if !this.hvac.unset() then
+        !this.hvac = !a
+      endif
+    endif
+  enddo
+
+  !this.description = !this.appldata.description
+  if !this.dataset.set() then
+    !this.getdatavalues()
+  endif
+
+  !!ce = !this.appldata
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- method to check if the assembly has been modified
+define method .update()
+
+  !!ce = !this.appldata
+
+  !currentmoddate = object DATETIME(!!ce.lastmod.hier)
+  if !currentmoddate.gt(!this.moddate) then
+    !this.build()
+  endif
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+define method .getdatavalues()
+
+  !save = !!ce
+  -- go to dataset to be able to evaluate parameters
+  !!ce = !this.dataset
+  -- get the list of properties because the property search does not work without showing the error
+  !unusedPrls = !!ce.depl
+
+  var !coll coll all ddat for CE
+  if !coll.size().eq(0) then
+    return
+  else
+    do !a values !coll
+      !item = !a.dbref()
+      !!ce = !item
+      if !item.dkey.eq('FUNC') then
+        vvalue1
+        handle any
+          !func = 'Not Set'
+        elsehandle NONE
+          !text = !!ce.validvalue
+          !func = !text.replace(|'|,||).replace(|(|,||,1).replace(|)|,||,-1)
+          !this.type = 'FUNC'
+          !this.func = '!!' & !func & '()'
+        endhandle
+      endif
+      if !item.dkey.eq('FORM') then
+        vvalue1
+        handle any
+          -- q var !!error
+          !form = 'Not Set'
+        elsehandle NONE
+          !text = !!ce.validvalue
+          !form = !text.replace(|'|,||).replace(|(|,||,1).replace(|)|,||,-1)
+          !this.type = 'FORM'
+          !this.form = '!!' & !form
+        endhandle
+      endif
+      if !item.dkey.eq('ORIP') then
+        !orig = !this.dataset.lfdp.orip
+        handle any
+          !this.primaryorigin = object DBREF()
+          !this.primarypoint  = object REAL()
+        elsehandle NONE
+          !this.primaryorigin = !orig
+          !this.primarypoint  = !item.number
+        endhandle
+      endif
+      if !item.dkey.eq('ORIS') then
+        !orig = !this.dataset.lfdp.oris
+        handle any
+          !this.secondaryorigin = object DBREF()
+          !this.secondarypoint  = object REAL()
+        elsehandle NONE
+          !this.secondaryorigin = !orig
+          !this.secondarypoint  = !item.number
+        endhandle
+      endif
+    enddo
+  endif
+
+  if !this.type.unset() then
+    !this.type = 'copy'
+  endif
+
+  !!ce = !save
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- method to collect all of the assembly hvac members
+define method .getitems()
+
+  var !all coll all for $!this.appldata
+  !this.components = ARRAY()
+  do !a values !all
+    !this.components.append(!a.dbref())
+  enddo
+  !this.designitems = !this.components
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- method to build a new assembly from a HVAC selection
+define method .buildfromselection(!hvac is DBREF, !components is ARRAY, !branch is DBREF, !branches is ARRAY, !owners is ARRAY)
+
+  !!ce = !hvac
+  !this.designitems = !components
+  --  get branches and design order
+  --  !branch is the owner of the main components
+  --  loop through and get the branches
+  !ownerseq = !owners
+  -- modify the owner array so that the main branch is first
+  !ownerseq.insert(1,!ownerseq.remove(!ownerseq.findfirst(!branch)))
+  do !bran index !ownerseq
+    !comps[!bran] = ARRAY()
+    do !a values !this.designitems
+      skip if(!a.type eq 'TUBI' or !a.type eq 'BRAN')
+      if !a.owner.eq(!ownerseq[!bran]) then $* its the current branch
+         !comps[!bran].append(!a)
+      endif
+    enddo
+    !comps[!bran] = !this.setorder(!comps[!bran])
+  enddo
+
+  -- at this point, we have the components of the separate branches and another array of actual branches
+  -- we now need to insert something at the start of each array to indicate the branch status
+  -- this can be:
+  -- complete (head and tail and all components)
+  -- nothing  (no head and tail)
+  -- head
+  -- tail
+
+  do !a index !comps
+    !comps[!a] = !this.setbranchstatus(!comps[!a], !branches)
+  enddo
+
+  -- now we need to concatenate the arrays and process them
+  !final = ARRAY()
+  do !a values !comps
+    !final.append(!a)
+  enddo
+
+  !this.designitems = !final
+
+  -- we need to look at what happened in the error situation
+
+  -- !this.display()
+  !this.copydesignitems()
+  -- need to fix up the heads and tails to suit
+
+  -- now go and resolve any connection references
+  !this.resolverefs()
+
+  !this.moveorigin()
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- method to reorder the list of components as the graphical selection
+-- has them in database order rather than sequence
+define method .setorder(!comps is ARRAY) is ARRAY
+
+  !order = ARRAY()
+  do !a values !comps
+    !order.append(!a.order)
+  enddo
+
+  !index = !order.sortedindices()
+  !return = !comps.reindex(!index)
+
+  return !return
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- method to set the copying status of components in the list
+define method .setbranchstatus(!complist is ARRAY, !branchlist is ARRAY)is ARRAY
+
+  !branch = !complist[1].owner
+  !find = !branchlist.find(!branch)
+  !complist.insert(1,!branch)
+  if !find.size().eq(0) then
+    !complist.insert(2,'none')
+  elseif !find.size().eq(2) then
+    !complist.insert(2,'complete')
+  else $* we have one branch in the list so its a head or tail
+    -- find if the head or tail is part of the setup
+    if !this.components.findfirst(!branch.href).set() then
+      !complist.insert(2,'head')
+    elseif !this.components.findfirst(!branch.tref).set() then
+      !complist.insert(2,'tail')
+    elseif !complist[2].order.eq(1) then
+      !complist.insert(2,'head')
+    else
+      !complist.insert(2,'tail')
+    endif
+  endif
+
+  return !complist
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- method to loop through the connected components and resolve the
+-- connection references
+define method .resolverefs()
+
+  -- loop through the assembly items and set hrefs trefs
+  do !a values !this.assemblyitems
+    if !a.type.eq('BRAN') then
+      !this.connectBranch(!a)
+    endif
+  enddo
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- method to connect the new branches
+define method .connectBranch(!current is BASECOMPONENT)
+
+  -- find what the old head and tail settings were
+  !href = !current.href
+  !tref = !current.tref
+  !branch = !current.newcomp
+  !!ce = !branch
+  do !b values !this.assemblyitems
+    if !b.origin.string().eq(!href.string()) then
+      !test = !b.newcomp
+      -- OK this branch needs connecting to $!test
+      if (!test.type eq 'BRAN') then
+      	-- connect head to tail of other
+        FCONN PH TO PT OF $!test
+        handle ANY
+        endhandle
+      else
+      	-- connect head to p3 of HVAC component
+        !leave = 6 - !test.arrive - !test.leave
+        FCONN PH TO P$!leave OF $!test
+        handle ANY
+        endhandle
+      endif
+      	
+    elseif !b.origin.string().eq(!tref.string()) then
+      !test = !b.newcomp
+      -- OK this branch needs connecting to $!test
+      if (!test.type eq 'BRAN') then
+      	-- connect tail to head of other
+        FCONN PT TO PH OF $!test
+        handle ANY
+        endhandle
+      else
+      	-- connect tail to p3 of HVAC component (should not occur)
+        !leave = 6 - !test.arrive - !test.leave
+        FCONN PT TO P$!leave OF $!test
+        handle ANY
+        endhandle
+      endif
+    endif
+  enddo
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- main method to copy the design into a new assembly
+define method .copydesignitems()
+
+  !!ce = !this.hvac
+  !this.assemblyitems = ARRAY()
+
+  -- !this.designitems consists of one or more arrays
+  do !atype index !this.designitems
+    !branch   = !this.designitems[!atype][1]
+    !brantype = !this.designitems[!atype][2]
+    !remainingcomps = !this.designitems[!atype].removefrom(3)
+
+    -- its a new array so we need to build a branch
+    !this.createbran(!branch, !brantype)
+
+    do !a index !remainingcomps
+      if !a.eq(1) then
+        if !atype.eq(1) then
+          -- the assembly starts with a branch
+          !this.assemblyitems.append(object BASECOMPONENT(!remainingcomps[!a] , !branch ))
+          if (!remainingcomps[!a].type inset('TEE','OLET','BRCO','THRE','AHU','HFAN')) then
+            !this.buildtee(!remainingcomps[!a], !remainingcomps[!a].type, !a)
+          endif
+          bran
+          conn ph to first mem
+          conn pt to last mem
+          1
+          skip
+        else
+          !this.assemblyitems.append(object BASECOMPONENT(!remainingcomps[!a] , !branch ))
+          if (!remainingcomps[!a].type inset('TEE','OLET','BRCO','THRE','AHU','HFAN')) then
+            !this.buildtee(!remainingcomps[!a], !remainingcomps[!a].type, !a)
+          endif
+          skip
+        endif
+      endif
+      -- build the component
+      !this.assemblyitems.append(object BASECOMPONENT(!remainingcomps[!a] , !branch ))
+      if (!remainingcomps[!a].type inset('TEE','OLET','BRCO','THRE','AHU','HFAN')) then
+        !this.buildtee(!remainingcomps[!a], !remainingcomps[!a].type, !a)
+      endif
+      if !a.eq( !remainingcomps.size()) then
+        -- the next item is a different branch, so we need to end the current one
+        bran
+        if !brantype.eq('none') then
+          conn pt to last mem
+        else
+          !this.copyheadtail(!!ce,!branch,!brantype)
+        endif
+      endif
+    enddo
+  enddo
+
+  -- Make sure all tails are tied
+  HVAC
+  do !branchElement values !!ce.members
+    !!ce = !branchElement
+    if (!branchElement.tpos.near(object POSITION('E0N0u0 wrt ZONE'), 0.5mm)) then
+      CONN PT TO PL OF LAST MEM
+      handle ANY
+      endhandle
+    endif
+    if (!branchElement.hpos.near(object POSITION('E0N0u0 wrt ZONE'), 0.5mm)) then
+      CONN PH TO PA OF 1
+      handle ANY
+      endhandle
+    endif
+  enddo
+  HVAC
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- method to extract head and tail information from the old branch
+define method .copyheadtail(!target is DBREF, !source is DBREF, !type is STRING)
+
+  if !type inset('head','complete') then
+    !hpos = !source.hpos
+    !hp = !hpos.string().before('WRT')
+    !target.hpos = !hp.position()
+    !hdir = !source.hdir
+    !hd = !hdir.string().before('WRT')
+    !target.hdir = !hd.direction()
+    !target.hcon = !source.hcon
+    !target.hbor = !source.hbor
+    !target.hstu = !source.hstu
+  endif
+
+  if !type inset('tail','complete') then
+    !tpos = !source.tpos
+    !tp = !tpos.string().before('WRT')
+    !target.tpos = !tp.position()
+    !tdir = !source.tdir
+    !td = !tdir.string().before('WRT')
+    !target.tdir = !td.direction()
+    !target.tcon = !source.tcon
+    !target.tbor = !source.tbor
+  endif
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- method to create a branch as part of an assembly.
+-- can be a complete copy or a new branch or can be the last action to set the tail
+define method .createbran(!designitem is DBREF ,!action is STRING)
+
+  if !action.eq('complete') then
+    new bran copy like $!designitem
+  elseif !action.eq('none') then
+    new bran
+  elseif !action.eq('head') or !action.eq('tail') then
+    new bran copy like $!designitem
+  endif
+
+  !this.assemblyitems.append(object BASECOMPONENT(!designitem, !!ce ))
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+--
+-- Method:      componentGroup
+--
+-- Description: Derives the component group information from the current
+--              components in the "components" member of the object. Data
+--              written to the object.
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if valid list of components is returned
+--
+------------------------------------------------------------------------
+
+define method .componentgroup() is BOOLEAN
+
+  -- Initialise Variables
+  !this.components       = ARRAY()
+
+  -- Remove any implied tube
+  do !component values !this.designitems
+
+    skip if(!component.type eq 'TUBI' or !component.owner.type ne 'BRAN')
+    if(!!dbrefUpdatable(!component).not()) then
+      return false
+    endif
+    !this.components.append(!component)
+  enddo
+
+  -- No components to derive group from
+  if(!this.components.empty()) then
+    !!error.text = 'No component(s) selected.'
+    return false
+  endif
+
+  -- Define data table
+  !table            = object TABLE()
+  !table.primarykey(!this.components)
+
+  -- Define columns
+  !columns[1]       = object COLUMN(object EXPRESSION('SEQUENCE'), true, true, 'Sequence')
+  !columns[2]       = object COLUMN(object EXPRESSION('OWNER'), true, true, 'Owner')
+
+  -- Build Table
+  !table.columns(!columns)
+  !table.evaluate()
+
+  -- Check that all components are contiguous
+  !unusedSequence  = !table.column('Sequence')
+
+  -- Empty component group list
+  !this.componentgroup.clear()
+
+  -- Group components
+  !this.componentgroup      = !table.primarykey()
+
+  -- Start/End component of group
+  !first                    = !this.componentgroup.first()
+  !last                     = !this.componentgroup.last()
+
+  -- Arrive/Leave information of group
+  !aposition                = !first.aposition
+  !adirection               = !first.apirection
+  !lposition                = !last.lposition
+  !ldirection               = !last.ldirection
+  !this.grouparrive         = object POINTVECTOR(!aposition, !adirection)
+  !this.groupleave          = object POINTVECTOR(!lposition, !ldirection)
+
+  -- Basic characteristics of group
+  !this.groupparallel       = !adirection.isparallel(!ldirection)
+  !this.groupconcentric     = !this.grouparrive.line(1000mm).distance(!this.groupleave.line(1000mm)) le !this.distancetolerance
+
+  -- Return
+  return true
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+define method .settolerances()
+
+  -- Initialise Variables
+  var !tolangle  TOL ANGLE
+  var !toloffset TOL OFFSET
+
+  -- Handle imperial values
+  !pos    = object POSITION('N' & !toloffset)
+  !offset = !pos.north
+
+  !this.angletolerance    = !tolangle.real()
+  !this.distancetolerance = !offset
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+-- method to move the head of the first branch to n0u0e0
+define method .moveorigin()
+
+  !!ce = !this.hvac
+  bran 1
+  handle any
+    return
+  endhandle
+
+  !position   = !!ce.hpos.wrt(/* )
+  !e = !position.east
+  !u = !position.up
+  !n = !position.north
+
+  !!ce = !this.hvac
+  var !bran coll all bran for $!this.hvac
+  do !a values !bran
+    $!a
+    by n(-1 * $!n)
+    by e(-1 * $!e)
+    by u(-1 * $!u)
+  enddo
+
+endmethod
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+define method .buildnewassembly(!picktype is STRING)
+
+  !this.update()
+
+  if !this.type.eq('FUNC') then
+    !func = !this.getpmlname(!this.func,1)
+    $!func
+    handle any
+      !!alert.error('function $!func does not exist')
+      return
+    endhandle
+
+  elseif !this.type.eq('FORM') then
+    !form = !this.getpmlname(!this.form,2)
+    show $!form
+    handle any
+      !!alert.error('form $!form does not exist')
+      return
+    endhandle
+  else
+    --This is the bit which builds the assembly by inserting it in a straight tube
+    if !picktype.eq('intube') then
+      !this.connected = FALSE
+
+      -- go and build the assembly after picking the appropriate insert point
+      if !this.assemblyselection().not() then
+        -- undo
+      endif
+    elseif !picktype.eq('connected') then
+      !this.connected = TRUE
+      if !this.assemblyconnect().not() then
+       -- undo
+      endif
+    elseif !picktype.eq('connecttocurrent') then
+      !this.connected = TRUE
+      !data = object EDGPICKDATA()
+      -- Check it is an HVAC component or branch
+      !data.item = !!hvacAssemblyCreation.currentElement
+      if (!data.set()) then
+        !!ce = !!hvacAssemblyCreation.currentElement
+        if ((TYPE eq 'BRAN' and TYPE OF OWNER eq 'HVAC') or (TYPE OF OWNER eq 'BRAN' and TYPE OF OWNER OF OWNER eq 'HVAC')) then
+          !this.assemblyconnect(!data)
+        else
+          !!alert.error('Must be at an HVAC branch or component')
+          return
+        endif
+      endif
+    endif
+  endif
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- method to get the file or function name from the passed string
+define method .getpmlname(!name is STRING,!type is REAL)is STRING
+
+  !return = !name.replace(' ','')
+  if !return.match('!').eq(0) then
+    !return = '!!' & !return
+  endif
+
+  if !type.eq(1) then
+    if !return.match('()').eq(0) then
+      !return = !return  & '()'
+    endif
+  endif
+
+  return !return
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+--
+-- Method:      AssemblySelection
+--
+-- Description: List the passed components
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       Components to align
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if successful
+--
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+--
+-- Method:      AssemblySelection
+--
+-- Description: Instigate EDG for picking
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if successful
+--
+------------------------------------------------------------------------
+
+define method .assemblyselection() is BOOLEAN
+
+  -- Initialise Variables
+  !result = true
+
+  -- Define EDG packet
+  !packet = object EDGPACKET()
+  !packet.pickPacket.picks[1]                 = object EDGPICKTYPE()
+  !packet.pickPacket.picks[1].stdElement('Identify an Insertion Point in Tube')
+  !packet.pickPacket.picks[1].pick.input[3]   = 'TYPE of OWNER of OWNER eq |HVAC| and TYPE of OWNER of ZONE neq |APPLDA|'
+  !packet.pickPacket.picks[1].pick.input[5]   = 'TYPE of OWNER of OWNER eq |HVAC| and TYPE of OWNER of ZONE neq |APPLDA|'
+  !packet.pickPacket.picks[1].pick.modifiable = false
+  !packet.action  =  '!!' & !this.varid & '.assemblyselection(!this.return[1])'
+  !packet.remove  = true
+  !return = !!edgcntrl.add(!packet)
+
+  handle any
+  endhandle
+  -- Return
+  return !result
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      AssemblySelection
+--
+-- Description: Instigate EDG for picking
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if successful
+--
+------------------------------------------------------------------------
+define method .assemblyselection(!data is EDGPICKDATA)
+
+  -- Initialise Variables
+  !tubing         = object EDGTUBING()
+  !position       = !tubing.exact(!data.item, !data.pickLine)
+  !element        = !data.item
+
+  !this.undo           = object UNDOABLE()
+  !this.undo.description('Create selection copy')
+  !this.undo.add()
+
+  !this.buildintube(!position,!element,1,true)
+  handle 111
+    !!fmsys.setprogress(0)
+    !!alert.message('Assembly Cancelled. All components have been removed')
+    !this.undo.endundoable()
+    undodb 1
+  elsehandle (61,164)
+    !!fmsys.setprogress(0)
+    !!alert.warning('No suitable components can be found in the Specification - Assembly Cancelled. All components have been removed')
+    !this.undo.endundoable()
+    undodb 1
+  elsehandle NONE
+    !this.undo.endundoable()
+  endhandle
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+--
+-- Method:      Assemblyconnect
+--
+-- Description: Instigate EDG for picking
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if successful
+--
+------------------------------------------------------------------------
+
+define method .assemblyconnect() is BOOLEAN
+
+  -- Initialise Variables
+  !result = true
+
+   -- Define EDG packet
+  !packet = object EDGPACKET()
+  !packet.pickPacket.picks[1]                 = object EDGPICKTYPE()
+  !packet.pickPacket.picks[1].stdElement('Identify Component')
+  !packet.pickPacket.picks[1].pick.input[3]   = 'TYPE of OWNER of OWNER eq |HVAC| and TYPE of OWNER of ZONE neq |APPLDA| or TYPE of OWNER eq |HVAC| and TYPE of OWNER of ZONE neq |APPLDA|'
+  !packet.pickPacket.picks[1].pick.input[5]   = 'TYPE of OWNER of OWNER eq |HVAC| and TYPE of OWNER of ZONE neq |APPLDA| or TYPE of OWNER eq |HVAC| and TYPE of OWNER of ZONE neq |APPLDA|'
+  !packet.pickPacket.picks[1].pick.modifiable = FALSE
+
+  !packet.action  =  '!!' & !this.varid & '.assemblyconnect(!this.return[1])'
+
+  !packet.remove  = true
+  !return = !!edgcntrl.add(!packet)
+
+  -- Return
+  return !result
+
+endmethod
+-- End of method definition
+
+--------------------------------------------------------------------------
+--
+-- Method:      AssemblyConnect
+--
+-- Description: Instigate EDG for picking
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if successful
+--
+------------------------------------------------------------------------
+
+define method .assemblyconnect(!data is  EDGPICKDATA)
+
+  -- Initialise Variables
+  !tubing         = object EDGTUBING()
+  !line           = !tubing.line(!data.item)
+  !position       = !line.startposition
+  !element        = !data.item
+
+  !this.buildintube(!position,!element,0,true)
+  handle 111
+    !!fmsys.setprogress(0)
+    !!alert.message('Assembly Cancelled. All components have been removed')
+    !this.undo.endundoable()
+    undodb 1
+  elsehandle NONE
+    !this.undo.endundoable()
+    !!inassembly.delete()
+    handle any
+    endhandle
+  endhandle
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+--
+-- Method:      Buildintube
+--
+-- Description: build the components at element and position
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if successful
+--
+------------------------------------------------------------------------
+
+-- This is the main building routine
+define method  .buildintube(!position is POSITION, !insertitem is DBREF, !origin is REAL, !feedback is BOOLEAN)
+
+  !!inassembly = TRUE
+
+  if !this.undoswitch then
+    !this.undo           = object UNDOABLE()
+    !this.undo.description('Create selection copy')
+    !this.undo.add()
+  endif
+
+  !this.commandstring = ARRAY()
+
+  !this.insertelement = !insertitem
+
+  !this.insertposition = !position
+  -- New components
+  !this.components = ARRAY()
+  !this.components     = !this.getactivecomps(!this.designitems)
+  !this.selection      = object SELECTION()
+  !!ce            = !insertitem
+  -- we need to handle ATTA elements
+  do
+    if ((!!ce.owner.type eq 'BRAN') and (!!ce.seq lt !!ce.owner.mcount)) then
+      var !nearPosition construct distance pl to pa of next
+      !nearPositionReal = !nearPosition.real()
+      if ((hardtype of next eq 'ATTA') and (!nearPositionReal lt 0.6 )) then
+      	next
+      else
+      	break
+      endif
+    else
+    	break
+    endif
+  enddo
+
+  if !!ce.type.eq('BRAN') then
+    !spec  = !!ce.pspe.name
+  else
+    !spec = !!ce.spow.name
+  endif
+
+  !this.tees = ARRAY()
+  !this.branches = ARRAY()
+  !this.builtitems = ARRAY()
+   -- Copy component group
+
+  !this.savedcomponent  = object DBREF()
+  do !a values !this.components
+    if !a.type.neq('BRAN') then
+      !this.savedoriginal   = !a
+    endif
+    break
+  enddo
+
+  !this.selection = object SELECTION()
+  -- main build loop
+  -- we are building in normal forwards mode no problem
+  -- Negative situation handle (Test team scenario)
+  if (!this.components.size() eq 0) then
+    !!alert.error('No components in this assembly')
+    return
+  endif
+
+  !this.buildfromlist(!this.components,!spec,!origin,!feedback,!position)
+
+  !!componentcreation.component = !!ce.owner
+  handle any
+  endhandle
+
+  !!componentcreation.componentposition = n1
+  handle any
+  endhandle
+
+  !!ce = !this.builtitems[!this.builtitems.size()]
+
+  !this.selection.setCurrent()
+  !!fmsys.setprogress(0)
+
+  if !this.undoswitch then
+    !this.undo.endundoable()
+  endif
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- method to build an array of components
+-- used by build in tube
+------------------------------------------------------------------------
+define method .buildfromlist(!components is ARRAY, !spec is STRING, !origin is REAL, !feedback is BOOLEAN, !position is POSITION)
+
+  !move = FALSE
+  !this.moved = FALSE
+  !increment = 100 / !this.components.size()
+
+  if !origin.eq(1).or(!origin.eq(2)) then
+
+    if !origin.eq(1) then
+      !originelement        = !this.primaryorigin
+      !originpoint          = !this.primarypoint
+      !secondaryelement     = !this.secondaryorigin
+      !secondarypoint       = !this.secondarypoint
+    else
+      !originelement        = !this.secondaryorigin
+      !originpoint          = !this.secondarypoint
+      !secondaryelement     = !this.primaryorigin
+      !secondarypoint       = !this.primarypoint
+    endif
+    if !originelement.set() then
+      !move = TRUE
+    else
+      !move = FALSE
+    endif
+  endif
+
+  do !i indices !components
+
+    !component = !components[!i]
+    -- go and get the rules for the component template
+    !this.assemblycomponent = object HVACASSEMBLYCOMPONENT(!component)
+
+    if !i.neq(1) then
+       !this.branches.append(!component.owner)
+       !previous  = !components[!i - 1]
+    else
+       !previous = object DBREF()
+    endif
+
+    if !feedback then
+      !!inassembly = TRUE
+      refresh
+      !!inassembly.delete()
+      !currentprogress  = !i * !increment
+      !!fmsys.setprogress(!currentprogress)
+    endif
+
+    -- go and create the component
+    !this.createcomponent(!component,!spec,!previous,!i)
+    handle 111
+       -- if there is an error in selection we need to sort out what to do from here
+       return error 111
+    endhandle
+
+    if !component.eq(!this.primaryorigin) then
+       !this.newprimary = !!ce
+    elseif !component.eq(!this.secondaryorigin) then
+       !this.newsecondary = !!ce
+    endif
+
+    -- orientate
+    !this.orientatecomponent(!component, !i, !previous)
+    handle 111
+      -- if there is an error in selection we need to sort out what to do from here
+      return error 111
+    endhandle
+
+    -- position
+    !this.positioncomponent(!component, !i, !previous, !spec )
+    handle 112
+       return error 111
+    endhandle
+
+    if !component eq !this.savedoriginal then
+       !this.savedcomponent  = !!ce
+    endif
+
+    -- add the new item to the graphical selection
+    if !!ce.type.neq('BRAN') then
+       !this.selection.add(!!ce)
+    endif
+    --$P just built $!!ce.type
+    --$P index is $!i
+    !this.builtitems[!i] = !!ce
+
+    if !move then
+      if !component.eq(!originelement) then
+         !this.movetonewposition(!originpoint,!position)
+      endif
+    endif
+    if !feedback then
+       !!inassembly = TRUE
+       refresh
+       !!inassembly.delete()
+    endif
+
+  enddo
+
+  !this.settail(!component)
+  !this.calculatelengths(!this.builtitems)
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+define method .movetonewposition(!originpoint is REAL, !position is POSITION)
+
+  !line = object LINE()
+  !line.startposition = !!ce.pposition[!originpoint].wrt(/* )
+  !line.endposition  = !position
+  if !line.length().neq(0) then
+    !vector = !line.pointvector()
+    !this.moveddistance = !line.length()
+  else
+     !this.moveddistance = 0
+  endif
+  !this.originoffset = !this.moveddistance
+  do !comp values !this.builtitems
+    !this.commandstring.append('$!comp')
+    !!ce = !comp
+    !this.commandstring.append('move $!vector.direction distance $!this.moveddistance')
+    move $!vector.direction distance $!this.moveddistance
+  enddo
+  !this.moved = TRUE
+  !this.originoffset = !this.moveddistance
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+define method .calculatelengths(!items is ARRAY)
+
+  !startpos          = !items[1].apos
+  !owner             = !items[1].owner
+  !endpos = object POSITION()
+
+  !this.originoffset    = 0
+  !this.secondaryoffset = 0
+
+  do !a from 1 to !items.size()
+    if !items[!a].eq(!this.newprimary) then
+      !primarypos = !items[!a].pposition[!this.primarypoint]
+      handle any
+      endhandle
+      !this.originoffset = !startpos.distance(!primarypos)
+    elseif  !items[!a].eq(!this.newsecondary) then
+      !secondarypos = !items[!a].pposition[!this.secondarypoint]
+      handle any
+      endhandle
+      !this.secondaryoffset = !startpos.distance(!secondarypos)
+    endif
+
+    if !items[!a].owner.neq(!owner) then
+      -- we have reached the end of the items in the first branch
+      break
+    endif
+    !endpos = !items[!a].lpos
+  enddo
+
+  if !endpos.set() then
+    !this.assemblylength = !startpos.distance(!endpos)
+  else
+    !this.assemblylength = object REAL()
+  endif
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- method for creating and selecting the design component
+define method .createcomponent(!component is DBREF, !dummySpec is STRING,!previous is DBREF,!i is REAL )
+
+  !type = !component.type
+  -- $P type is $!type
+  if !type.eq('BRAN') then
+    !this.inlinebranch(!component,!previous)
+    return
+  endif
+
+  !this.commandstring.append('NEW $!type copy like $!component')
+  NEW $!type copy like $!component
+
+  -- Manage Connections to tees etc
+  if (!type inset('TEE','OLET','BRCO','THRE','AHU','HFAN')) then
+    !this.buildtee(!component,!type,!i)
+  endif
+
+endmethod
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+--
+-- Method:      Buildtee
+--
+-- Description: build tees and olets
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if successful
+--
+------------------------------------------------------------------------
+--
+------------------------------------------------------------------------
+define method  .buildtee(!component is DBREF,!dummyType is STRING, !dummyReal is REAL)
+
+  -- Append new tee and tee out of reference assembly
+  !this.tees.append(!!ce)
+  !this.tees.append(!component)
+
+endmethod
+------------------------------------------------------------------------
+define method .orientatecomponent(!component is DBREF, !i is REAL, !previous is DBREF )
+
+  if !component.type.eq('BRAN') then
+    return
+  endif
+
+  !this.commandstring.append('ORI')
+  ori
+
+  -- if we have any ori commands then they override the normal mechanism
+  !test = !this.getoricommands(!component)
+  handle any
+    return error 111
+  endhandle
+  if !test then
+    return
+  endif
+
+  if !i eq 1 then
+    -- we are at the first component
+    !this.orientatefirst(!component, !i, !previous)
+  elseif !previous.type.eq('BRAN')  then
+    !ori = !component.orientation.wrt(!component.owner).string().before('WRT').trim()
+    !this.commandstring.append('ORIENTATE AND $!ori WRT owner')
+    ORIENTATE AND $!ori WRT owner
+    handle any
+      ori
+    endhandle
+  elseif !component.type inset('TEE','OLET','BRCO','THRE','AHU','HFAN','HACC','HSAD') then
+  	!componentType = !component.type
+    !leave = 6 - !component.arrive - !component.leave
+    !default = !component.pdir[!leave].wrt(/* ).string().before('WRT').trim()
+    !dir = !!alert.input('Please enter a P$!leave direction for $!componentType ','$!default')
+    -- we have found a component which needs to be orientated relative to something else
+    !this.commandstring.append('ori and p$!leave is $!dir')
+    ori and p$!leave is $!dir
+  else
+    -- Orientation with respect to previous component
+    !ori = !component.orientation.wrt(!previous).string().before('WRT').trim()
+    !this.commandstring.append('ORIENTATE AND $!ori WRT PREVIOUS')
+    ORIENTATE AND $!ori WRT PREVIOUS
+    handle any
+      !this.commandstring.append('ORIENTATE AND $!ori WRT PREVIOUS')
+      ORIENTATE $!ori WRT PREVIOUS
+    endhandle
+  endif
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- method to orientate the first component. if its got an offset the user is asked.
+define method .orientatefirst(!component is DBREF, !i is REAL, !previous is DBREF )
+
+  !ldir = 'ldir'
+  !adir = 'adir'
+
+  if !component.$!<adir>.wrt(/* ).neq(!component.$!<ldir>.wrt(/* ).opposite()) then
+    !default = !component.$!<ldir>.wrt( /* ).string().before('WRT').trim()
+    !dir = !!alert.input('Please enter a direction for PL','$!default')
+    -- we have found a component which needs to be orientated relative to something else
+    !this.commandstring.append('ori and pl is $!dir')
+    ori and pl is $!dir
+  elseif !component.type inset('TEE','OLET','BRCO','THRE','AHU','HFAN','HACC','HSAD') then
+  	!componentType = !component.type
+    !leave = 6 - !component.arrive - !component.leave
+    !default = !component.pdir[!leave].wrt(/* ).string().before('WRT').trim()
+    !dir = !!alert.input('Please enter a P$!leave direction for $!componentType ','$!default')
+    -- we have found a component which needs to be orientated relative to something else
+    !this.commandstring.append('ori and p$!leave is $!dir')
+    ORI and p$!leave is $!dir
+  else
+    -- For HVAC we need to try to ori using P6
+    -- Try to get p6 from last member of connected bran
+    if (!!ce.seq eq 1) then
+      var !p6 dir p6 of last mem of href of bran
+      handle ANY
+        ORI
+      endhandle
+    else
+      var !p6 dir p6 of prev
+      handle ANY
+        ORI
+      endhandle
+    endif
+    if (defined(!p6) and !p6.set()) then
+      ORI and x is $!p6
+      handle ANY
+        ORI
+      endhandle
+    else
+      ORI
+    endif
+  endif
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+define method .positioncomponent(!component is DBREF, !i is REAL, !previous is DBREF, !spec is STRING)
+
+  if(!i.eq(1)) then
+    !this.commandstring.append(| POS PA AT $!<this.insertposition> |)
+    POS PA AT $!<this.insertposition>
+  elseif !component.type.eq('BRAN') then
+      return
+  else
+    -- see if we have a stored command for positioning
+    -- if there is it gets executed and we
+    --- need to apply to the first component as well
+    if !this.getpositioncommand(!component,!component.type,!spec).not() then
+
+      if !previous.type.eq('BRAN') then
+        if(!component.aposition.near(!previous.hposition, 1mm)) then
+          !this.commandstring.append('CONNECT')
+          pos pa at ph
+          CONNECT
+          handle (7,3) $* incompatible connection types
+             !!alert.error('Component has incompatible connection types - Assembly Creation Aborted')
+             return error 112
+          endhandle
+        else
+          !distance = !component.position.distance(!previous.hposition)
+          !this.commandstring.append('DISTANCE $!distance')
+          DISTANCE $!distance
+        endif
+      -- Connected to previous
+      elseif(!component.aposition.near(!previous.lposition, 1mm)) then
+        !this.commandstring.append('CONNECT')
+        -- CONNECT
+        pos pa at pl of prev
+        handle (7,3) $* incompatible connection types
+           !!alert.error('Component has incompatible connection types - Assembly Creation Aborted')
+           return error 112
+        endhandle
+      else
+        !distance = !component.position.distance(!previous.position)
+        !this.commandstring.append('DISTANCE $!distance')
+        DISTANCE $!distance
+      endif
+
+    endif
+  endif
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+--
+-- Method:      InLineBranch
+--
+-- Description: build inline branches
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if successful
+--
+------------------------------------------------------------------------
+--
+------------------------------------------------------------------------
+define method .inlinebranch(!branch is DBREF, !prev is DBREF)
+
+  !conn = FALSE
+
+  !this.commandstring.append('New bran copy like $!branch')
+  !lastcomp = !!ce
+  !spec = !!ce.owner.pspe
+  new bran copy like $!branch
+  !!ce.pspe = !spec
+
+  -- Not always P3
+  !href = !branch.href
+  !x = !this.tees.findfirst(!href)
+  if !x.set() then
+    !tee = !this.tees[!x - 1]
+    !leave = 6 - !tee.arrive - !tee.leave
+    !this.commandstring.append('conn ph to P$!leave of $!tee')
+    fconn ph to P$!leave of $!tee
+    handle ANY
+    endhandle
+    !conn = TRUE
+  endif
+
+  !tref = !branch.tref
+  !x = !this.tees.findfirst(!tref)
+  if !x.set() then
+    !tee = !this.tees[!x - 1]
+    !leave = 6 - !tee.arrive - !tee.leave
+    !this.commandstring.append('conn pt to P$!leave of $!tee')
+    fconn pt to P$!leave of $!tee
+    handle ANY
+    endhandle
+    !conn = TRUE
+  endif
+
+  if !conn then
+    return
+  endif
+  -- if it gets here then we need to connect the tail of the previous branch
+  if !prev.unset() then
+    return
+  endif
+
+  --  we have unexpectedly come across the start of a new branch
+  --  the previous component's leave point is the current position
+  !newbranch = !!ce
+  !!ce = !lastcomp
+  !currentbranch = !!ce.owner
+  -- first end the current branch
+  !tubelength = !prev.ltlen
+  !currentcomponent = !!ce
+  tail
+  !!ce.tpos  = !currentcomponent.lposition
+  !!ce.tdir  = !currentcomponent.ldirection.opposite()
+  !!ce.tbore = !currentcomponent.lbore
+  !this.commandstring.append('move pt dist $!tubelength')
+  move pt dist $!tubelength
+
+  !!ce = !newbranch
+  if !branch.href.eq(!prev.owner) then
+     -- the head is connected
+     !!ce.href  = !currentbranch
+     !!ce.hpos  = !currentbranch.tpos
+     !!ce.hdir  = !currentbranch.tdir.opposite()
+     !!ce.hbore = !currentbranch.tbore
+  endif
+
+endmethod
+------------------------------------------------------------------------
+
+-- method to get the bare bones of what to create in the new assembly
+-------------------------------------------------------------------------
+define method .getactivecomps(!items is ARRAY )is ARRAY
+
+  !branches = 0
+  !return = ARRAY()
+
+  do !a values !items
+      -- fix for items being deleted in the assembly master.
+      if !a.badref() then
+        skip
+      endif
+    skip if !a.type inset('APPLDA','DDSE','DDAT','VVALUE','ZONE','HVAC','TUBI','HSLIST','HSPOOL')
+    if !a.type.eq('BRAN') then
+      !branches = !branches + 1
+      if !branches.eq(1) then
+        skip
+      endif
+    endif
+    !return.append(!a)
+  enddo
+
+  return !return
+
+endmethod
+-------------------------------------------------------------------------
+
+-------------------------------------------------------------------------
+define method .getoricommands(!source is DBREF ) is BOOLEAN
+
+  !error = FALSE
+  do !a values !this.assemblycomponent.orirules
+    !command = !a.split(',')[2]
+    if !command.upcase().match('PROMPT').gt(0) then
+      var !coord coord
+      if(!coord eq 'ENU')then
+        !dir = !!alert.input('Please Enter a direction for P3','N')
+      else
+        !dir = !!alert.input('Please Enter a direction for P3','Y')
+      endif
+      !this.commandstring.append('ori and p3 is $!dir')
+      ori and p3 is $!dir
+      handle any
+        !!alert.error('error in Orientation command line')
+        return FALSE
+      elsehandle NONE
+        return TRUE
+      endhandle
+    else
+      $!command
+      handle any
+        !!alert.error('error in Orientation command line -($!command)')
+      elsehandle NONE
+        !error = TRUE
+      endhandle
+    endif
+  enddo
+
+  return !error
+
+endmethod
+-------------------------------------------------------------------------
+
+-------------------------------------------------------------------------
+-- method to get any positioning commands for the current seed component
+define method .getpositioncommand(!source is DBREF, !type is STRING, !spec is STRING ) is BOOLEAN
+
+  !error = FALSE
+  do !a values !this.assemblycomponent.posrules
+    !command = !a.split(',')[2]
+    !this.commandstring.append('$!command')
+    $!command
+    handle any
+      !!alert.error('error in Position command line -($!command)')
+    elsehandle NONE
+      !error =  TRUE
+    endhandle
+  enddo
+
+  return !error
+
+endmethod
+-------------------------------------------------------------------------
+
+-------------------------------------------------------------------------
+-- method to get parameters for the current component.
+define method .setdespars(!component is DBREF)
+
+  !height = !component.height
+  handle any
+  elsehandle NONE
+    height $!height
+  endhandle
+  !radius = !component.radius
+  handle any
+  elsehandle NONE
+    radius $!radius
+  endhandle
+
+endmethod
+-------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- connect the final tail if required
+define method .settail(!component is DBREF)
+
+  if !this.builtitems[!this.builtitems.size()].owner.tref.set() then
+    return
+  endif
+
+  -- we are at the last mem of the branch
+  !tcon = !component.owner.tcon
+  if !tcon inset('OPEN','CLOS','VENT','DRAN') then
+    tail
+    conn pt to last mem
+    handle any
+      !!ce.tpos =  !!ce.members(!!ce.members.size()).lpos
+      !!ce.tdir =  !!ce.members(!!ce.members.size()).ldir.opposite()
+      !!ce.tbor =  !!ce.members(!!ce.members.size()).lbor
+    endhandle
+  endif
+
+  -- catch all
+  var !tailDistance construct distance pt of bran to pl of last mem of bran
+  if (!tailDistance.real().gt(1)) then
+    bran
+    conn pt to last mem
+  endif
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+define method .markelements()
+
+  !this.markorigin()
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- place a text
+define method .markorigin()
+
+  aid clear text 34567
+  handle any
+  endhandle
+  aid clear text 34568
+  handle any
+  endhandle
+  refresh
+
+  !type[1] = 'Primary'
+  !type[2] = 'Secondary'
+  do !a values !type
+    if !a.eq('Primary') then
+      !number = 34567
+    else
+      !number = 34568
+    endif
+
+    if !this.$!<a>origin.set() then
+      !position = !this.$!<a>origin.pposition[!this.$!<a>point]
+      handle any
+        skip
+      endhandle
+      aid text  number $!number '$!a Origin' at $!position
+      handle any
+      endhandle
+      refresh
+    endif
+  enddo
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+define method .setoriginpoints(!origin is REAL)
+
+  -- get the primary or secondary origins
+  var !a coll all ddat with dkey eq 'ORIP' for $!this.dataset
+  if !a.set() then
+    !this.primarypoint = !a[1].dbref().number
+    !this.primaryorigin = !this.dataset.lfdp.orip
+    !move = TRUE
+  else
+    !this.primarypoint  =  REAL()
+    !this.primaryorigin =  object DBREF()
+  endif
+
+  var !b coll all ddat with dkey eq 'ORIS' for $!this.dataset
+  if !b.set() then
+    !this.secondarypoint  = !b[1].dbref().number
+    !this.secondaryorigin = !this.dataset.lfdp.oris
+  else
+    !this.secondarypoint  = REAL()
+    !this.secondaryorigin = object DBREF()
+  endif
+
+endmethod

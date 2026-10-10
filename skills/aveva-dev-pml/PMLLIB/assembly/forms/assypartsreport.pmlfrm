@@ -1,0 +1,555 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            assypartsreport.pmlfrm
+--   Type:          Function Definition
+--   Group:         Assembly
+--     Keyword:     Drawing
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         13 Feb 2006
+--
+--
+-- Description:
+-- The main form for creating Assembly Planning deliverables
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  assemblySelectionHandler(ARRAY)  -                   assemblySelectionHandler
+--  assyPartsReport()                -                   Constructor method
+--  browser()                        -                   Show standard browser
+--  cancel()                         -                   Cancel this form
+--  checkFile()                      -                   Check the entered file
+--  cleanup()                        -                   Cleanup of the form
+--  close()                          -                   Close the form
+--  format()                         -                   Set the output formats required
+--  getGUISelected()                 -                   Get the current selected assembly in Assembly Planning
+--  init()                           -                   Method to initialise the form
+--  runPartsList()                   -                   Call the function that creates the parts lists
+--  scope()                          -                   Set the scope of the report
+--  setGadgets(BOOLEAN)              -                   Set the status for all gadgets
+--  setOutput(FILE)                  -                   Set file to that returned from the file browser
+--
+------------------------------------------------------------------------
+import 'Aveva.Marine.AssemblyPlanning.Utilities'
+  handle any
+  endhandle
+
+setup form !!assyPartsReport dialog
+
+  -- Form members
+  !this.formtitle     = 'Parts List'
+  !this.callback      = '!this.init()'
+  !this.cancelCall    = '!this.cancel()'
+  !this.quitCall      = '!this.close()'
+
+  -- Assembly to report on
+  para   .asname  anchor left + top at xmax+0.5 ymin lines 1 width 40
+
+  frame .partsList 'Options' anchor left + top + right at x0 ymax+0.2
+
+    -- Scope
+    frame .scope 'Report Scope' anchor left + right + top  at x5 ymax
+
+      path down
+
+      rtoggle .option1 tagwid 30 'This Assembly Only'                        states '' 'CE SINGLE'
+      rtoggle .option2 tagwid 30 'Totals for this Assembly only'             states '' 'CE TOTALS'
+      rtoggle .option3 tagwid 30 'All Assemblies below this node'            states '' 'ALL SINGLE'
+      rtoggle .option4 tagwid 30 'Totals for all Assemblies below this node' states '' 'ALL TOTALS'
+
+    exit
+
+    -- Output formats
+    frame .plFrame 'Output Formats' anchor left + right + top  at x5 ymax+0.2 width 35
+
+      toggle .partsTxt '.txt' at x2     ymin+0.7
+      toggle .partsCsv '.csv' at xmax+2 ymin
+      toggle .partsXls '.xls' at xmax+2 ymin
+
+    exit
+
+    -- Output folder
+    para .plFile  anchor left + top         at x1       ymax+0.3 text 'Create parts list in this location'
+    text .plFold  anchor left + right + top at xmin+0.5 ymax+0.1 tooltip 'In which Folder? ' width 38 scroll 90 STRING
+
+    button .plBrowse tooltip 'Browse Folders' anchor right + top  at xmax.plFold+0.2 ymin+0.1 pixmap width 16 height 16
+
+  exit
+
+  -- Actions
+  button .apply  'Apply'  at x0 ymax+0.5
+  button .cancel 'Cancel' at xmax form-size ymin
+
+  -- Members
+  member .assyDrwgApp    is ASSYDRWGAPPLICATION
+  member .type           is STRING
+  member .range          is STRING
+  member .selected       is DBREF
+  member .assemblyHandle is REAL
+
+  -- Current Assembly Selection in AP GUI
+  using namespace 'Aveva.Marine.AssemblyPlanning.Utilities'
+  member .currentSelection is ASSEMBLYSELECTION
+
+exit
+
+------------------------------------------------------------------------
+--
+-- Method:      .assyPartsReport()
+--
+-- Description: Constructor method
+--
+-- Method Type: Constructor
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .assyPartsReport()
+
+  -- Pixmaps
+  !this.plBrowse.addPixmap(!!pml.getPathName('ad_t_012.png'))
+
+  -- Callbacks
+  !this.scope.callback    = '!this.scope()'
+  !this.partsTxt.callback = '!this.format()'
+  !this.partsCsv.callback = '!this.format()'
+  !this.partsXls.callback = '!this.format()'
+  !this.plFold.callback   = '!this.checkFile()'
+  !this.plBrowse.callback = '!this.browser()'
+  !this.apply.callback    = '!this.runPartsList()'
+  !this.cancel.callback   = '!this.cancel()'
+
+  -- Load the assembly ADP defaults
+  !this.assyDrwgApp.device = 'TTY'
+  !this.assyDrwgApp.load()
+  !this.assyDrwgApp.setDefaults()
+
+endmethod
+-- End of method definition for .assyPartsReport()
+
+-----------------------------------------------------------------------
+--
+-- Method:      init
+--
+-- Description: Method to initialise the form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .init()
+
+  -- Set output scope and format
+  !this.option1.val  = true
+  !this.partsTxt.val = true
+  !this.partsCsv.val = true
+  !this.partsXls.val = true
+
+  -- Set destination folder
+  !this.plFold.val   = !this.assyDrwgApp.plFold.name()
+
+  -- Set the scope of the report
+  !this.scope()
+
+  -- Add PML event handler for assembly selections, important to this.currentSelection.remove() when closing the form
+  using namespace 'Aveva.Marine.AssemblyPlanning.Utilities'
+  !this.currentSelection = object AssemblySelection(!this.formTitle)
+  !this.assemblyHandle = !this.currentSelection.addeventhandler('AssemblySelectionEvent', !this, 'assemblySelectionHandler')
+  -- Get current element
+  !this.getGUISelected()
+
+endmethod
+-- End of method .init()
+
+------------------------------------------------------------------------
+--
+-- Method:      assemblySelectionHandler
+--
+-- Description: assemblySelectionHandler
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY      arguments
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+
+define method .assemblySelectionHandler(!array is ARRAY)
+
+  --For debugging purposes to test that this event handler not is running after form is closed.
+  --this.currentSelection.remove() must be invoked when closing the form
+  --!args = !this.formtitle + ': ' + !array[0] + ' ' + !array[1]
+  --$P $!args
+
+  !this.getGUISelected()
+
+endmethod
+-- End of method for assemblySelectionHandler
+
+-----------------------------------------------------------------------
+--
+-- Method:      .browser()
+--
+-- Description: Show standard browser
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .browser()
+
+  import 'PMLFileBrowser'
+    handle any
+    endhandle
+
+  using namespace 'Aveva.Pdms.Presentation'
+
+  -- Initialise variables
+  !folderBrowser = object PMLFOLDERBROWSER()
+
+  -- Show the folder browser
+  !folderBrowser.show('Select Output Folder',true)
+
+  -- Use the selected folder
+  !this.setOutput(object FILE(!folderBrowser.selectedPath()))
+
+endmethod
+-- End of method .browser(GADGET)
+
+-----------------------------------------------------------------------
+--
+-- Method:      .cancel()
+--
+-- Description: Cancel this form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .cancel()
+
+  !this.hide()
+  !this.cleanup()
+
+endmethod
+-- End of method .cancel()
+
+------------------------------------------------------------------------
+--
+-- Method:      .getGUISelected()
+--
+-- Description: Check the current element for assembly
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getGUISelected()
+
+  !sel = !this.currentSelection.assemblies()
+  if (!sel.empty()) then
+     !this.selected = object DBREF()
+     !this.asname.val = 'No assembly selected'
+     !this.setGadgets(false)
+  else
+     !this.selected = !sel[1].dbref()
+     !this.asname.val = !this.selected.flnn
+     !this.setGadgets(true)
+  endif
+endmethod
+-- End of method definition for .getGUISelected()
+
+------------------------------------------------------------------------
+--
+-- Method:      .checkFile()
+--
+-- Description: Check the entered file
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .checkFile()
+
+  -- Get the entered file name
+  !newFolder = object FILE(!this.plFold.val)
+
+  -- Test to see if it exists
+  if (!newFolder.exists().not()) then
+
+    -- Ask the user
+    !answer = !!alert.confirm('The folder name you have entered does not exist. Would you like it to be created for you?')
+
+    if (!answer.eq('YES')) then
+
+      -- Build the folder pathname using the entered name
+      -- We do this because we cannot build the name from the file object as parts may not exist
+      !folderPath = !this.plFold.val
+
+      -- Create the folder
+      SYSCOM 'mkdir "$!folderPath"'
+
+      -- Store the new location
+      !this.assyDrwgApp.plFold = !newFolder
+
+    else
+
+      -- Return to the stored name
+      !this.plFold.val = !this.assyDrwgApp.plFold.name()
+
+    endif
+
+  else
+
+    -- Store the new location
+    !this.assyDrwgApp.plFold = !newFolder
+
+  endif
+
+endmethod
+-- End of method definition for .checkFile()
+
+------------------------------------------------------------------------
+--
+-- Method:      .close()
+--
+-- Description: Close the form
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .close()
+
+  !this.hide()
+  !this.cleanup()
+
+endmethod
+-- End of method definition for .close()
+
+------------------------------------------------------------------------
+--
+-- Method:      .format()
+--
+-- Description: Set the output formats required
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .format()
+
+  -- Text
+  !this.assyDrwgApp.partsTxt = !this.partsTxt.val
+
+  -- Csv
+  !this.assyDrwgApp.partsCsv = !this.partsCsv.val
+
+  -- Xls
+  !this.assyDrwgApp.partsXls = !this.partsXls.val
+
+endmethod
+-- End of method definition for .format()
+
+------------------------------------------------------------------------
+--
+-- Method:      .runPartsList()
+--
+-- Description: Call the function that creates the parts lists
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .runPartsList()
+
+
+  -- Initialise variables
+  !this.assyDrwgApp.assemblies.clear()
+  !allFiles = ARRAY()
+
+  -- Type of report
+  if (!this.type.eq('CE')) then
+    !this.assyDrwgApp.assemblies.append(!this.selected)
+
+  -- Get all assemblies below the current element
+  elseif (!this.type.eq('ALL')) then
+    !this.assyDrwgApp.assemblies = !!assyDrwgAsmbly(!this.selected, 'DBREF')
+
+  endif
+
+  -- Set the report range
+  !this.assyDrwgApp.range  = !this.range
+
+  -- Produce the parts list(s)
+  !allFiles.append(!this.assyDrwgApp.makePartsList())
+
+  -- Open Windows Explorer view of the directory containing the batch files
+  !command = 'explorer /root,"' & !allFiles[1][1][1].directory().fullName() & '"'
+  SYSCOM '$!command'
+
+endmethod
+-- End of method .runPartsList(STRING,STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      .setGadgets(BOOLEAN)
+--
+-- Description: Set the status for all gadgets
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      BOOLEAN     Active status of the gadgets
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setGadgets(!active is BOOLEAN)
+
+  !this.apply.active = !active
+
+endmethod
+-- End of method definition for .setGadgets(BOOLEAN)
+
+------------------------------------------------------------------------
+--
+-- Method:      .scope()
+--
+-- Description: Set the scope of the report
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .scope()
+
+  -- This Assembly Only
+  if (!this.option1.val) then
+    !this.type  = 'CE'
+    !this.range = 'SINGLE'
+  endif
+
+  -- Totals for this Assembly only
+  if (!this.option2.val) then
+    !this.type  = 'CE'
+    !this.range = 'TOTALS'
+  endif
+
+  -- All Assemblies below this node
+  if (!this.option3.val) then
+    !this.type  = 'ALL'
+    !this.range = 'SINGLE'
+  endif
+
+  -- Totals for all Assemblies below this node
+  if (!this.option4.val) then
+    !this.type  = 'ALL'
+    !this.range = 'TOTALS'
+  endif
+
+endmethod
+-- End of method definition for .scope()
+
+------------------------------------------------------------------------
+--
+-- Method:        .setOutput(FILE)
+--
+-- Description:   Set file to that returned from the file browser
+--
+-- Function Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      FILE        Directory pathname returned from the browser
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setOutput(!directory is FILE)
+
+  -- Set the gadget to the selected folder name
+  !this.plFold.val = !directory.fullName()
+
+  -- Set the application object
+  !this.assyDrwgApp.plFold = !directory
+
+endmethod
+-- End of method definition for .setOutput(FILE)
+
+------------------------------------------------------------------------
+--
+-- Method:      .cleanup()
+--
+-- Description: Cleanup of the form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .cleanup()
+
+  !this.currentSelection.remove()
+  !this.currentSelection.removeeventhandler('AssemblySelectionEvent', !this.assemblyHandle)
+
+endmethod
+-- End of method definition for .cleanup()

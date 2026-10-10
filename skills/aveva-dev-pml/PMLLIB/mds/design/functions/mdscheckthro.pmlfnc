@@ -1,0 +1,242 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:    mdscheckthro.pmlfnc
+--   Type:		Function Definition
+--   Group:		Multi Discipline Supports Application
+--     Keyword:		MDS
+--   Module:		design
+--   Replaces:
+--
+-- Author:		Wayne Dodwell
+-- Created:		Monday 28th October 2002
+--
+--
+-- Description:
+--
+--
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R        FORM         FORM  of Current MDS Support
+--     2     R        DBREF        DBREF of Current Element
+--     3     R        ANY          POSITION of PPOINT/PLINE etc... or DBREF of Any Current Identified/Specified Element
+--     4     R        DIRECTION    Orthogonal Leave Direction of Branch Component
+--
+-- Return:
+--    [Data Type]   [Description]
+--      BOOLEAN      TRUE
+--                   if Specified Element is Within the Limits of the Arrive Position
+--                   of the Next Branch Component or the Pipe Tail of the Branch and
+--                   the Leave Position of the Previous Branch Component or the
+--                   Pipe Head of the Branch
+--               or
+--                   FALSE
+--                   if Identified/Specified Element/Position is NOT within the limits for TRUE
+--
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+-- Define Function
+  define function !!mdscheckthro(!form is FORM, !dbrefce is DBREF, !dbrefid is ANY, !orthdir is DIRECTION) is BOOLEAN
+
+  --<KP> Oct 2008
+  -- handle CTSUPP
+  if !dbrefce.type.eq('CTSUPP') then
+    !tray = !dbrefce.owner
+    !cl = !tray.ppos[1].line(!tray.ppos[2])
+    return !cl.onProjected(!dbrefid)
+  endif
+
+-- Initialise Variables
+    !datum   = !form.support.datum
+    !origce  = !!ce
+    !cecomp  = !dbrefce
+    !idcomp  = !dbrefid
+    !oppdir  = !orthdir.opposite()
+  !oppdirb = BOOLEAN()
+
+-- q var !orthdir
+
+-- Navigate to !cecomp
+-- Position Pin 9 at Pleave of Previous Component or the PHead
+    !!ce = !cecomp
+
+-- Check to see if the element is to be moved within the current tube limits
+-- unless its a trunnion
+
+    if !!ce.owner.type.eq('BRAN') then
+      if !!ce.owner.:mdstrun then
+        return true
+      endif
+    endif
+-- dtf >>> 16.09.04
+-- Get prev component not associated with support
+   !ceref  = !!ce
+  !suppName = !datum.name.before('/DATUM')
+
+  do !index to 10
+     prev
+     handle any
+       pin 9 copy ph
+       !prev = !!ce.own
+       break
+     elsehandle NONE
+      !!mdsSilent = TRUE
+       !prevsuppname = ''
+      !prevsuppname = !!mdsGetSuppName(!!ce)
+      !!mdsSilent.delete()
+      if (!prevsuppname NEQ !suppName ) then
+         !prev = !!ce
+         !!ce = !ceref
+         pin 9 copy pl of $!prev
+         break
+       endif
+
+     endhandle
+
+   enddo
+-- dtf<<<
+-- End of Mod
+
+$(    pin 9 copy pl of prev
+    handle any
+      pin 9 copy ph
+    endhandle
+$)
+
+-- Position Pin 8 at !cecomp and Pin 9 Through the Identified/Specified Element/Position
+    pin 9 dir $!cecomp.ldir
+    pin 8 copy pin 9
+    -- $P pin 9 plane pin 9 thro $!idcomp
+    pin 9 plane pin 9 thro $!idcomp
+    pin 8 dir towards pin 9
+    handle (61,52)
+-- Unable to Orientate Pin 8 <-Because Pin8 and Pin 9 are in the SAME Position->
+-- Check for Lug/Trunnion Branches and if TRUE Confirm if User wants to Move the MDS Support
+      if (!!ce.owner.:mdstrun) then
+        if (!!ce.owner.href.type.eq('TEE')) then
+--          !!alert.error('The NEW position of the support will be in the same position as the previous component. Aborting ''Through...'' operation')
+          if (!!alert.confirm('The NEW position of the support will be in the SAME position as the previous component. Do you want to continue?').eq('NO')) then
+            var !dist const dist p0 to pl of prev
+            handle (2,113)
+              var !dist const dist p0 to ph
+            endhandle
+            !form.dist.val = $!dist
+            !!mdsresetpins(8,10)
+            return false
+          else
+-- Pin 8 copy Pin 9 and Move Pin 8 by -50mm from Pin 9 to set the direction to be the SAME as Pin 9
+            pin 8 copy pin 9
+            pin 8 dist -50mm
+            pin 8 dir towards pin 9
+          endif
+        else
+-- For all Other Trunnion Types
+-- Pin 8 copy Pin 9 and Move Pin 8 by -50mm from Pin 9 to set the direction to be the SAME as Pin 9
+          pin 8 copy pin 9
+          pin 8 dist -50mm
+          pin 8 dir towards pin 9
+        endif
+      else
+-- Standard MDS Ancillary ATTA 'InLine' Support
+-- Pin 8 copy Pin 9 and Move Pin 8 by -50mm from Pin 9 to set the direction to be the SAME as Pin 9
+        pin 8 copy pin 9
+        pin 8 dist -50mm
+        pin 8 dir towards pin 9
+      endif
+    endhandle
+
+-- Determine the Move Direction (Forwards or Backwards of the !cecopmp)
+    var !pin8d pin 8 dir wrt /*
+    var !pin9d pin 9 dir wrt /*
+    !pin8dir = !pin8d.direction().wrt(/* )
+    !pin9dir = !pin9d.direction().wrt(/* )
+
+-- Set object definition
+    !direction = object KEQUALDIR()
+    !direction.directiona = !pin8dir
+    !direction.directionb = !pin9dir
+    !direction.tolerance  = 0.1
+
+    if (!!kdirequaldir(!direction)) then
+    --if(!pin8dir.eq(!pin9dir)) then
+-- Movement Direction is Forwards of Valid Previous Component or Pipe Head
+      !movedir = !orthdir
+      !oppdirb = false
+    else
+-- Movement Direction is Backwards of Valid Previous Component or Pipe Head
+      !movedir = !oppdir
+      !oppdirb = true
+    endif
+
+-- Do NOT move the Support if the NEW and OLD positions are the SAME
+    var !pin9pos pin 9 pos wrt /*
+    !pospin9 = !pin9pos.position()
+    -- !posce  = !!ce.position.wrt(/* )
+    -- if !pospin9.eq(!posce) then
+      -- !!mdsresetpins(8,10)
+      -- return false
+    -- endif
+
+-- Check to see if the MDS Support may be moved within the current tube limits
+-- $P -- !pospin9pos = $!pin9pos
+-- $P -- !movedir    = $!movedir
+-- $P -- !oppdirb    = $!oppdirb
+    if (!!mdscheckwithin(!pospin9, !movedir, !oppdirb).not()) then
+      !!ce = !datum
+      if (!!ce.owner.:mdstrun) then
+        branch
+        goto href
+      endif
+
+
+-- dtf >>> 16.09.04
+-- Get prev component not associated with support
+   !ceref  = !!ce
+    !suppName = !datum.name.before('/DATUM')
+
+    do !index to 10
+     prev
+     handle any
+       var !dist const dist p0 to ph
+       !prev = !!ce.own
+       break
+     elsehandle NONE
+        !!mdsSilent = TRUE
+       !prevsuppname = ''
+        !prevsuppname = !!mdsGetSuppName(!!ce)
+        !!mdsSilent.delete()
+        if (!prevsuppname NEQ !suppName ) then
+         !prev = !!ce
+         !!ce = !ceref
+         var !dist const dist p0 to pl of $!prev
+         break
+       endif
+
+     endhandle
+   enddo
+-- dtf<<<
+-- End of Mod
+
+$(      var !dist const dist p0 to pl of prev
+      handle (2,113)
+        var !dist const dist p0 to ph
+      endhandle
+$)
+      -- !form.dist.val = $!dist
+-- Return false if NOT OK to move Support Thro Identified/Specified Element/Position
+      return false
+    else
+-- Navigate back to the Original Component
+      !!ce = !origce
+-- Return true if OK to move Support Thro Identified/Specified Element/Position
+      return true
+    endif
+
+  endfunction
+-- End of function

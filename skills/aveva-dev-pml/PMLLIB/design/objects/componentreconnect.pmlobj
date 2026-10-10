@@ -1,0 +1,1312 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            componentreconnect.pmlobj
+--   Type:          Object Definition
+--   Group:         Piping Application
+--     Keyword:     Component reconnection
+--   Module:        Design
+--   Replaces:
+--
+-- Author:          neil.holmes
+-- Created:         Mon Apr 05 10:00:00 GMT 2004
+--
+--
+-- Description:
+--    Reconnection object for piping components
+--
+-- Known Problems:
+--
+--    Move error checking out of the reconnect routing and do a check
+--    on the completion of reconnection.
+--
+--    There may be a perceived problem reconnected unconnected ends, in
+--    that if there is no other constraint in operation then an end can
+--    be repositioned where they may consider it should stay in the
+--    original position. Do we handle this?
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  adjacentComponents(DBREF,ARRAY,BOOLEAN) ARRAY               Return the up or down stream components adjacent to the
+--  checkComponent(DBREF)            ARRAY               Check passed component for bad, bore, connection alignment
+--  checkErrors()                    -                   Check current components for Errors
+--  clear()                          -                   Clear out component information
+--  componentReconnect()             -                   Constructor
+--  componentReconnect(DBREF,ARRAY)  -                   Constructor
+--  constraints()                    -                   Derive constraints for components
+--  errors()                         ARRAY               Return errors
+--  flow(BOOLEAN)                    -                   Set creation flow for component (forwards/backwards)
+--  ignorePositioned(BOOLEAN)        -                   Ignore the positioned components
+--  isReconnectRequired()            BOOLEAN             Check if reconnection is required
+--  isValid(DBREF,BOOLEAN)           BOOLEAN             Checks if arrive/leave of the passed component is valid
+--  movement(REAL,REAL)              ARRAY               Sets the component indices for the reconnection
+--  reconnect()                      BOOLEAN             Perform Reconnection
+--  reconnect(ARRAY,REAL,REAL)       REAL                Perform reconnection of the passed range of components
+--  reconnect(BOOLEAN)               BOOLEAN             Perform Reconnection
+--  reconnect(DBREF,BOOLEAN)         BOOLEAN             Perform Reconnection
+--  reconnectEnds(BOOLEAN)           -                   Ignore the positioned components
+--  tag()                            -                   Tag constraints
+--  tag(BOOLEAN)                     -                   Set tagging flag
+--  untag()                          -                   Untag constraints
+--
+
+define object COMPONENTRECONNECT
+
+  -- Root Component
+  member .component           is DBREF
+
+  -- Connected Components
+  member .components          is ARRAY
+
+  -- Reconnection Errors
+  member .errors              is ARRAY
+
+  -- Configuration settings
+
+    -- Mark Database (if false, then calling routing should handle UNDO/REDO)
+    member .markDB            is BOOLEAN
+    -- Free End reconnection
+    member .reconnectEnds     is BOOLEAN
+    -- Position constraints are ignored
+    member .ignorePositioned  is BOOLEAN
+    -- Tag
+    member .tag               is BOOLEAN
+
+  -- Component constraint information
+
+    -- Index to component fixed
+    member .fixedComponents   is ARRAY
+    -- Hard fixed component, true = hard, false = soft
+    member .hardFix           is ARRAY
+    -- Component changes direction (Hard)
+    member .changeDirection   is ARRAY
+    -- Component is connected to (Hard)
+    member .connectedTo       is ARRAY
+    -- Component is locked or not able to modify (Hard)
+    member .locked            is ARRAY
+    -- Component is positioned and non deletable (Soft)
+    member .positioned        is ARRAY
+
+    -- Connection set connected to Head/Tail
+    member .connectedToHead   is BOOLEAN
+    member .connectedToTail   is BOOLEAN
+
+  -- Graphical Aid
+  member .tagNumber           is REAL
+
+  -- Undo for creation
+  member .undo                is UNDOABLE
+
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:      componentReconnect
+--
+-- Description: Constructor
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .componentReconnect()
+
+  -- Aid Number
+  !this.tagNumber         = !!aidNumbers.add('Reconnection')
+
+  -- Automatically mark database
+  !this.markDB            = true
+
+  -- Don't reconnect free ends
+  !this.reconnectEnds     = false
+
+  -- Ignore position constraints
+  !this.ignorePositioned  = false
+
+  -- Tag constraints
+  !this.tag               = true
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      componentReconnect
+--
+-- Description: Constructor
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Reference component, must be in list of connected
+--    2   R      ARRAY       List of connected components
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .componentReconnect(!component is DBREF, !connected is ARRAY)
+
+  -- Initialise Variables
+  !this.component   = !component
+
+  -- Order the connection list
+  !this.components  = !!componentOrder(!connected)
+  !this.components.compress()
+
+  -- Define constraints for connected components
+  !this.constraints()
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      clear
+--
+-- Description: Clear out component information
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .clear()
+
+  -- Initialise Variables
+  !this.component = object DBREF()
+  !this.components.clear()
+  !this.fixedComponents.clear()
+  !this.hardFix.clear()
+  !this.changeDirection.clear()
+  !this.connectedTo.clear()
+  !this.positioned.clear()
+  !this.locked.clear()
+  !this.connectedToHead = false
+  !this.connectedToTail = false
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      constraints
+--
+-- Description: Derive constraints for components
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .constraints()
+
+  -- Determine the fixed components, hard fixed components are:
+  --
+  --    1.  Components which change direction
+  --    2.  Components which are connected to, i.e. tees, olets, etc.
+  --    3.  Components which are locked
+  --
+  --  Soft fixed elements, i.e. ones which we could try and move if
+  --  there are hard fixed components adjacent to them, are:
+  --    1.  Components which have the RLOCK attribute equal to 0, i.e.
+  --        have been positioned and are automatically non-deletable
+
+  -- Fixed Component
+  !fixedComponents          = ARRAY()
+  !hardFix                  = ARRAY()
+  !changeDirection          = ARRAY()
+  !connectedTo              = ARRAY()
+  !locked                   = ARRAY()
+  !positioned               = ARRAY()
+  !connectedToHead          = false
+  !connectedToTail          = false
+
+  -- Loop through list of components
+  do !i indices !this.components
+
+    -- Initialise Variables
+    !component              = !this.components[!i]
+    !changeDirection[!i]    = false
+    !connectedTo[!i]        = false
+    !positioned[!i]         = false
+    !locked[!i]             = false
+
+    -- Check if the component is connected to the head/tail of the branch
+    -- Connected to the head
+    if(!component.sequence eq 1) then
+      if(!component.aPosition.near(!component.owner.hPosition, 0.01mm)) then
+        !connectedToHead      = true
+      endif
+    endif
+
+    -- Connected to the tail
+    if((!component.sequence eq !component.owner.mcount) and !component.spref.set()) then
+      if(!component.lPosition.near(!component.owner.tPosition, 0.01mm)) then
+        !connectedToTail      = true
+      endif
+    endif
+
+    -- Check for change in direction (may need to use angle if there is
+    -- a problem with accuracy)
+    if(!component.aDirection.isParallel(!component.lDirection).not()) then
+      !changeDirection[!i]  = true
+      !fixedComponents.append(!i)
+      !hardFix.append(true)
+      skip
+    endif
+
+    -- Check for connection
+    if(!component.connectionsHierarchy.set()) then
+      !connectedTo[!i]      = true
+      !fixedComponents.append(!i)
+      !hardFix.append(true)
+      skip
+    endif
+
+    -- Component unmodifiable for some reason
+    if(!!dbRefUpdatable(!component).not()) then
+      !locked[!i]           = true
+      !fixedComponents.append(!i)
+      !hardFix.append(true)
+      skip
+    endif
+
+    -- Component locked using (not hard DB lock)
+    if(!this.ignorePositioned.not() and !component.rlock eq 0) then
+      !positioned[!i]       = true
+      !fixedComponents.append(!i)
+      !hardFix.append(false)
+    endif
+
+  enddo
+
+  -- Set object data
+  !this.fixedComponents = !fixedComponents
+  !this.hardFix         = !hardFix
+  !this.changeDirection = !changeDirection
+  !this.connectedTo     = !connectedTo
+  !this.positioned      = !positioned
+  !this.locked          = !locked
+  !this.connectedToHead = !connectedToHead
+  !this.connectedToTail = !connectedToTail
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      reconnect
+--
+-- Description: Perform reconnection of the passed range of components
+--              where the from is greater than the to component, then
+--              we are working back up stream on the reconnection
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       Component to reconnect
+--    2   R      REAL        From component in the list
+--    3   R      REAL        To component in the list
+-- Return:
+--   [Data Type] [Description]
+--    REAL       Index of component finished reconnection on
+--
+------------------------------------------------------------------------
+
+define method .reconnect(!components is ARRAY, !from is REAL, !to is REAL) is REAL
+
+  -- Initialise Variables
+  !completeIndex  = REAL()
+  !flow           = !from le !to
+  !by             = 1
+
+  -- Set from/to in order
+  if(!flow.not()) then
+    !by           = -1
+  endif
+
+  -- Loop through the components
+  do !i from !from to !to by !by
+    !component = !components[!i]
+
+    -- Reconnect component
+    !this.reconnect(!component, !flow)
+
+    -- Check connectivity
+    if(!this.isValid(!component, !flow)) then
+      !completeIndex = !i
+      break
+    endif
+  enddo
+
+  -- Return
+  return !completeIndex
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      reconnect
+--
+-- Description: Perform Reconnection
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Component to reconnect
+--    2   R      BOOLEAN     Flow direction - true = forwards, false = backwards
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if reconnection worked without a problem
+--
+------------------------------------------------------------------------
+
+define method .reconnect(!component is DBREF, !flow is BOOLEAN) is BOOLEAN
+
+  -- Initialise Variables
+  var !mode MODE
+  !success      = true
+  !reference    = !!ce
+
+  -- Set Flow
+  !this.flow(!flow)
+
+  -- Reconnect
+
+  -- Get re-alignment axis of component after a reconnection
+  !aDirection = !component.aDirection
+  if(!aDirection.angle(!component.orientation.xDir()).between(45, 135)) then
+    !reorient = 'ORI AND X is ' & !component.orientation.xDir()
+  elseif (!aDirection.angle(!component.orientation.yDir()).between(45, 135)) then
+    !reorient = 'ORI AND Y is ' & !component.orientation.yDir()
+  else
+    !reorient = 'ORI AND Z is ' & !component.orientation.zDir()
+  endif
+
+  -- Move to component
+  !!ce        = !component
+
+  CONNECT
+  handle ANY
+    FCONNECT
+    !success  = false
+  endhandle
+  $!<reorient>
+  handle ANY
+    ORIENT
+  endhandle
+
+  -- Return
+  !!ce        = !reference
+  $!<mode>
+  return !success
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      reconnect
+--
+-- Description: Perform Reconnection
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      BOOLEAN     True if DB is to be marked on change
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if reconnection worked without a problem
+--
+------------------------------------------------------------------------
+
+define method .reconnect(!markDB is BOOLEAN) is BOOLEAN
+
+  -- Initialise Variables
+  !this.markDB        = !markDB
+
+  -- Reconnect
+  return !this.reconnect()
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      reconnect
+--
+-- Description: Perform Reconnection
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if reconnection worked without a problem
+--
+------------------------------------------------------------------------
+--
+--  Basic rules for determine the reconnection:
+--
+--    Where an related fixed element is the head or a tail of a branch
+--    then the system will try and maintain the connectivity to the end.
+--
+--    Priority  - Locked (read only)
+--              - Head/Tail
+--              - Branch connection
+--              - Change in direction
+--              - Rlock 0 (positioned)
+--
+
+define method .reconnect() is BOOLEAN
+
+  -- Initialise Variables
+  !markEnd              = false
+  !this.errors.clear()
+  !success              = true
+  !rootIndex            = !this.components.findFirst(!this.component)
+  !standardReconnect    = true
+
+  -- Up/Down Stream Components
+  !upStreamComponents   = ARRAY()
+  !downStreamComponents = ARRAY()
+  !fixedComponent       = object DBREF()
+
+  -- Reconnect Flags
+  !upStreamConnect      = false
+  !downStreamConnect    = false
+
+  -- Copy constraints, this allows use to apply changes to the constraint
+  -- behaviour, without losing the original constraints of the components.
+  !fixedComponents      = !this.fixedComponents
+  !hardFix              = !this.hardFix
+  !changeDirection      = !this.changeDirection
+  !connectedTo          = !this.connectedTo
+  !positioned           = !this.positioned
+  !locked               = !this.locked
+
+  -- Don't force connection by default to the head or tail
+  !connectToHead        = false
+  !connectToTail        = false
+
+  -- Set number of fixed components
+  !fixedCount   = !fixedComponents.size()
+
+  ------------------------ No constrained components ------------------------
+
+  -- Use the root component as the constrained item, reconnect possible on
+  -- both up stream and down stream legs
+  if(!fixedCount eq 0) then
+
+    -- Check if head is connected, this is a elseif, so that the head of
+    -- a branch always takes precedence over the tail
+    if(!this.connectedToHead) then
+      !connectToHead        = true
+      !fixedComponent       = !this.components.first()
+      !fixedIndex           = 1
+
+    -- Check if tail is connected
+    elseif (!this.connectedToTail) then
+      !connectToTail        = true
+      !fixedComponent       = !this.components.last()
+      !fixedIndex           = !this.components.size()
+
+    -- Use component as fixed item
+    else
+      !fixedIndex           = !rootIndex
+      !fixedComponent       = !this.component
+    endif
+
+    !upStreamConnect      = true
+    !downStreamConnect    = true
+    !upStreamComponents   = !this.adjacentComponents(!fixedComponent, !this.components, true)
+    !downStreamComponents = !this.adjacentComponents(!fixedComponent, !this.components, false)
+
+  -------------------------- constrained components -------------------------
+  else
+
+    ---------------------- Single constrained component ----------------------
+    if(!fixedCount eq 1) then
+      !fixedIndex               = !this.fixedComponents.first()
+      !fixedComponent           = !this.components[!fixedIndex]
+
+      -- If the constrained component and root component are the same then
+      -- we will connect both up and down stream components to it
+      if(!fixedIndex eq !rootIndex) then
+        !upStreamConnect        = true
+        !downStreamConnect      = true
+        !upStreamComponents     = !this.adjacentComponents(!fixedComponent, !this.components, true)
+        !downStreamComponents   = !this.adjacentComponents(!fixedComponent, !this.components, false)
+
+      -- Determine if we reconnect up or sown stream
+      else
+
+        -- If component index is greater then constrained index, then we
+        -- will only connect the up stream components
+        if(!rootIndex gt !fixedIndex) then
+          !upStreamConnect      = true
+          !upStreamComponents   = !this.adjacentComponents(!fixedComponent, !this.components, true)
+
+        -- Reconnect down stream components
+        else
+          !downStreamConnect    = true
+          !downStreamComponents = !this.adjacentComponents(!fixedComponent, !this.components, false)
+        endif
+
+      endif
+
+    -------------------- Multiple constrained components --------------------
+    else
+
+      -- Determine if root component is fixed
+      !index = !this.fixedComponents.findFirst(!rootIndex)
+
+      -- Determine if the constraint is hard or soft, if it is a soft
+      -- constraint, then we'll ignore it.
+      if(!index.set()) then
+        if(!hardFix[!index].not()) then
+          !fixedComponents.remove(!index)
+          !hardFix.remove(!index)
+          !index = REAL()
+        endif
+      endif
+
+      -- Root component is down stream of any constraint
+      if(!rootIndex lt !fixedComponents.first()) then
+        !fixedIndex           = !fixedComponents.first()
+        !fixedComponent       = !this.components[!fixedIndex]
+        !downStreamConnect    = true
+        !downStreamComponents = !this.adjacentComponents(!fixedComponent, !this.components, false)
+
+      -- Root Component is up stream of any constraint
+      elseif (!rootIndex gt !fixedComponents.last()) then
+        !fixedIndex           = !fixedComponents.last()
+        !fixedComponent       = !this.components[!fixedIndex]
+        !upStreamConnect      = true
+        !upStreamComponents   = !this.adjacentComponents(!fixedComponent, !this.components, true)
+
+      -- Root component is between constraints
+      else
+
+        -- Determine the fixed components either side of the root component
+        do !i from 1 to !fixedComponents.size() - 1
+
+          -- Fixing either side of root component
+          if(!rootIndex.between(!fixedComponents[!i], !fixedComponents[!i + 1])) then
+            !previous       = !fixedComponents[!i]
+            !next           = !fixedComponents[!i + 1]
+            break
+          endif
+
+        enddo
+
+        -- Determine preferred direction of reconnection, "Positioned" is highest,
+        -- all others are equal.
+
+        -- Up stream component positioned
+        if(!positioned[!previous] and !positioned[!next].not()) then
+          !movement         = !this.movement(!next, !previous)
+
+        -- Down stream component positioned
+        elseif (!positioned[!previous].not() and !positioned[!next]) then
+          !movement         = !this.movement(!previous, !next)
+
+        -- If either both or neither constrained components are positioned then
+        -- we will use the one which is the nearest as the preferred one.
+        -- Where the root component is in the middle of the two constraints then
+        -- we will assume the up stream component is the preferred.
+        else
+          !previousCount    = !rootIndex - !previous
+          !nextCount        = !next - !rootIndex
+          if(!nextCount lt !previousCount) then
+            !movement       = !this.movement(!previous, !next)
+          else
+            !movement       = !this.movement(!next, !previous)
+          endif
+        endif
+
+        -- Mark the database
+        if(!this.markDB) then
+          !markEnd          = true
+          !this.undo.description('Component reconnected')
+          !this.undo.add()
+        endif
+
+        -- Try preference constraint
+        !compIndex          = !this.reconnect(!this.components, !rootIndex, !movement[1])
+
+        -- If the component Index is unset, then we have bad connection at the end,
+        -- so we need to test the other side.
+        if(!compIndex.unset()) then
+          !compIndex        = !this.reconnect(!this.components, !movement[1], !movement[2])
+
+          -- If component index is still unset, then we'll revert to the original connection
+          if(!compIndex.unset()) then
+            !compIndex      = !this.reconnect(!this.components, !movement[2], !movement[1])
+            if(!compIndex.unset()) then
+              !success  = false
+            endif
+          endif
+
+        endif
+
+        -- No need to perform standard reconnect mechanism
+        !standardReconnect  = false
+
+      -- End of Root component between constraints
+      endif
+
+    -- End of Multiple fixed components
+    endif
+
+  -- End of fixed components
+  endif
+
+  -- Standard Reconnection mechanism
+  if(!standardReconnect and (!upStreamComponents.set() or !downStreamComponents.set())) then
+
+    -- Mark the database
+    if(!this.markDB) then
+      !markEnd              = true
+      !this.undo.description('Component reconnected')
+      !this.undo.add()
+    endif
+
+    -- Connect fixed component to head
+    if(!connectToHead) then
+      !this.reconnect(!fixedComponent, true)
+    endif
+
+    -- Resolve upstream components
+    do !i indices !upStreamComponents
+      -- CHECK if the components need to be reconnected
+      if(!this.reconnect(!upStreamComponents[!i], true).not()) then
+        !success  = false
+      endif
+
+    enddo
+
+    -- Connect fixed component to tail
+    if(!connectToTail) then
+      !this.reconnect(!fixedComponent, false)
+    endif
+
+    -- Resolve downstream components
+    do !i indices !downStreamComponents
+      -- CHECK if the components need to be reconnected
+      if(!this.reconnect(!downStreamComponents[!i], false).not()) then
+        !success  = false
+      endif
+
+    enddo
+
+  endif
+
+  -- Do we need to reposition free end?
+  if(!this.reconnectEnds and !this.connectedToHead.or(!this.connectedToTail)) then
+
+    -- Reposition Head
+    if(!this.connectedToHead and !this.component.owner.href.unset()) then
+      !this.component.owner.hPosition   = !this.components.first().aPosition
+      handle ANY
+      endhandle
+      !this.component.owner.hDirection  = !this.components.first().aDirection.opposite()
+      handle ANY
+      endhandle
+    endif
+
+    -- Reposition Tail
+    if(!this.connectedToTail and !this.component.owner.tref.unset()) then
+      !this.component.owner.tPosition   = !this.components.last().lPosition
+      handle ANY
+      endhandle
+      !this.component.owner.tDirection  = !this.components.last().lDirection.opposite()
+      handle ANY
+      endhandle
+    endif
+
+  endif
+
+  -- Mark end of undo
+  if(!this.markDB and !markEnd) then
+    !this.undo.endUndoable()
+  endif
+
+  -- Check for errors
+  !this.checkErrors()
+
+  -- Return
+  return !this.errors.unset()
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      adjacentComponents
+--
+-- Description: Return the up or down stream components adjacent to the
+--              passed component from the list of components
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Reference component
+--    2   R      ARRAY       Adjacent components
+--    3   R      BOOLEAN     Direction up/true or down/false component to return
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       List of components in relevant direction (order is inverted
+--                for down stream items)
+--
+------------------------------------------------------------------------
+
+define method .adjacentComponents(!component is DBREF, !components is ARRAY, !flow is BOOLEAN) is ARRAY
+
+  -- Initialise Variables
+  !adjacent     = ARRAY()
+  !index        = !components.findFirst(!component)
+
+  -- Determine up stream components
+  if(!flow) then
+    !adjacent = !this.components.from(!index + 1)
+
+  -- Determine down stream components
+  else
+    if(!index gt 1) then
+      !adjacent = !this.components.to(!index - 1)
+      !adjacent.invert()
+    endif
+  endif
+
+  -- Return
+  return !adjacent
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      errors
+--
+-- Description: Return errors
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Component error information
+--
+------------------------------------------------------------------------
+
+define method .errors() is ARRAY
+  return !this.errors
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      checkErrors
+--
+-- Description: Check current components for Errors
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .checkErrors()
+
+  -- Initialise Variables
+  !this.errors.clear()
+
+  -- Get Errors
+  do !i indices !this.components
+    !component  = !this.components[!i]
+    !errors     = !this.checkComponent(!component)
+    if(!errors.set()) then
+      !error[1] = !component
+      !error[2] = !errors
+      !this.errors.append(!error)
+    endif
+  enddo
+
+endmethod
+-- End of method definition
+
+  -- Initialise Variables
+------------------------------------------------------------------------
+--
+-- Method:      checkComponent
+--
+-- Description: Check passed component for bad, bore, connection alignment
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Component to check for errors
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       List of errors for passed component
+--
+------------------------------------------------------------------------
+
+define method .checkComponent(!component is DBREF) is ARRAY
+
+  -- Initialise Variables
+  !errors       = ARRAY()
+
+  -- No specification defined
+  if(!component.spref.unset()) then
+    !errors.append('No specification reference')
+  elseif !component.spref.badref() then
+    !errors.append('Invalid specification reference')
+  -- Get Component information adjacent components
+  else
+    !aQAngle    = !component.aQAngle
+    handle any
+  		!aQAngle = 0
+  	endhandle
+    !lQAngle    = !component.lQAngle
+    handle any
+  		!lQAngle = 0
+  	endhandle
+    !aQBore     = !component.aQBore
+    handle any
+  		!aQBore = true
+  	endhandle
+    !lQBore     = !component.lQBore
+    handle any
+  		!lQBore = true
+  	endhandle
+    !aQOffset   = !component.aQOffset
+    handle any
+  		!aQOffset = 0
+  	endhandle
+    !lQOffset   = !component.lQOffset
+    handle any
+  		!lQOffset = 0
+  	endhandle
+    !aQConnect  = !component.aQConnect
+    handle any
+  		!aQConnect = true
+  	endhandle
+    !lQConnect  = !component.lQConnect
+    handle any
+  		!lQConnect = true
+  	endhandle
+
+    if(!aQBore.not()) then
+      var !pBore PREVPP BORE of $!<component>
+      !abore    = !component.abore
+      !errors.append('Arrive bore of ' & !abore.string(!!boreFmt) & ' is incompatible with ' & !pBore.string(!!boreFmt) & ' leave bore of previous.')
+    endif
+    if(!lQBore.not()) then
+      var !nBore NEXTPP BORE of $!<component>
+      !lbore    = !component.lbore
+      !errors.append('Leave bore of ' & !lbore.string(!!boreFmt) & ' is incompatible with ' & !nBore.string(!!boreFmt) & ' arrive bore of next.')
+    endif
+    if(!aQConnect.not()) then
+      var !pConn PREVPP CONNECT of $!<component>
+      handle any
+        !errors.append('Problem with previous Component.')
+      elsehandle NONE
+         !errors.append('Arrive connection of ' & !component.aConnect & ' is incompatible with ' & !pConn & ' of previous.')
+      endhandle
+    endif
+    if(!lQConnect.not()) then
+      var !nConn NEXTPP CONNECT of $!<component>
+      handle any
+        !errors.append('Problem with Next Component.')
+      elsehandle NONE
+        !errors.append('Arrive connection of ' & !component.lConnect & ' is incompatible with ' & !nConn & ' of next.')
+      endhandle
+   endif
+    if(!aQOffset.gt(0.001)) then
+      !errors.append('Arrive misaligned by ' & !aQOffset & ' with previous.')
+    endif
+    if(!lQOffset.gt(0.001)) then
+      !errors.append('Leave misaligned by ' & !lQOffset & ' with next.')
+    endif
+    if(!aQAngle.gt(0.001)) then
+      if(!aQAngle.gt(90)) then
+        !errors.append('Arrive overlaps with leave of previous.')
+      endif
+    endif
+    if(!lQAngle.gt(0.001)) then
+      if(!lQAngle.gt(90)) then
+        !errors.append('Leave overlaps with arrive of next.')
+      endif
+    endif
+  endif
+
+  -- Return errors
+  return !errors
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      tag
+--
+-- Description: Set tagging flag
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      BOOLEAN     Tag constraint flag
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .tag(!tag is BOOLEAN)
+
+  -- Initialise Variables
+  !this.tag = !tag
+
+  -- Tag constraint
+  !this.tag()
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      tag
+--
+-- Description: Tag constraints
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .tag()
+
+  -- Initialise Variables
+
+  -- Remove aid text
+  !this.untag()
+
+  -- If no tagging, return
+  if(!this.tag.not()) then
+    return
+  endif
+
+  -- Loop through the constraints
+  do !i indices !this.fixedComponents
+    !index        = !this.fixedComponents[!i]
+    !component    = !this.components[!index]
+
+    -- Highlight fixed components
+    enhance $!<component> colour red
+
+    -- Don't flag change in directions or connected to
+    skip if(!this.changeDirection[!index] or !this.connectedTo[!index])
+
+    -- Get Component information
+    !od           = !component.aod * 1.5
+    if(!od eq 0) then
+      !od         = !component.abore.real() * 1.5
+    endif
+
+    !zDirection   = !component.aDirection
+
+    -- Directions
+    !orthDir      = !zDirection.orthogonal(U)
+    handle ANY
+      !orthDir    = !zDirection.orthogonal(N)
+    endhandle
+    !orientation  = object ORIENTATION('X is ' & !orthDir & ' and Z is ' & !zDirection)
+
+    -- Arc
+    !arc          = object ARC(!component.position, !orientation, 0, 180, !od, true)
+
+    !line1        = !arc.anglePosition(45).line(!arc.anglePosition(225))
+    !line2        = !arc.anglePosition(135).line(!arc.anglePosition(315))
+
+    !height       = !od * 2
+    !line1Dir     = !line1.direction()
+    !line2Dir     = !line2.direction()
+
+    -- Tag unconnected end
+    if (!this.locked[!index]) then
+      !constraint = 'Locked'
+    elseif (!this.positioned[!index]) then
+      !constraint = 'Positioned'
+    else
+      !constraint = 'Fixed?'
+    endif
+
+    AID CYLINDER NUMBER $!<this.tagNumber>  AT $!<component.position>  ORI Z IS $!<line1Dir>   HEIGH $!<height> DIAM 8mm FILLED ON
+    AID CYLINDER NUMBER $!<this.tagNumber>  AT $!<component.position>  ORI Z IS $!<line2Dir>   HEIGH $!<height> DIAM 8mm FILLED ON
+    AID TEXT NUMBER $!<this.tagNumber> '$!constraint' AT $!component.position
+
+  enddo
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      untag
+--
+-- Description: Untag constraints
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .untag()
+
+  -- Remove aid text
+  AID CLEAR ALL $!<this.tagNumber>
+
+  do !i indices !this.fixedComponents
+    !index        = !this.fixedComponents[!i]
+    !component    = !this.components[!index]
+    unenhance $!<component>
+  enddo
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      isReconnectRequired
+--
+-- Description: Check if reconnection is required
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True for reconnection
+--
+------------------------------------------------------------------------
+
+define method .isReconnectRequired() is BOOLEAN
+
+  -- Initialise Variable
+  !reconnection   = true
+
+  -- If root component is connected to the same components as is currently
+  -- in the components list, then we'll assume we have no need to reconnect.
+  if(!this.components.empty().not()) then
+    !connected    = !this.component.brConnect
+    !connected.append(!this.component)
+    !connections  = !!componentOrder(!connected)
+
+    if(!this.components eq !connections) then
+      !reconnection = false
+
+    -- If component is connected on one side, then we'll leave it
+    else
+      !arrive       = !this.component.aQConnect and !this.component.aQAngle lt 0.01 and !this.component.aQOffset lt 0.01mm
+      !leave        = !this.component.lQConnect and !this.component.lQAngle lt 0.01 and !this.component.lQOffset lt 0.01mm
+      !reconnection = !arrive.and(!leave).not()
+    endif
+
+  -- No connected components
+  else
+    !reconnection = false
+  endif
+
+  -- Return
+  return !reconnection
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      flow
+--
+-- Description: Set creation flow for component (forwards/backwards)
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      BOOLEAN     True for forward, False for backwards
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .flow(!flow is BOOLEAN)
+  if(!flow) then
+    FORWARDS
+  else
+    BACKWARDS
+  endif
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      isValid
+--
+-- Description: Checks if arrive/leave of the passed component is valid
+--              based on connection (COCO), bore, offset and angle
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Component to check
+--    2   R      BOOLEAN     True for forward, False for backwards
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True for valid
+------------------------------------------------------------------------
+
+define method .isValid(!component is DBREF, !flow is BOOLEAN) is BOOLEAN
+
+  -- Check arrive/leave
+  if(!flow) then
+    !valid = !component.lQConnect and !component.lQAngle lt 0.01 and !component.lQBore and !component.lQOff lt 0.01mm
+  else
+    !valid = !component.aQConnect and !component.aQAngle lt 0.01 and !component.aQBore and !component.aQOff lt 0.01mm
+  endif
+
+  -- Return
+  return !valid
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      movement
+--
+-- Description: Sets the component indices for the reconnection
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      REAL        First element
+--    2   R      REAL        Second element
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Movement indices
+------------------------------------------------------------------------
+
+define method .movement(!from is REAL, !to is REAL) is ARRAY
+
+  -- Initialise Variables
+  if(!from lt !to) then
+    !movement[1] = !from + 1
+    !movement[2] = !to - 1
+  else
+    !movement[1] = !from - 1
+    !movement[2] = !to + 1
+  endif
+
+  -- Return
+  return !movement
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      reconnectEnds
+--
+-- Description: Ignore the positioned components
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      BOOLEAN     True if free ends are to be reconnected
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .reconnectEnds(!reconnectEnds is BOOLEAN)
+
+  -- Initialise Variables
+  !this.reconnectEnds = !reconnectEnds
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      ignorePositioned
+--
+-- Description: Ignore the positioned components
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .ignorePositioned(!ignore is BOOLEAN)
+
+  -- Initialise Variables
+  !this.ignorePositioned  = !ignore
+
+  -- Check if there are any components to check
+  if(!this.components.empty()) then
+    return
+  endif
+
+  -- Remove tags
+  !this.untag()
+
+  -- Positioned
+  !positioned             = !this.positioned.find(true)
+
+  -- Unset all positioning tags regardless of whether we are ignoring or
+  -- using position constrained.
+  if(!positioned.set()) then
+    do !i indices !positioned
+      !index                    = !positioned[!i]
+      !iPos                     = !this.fixedComponents.findFirst(!index)
+      !this.positioned[!index]  = false
+      !this.fixedComponents.remove(!iPos)
+      !this.hardFix.remove(!iPos)
+    enddo
+  endif
+
+  -- Get positioned flag
+  if(!ignore.not()) then
+
+    -- Loop through the components
+    do !i indices !this.components
+      skip if(badref(!this.components[!i]))
+          -- Component locked using (not hard DB lock)
+      if(!this.components[!i].rlock eq 0) then
+        !this.positioned[!i]  = true
+        !this.fixedComponents.append(!i)
+        !this.hardFix.append(false)
+      endif
+
+    enddo
+
+    -- Sort into order
+    !indices = !this.fixedComponents.sortedIndices()
+    !this.fixedComponents.reIndex(!indices)
+    !this.hardFix.reIndex(!indices)
+
+  endif
+
+  -- Tag constraints
+  !this.tag()
+
+endmethod
+-- End of method definition

@@ -28,7 +28,7 @@ PML 2 provides a native bridge to Microsoft .NET assemblies. Developers can impo
 
 ## Mental Models
 - **Think of PML 2 as a managed .NET scripting host**: Any public class in an imported .NET assembly becomes a first-class citizen inside PML 2, accessible with the same syntax as native PML objects.
-- **Always catch error `(1000, 0)` on `import`**: If an assembly was already loaded by another macro or during startup, re-executing `import` raises error `(1000, 0)`. Always wrap imports in `handle (1000, 0) endhandle`.
+- **Always catch error `(1000, 0)` on `import`**: If an assembly was already loaded by another macro or during startup, re-executing `import` raises error `(1000, 0)`. Always place `handle (1000, 0) endhandle` immediately **after** the `import` statement — the import itself stays outside the trap, and the block between `handle` and `endhandle` contains only the recovery for the "already loaded" error.
 
 ## Anti-patterns
 - **Placing DLLs Outside AVEVA Search Path**: Placing custom .NET assemblies in arbitrary directories without configuring the application manifest or PATH causes assembly loader exceptions. Place assemblies in `%AVEVA_DESIGN_EXE%` or `%PDMSUI%`.

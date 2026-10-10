@@ -1,0 +1,400 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            cvlwallendsmove.pmlfnc
+--   Type:          Function Definition
+--   Group:         Wall and Floors Application
+
+--     Keyword:     CIVIL
+--   Module:        design
+--   Replaces:
+--
+-- Author:          N.Holmes
+-- Created:         Wed Aug 18 17:04:58 BST 1999
+--
+--
+-- Description:
+-- Moves the ends of the picked walls to the intersection (if possible) of the two
+-- picked walls (STWALL or WALL).
+--
+------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      REAL        Pick sequence/action number
+--    2   R      ANY         Pick/Process data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define function !!cvlWallEndsMove(!index is REAL, !data is ANY) is ANY
+
+  -- Initialise Variables
+  !reference = !!ce
+
+  -- First End
+  if(!index eq 1) then
+
+    -- Initialise the global variable used to pass data about
+    !!cdCvlEndEnd    = ARRAY()
+
+    -- Determine the end of the Wall
+    !return          = !data.positionData()
+    !position        = !!edgTypes.attribute(!data.item.type).snap(!data.item, !data.pickLine, false)
+    !return.position = !position
+    !!cdCvlEndEnd[1] = !data.item.string()
+    ENHANCE $!<data.item> COLOUR RED
+    return !return
+
+  -- Second End
+  elseif (!index eq 2) then
+    !return          = !data.positionData()
+    !position        = !!edgTypes.attribute(!data.item.type).snap(!data.item, !data.pickLine, false)
+    !return.position = !position
+    !!cdCvlEndEnd[2] = !data.item.string()
+    ENHANCE $!<data.item> COLOUR RED
+    return !return
+
+  -- Create Connection
+  elseif (!index eq 0) then
+
+    -- Initialise Variables
+    !element[1]     = !data[1].item
+    !element[2]     = !data[2].item
+    !endPosition[1] = !data[1].position
+    !endPosition[2] = !data[2].position
+    !temp           = ''
+
+    -- Check we haven't got the same item twice
+    if(!element[1] eq !element[2]) then
+      !!alert.warning('The same wall has been picked twice!')
+      return false
+    endif
+
+    -- Derive Data for items
+    do !i from 1 to 2
+
+      -- Claim and check we have write access to the elements
+      !claimed[!i]   = !!dbRefUpdate(!element[!i])
+      if(!claimed[!i].not() ) then
+        !!alert.warning('Unable to modify wall ' & !element[!i].flnn & ' (' & !!error.text & ').')
+        return false
+      endif
+
+      -- Determine end picked
+      if(!endPosition[!i].near(!element[!i].posStart, 1mm)) then
+        !end[!i]     = 'Start'
+        !oEnd[!i]    = 'End'
+      else
+        !end[!i]     = 'End'
+        !oEnd[!i]    = 'Start'
+      endif
+
+      -- Check if selected end are already connected
+      !connected[!i] = !element[!i].attribute('JOI' & !end[!i]).set()
+
+      -- Derive the types of sections to connect
+      !temp.delete()
+      !temp      = !!edgTypes.attribute(!element[!i].type).line(!element[!i])
+      if(!temp.unset()) then
+        !temp.delete()
+        !temp    = !!edgTypes.attribute(!element[!i].type).arc(!element[!i])
+        if(!temp.unset()) then
+          !!alert.warning('Unable to derive basic type of wall (' & !i & '), aborting.')
+          return false
+        endif
+      endif
+      !oType[!i] = !temp.objectType()
+      !type[!i]  = !temp
+
+    enddo
+
+    -- At this point we should have all the data required
+    !position = N0
+
+    -- Determine the intersections between the items
+    -- Line - Line (single position)
+    if(!oType[1] eq 'LINE' and !oType[2] eq 'LINE') then
+
+      !position = !type[1].intersection(!type[2])
+      handle (2,870)
+        !!alert.warning('Unable to connect wall ends, walls are parallel.')
+        return false
+      elsehandle any
+        !!alert.warning('Unable to connect wall ends, walls do not intersect.')
+        return false
+      endhandle
+
+    -- Line - Arc (two positions)
+    elseif (!oType[1] eq 'LINE' and !oType[2] eq 'ARC') then
+
+      !positions    = !type[1].intersections(!type[2])
+      if(!positions.empty()) then
+        !!alert.warning('Unable to connect wall ends, walls do not intersect.')
+        return false
+      endif
+
+      -- Determine the best position
+      !angles[1]    = !type[2].position.angle(!type[2].anglePosition(!type[2].attribute(!end[2] & 'Angle')), !positions[1])
+      !angles[2]    = !type[2].position.angle(!type[2].anglePosition(!type[2].attribute(!end[2] & 'Angle')), !positions[2])
+
+      if(!angles[1] le !angles[2]) then
+        !position   = !positions[1]
+      else
+        !position   = !positions[2]
+      endif
+
+    -- Arc - Line (two angles, relating to arc)
+    elseif (!oType[1] eq 'ARC'  and !oType[2] eq 'LINE') then
+
+      !angles       = !type[1].intersections(!type[2])
+      if(!angles.empty()) then
+        !!alert.warning('Unable to connect wall ends, walls do not intersect.')
+        return false
+      endif
+
+      !positions[1] = !type[1].anglePosition(!angles[1])
+      !positions[2] = !type[1].anglePosition(!angles[2])
+
+      -- Determine the best position
+      !angles[1]    = !type[1].position.angle(!type[1].anglePosition(!type[1].attribute(!end[1] & 'Angle')), !positions[1])
+      !angles[2]    = !type[1].position.angle(!type[1].anglePosition(!type[1].attribute(!end[1] & 'Angle')), !positions[2])
+
+      if(!angles[1] le !angles[2]) then
+        !position   = !positions[1]
+      else
+        !position   = !positions[2]
+      endif
+
+    -- Arc - Arc (two angle relating to first arc)
+    elseif (!oType[1] eq 'ARC'  and !oType[2] eq 'ARC') then
+
+      !angles = !type[1].intersections(!type[2])
+      if(!angles.empty()) then
+        !!alert.warning('Unable to connect wall ends, walls do not intersect.')
+        return false
+      endif
+
+      !positions[1] = !type[1].anglePosition(!angles[1])
+      !positions[2] = !type[1].anglePosition(!angles[2])
+
+      -- Determine the best position
+      !angles[1]    = !type[1].position.angle(!type[1].anglePosition(!type[1].attribute(!end[1] & 'Angle')), !positions[1])
+      !angles[2]    = !type[1].position.angle(!type[1].anglePosition(!type[1].attribute(!end[1] & 'Angle')), !positions[2])
+
+      if(!angles[1] le !angles[2]) then
+        !position   = !positions[1]
+      else
+        !position   = !positions[2]
+      endif
+
+    -- Unknown
+    else
+      !!alert.warning('Unable to determine intersection between the two walls!')
+      return false
+    endif
+
+    -- Modify basic element
+    do !i from 1 to 2
+
+      -- Modify Line
+      if(!oType[!i] eq 'LINE') then
+
+        !line   = !type[!i]
+
+        -- Modify start/end
+        if(!end[!i] eq 'End') then
+          !line.endPosition   = !line.near(!position)
+        else
+          !line.startPosition = !line.near(!position)
+        endif
+
+        -- Check for zero length or lines that have been reversed
+        if(!line.startPosition.distance(!line.endPosition) eq 0) then
+          !!alert.warning('Unable to modify wall (' & !i & '), resultant wall would be zero length.')
+          return false
+        endif
+
+        -- Check we haven't reversed the direction
+        if(!line.direction() ne !type[!i].direction()) then
+          !!alert.warning('Unable to modify wall (' & !i & '), resultant wall would be reversed.')
+          return false
+        endif
+
+        !type[!i] = !line
+
+      -- Modify Arc
+      else
+
+        !arc    = !type[!i]
+
+        -- Don't allow complete circular wall to be changed this way
+
+        -- If arc angle is zero, return
+        if(!arc.angle() eq 0 or !arc.angle() eq 360) then
+          !!alert.warning('Unable to modify wall (' & !i & ') as it is a complete circle')
+          return false
+        endif
+
+        -- Modify start/end
+        if(!end[!i] eq 'End') then
+          !arc.endAngle    = !arc.near(!position)
+        else
+          !arc.startAngle  = !arc.near(!position)
+        endif
+
+        -- If arc angle is zero, return
+        !angle = !arc.angle()
+        if(!angle eq 0) then
+          !!alert.warning('Unable to modify wall (' & !i & '), resultant wall would be zero degrees.')
+          return false
+        elseif (!angle eq 360) then
+          !!alert.warning('Unable to modify wall (' & !i & '), resultant wall would be a complete circle.')
+          return false
+        endif
+
+        !type[!i] = !arc
+
+      endif
+
+    enddo
+
+    -- Do we want to break connection?
+    if(!connected[1] or !connected[2]) then
+      if(!!alert.confirm('One or both of ends of the walls arc connected, OK to break connection?').boolean().not()) then
+        return false
+      endif
+
+      -- Remove the connections (regardless of whether they are connected to each other)
+      do !i from 1 to 2
+
+        -- Is element connected
+        if(!connected[!i]) then
+
+          -- Remove joint reference and delete joint
+          !joint = !element[!i].attribute('JOI' & !end[!i])
+
+          -- Can we delete the joint
+          if(!!dbRefUpdate(!joint).not()) then
+            !!alert.warning('Unable to delete joint at ' & !end[!i] & ' of wall ' & !i & ', (' & !!error.text &'). Will create new joint.')
+
+          -- Delete item
+          else
+            !!ce   = !joint
+            !eType = !!ce.type
+            DELETE $!<eType>
+
+            -- Delete owner, if its empty
+            if(!!ce.mCount eq 0 and !!dbRefUpdate(!!ce)) then
+              !eType = !!ce.type
+              DELETE $!<eType>
+            endif
+          endif
+        endif
+      enddo
+    endif
+
+    -- Modify Sections
+    do !i from 1 to 2
+
+      !!ce = !element[!i]
+
+      -- Modify Straight
+      if(!oType[!i] eq 'LINE') then
+
+        if(!end[!i] eq 'End') then
+          POSEND   $!<type[$!<i>].endPosition>
+          !positions[!i] = !type[!i].endPosition
+        else
+          POSSTART $!<type[$!<i>].startPosition>
+          !positions[!i] = !type[!i].startPosition
+        endif
+
+      -- Modify Ring
+      else
+
+        -- Get Spine Data
+        !spine = !!dtbMemberOfType(!element[!i], 'SPINE', 1)
+
+        -- Modify three point spine
+        if(!spine.mCount eq 3) then
+
+          -- Modify start/end
+          if(!end[!i] eq 'End') then
+            DRNE PERP
+            !position    = !type[!i].anglePosition(!type[!i].endAngle)
+            POINSP 2 OF $!<spine>
+
+          else
+            DRNS PERP
+            !position    = !type[!i].anglePosition(!type[!i].startAngle)
+            POINSP 1 OF $!<spine>
+          endif
+          !positions[!i] = !position
+          AT $!<position>
+
+          -- Recalculate curve position
+          !angle         = !type[!i].angle()
+          if(!type[!i].sense) then
+            !midPoint    = !type[!i].anglePosition(!type[!i].startAngle + !angle / 2)
+          else
+            !midPoint    = !type[!i].anglePosition(!type[!i].startAngle - !angle / 2)
+          endif
+          CURVE  1 OF $!<spine>
+          AT $!<midPoint>
+        endif
+
+      endif
+
+    enddo
+
+
+    -- Mitre Ends
+    call !!strMitre (!element[1], !end[1], !element[2], !end[2])
+
+    -- Check we can create the connection pnode
+    if(!!dbRefUpdate(!element[1].owner).not()) then
+      !!alert.warning('Unable to create primary node for connection of walls, (' & !!error.text & ').')
+
+    -- Create Primary Node between the two walls
+    else
+
+      !!ce    = !element[1]
+
+      NEW PNODE AT $!<positions[1]>
+
+      do !i from 1 to 2
+        NEW PJOIN
+        CREF  $!<element[$!<i>]> $!<end[$!<i>]>
+        !direction = !element[!i].attribute('DRN' & !end[!i])
+        CUTP  $!<direction>
+      enddo
+
+    endif
+
+    -- Remove enhancement
+    UNENHANCE ALL FROM !!cdCvlEndEnd
+    !!cdCvlEndEnd.delete()
+
+    -- Return
+    !!ce = !reference
+
+  -- Close down
+  elseif (!index lt 0) then
+
+    -- Unenhance all items in cdCvlEndEnd (if it exists)
+    if(defined(!!cdCvlEndEnd)) then
+      UNENHANCE ALL FROM !!cdCvlEndEnd
+      !!cdCvlEndEnd.delete()
+    endif
+
+  endif
+
+  -- Return
+  return true
+
+endfunction
+-- End of function definition for !!cvlWallEndsMove

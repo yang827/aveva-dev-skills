@@ -1,0 +1,475 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            pipefabricationmanager.pmlobj
+--    Type:          Object Definition
+--    Group:         PIPE
+--      Keyword:     PIPE
+--    Module:        Design
+--  Author:          Daniel(Jaehun Choi)
+--  Created:         23 July 2010
+--
+--  Description:     This object used to be check fabrication about pipe.
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  deleteSpool(DBREF)               -
+--  initializeFabrication()          BOOLEAN             initialize object
+--  makeSpool(STRING,DBREF)          -                   make or update spool on pipe
+--  removeSpoolData(DBREF)           BOOLEAN             remove spool on pipe
+--  setError(STRING,STRING)          -                   set error
+--  updatePartNo(DBREF)              -                   update part no
+--  updateSpool(DBREF)               -                   update spool attributes
+--
+------------------------------------------------------------------------
+
+define object PIPEFABRICATIONMANAGER
+  member .pipeFabricationManager is FABRICATIONMACHINEMANAGER
+  member .setAutoResolve         is BOOLEAN
+  member .minimumMaterailLength  is REAL
+
+  member .pipeSpoolManager       is PIPESPOOLMANAGER
+  member .pipePieceManager       is PIPEPIECEMANAGER
+  member .bendingMachine         is DBREF
+  member .weldingMachine         is DBREF
+
+  member .errorMessage           is ARRAY
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:      initializeFabrication
+--
+-- Description: initialize object
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .initializeFabrication() is BOOLEAN
+  !this.errorMessage.clear()
+
+  -- set bending machine
+  if (!this.bendingMachine.unset()) then
+    !this.bendingMachine = object DBREF('/BENDING-MACHINE-1(3D)')
+    handle any
+      !this.setError('BENDMC', '/BENDING-MACHINE-1(3D)')
+      return false
+    endhandle
+  endif
+
+  -- set welding machine
+  if (!this.weldingMachine.unset()) then
+    !this.weldingMachine = object DBREF('/WELDING-MACHINE-1')
+    handle any
+      !this.setError('WELDMC', '/WELDING-MACHINE-1')
+      return false
+    endhandle
+  endif
+
+  !this.pipeFabricationManager.setBendingMachine(!this.bendingMachine)
+  handle any
+    !this.setError('BENDMC', '$!this.bendingMachine')
+    return false
+  endhandle
+
+  !this.pipeFabricationManager.setWeldingMachine(!this.weldingMachine)
+  handle any
+    !this.setError('WELDMC', '$!this.weldingMachine')
+    return false
+  endhandle
+
+  -- set auto resolve option for fabrication manager
+  if (!this.setAutoResolve.unset()) then
+    !this.setAutoResolve = true
+  endif
+
+  if (!this.setAutoResolve) then
+    !this.pipeFabricationManager.setAddEndExcess(true)
+    !this.pipeFabricationManager.setAddExcessBetweenBends(true)
+  else
+    !this.pipeFabricationManager.setAddEndExcess(false)
+    !this.pipeFabricationManager.setAddExcessBetweenBends(false)
+  endif
+
+  -- set stock length option for fabrication manager
+  if (!this.minimumMaterailLength.set()) then
+    !this.pipeFabricationManager.setMaximumMaterialLength(!this.minimumMaterailLength)
+  else
+    !this.pipeFabricationManager.setMaximumMaterialLength(6000)
+  endif
+
+  !this.pipeFabricationManager.setCheckStockLength(true)
+
+  return true
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      makeSpool
+--
+-- Description: make or update spool on pipe
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF      Current Element
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .makeSpool(!actionType is STRING, !element is DBREF)
+  if (!this.initializeFabrication().not()) then
+    return
+  endif
+
+  !items = !!collectAllFor('PIPE','mcount neq 0', !!ce)
+
+  do !pipeEntry values !items
+    -- if action type is 'create', all pspool and pplist will be deleted on the pipe.
+    if (!actionType eq 'CREATE') then
+      if (!this.removeSpoolData(!pipeEntry).not()) then
+        skip
+      endif
+    else
+      -- save pipe spool names
+      --!!savePipeSpoolNames()
+    endif
+
+    -- create pipe spool list
+    !this.pipeSpoolManager.generatePipeSpools(!element)
+    handle any
+      !this.setError('GEN_PSPOOL', !pipeEntry.name)
+      skip
+    endhandle
+
+    -- create pipe piece list
+    !this.pipePieceManager.generatePipePieces(!element)
+    handle any
+      !this.setError('GEN_PPIECE', !pipeEntry.name)
+      skip
+    endhandle
+
+--    -- create part no for iso-draft
+--    partno create $!pipeEntry
+--    handle any
+--      partno update $!pipeEntry
+--    endhandle
+
+    -- update machines information on spool and check validation
+    !this.updateSpool(!pipeEntry)
+
+    if (!actionType ne 'CREATE') then
+      -- restore original spool names
+      --!!restorePipeSpoolNames()
+    endif
+  enddo
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      updateSpool
+--
+-- Description: update spool attributes
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF      Current Element
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .updateSpool(!element is DBREF)
+  -- get spool list
+  !spoolList = !!collectAllFor('PSPOOL','', !element)
+
+  do !spool values !spoolList
+    !!ce = !spool
+    !!autoNameCe(false)
+
+    !pipePieces = !this.pipeSpoolManager.getPipePieces(!spool)
+    do !piece values !pipePieces
+      !!ce = !piece
+      !!autoNameCe(false)
+
+      if (!piece.ppcnbd) then
+        -- set bending machine
+        bendmc  $!this.bendingMachine
+      else
+        -- set welding machine
+        weldmc $!this.weldingMachine
+      endif
+
+      !validateCheck = !this.pipeFabricationManager.validatePipePiece(!!ce)
+      if (!validateCheck.not()) then
+        !validateCheck = !this.pipeFabricationManager.reValidatePipePiece(!!ce)
+      endif
+
+      -- set validate check result
+      PPFMCV $!validateCheck
+    enddo
+
+    !!ce = !spool
+
+    -- set spool reference on components
+    !components = belrfa
+    !spoolnamn  = namn
+
+    do !comp values !components
+      !!ce = !comp
+      if (!comp.type eq 'BRAN') then
+        splh |$!spoolnamn|
+      else
+        spln |$!spoolnamn|
+        handle any
+          -- current element does not have an attribute SPLN
+          skip
+        endhandle
+
+        if (!comp.type ne 'TUBI') then
+          !unusedTubi =  ileave tube of $!comp
+          handle any
+          elsehandle none
+            splt |$!spoolnamn|
+          endhandle
+        else
+          splt |$!spoolnamn|
+        endif
+      endif
+    enddo
+  enddo
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      updatePartNo
+--
+-- Description: update part no
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF      Current Element
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .updatePartNo(!spoolRef is DBREF)
+  !mtoElements  = !this.pipeSpoolManager.getMtoElements(!spoolRef)
+  -- Capture the Assembly tables
+  !assemblyTable = !this.pipeSpoolManager.getActivityTables(!spoolRef)
+
+  -- Should we sub-total or give unique identifiers?
+  !testTable = ARRAY()
+  !uniqueTypeForPartNo = ''
+  do !i indices !assemblyTable
+    !testKey = !assemblyTable[!i].component().type & ' ' & !assemblyTable[!i].referencePlaneComponent().refno
+    handle ANY
+      !testKey = !assemblyTable[!i].component().type & ' ' & !assemblyTable[!i].referenceComponent().refno
+      handle ANY
+        skip
+      endhandle
+    endhandle
+
+    -- Check if possible duplication
+    !test = !testTable.findfirst(!testKey)
+    if (!test.unset()) then
+      !testTable.append(!testKey)
+    else
+      -- We have had this type before that refers to the same reference plane
+      !uniqueTypeForPartNo = !uniqueTypeForPartNo & ' ' & !assemblyTable[!i].component().type
+    endif
+  enddo
+
+  !checkDBWrite = object COMCHECKDBWRITE()
+  !checkDBWrite.showAlert = false
+
+  !table = object ARRAY()
+
+  !pieceCount = 1
+  !index = 1
+  do !entry values !mtoElements
+    if (!checkDBWrite.checkDBWrite(!entry).not()) then
+      !this.setError(!checkDBWrite.errorMessage, !entry.name)
+      skip
+    endif
+
+    if (!entry.type eq 'PPIECE') then
+      !key = !entry.type & ' ' & !entry.dtxr & ' '& !pieceCount
+      !pieceCount = !pieceCount + 1
+    elseif (!uniqueTypeForPartNo.match(!entry.type).gt(0) ) then
+    	!key = !entry.type & ' ' & !entry.fullname
+    else
+      !key = !entry.type & ' ' & !entry.dtxr & ' ' & !entry.abor.string()
+    endif
+
+    -- check index as type
+    !index = !table.findfirst(!key)
+    if (!index.unset()) then
+      !table.append(!key)
+      !index = !table.size()
+    endif
+
+    -- update part no
+    if (!key.part(1) eq 'PPIECE') then
+      do !compRef values !entry.aelrfa
+        if (!compRef.type eq 'BRAN') then
+          !compRef.ptnhead = !index
+        else
+          !compRef.ptntube = !index
+        endif
+
+        handle any
+          !this.setError(!!error.text, !entry.name)
+          skip
+        endhandle
+      enddo
+    else
+      !entry.ptno = !index
+      handle any
+        !this.setError(!!error.text, !entry.name)
+        skip
+      endhandle
+    endif
+
+  enddo
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      updateSpool
+--
+-- Description: update spool attributes
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF      Current Element
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .deleteSpool(!spoolRef is DBREF)
+  !pipePieces = !this.pipeSpoolManager.getPipePieces(!spoolRef)
+  !!ce     = !spoolRef
+  !pipeRef = !spoolRef.owner.owner
+
+  input begin
+  delete PSPOOL
+
+  if (!!ce.mcount eq 0) then
+    delete PSLIST
+  endif
+
+  if (!pipePieces.set()) then
+    do !pieceRef values !pipePieces
+      !!ce = !pieceRef
+      delete PPIECE
+    enddo
+
+    !pieceList = !!collectAllFor('PPLIST','', !pipeRef)
+    do !entry values !pieceList
+      if (!entry.mcount eq 0) then
+        !!ce = !entry
+        delete PPLIST
+      endif
+
+    enddo
+
+--    if (!pieceListRef.mcount eq 0) then
+--      !!ce = !pieceListRef
+--      delete PPLIST
+--    endif
+
+  endif
+  exit
+  handle any
+  endhandle
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      removeSpoolData
+--
+-- Description: remove spool on pipe
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF      Current Element
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .removeSpoolData(!element is DBREF) is BOOLEAN
+  -- delete pipe spool elements
+  !this.pipeSpoolManager.removePipeSpools(!element)
+  handle any
+    !this.setError('REM_PSPOOL', !element.name)
+    return false
+  endhandle
+
+  -- delete pipe piece elements
+  !this.pipePieceManager.removePipePieces(!element)
+  handle any
+    !this.setError('REM_PPIECE', !element.name)
+    return false
+  endhandle
+
+  return true
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      setError
+--
+-- Description: set error
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF      Current Element
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setError(!errorKind is STRING, !elementName is STRING)
+  !prefixError = 'It was failed to <A>'
+  if (!errorKind eq 'BENDMC') then
+    !errorMessage = !prefixError.replace('<A>', 'use bending machine')
+  elseif (!errorKind eq 'WELDMC') then
+    !errorMessage = !prefixError.replace('<A>', 'use welding machine')
+  elseif (!errorKind eq 'REM_PSPOOL') then
+    !errorMessage = !prefixError.replace('<A>', 'remove PSPOOL')
+  elseif (!errorKind eq 'REM_PPIECE') then
+    !errorMessage = !prefixError.replace('<A>', 'remove PPIECE')
+  elseif (!errorKind eq 'GEN_PSPOOL') then
+    !errorMessage = !prefixError.replace('<A>', 'generate PSPOOL')
+  elseif (!errorKind eq 'GEN_PPIECE') then
+    !errorMessage = !prefixError.replace('<A>', 'generate PPIECE')
+  else
+    !errorMessage = !errorKind
+  endif
+
+  !table[1] = !elementName
+  !table[2] = !errorMessage
+
+  !this.errorMessage.append(!table)
+endmethod

@@ -1,0 +1,273 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            Mdssetdespars.pmlfnc
+--    Type:          Function Definition
+--    Group:         Undefined
+--      Keyword:     Undefined
+--    Module:        Undefined
+--------------------------------------
+--
+-- File             : Mdssetdespars.pmlfnc
+--   Type           : Function Definition
+--   Group          : Multi Discipline Supports Application
+--     Keyword      : MDS
+--   Module         : design
+--   Replaces       :
+--
+-- Author:          : Steve Robinson
+-- Created:         : Oct 7 1997
+--
+--
+-- Description:
+-- set design parameters for a given attachment type and bore
+--
+----------------------------------------------------------------------------------
+-- Arguments:
+--    [#]   [R/RW] [Data Type] [Description]
+--     1     R      DBREF       Reference of ATTA at which design params will be set
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+----------------------------------------------------------------------------------
+-- Define Function
+define function !!mdsSetDesPars(!atta is DBREF) is BOOLEAN
+
+  !currentUnits = !!kgetsetunits()
+
+  -- Initialise variables
+  !startRef = !!ce
+
+  -- check that passed atta exists
+  if (!atta.badRef()) then
+    !!alert.error('[!!mdsSetDesPars] Could not navigate to Attachment "$!atta"')
+    !!kRestoreUnits(!currentUnits)
+    return FALSE
+  endif
+
+  -- check passed element type is an ATTA
+  if (!atta.type neq 'ATTA' and !atta.type neq 'PLAT' and !atta.type neq 'CTSUPP') then
+    !!alert.error('[!!mdsSetDesPars] Passed element type is not a Support')
+    !!kRestoreUnits(!currentUnits)
+    return FALSE
+  endif
+
+  -- determine atta type (AT01,AT02,AT03 etc.) from STYP
+  !stype = !!ce.styp
+  handle any
+    !!alert.error('[!!mdsSetDesPars] Unable to determine Atta selection type from spec')
+    !!kRestoreUnits(!currentUnits)
+    return FALSE
+  endhandle
+
+  !savedStype = !!ce.styp
+
+  -- if its a spring only get first four chars of stype
+  if(!stype inset('SP01A','SP02A','SP03EA','SP03FA')) then
+    --do nothing
+  elseif !stype.match('AC17-').neq(0) then
+    -- get the stype without '-'
+    !stypeNew = !stype.before('-') & !stype.after('-').before('-') & !stype.substring(-1,1)
+    !stype = !stypeNew.replace('/','')
+
+    --if stype contains '-REST' no despars to set so return
+  elseif !stype.match('-REST').neq(0) then
+    if !stype.eq('RACK-REST') then
+      !desp[1] = !atta.ppbor[1].real()
+      !desp[2] = 0
+      !atta.desp = !desp
+    else
+      --NO despars to set...-- return silently...
+    endif
+
+    !!kRestoreUnits(!currentUnits)
+    return TRUE
+  endif
+
+  -- Determine atta nominal bore
+  -- !nomBore = !atta.catref.param[1]
+  if !atta.type neq 'CTSUPP' then
+    !nomBore = !atta.abore.real().value()
+  else
+    !temp = p1bore of own of $!atta
+    !nomBore = !temp.real().value()
+  endif
+
+  !attastype = !atta.stype
+  if !attastype.match('AC17-').neq(0) then
+    -- get the stype without '-'
+    !stypeNew = !attastype.before('-') & !attastype.after('-').before('-') & !attastype.substring(-1,1)
+    !attastype = !stypeNew.replace('/','')
+  endif
+
+  !mds$!<stype>defs = object MDSREADPARSDATA()
+  !mdscheckdefs = !mds$!<stype>defs.mdsdefsdata(!attastype, !nomBore)
+
+  !!mobj.delete()
+  handle ANY
+  endhandle
+  !!mobj = !mds$!<stype>defs
+
+  if (!mdscheckdefs.not()) then
+    !!kRestoreUnits(!currentUnits)
+    return FALSE
+  endif
+
+  -- Get DESPARS for this BORE size and MDS Standard type
+  !desPars = !mds$!<stype>defs.desPars
+  handle (2,759) (2,752)
+    !!kRestoreUnits(!currentUnits)
+    return FALSE
+  elsehandle any
+    !!alert.warning('Design parameters have not been defined for this type of support with N.b. $!nomBore')
+    !!kRestoreUnits(!currentUnits)
+    return FALSE
+  endhandle
+
+  -- Set DESIGN PARAMETERS for component
+  !!ce = !atta
+
+  -- Set DESIGN PARAMETERS back to NONE
+  !!mdsDacControl(true)
+  despar unset
+
+  -- Cycle through Default DESIGN PARAMETER values and IGNORE any DP expressions (set to ZERO)
+  do !index index !desPars
+    if (!desPars[!index].match('(') neq 0) then
+      -- This DESPAR is an EXPRESSION, so set the value to ZERO and RE-EVALUATE later in the NEXT "DO" LOOP
+      DESPAR N $!index 0
+    else
+      DESPAR N $!index  $!desPars[$!index]
+      handle any
+        !!alert.message('Invalid Design parameter: $!desPars[$!index]')
+        $!startRef
+        !!kRestoreUnits(!currentUnits)
+        return FALSE
+      endhandle
+    endif
+  enddo
+
+  -- Cycle through Default DESIGN PARAMETER values and EXECUTE any DESPAR EXPRESSIONS
+  do !index index !desPars
+    --extract design parameters for range of trunnion bores
+    if (!stype inset('AC68','AT169')) then
+      if (!desPars[!index].match(',') neq 0) then
+        !lbore = lbor of nex
+        !nbore = !lbore.real()
+        !desplit = !desPars[$!index].after('(').before(')').split()
+        do !desnum values !desplit
+          if (!desnum.before(',').real() eq !nbore) then
+            !desrequd = !desnum.after(',')
+            break
+          endif
+        enddo
+        DESPAR N $!index  $!desrequd
+      endif
+
+    elseif (!desPars[!index].match('(') neq 0) then
+      -- This DESPAR is an EXPRESSION, re-execute in case ay DESPARS set above is contained in the EXPRESSION
+      DESPAR N $!index  $!desPars[$!index]
+      handle ANY
+        !!alert.message('Invalid Design parameter expression: $!desPars[$!index]')
+        $!startRef
+        !!kRestoreUnits(!currentUnits)
+        return FALSE
+      endhandle
+    endif
+  enddo
+
+  -- Navigate back to start element
+  $!startRef
+
+  -- WRITE Message to the MDS DIMENSION DEFAULTS Form---> !!mdsExpDflts
+  if (defined(!!noExpMessage))then
+    if !!noExpMessage then
+      !tempList = !!mdsExpDflts.reports.dtext
+      !num = !!mdsExpDflts.reports.dtext.size()
+      !num = !num + 1
+      !attaName = !atta.name
+      !tempList.append('[$!num] Des Dims - Set parameters to default for $!attaName')
+      !!mdsExpDflts.reports.dtext = !tempList
+      !numOff = !!mdsExpDflts.reports.dtext.size()
+      !selectLast = !!mdsExpDflts.reports.dtext[$!numOff]
+      !!mdsExpDflts.reports.select('DTEXT','$!selectLast')
+    endif
+
+  else
+    !tempList = !!mdsExpDflts.reports.dtext
+    !num = !!mdsExpDflts.reports.dtext.size()
+    !num = !num + 1
+    !attaName = !atta.name
+    !tempList.append('[$!num] Des Dims - Set parameters to default for $!attaName')
+    !!mdsExpDflts.reports.dtext = !tempList
+    !numOff = !!mdsExpDflts.reports.dtext.size()
+    !selectLast = !!mdsExpDflts.reports.dtext[$!numOff]
+    !!mdsExpDflts.reports.select('DTEXT','$!selectLast')
+
+  endif
+
+  -- Determine DESPAR Num 6 for "SP02A"
+  if !savedStype.match('SP02A').eq(1) then
+    despar n6 (desp[1] of :MDSGuideRef)
+    handle (2,223)
+    endhandle
+  endif
+
+  -- Determine DESPAR Num 19 for "GT12A & GT12B"
+  if !savedStype inset ('GT12A','GT12B') then
+    despar n19 (desp[3] of CE)
+    handle (2,223)
+    endhandle
+  endif
+
+  -- Check the ALTERNATIVE EXPRESSION or MULTIPLE ALTERNATIVE EXPRESSIONS
+  --
+  --  !expr = !check[$!nomBore].altexpr
+  --  !altdespar = !check[$!nomBore].altdespars
+  --
+  -- The Object member .altexpr is now an ARRAY of EXPRESSIONS with each defined as a STRING
+  !expr = !mds$!<stype>defs.altexpr
+
+  -- The Object member .altdespars is now an ARRAY with the ARRAY INDEX NUMBER corresponding to
+  -- the same ARRAY INDEX NUMBER of the ALTERNATIVE EXPRESSIONS ARRAY
+  -- Each set of ALTERNATIVE DESPARS is defined as an ARRAY of MDSDPVAL Objects
+  !altdespar = !mds$!<stype>defs.altdespars
+
+  if !expr.set() then
+    -- ALTERNATIVE EXPRESSIONS are NOW stored as an ARRAY of STRINGS
+    do !aexpr indices !expr
+      if !expr[$!aexpr].neq('') then
+        -- Determine if the EVALUATED ALTERNATIVE EXPRESSION is TRUE or FALSE
+        !testexpr = $!expr[$!aexpr]
+        if (!testexpr) then
+
+          -- Set the ALTERNATIVE DESPARS from the ALTERNATIVE EXPRESSION array index number.
+          do !set values !altdespar[!aexpr]
+            -- The ALTERNATIVE DESPARS are NOW stored in an ARRAYS with each ARRAY INDEX number
+            -- representing the same ARRAY INDEX number in the corresponding ALTERNATIVE EXPRESSION
+            !!mdsSetDesPar(!!ce,!set.dpnum,!set.altval.real())
+          enddo
+        endif
+      endif
+    enddo
+  endif
+
+  if (!mds$!<stype>defs.weldsize.neq(||)) then
+    !size = !mds$!<stype>defs.weldsize
+    :mdsweldsize $!size
+    handle ANY
+    endhandle
+  else
+    :mdsweldsize def
+    handle ANY
+    endhandle
+  endif
+
+  !!mdsDacControl(false)
+
+  !!kRestoreUnits(!currentUnits)
+  return TRUE
+
+endfunction

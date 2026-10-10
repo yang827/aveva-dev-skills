@@ -1,0 +1,892 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+------------------------------------------------------------------------
+--
+-- File:            pipeloader.pmlobj
+--   Type:          object Definition
+--   Group:         Utilities
+--     Keyword:     GENERAL
+--   Module:        design
+--   Replaces:
+--
+-- Author:          S.Williams
+-- Created:         Fri Jan 6 09:01:00 BST 2012
+--
+--
+-- Description:
+--   Data handler for !!spreadsheetImport form to load and
+--   process Piping items
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  analyseRows(ARRAY)               -                   Check each row to determine the validity of data
+--  boreCheck(STRING,STRING,STRING)  STRING              Validate given bore against system bore tables
+--  branConnect(STRING,STRING,STRING) STRING              Validate and connect branch to nozzle or tee
+--  close()                          -                   Callback from form to allow this object to tidy up
+--  feedback(ARRAY)                  -                   Callback to provide feedback given selection of items
+--  getHeadings()                    ARRAY               Return data source headings as an array of strings
+--  getMessages()                    ARRAY               Return message for each row
+--  getRowState()                    ARRAY               Return array of status words, one per row
+--  getRows()                        ARRAY               Return Rows as arrays of row where row is array of string
+--  nameCheck(STRING)                STRING              Normalise the name to valid string preceded by '/'
+--  ownerCheck(STRING)               DBREF               Return data source headings as an array of strings
+--  pipeLoader()                     -                   Constructor
+--  processData(BOOLEAN,BOOLEAN)     -                   Load new elements
+--  processData(REAL)                -                   Load new element
+--  setAttribute(STRING,STRING,STRING,BOOLEAN) STRING              Set attribute values and catch errors
+--  typeCheck(DBREF,STRING,REAL)     BOOLEAN             Check if given owner is valid
+--  validateSpreadSheetHeadings(ARRAY) STRING              Validate SpreadSheet headings
+--
+
+define object PIPELOADER
+
+  -- Column Heading
+  member .headings            is ARRAY
+  -- Rows
+  member .rows                is ARRAY
+  -- Name column index
+  member .nameColumnIndex     is REAL
+  -- Type column index
+  member .typeColumnIndex     is REAL
+  -- Owner column index
+  member .ownerColumnIndex    is REAL
+  -- Array of error state - one per row
+  member .errors              is ARRAY
+  -- status indicator - one per row
+  member .state               is ARRAY
+  -- true if mandatory headings ar OK
+  member .validHeadings       is BOOLEAN
+  -- Name per row - with leading / - Array of STRING
+  member .normalisedName      is ARRAY
+  -- dbref of element for each row (unset dbref if element does not exist) - Array of DBREF
+  member .element             is ARRAY
+  -- dbref of owner for each row - Array of DBREF
+  member .owner               is ARRAY
+
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:      pipeLoader
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .pipeLoader()
+
+  -- initialise valid headings to false until they are input and validated
+  !this.validHeadings   = false
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      validateSpreadSheetHeadings
+--
+-- Description: Validate SpreadSheet headings
+--              INTERFACE METHOD - used by spreadsheetImport form
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       Array of headings from the import file
+-- Return:
+--   [Data Type] [Description]
+--    STRING     Empty string if SpreadSheet is OK, otherwise string is
+--               used as an error message
+--
+------------------------------------------------------------------------
+
+define method .validateSpreadSheetHeadings(!headings is ARRAY) is STRING
+
+  -- Initialise Variables
+  !this.headings         = !headings
+  !this.nameColumnIndex  = object REAL()
+  !this.typeColumnIndex  = object REAL()
+  !this.ownerColumnIndex = object REAL()
+  !this.validHeadings    = false
+  !badHeading            = false
+  -- empty return indicates that headings are OK
+  !return                = ''
+
+  -- loop through headings to find key columns
+  do !index indices !this.headings
+
+    !heading = !this.headings[!index].trim().upcase()
+    -- find special columns and note the column index
+    if( !heading eq 'NAME' ) then
+      !this.nameColumnIndex = !index
+    elseif( !heading eq 'TYPE' ) then
+      !this.typeColumnIndex = !index
+    elseif( !heading eq 'OWNER' ) then
+      !this.ownerColumnIndex  = !index
+    elseif( !heading.empty() ) then
+      !badHeading = true
+      break
+    endif
+
+  enddo
+
+  if( !badHeading ) then
+    !return = 'Headings invalid: The table must not contain empty heading'
+  elseif( !this.nameColumnIndex.unset() ) then
+    !return = 'Headings invalid: The table must contain a NAME column'
+  elseif( !this.typeColumnIndex.unset() ) then
+    !return = 'Headings invalid: The table must contain a TYPE column'
+  endif
+
+  -- record locally if headings are OK
+ !this.validHeadings = !return.empty()
+
+  return !return
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      analyseRows
+--
+-- Description: Check each row to determine the validity of data
+--              Stores derived data for each row
+--              INTERFACE METHOD - used by spreadsheetImport form
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       Array of rows. Each row is an array
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .analyseRows(!rows is ARRAY)
+
+  -- Initialise Variables
+  if( !this.validHeadings.not() ) then
+    return object ARRAY()
+  endif
+
+  !this.rows = !rows
+
+  -- loop through rows - validate each row
+  do !index indices !this.rows
+
+    !this.errors[!index]     = ''
+    !this.state[!index]      = 'VALID'
+    !this.element[!index]    = object DBREF()
+    !this.owner[!index]      = object DBREF()
+    -- get the row
+    !row = !this.rows[!index]
+    -- Get element type
+    !type = !row[!this.typeColumnIndex].trim()
+    -- Get normalised element name
+    !this.normalisedName[!index] = !this.nameCheck(!row[!this.nameColumnIndex])
+    if(!this.normalisedName[!index].empty()) then
+      !this.errors[!index] = 'Invalid name'
+      !this.state[!index]  = 'ERROR'
+      skip
+    endif
+
+    -- check to see if an element of this name exists
+   !elementRef = object DBREF(!this.normalisedName[!index])
+    handle any
+      -- element does not exist
+      !elementRef = object DBREF()
+    endhandle
+    !this.element[!index] = !elementRef
+
+    if(not badref(!elementRef) ) then
+      -- check that named element agrees with the type
+      !actualType = !elementRef.actType
+      handle any
+        !actualType = !elementRef.type
+      endhandle
+      if( !elementRef.type neq !type.upcase()) then
+        if(!actualType.upcase() neq !type.upcase()) then
+          !this.errors[!index] = 'Element type does not match existing element'
+          !this.state[!index]  = 'ERROR'
+          skip
+        endif
+      endif
+      -- check that existing element can be written
+      if(!!dbrefUpdatable(!elementRef).not()) then
+        !this.errors[!index] = !!error.text
+        !this.state[!index]  = 'ERROR'
+        skip
+      endif
+      !this.state[!index]  = 'EXISTS'
+    endif
+
+    -- Get element owner
+    -- if the named element exists, then the owner column is ignored
+    if( not badref(!elementRef) ) then
+      !ownerRef = !elementRef.owner
+    else
+      -- get element owner if set
+      if(!this.ownerColumnIndex.set()) then
+        -- check for null entry - use CE
+        if(!row[!this.ownerColumnIndex].trim().empty()) then
+          -- if type is Branch we need to know which pipe to place it under
+          -- only needed if the branch is new
+          if(!type.eq(|BRAN|) and !elementRef.badRef()) then
+            !this.errors[!index] = !this.normalisedName[!index] + ' :Branch must have a specified owner'
+            !this.state[!index]  = 'ERROR'
+            skip
+          endif
+          -- set owner id to CE
+          !ownerRef = !!ce
+        else
+          -- validate owner
+          !ownerRef = !this.ownerCheck(!row[!this.ownerColumnIndex])
+          if( badref(!ownerRef) ) then
+            -- current element is the owner
+            !this.errors[!index] = 'Invalid owner name'
+            !this.state[!index]  = 'ERROR'
+            skip
+          endif
+        endif
+      else
+        if(!type.eq(|BRAN|) and !elementRef.badRef()) then
+          !this.errors[!index] = !this.normalisedName[!index] + ' :Branch must have a specified owner'
+          !this.state[!index]  = 'ERROR'
+          skip
+        endif
+        -- set owner id to CE
+        !ownerRef = !!ce
+      endif
+    endif
+    !this.owner[!index] = !ownerRef
+
+    -- check that element of this type can be created for this owner
+    !this.typeCheck(!ownerRef, !type, !index)
+
+  enddo
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      processData
+--
+-- Description: Load new elements
+--              INTERFACE METHOD - used by spreadsheetImport form
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      BOOLEAN     Load new elements if true
+--    2   R      BOOLEAN     Update existing elements if true
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .processData(!new is BOOLEAN, !update is BOOLEAN)
+
+  -- Loop through new elements and create
+  do !index indices !this.rows
+
+    -- skip if error already found
+    skip if(!this.errors[!index].empty().not())
+    !createNewElement = badref(!this.element[!index])
+    -- skip if not a new element and no update
+    skip if(!update.not() and !createNewElement.not())
+    -- skip if new element but no new elements to be created
+    skip if(!new.not() and !createNewElement)
+
+    -- process this row
+    !this.processData(!index)
+
+  enddo
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      processData
+--
+-- Description: Load new element
+--              INTERFACE METHOD - used by spreadsheetImport form
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      REAL        Index identifying the row
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .processData(!index is REAL)
+
+  -- create a !currentValue variable so that it can be deleted below
+  !currentValue = ''
+
+  -- get row from table
+  !row = !this.rows[!index]
+  -- get the full name of the element
+  !name = !this.normalisedName[!index]
+  if( badref(!this.element[!index]) ) then
+    -- create element
+    !!ce  = !this.owner[!index]
+    handle any
+      -- leave the old error message in place, and make sure that the fail mark is set
+      !this.state[!index]  = 'FAIL'
+      return
+    endhandle
+    !type = !row[!this.typeColumnIndex].trim()
+    if( !type.empty() ) then
+      !this.errors[!index] = !name + ': Error in element creation ( TYPE field not set )'
+      !this.state[!index]  = 'FAIL'
+      return
+    else
+--$P  NEW $!<type> $!<name>
+      NEW $!<type> $!<name>
+      handle (47,15)
+        -- handle syntax error
+        !this.errors[!index] = !name + ': Error in element creation (' + !!error.command + ')'
+        !this.state[!index]  = 'FAIL'
+        return
+      elsehandle any
+        !this.errors[!index] = !name + ': ' + !!error.text
+        !this.state[!index]  = 'FAIL'
+        return
+      endhandle
+    endif
+    !element = !!ce
+  else
+    -- update existing element
+    !element = !this.element[!index]
+  endif
+
+  !!ce = !element
+
+  -- Set attributes on this element
+  do !columnIndex indices !this.headings
+
+    -- skip standard columns
+    skip if(!columnIndex eq !this.typeColumnIndex or !columnIndex eq !this.nameColumnIndex)
+    if(!this.ownerColumnIndex.set() ) then
+      skip if(!columnIndex eq !this.ownerColumnIndex)
+    endif
+    -- set attributes
+    !attribute      = !this.headings[!columnIndex].trim().upcase()
+    -- delete variable because variable type will change each time
+    !currentValue.delete()
+    handle any
+    endhandle
+    !currentValue   = !element.attribute(!attribute)
+    handle any
+      !this.errors[!index] = !name + '~' + !attribute + ': ' + !!error.text
+      !this.state[!index]  = 'FAIL'
+      skip
+    endhandle
+    !attributeValue = !row[!columnIndex]
+    -- nothing to do if no value
+    skip if(!attributeValue.trim().empty())
+    !attributeType  = !currentValue.objecttype()
+    if( !attributeType eq 'STRING' ) then
+      -- Check for attribute types pretending to be strings
+      !attDef = object ATTDEFINITION()
+      !attDef.attlibGet(!attribute)
+      !stringAttribute = (!attDef.type.upcase() eq 'TEXT')
+    elseif( !attributeType eq 'DBREF' ) then
+      -- References
+      !leadChar = !attributeValue.trim().subString(1,1)
+      if(!leadChar neq '/' and !leadChar neq '=') then
+        -- may be name without preceding / - try adding a /
+        !attributeValue = '/' + !attributeValue
+      endif
+      !stringAttribute = false
+    else
+      !stringAttribute = false
+    endif
+    -- set the attribute
+    !this.errors[!index] = !this.setAttribute(!name, !attribute, !attributeValue, !stringAttribute)
+    if(!this.errors[!index].empty()) then
+      !this.state[!index] = 'SUCCESS'
+    else
+      !this.state[!index] = 'FAIL'
+      break
+    endif
+
+  enddo
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      feedback
+--
+-- Description: Callback to provide feedback given selection of items
+--              INTERFACE METHOD - used by spreadsheetImport form
+--              DO NOT REMOVE THIS METHOD
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       Array of selected items
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .feedback(!selectedItems is ARRAY)
+
+  -- DO NOT REMOVE THIS METHOD
+  -- not providing graphical feedback
+  !unusedSelectedItems = !selectedItems
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      close
+--
+-- Description: Callback from form to allow this object to tidy up
+--              INTERFACE METHOD - used by spreadsheetImport form
+--              DO NOT REMOVE THIS METHOD
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .close()
+
+  -- DO NOT REMOVE THIS METHOD
+  -- no clear up necessary
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      getHeadings
+--
+-- Description: Return data source headings as an array of strings
+--              INTERFACE METHOD - used by spreadsheetImport form
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Array of rows (ARRAY)
+--
+------------------------------------------------------------------------
+
+define method .getHeadings() is ARRAY
+
+  return !this.headings
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      getRows
+--
+-- Description: Return Rows as arrays of row where row is array of string
+--              INTERFACE METHOD - used by spreadsheetImport form
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Array of rows (ARRAY)
+--
+------------------------------------------------------------------------
+
+define method .getRows() is ARRAY
+
+  return !this.rows
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      getMessages
+--
+-- Description: Return message for each row
+--              INTERFACE METHOD - used by spreadsheetImport form
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Array (STRING) of row messages
+--
+------------------------------------------------------------------------
+
+define method .getMessages() is ARRAY
+
+  return !this.errors
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      getRowState
+--
+-- Description: Return array of status words, one per row
+-- Status words are as follows.
+-- Before data processed:
+--     VALID     New element - no errors found in input data
+--     EXISTS    Existing element - no errors found in input data
+--     ERROR     Error found in input data
+-- After data processed:
+--     SUCCESS   Row processed successfully
+--     FAIL      Error occurred during processing
+--              INTERFACE METHOD - used by spreadsheetImport form
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Array (STRING) of row status
+--
+------------------------------------------------------------------------
+
+define method .getRowState() is ARRAY
+
+  return !this.state
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      setAttribute
+--
+-- Description: Set attribute values and catch errors
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Item name - used for error string
+--    2   R      STRING      Attribute name
+--    3   R      STRING      Attribute value
+--    4   R      BOOLEAN     True if this is a string type attribute
+-- Return:
+--   [Data Type] [Description]
+--    STRING      Empty if no errors. Error message if error found
+--
+------------------------------------------------------------------------
+
+define method .setAttribute(!name is STRING, !attribute is STRING, !attributeValue is STRING, !stringAttribute is BOOLEAN) is STRING
+
+  !errorReturn = ''
+
+  -- If attribute value is empty - use existing or default value
+  if(!attributeValue.empty()) then
+    return ''
+  endif
+
+  -- If attribute value is 'unset' - use existing or default value
+  if(!attributeValue eq 'unset') then
+    return ''
+  endif
+
+  -- if attribute is Lock - ignore it - all new data is loaded unlocked - existing locked records will not be modified
+  if(!attribute eq 'LOCK') then
+    return ''
+  endif
+
+  -- if attribute is head or tail reference check reference given and connect
+  if(!attribute eq 'TREF' or !attribute eq 'HREF') then
+   !errorReturn = !this.branConnect(!name, !attributeValue, !attribute)
+   return !errorReturn
+  endif
+
+  -- if bore is given check it is valid against the system bore table
+  if(!attribute eq 'BORE' or !attribute eq 'HBORE' or !attribute eq 'TBORE') then
+    !errorReturn = !this.boreCheck(!name, !attribute, !attributeValue)
+    return !errorReturn
+  endif
+
+  if(!stringAttribute) then
+--$P    $!<attribute> '$!<attributeValue>'
+    $!<attribute> '$!<attributeValue>'
+    handle (47,15)
+      -- handle syntax error
+      !errorReturn = !name + ' ( ' + !attribute + ' ) : Invalid attribute value: ' + !attributeValue
+    elsehandle any
+      !errorReturn = !name + ' ( ' + !attribute + ' ) : ' + !!error.text
+    endhandle
+  else
+--$P    $!<attribute> $!<attributeValue>
+    $!<attribute> $!<attributeValue>
+    handle (47,15)
+      -- handle syntax error
+      !errorReturn = !name + ' ( ' + !attribute + ' ) : Invalid attribute value: ' + !attributeValue
+    elsehandle any
+      !errorReturn = !name + ' ( ' + !attribute + ' ) : ' + !!error.text
+    endhandle
+  endif
+
+  return !errorReturn
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      nameCheck
+--
+-- Description: Normalise the name to valid string preceded by '/'
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Element name with or without preceding /
+-- Return:
+--   [Data Type] [Description]
+--    STRING      Normalise name or empty if name is invalid
+--
+------------------------------------------------------------------------
+
+define method .nameCheck(!name is STRING) is STRING
+
+  if(!name.trim().empty()) then
+    return ''
+  endif
+
+  if( !name.subString(1,1) ne '/' ) then
+    -- add a / for PDMS name
+    !name     =  '/' + !name
+  endif
+  -- Check to see if name converts to a dbref
+  !unusedDbRef      = !name.dbRef()
+  handle(2,813)
+    -- bad name
+    return ''
+  elsehandle any
+    -- continue with new name
+  endhandle
+
+  return !name
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      ownerCheck
+--
+-- Description: Return data source headings as an array of strings
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Owner name with or without preceding /
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       DBREF of owner, or unset DBREF if owner not valid
+--
+------------------------------------------------------------------------
+
+define method .ownerCheck(!ownerName is STRING) is DBREF
+
+  -- Use CE if owner string is empty
+  if( !ownerName.trim().empty() ) then
+    return !!ce
+  endif
+
+  -- Find and validate owner
+  !ownerName = !this.nameCheck(!ownerName)
+  if( !ownerName.empty() ) then
+    -- name invalid
+    !ownerRef = object DBREF()
+  else
+    !ownerRef = object DBREF(!ownerName)
+    handle any
+      -- owner element not found
+      !ownerRef  = object DBREF()
+    endhandle
+  endif
+
+  return !ownerRef
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      typeCheck
+--
+-- Description: Check if given owner is valid
+--              Error and status set if error found
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       DBREF of owner
+--    2   R      STRING      Element type
+--    3   R      REAL        Index for error and status arrays
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     true if type check is OK
+--
+------------------------------------------------------------------------
+
+define method .typeCheck(!owner is DBREF, !type is STRING, !index is REAL) is BOOLEAN
+
+  -- owner should have been verified before this - just return and catch errors elsewhere
+  if( badref(!owner) ) then
+    return true
+  endif
+
+  !saveRef = !!ce
+  !!ce = !owner
+  !typeOK = false
+  -- Have to use old syntax to test validity using DAC check
+  VAR !dacOKString DACCRE $!<type>
+  handle (99,532)
+    -- undefined UDET
+    !this.errors[!index] = 'Invalid User Defined Element Type : ' + !type
+    !this.state[!index] = 'ERROR'
+  elsehandle (47,15)
+    -- Syntax error, which means that the type name is invalid
+    !this.errors[!index] = 'Invalid element type : ' + !type
+    !this.state[!index] = 'ERROR'
+  elsehandle (2,220)
+    -- Can't create an element of this type here
+    !this.errors[!index] = 'Cannot create element of type ' + !type + ' under element ' + !owner.name
+    !this.state[!index] = 'ERROR'
+  elsehandle any
+    -- To handle any other errors
+    !this.errors[!index] = 'Cannot create element of type ' + !type + ' under element ' + !owner.name
+    !this.state[!index] = 'ERROR'
+  elsehandle none
+    -- no error
+    !dacOK = !dacOKString.boolean()
+    if(!dacOK) then
+      -- creation if OK
+      !typeOK = true
+    else
+      -- creation denied by DAC
+      !typeOK = false
+      VAR !dacError DACERR $!<type>
+      handle any
+        !dacError = 'Unknown Data Access Control Error'
+      endhandle
+      !this.errors[!index] = 'Data access control prevents creation of element type ' + !type + ' under element ' + !owner.name + '  DAC error: ' + !dacError
+      !this.state[!index] = 'ERROR'
+    endif
+  endhandle
+
+  !!ce = !saveRef
+  return !typeOK
+
+endmethod
+-- End of method
+-------------------------------------------------------------------
+--
+-- Method:      boreCheck
+--
+-- Description: Check if given bore is valid
+--              error message returned if found
+--              blank string returned if bore valid
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      STRING     Name of current element
+--    2    R      STRING     Name of attribute to set
+--    3    R      STRING     Value of the attribute required
+-- Return:
+--   [Data Type] [Description]
+--    STRING      Any error messages that are created
+--
+------------------------------------------------------------------------
+define method .boreCheck(!name is STRING, !attribute is STRING, !attributeValue is STRING) is STRING
+
+  !errorReturn = ''
+
+  -- If the bore is 0 then ignore
+  if(!attributeValue.real().eq(0)) then
+    return ''
+  endif
+
+  !attributeValue.bore()
+  handle(2,808)
+    -- Error given if the value is not a valid bore, !!error.text gives details of the nearest valid bore
+    !errorReturn = !name + ' ( ' + !attribute + ' ) ' + !attributeValue + '  ' + !!error.text
+  endhandle
+
+  -- Return any errors found
+  return !errorReturn
+
+endmethod
+--End of Method
+-------------------------------------------------------------------
+--
+-- Method:      branConnect
+--
+-- Description: connect bore to head or tail reference given
+--              validation is performed before connection attempted
+--              error returned if invalid, blank string returned if valid
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      STRING     Name of current branch
+--    2    R      STRING     Name of connection nozzle
+--    3    R      STRING     Name of attribute to set
+-- Return:
+--   [Data Type] [Description]
+--     STRING     Any error message produced
+--
+------------------------------------------------------------------------
+define method .branConnect(!bran is STRING, !nozzle is STRING, !end is STRING) is STRING
+
+  !errorReturn = ''
+
+  !nozzRef = !nozzle.dbRef()
+  handle(2,109)
+    -- Error shows stated element doesn't exist
+    !errorReturn = ' Nozzle: ' + !nozzle + ' Does not exist '
+    return !errorReturn
+  endhandle
+
+  -- Checks element is valid for connection
+  if(!nozzRef.type.eq(|NOZZ|)) then
+    -- Checks element is not connected, unless to the given branch
+    if(!nozzRef.cref.unset() or !nozzRef.cref.eq(!bran.dbRef())) then
+     -- Connect the required end of the branch
+     if(!end.eq('HREF')) then
+       !conn = 'PHEAD'
+     elseif(!end.eq('TREF')) then
+       !conn = 'PTAIL'
+     endif
+       CONNECT $!conn TO P1 of $!nozzle
+       handle any
+         -- Error handler to catch anything unexpected
+         !errorReturn = ' Error in connecting to: ' + !nozzle + ' Branch was not connected '
+         return !errorReturn
+       endhandle
+    else
+      !errorReturn = ' Specified Nozzle: ' + !nozzle + ' is already connected to ' + !nozzRef.cref.name
+    endif
+  else
+    !errorReturn = ' Specified Element: '  + !nozzle + ' is not a nozzle '
+  endif
+
+  -- Return any errors found
+  return !errorReturn
+
+endmethod
+--End of Method

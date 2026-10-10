@@ -1,0 +1,339 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            moduleswitch.pmlfnc
+--   Type:          Function Definition
+--   Group:         General Application
+--     Keyword:     GEN
+--   Module:        limbo
+--   Replaces:
+--
+-- Author:          E.conba
+-- Created:         Tue Mar 25 09:48:44 GMT 1997
+--
+--
+-- Description:
+-- Macro call to change module, from Module Bar. Function to be
+-- called using $M syntax as module switches in PML2 functions
+-- is not permissible. Function should only be invoked as callback.
+--
+------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+$d2=FALSE
+$d3=TRUE
+$d4=UNSET
+
+!temp = '$3'
+!prompt = !temp.boolean()
+
+!temp = '$4'
+if (!temp eq 'UNSET') then
+  !readOnlyFlag = BOOLEAN()
+else
+  !readOnlyFlag = !temp.boolean()
+endif
+
+-- Initialise variables
+!switchName      = (upcase(|$1|))
+!restore         = |$2|
+!nextModule      = object MODULEBARDATA()
+
+-- Marine modules do not use moduleData to set up module pull down data
+-- Therefore users can try to enter ADMIN without sufficient access
+-- The following code for P-15619 prevents this
+var !user user
+!userInfo = object USER(!user)
+if (!userInfo.access.upcase() eq 'GENERAL' and !switchName eq 'ADMIN') then
+  !!alert.error('Insufficient status to run ADMIN module')
+  return
+endif
+-- End of changes for P-15619
+
+-- Exit from any submode (3 levels should be enough)
+-- Stay in ISODRAFTMODE for Isodraft (P-43720)
+!banner = banner
+!module = !banner.name.after(' ').after(' ').upcase()
+if (!module ne 'ISODRAFT') then
+  !count = 0
+  do from 1 to 3
+    !count = !count + 1
+    exit
+    handle ANY
+      -- Must not be in sub mode so break
+      break
+    elsehandle NONE
+      -- Must be in sub mode so output message (only once)
+      if (!count eq 1) then
+        --!!alert.message('Submode has been exited')
+      endif
+    endhandle
+  enddo
+endif
+
+if (!switchName.trim() eq '') then
+  !switchName = 'MONITOR'
+  !prompt = false
+endif
+
+!readOnly        = ||
+
+-- Get information about current module
+!sessionData     = CURRENT SESSION
+handle ANY
+  -- Defect 1492 Following a make global command it is likely to get error
+  -- (41,243)  Your current element has been deleted by another user - moving you back to the WORLD
+  -- Try again to make sure
+  !sessionData     = CURRENT SESSION
+endhandle
+
+-- Can be left in DARS sometimes  related to MOM
+if(!!mmsIsThis3dmmProj()) then
+  if(!sessionData.module() eq 'DARS') then
+    !banner        = banner
+    !module        = !banner.name.after(' ').after(' ').upcase()
+    !currentModule = !!getModuleData(!module)
+  else
+    !currentModule = !!getModuleData(!sessionData.module())
+  endif
+else
+-- Get the module from the banner
+  !banner        = banner
+  !module        = !banner.name.after(' ').after(' ').upcase()
+  !currentModule = !!getModuleData(!module)
+endif
+
+-- Get information on the module to switch to
+if (!switchName eq |EXIT|) then
+
+  -- Set exit data
+  !nextModule.name         = |EXIT|
+  !nextModule.command      = |FINISH|
+  !nextModule.description  = ||
+  !nextModule.dText        = ||
+  !nextModule.dbRw         = false
+
+  -- Set transition texts
+  !transition[1] = |Exit|
+  !transition[2] = |Exiting|
+
+else
+
+  -- Get the next module object
+  !nextModule   = !!getModuleData(!switchName)
+
+--   -- Does a sub-menu need to be shown
+--   if (!nextModule.command eq |SUBMENU|) then
+--
+--     -- Create sub-menu
+--     call !!subModuleBar(!nextModule.name,!moduleNames.findFirst(!switchName))
+--     return
+--
+--   endif
+
+  -- Set transition texts
+  !transition[1] = |enter |
+  !transition[2] = |entering |
+
+endif
+
+-- Check if there are any marine data that must be synchronised before we do a SaveWork.
+!marineDataSynchronised = TRUE
+if ((!currentModule.name.upcase() eq 'HULLDESIGN') or (!currentModule.name.upcase() eq 'MARINEDRAFTING')) then
+  import 'MarWrapper'
+  handle(1000,0)
+  endhandle
+  using namespace 'Aveva.Marine.Utilities'
+  !marineWorkspace = object WORKSPACE()
+  !marineDataSynchronised = !marineWorkspace.isSynchronised()
+  -- Set autolabellingIsLoaded to false in order to use autotagging after module switches
+  if(defined(!!draDfltsInMDra)) then
+    !!draDfltsInMDra.autolabellingIsLoaded = FALSE
+  endif
+endif
+
+-- Save work if this is a RW module and the DB has been modified
+-- The admin module does not have a quit option so there is no question of saving work for Admin
+if (!currentModule.dbRw and (!sessionData.modified() or !marineDataSynchronised.not()) and !currentModule.name.upcase() neq 'ADMIN') then
+  -- Ask user if they want to savework
+  !answer = !!alert.question(|Save changes, before leaving | & !currentModule.dText & $
+                             | and | & !transition[2] & !nextModule.dText & |?|)
+
+  if (!answer eq |YES|) then
+    -- Change module and savework
+    !savework = true
+
+  elseif (!answer eq |NO|) then
+    -- Change module but no savework
+    !savework = false
+
+  else
+    -- User cancelled module switch
+    return
+
+  endif
+
+else
+  -- Database is not RW or databases have not been modified or current module is Admin
+  if (!prompt) then
+    !answer = !!alert.confirm(|Leave |& !currentModule.dText &| and |& $
+                              !transition[1] & !nextModule.dText &|?|)
+
+    if (!answer eq |NO|) then
+      -- User cancelled module switch
+      return
+
+    endif
+  endif
+
+  !savework = false
+
+endif
+
+if (!savework and !marineDataSynchronised.not()) then
+  if (!marineWorkspace.preExit().not()) then
+    return
+  endif
+endif
+
+if (defined(!!modExitAction)) then
+  -- Call special exit actions
+  if (!!modExitAction.set()) then
+    $!!<modExitAction>
+  endif
+  !!modExitAction.delete()
+endif
+
+if (!nextModule.dbRw) then
+  if (!readOnlyFlag.unset()) then
+    if (defined(!!monitor) and !currentModule.name.upcase() eq |MONITOR|) then
+      -- Switch to read only dbs if monitor,mode is false
+      if (!!monitor.mode.val) then
+        !readOnly = |READONLY|
+      endif
+    endif
+  elseif (!readOnlyFlag) then
+    !readOnly = |READONLY|
+  endif
+endif
+
+
+-- Save the users session file to hold PROJ/USER/MDB
+call !!writeSessionFile()
+
+-- save the application we were in so it can be re-entered next time PDMS is started
+!!appSaveState(!currentModule.name)
+handle (2,751)
+  -- do nothing
+endhandle
+
+-- Clear on-help files
+call !!runMacro('%PDMSHELP%/ovpdms.mac','DELETE')
+handle any
+  -- Just in case help is not set up
+endhandle
+
+-- set global variable to indicate load method for next module
+!!modLoadMethod = !restore.boolean()
+
+if (!currentModule.name.upcase() eq 'MONITOR' or !currentModule.name.upcase() eq 'ADMIN') then
+  !savework = true
+endif
+
+-- Fix for crash when changing modules
+--!!gphdrawlists.delete()
+--handle (2,751)
+  -- do nothing
+--endhandle
+
+-- Perform module switch
+if (!savework) then
+if(!!mmsIsThis3dmmProj()) then
+  if (!sessionData.modified() and $
+      !currentModule.name.upcase() eq 'DESIGN' or $
+      !sessionData.modified() and $
+      !currentModule.name.upcase() eq 'SPOOLER') then
+    -- Process Hook
+     !userDefinedHook = !!mmsUniquePath('des-userdefinedhook.pmlmac','')
+     if(!userDefinedHook.unset().not()) then
+       -- process hook
+       !!mmsProcessHook('savework',!userDefinedHook.string(), '')
+       -- !!mmsProcessHook('savework','%PDMSDFLTS%/des-userdefinedhook.pmlmac','')
+     endif
+     savework
+     handle ANY
+       !!runFile = ''
+       -- unable to savework so show error
+       !!alert.error(|Unable to do a savework because| & !!error.text )
+     endhandle
+
+     $!!runFile
+     !!runFile.delete()
+
+   endif
+endif
+  -- module switch
+  $!nextModule.command $!readOnly
+  handle (39,15)
+    -- No MDB set
+    !!alert.error(|Unable to enter |& !nextModule.dText & | as there is no MDB set. You will need to go into Monitor and set an MDB before proceeding.|)
+  elsehandle any
+    -- Can't get into next module so show error
+    !!alert.error(|Unable to enter |& !nextModule.dText & | - |& !!error.text & | - |& !!error.line & | - |& !!error.command )
+    handle any
+      -- In case the message is too long
+      !!alert.error(|Unable to enter |& !nextModule.dText & | - |& !!error.text & | - |& !!error.line )
+      handle any
+        -- In case the message is still too long (This was the original line before attempt to give more information)
+        !!alert.error(|Unable to enter |& !nextModule.dText & | - |& !!error.text )
+      endhandle
+    endhandle
+  elsehandle none
+    if (!nextModule.command.lowcase() eq 'admin' and !readOnly.lowcase() neq 'readonly') then
+      -- Additional code at 11.5.SP1 for Repair functionality
+      call !!admRepair(false)
+    endif
+  endhandle
+
+else
+  -- Quit module
+  if (!nextModule.name.upcase()  eq |MONITOR|) then
+    -- Just quit to monitor
+    QUIT
+
+  else
+    QUIT $!nextModule.command $!readOnly
+    handle any
+      -- Can't get into next module so show error
+      !!alert.error(|Unable to enter |& !nextModule.dText & | because |& !!error.text )
+      QUIT
+    elsehandle none
+      if (!nextModule.command.lowcase() eq 'admin' and !readOnly.lowcase() neq 'readonly') then
+        -- Additional code at 11.5.SP1 for Repair functionality
+        call !!admRepair(false)
+      endif
+    endhandle
+
+  endif
+
+endif
+if(!!mmsIsThis3dmmProj()) then
+-- Addition to ensure 3dmm link is maintained
+  if (!nextModule.name.upcase() eq 'DESIGN' or!nextModule.name.upcase() eq 'SPOOLER') then
+
+    -- reinitialise MMS command line interface callback
+    !unusedCheck = !!pml.getPathName('aspcomparator.pmlfnc')
+    handle ANY
+    elsehandle NONE
+     !!aspComparator('INIT')
+    endhandle
+  endif
+endif

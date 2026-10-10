@@ -1,0 +1,719 @@
+--------------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            pfGalvanizationTankConfig.pmlfrm
+--   Type:          Form Definition
+--   Group:         Pipe Fabrication
+--     Keyword:     PF
+--   Module:        Design
+--   Replaces:
+--
+-- Author:          HyunJong Roh (Nick)
+-- Created:         Tuesday 6th December 2012
+--
+-- Description:     Form for galvanization tank volume configuration
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  exportToExcel()                  -                   export tanks to excel file
+--  getDistanceValue(DBREF)          REAL                return distance value of the given DDAT element
+--  onClickCreate()                  -                   create a new row
+--  onClickDelete()                  -                   delete selected rows
+--  onClickRefresh()                 -                   refresh the grid control
+--  onGridTankVolumesAfterCellUpdate(ARRAY) -                   called when a tank data is updated
+--  onGridTankVolumesAfterSelectChange(ARRAY) -                   called when the selection of tank data is changed
+--  onGridTankVolumesBeforeCellUpdate(ARRAY) -                   called when a tank data is modified
+--  onInitialize()                   -                   initialize form
+--  onShowPopupMenu(ARRAY)           -                   shows a context menu
+--  pfGalvanizationTankConfig()      -                   constructor
+--  populateTankVolumes()            -                   populate the grid control with newly queried tank volumes
+--  stringToDistance(STRING,BOOLEAN) REAL                convert string to distance value
+--
+--------------------------------------------------------------------------------
+import 'GridControl'
+handle (1000, 0)
+endhandle
+
+setup form !!pfGalvanizationTankConfig dialog
+
+  using namespace 'Aveva.Pdms.Presentation'
+
+  !this.formTitle = 'Galvanization Tank Configuration'
+  !this.initCall = '!this.onInitialize()'
+
+  para  .parTitle text 'Galvanization Tanks'
+  container .netControl nobox PMLNETCONTROL '' at xmin.parTitle ymax.parTitle - 0.2 wid 45 hei 8.2
+  para  .parImage at xmax.netControl + 0.2 ymin.netControl pixmap width 159 height 174
+
+  button .btnRefresh 'Refresh' at xmin.netControl ymax.netControl + 0.5 call '!this.onClickRefresh()' wid 8
+  path right
+  button .btnCreate  'Create'  call '!this.onClickCreate()'  wid 8
+  button .btnDelete  'Delete'  call '!this.onClickDelete()'  wid 8
+  button .btnCancel  'Dismiss' at xmax.parImage - 8.5 wid 8 CANCEL
+
+  member .gridTankVolumes   is NETGRIDCONTROL
+
+  member .editable          is BOOLEAN
+
+exit
+
+--------------------------------------------------------------------------------
+--
+-- Method:      pfGalvanizationTankConfig
+--
+-- Description: constructor
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .pfGalvanizationTankConfig()
+
+  using namespace 'Aveva.Pdms.Presentation'
+  !this.gridTankVolumes = object NETGRIDCONTROL()
+  !this.netControl.control = !this.gridTankVolumes.handle()
+
+  !this.gridTankVolumes.fixedHeaders(FALSE)
+  !this.gridTankVolumes.outlookGroupStyle(FALSE)
+--  --!this.gridTankVolumes.hideGroupByBox(TRUE)
+  !this.gridTankVolumes.columnExcelFilter(FALSE)
+  !this.gridTankVolumes.allGridEvents(TRUE)
+--  --!this.gridTankVolumes.allowDropInGrid(FALSE)
+  !this.gridTankVolumes.headerSort(TRUE)
+  !this.gridTankVolumes.columnSummaries(FALSE)
+  !this.gridTankVolumes.singleRowSelection(TRUE)
+  !this.gridTankVolumes.editableGrid(TRUE)
+  !this.gridTankVolumes.scrollSelectedRowToView(TRUE)
+
+  !this.gridTankVolumes.addEventHandler('AfterSelectChange', !this, 'onGridTankVolumesAfterSelectChange')
+  !this.gridTankVolumes.addEventHandler('BeforeCellUpdate',  !this, 'onGridTankVolumesBeforeCellUpdate')
+  !this.gridTankVolumes.addEventHandler('AfterCellUpdate',   !this, 'onGridTankVolumesAfterCellUpdate')
+  !this.gridTankVolumes.addEventHandler('OnPopup', !this, 'onShowPopupMenu')
+
+  -- initialize context menu
+  !this.newMenu('popupMenu')
+  !this.popupMenu.add('CALLBACK', 'Create',               '!this.onClickCreate()',                    'CREATE')
+  !this.popupMenu.add('CALLBACK', 'Delete',               '!this.onClickDelete()',                    'DELETE')
+  !this.popupMenu.add('CALLBACK', 'Refresh',              '!this.onClickRefresh()',                   'REFRESH')
+  !this.popupMenu.add('SEPARATOR')
+  !this.popupMenu.add('CALLBACK', 'Export to Excel...',   '!this.exportToExcel()',                    'EXPORT')
+  !this.popupMenu.add('CALLBACK', 'Print Preview...',     '!this.gridTankVolumes.printPreview()',     'PREVIEW')
+  !this.netControl.popup = !this.popupMenu
+
+ endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onInitialize
+--
+-- Description: initialize form
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onInitialize()
+  !this.populateTankVolumes()
+  !this.parImage.addPixmap(!!pml.getPathName(|galvtank.png|))
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      populateTankVolumes
+--
+-- Description: populate the grid control with tank data
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .populateTankVolumes()
+
+  using namespace 'Aveva.Pdms.Presentation'
+
+  !this.editable = false
+
+  !this.btnCreate.active = false
+  !this.btnDelete.active = false
+  !this.btnDelete.active = false
+
+  -- Fix Issue 98926 (SI#58186) 12.1.SP4#DVD RC5 - PF - Config Admin Errors
+  !appldwRefs = !!collectAllFor('APPLDW', |FUNC EQ 'PipeFabrication'|, WORLD)
+  if !appldwRefs.empty() then
+    return error 1 |No APPLDW defined for Pipe Fabrication. Please create one with FUNC = 'PipeFabrication'|
+  endif
+  -- End of Fix Issue 98926
+
+  !appldwRef = !appldwRefs.first()
+  !this.editable = !appldwRef.dbWrite
+
+  !headings    = ARRAY()
+  !headings[1] = 'REF_NO'
+  !headings[2] = 'Name'
+  !headings[3] = 'Width'
+  !headings[4] = 'Height'
+  !headings[5] = 'Depth'
+
+  !rows = ARRAY()
+
+  !appdarRefs = !!collectAllFor('APPDAR', |FUNC EQ 'GVTANK'|, !appldwRef)
+  if !appdarRefs.empty().not() then
+
+    !appldaRefs = !!collectAllFor('APPLDA', |FUNC EQ 'GVTANK'|, !appdarRefs.first())
+    if !appldaRefs.empty().not() then
+
+      !ddseRefs = !!collectAllFor('DDSE', |FUNC EQ 'GVTANK'|, !appldaRefs.first())
+      do !ddseRef values !ddseRefs
+
+        !width  = 0
+        !height = 0
+        !depth  = 0
+
+        !ddatRefs = !!collectAllFor('DDAT', '', !ddseRef)
+        do !ddatRef values !ddatRefs
+          !dkey = !ddatRef.dkey.upCase()
+          if !dkey.eq('WIDT') then
+            !width = !this.getDistanceValue(!ddatRef)
+          elseif !dkey.eq('DEPT') then
+            !depth = !this.getDistanceValue(!ddatRef)
+          elseif !dkey.eq('HEIG') then
+            !height = !this.getDistanceValue(!ddatRef)
+          endif
+        enddo
+
+        !row = object ARRAY()
+        !row[1] = !ddseRef.refNo.string()
+        !row[2] = !ddseRef.name
+        !row[3] = !width.string(!!distanceFmt)
+        !row[4] = !height.string(!!distanceFmt)
+        !row[5] = !depth.string(!!distanceFmt)
+        !rows.append(!row)
+
+      enddo
+    endif
+  endif
+
+  !dataSource = object NETDATASOURCE('Galvanization Tank Volumes', !headings, !rows)
+  !this.gridTankVolumes.bindToDataSource(!dataSource)
+  !this.gridTankVolumes.setColumnVisibility(1, false)
+  !this.gridTankVolumes.editableGrid(!this.editable)
+  !this.gridTankVolumes.autoFitColumns()
+
+  !this.btnCreate.active = !this.editable
+  !this.btnDelete.active = false
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getDistanceValue
+--
+-- Description: return distance value of the given DDAT element
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       DDAT element
+-- Return:
+--   [Data Type] [Description]
+--    REAL        distance value
+--------------------------------------------------------------------------------
+define method .getDistanceValue(!ddatRef is DBREF) is REAL
+  !block = object BLOCK(!ddatRef.ddProperty)
+  !value = !block.evaluate()
+  handle ANY
+    return 0
+  endhandle
+
+  if !value.objectType().eq('REAL') then
+    if !value.leq(0) then
+      return 0
+    endif
+
+    return !value
+  endif
+
+  return 0
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onClickRefresh
+--
+-- Description: refresh tank data grid
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onClickRefresh()
+  !this.populateTankVolumes()
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onClickCreate
+--
+-- Description: refresh tank data grid
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onClickCreate()
+
+  !appldwRefs = !!collectAllFor('APPLDW', |FUNC EQ 'PipeFabrication'|, WORLD)
+  if !appldwRefs.empty() then
+    !!alert.error(|No APPLDW for Pipe Fabrication. Please create an APPLDW with FUNC = 'PipeFabrication'|)
+    return
+  endif
+
+  !undo = object UNDOABLE()
+  !undo.description('Create Galvanization Tank')
+  !undo.add()
+
+  -- get APPDAR for galvanization tank
+  !appdarRefs = !!collectAllFor('APPDAR', |FUNC EQ 'GVTANK'|, !appldwRefs.first())
+  if !appdarRefs.empty() then
+
+    !!ce = !appldwRefs.first()
+    NEW APPDAR FUNC 'GVTANK'
+    handle ANY
+      !!alert.error(!!error.text)
+      return
+    endhandle
+    !appdarRef = !!ce
+  else
+    !appdarRef = !appdarRefs.first()
+  endif
+
+  -- get APPLDA for galvanization tank
+  !appldaRefs = !!collectAllFor('APPLDA', |FUNC EQ 'GVTANK'|, !appdarRef)
+  if !appldaRefs.empty() then
+
+    !!ce = !appdarRef
+    NEW APPLDA FUNC 'GVTANK'
+    handle ANY
+      !!alert.error(!!error.text)
+      return
+    endhandle
+
+    !appldaRef = !!ce
+  else
+    !appldaRef = !appldaRefs[1]
+    !!ce = !appldaRef
+  endif
+
+  LAST MEM
+  handle ANY
+  endhandle
+
+  NEW DDSE FUNC 'GVTANK'
+  handle ANY
+    !!alert.error(!!error.text)
+    return
+  endhandle
+
+  !ddseRef = !!ce
+
+  NEW DDAT DKEY WIDT DDPR 1000mm
+  NEW DDAT DKEY HEIG DDPR 1000mm
+  NEW DDAT DKEY DEPT DDPR 1000mm
+
+  !undo.endUndoable()
+
+  !defaultValue = 1000mm
+
+  !row = object ARRAY()
+  !row[1] = !ddseRef.refNo.string()
+  !row[2] = !ddseRef.name
+  !row[3] = !defaultValue.string(!!distanceFmt)
+  !row[4] = !defaultValue.string(!!distanceFmt)
+  !row[5] = !defaultValue.string(!!distanceFmt)
+
+  !this.gridTankVolumes.addRow(!row)
+
+  !rowCount = !this.gridTankVolumes.getNumberRows()
+  !this.gridTankVolumes.selectRow(!rowCount)
+  !this.gridTankVolumes.editableGrid(true)
+  !this.gridTankVolumes.autoFitColumns()
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onClickDelete
+--
+-- Description: delete the selected tank data
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onClickDelete()
+  !rowTags = !this.gridTankVolumes.getSelectedRowTags()
+  if !rowTags.empty() then
+    !!alert.message('Select items!')
+    return
+  endif
+
+  !rowTag = !rowTags.last()
+  !refNos = !this.gridTankVolumes.getColumn('REF_NO')
+  !refNo  = !this.gridTankVolumes.getCell(!rowTag, 'REF_NO')
+  !ddseRef = !refNo.dbref()
+  handle ANY
+    !!alert.error('Cannot get the selected DDSE')
+    !this.populateTankVolumes()
+    return
+  endhandle
+
+  !tankName = !this.gridTankVolumes.getCell(!rowTag, 'Name')
+  !answer = !!alert.confirm('OK to delete ' + !tankName + '?')
+  if !answer.neq('YES') then
+    return
+  endif
+
+  !undo = object UNDOABLE()
+  !undo.description('PF - Delete Galvanization Tank')
+  !undo.add()
+
+  !!ce = !ddseRef
+  DELETE DDSE
+  handle ANY
+    !!alert.error(!!error.text)
+    return
+  endhandle
+
+  !undo.endUndoable()
+
+  !deleteRowTags = object ARRAY()
+  !deleteRowTags.append(!rowTag)
+  !this.gridTankVolumes.deleteRows(!deleteRowTags)
+
+  !index = !refNos.findFirst(!refNo)
+  if !index.set() then
+    if !refNos.size().gt(!index + 1) then
+      !this.gridTankVolumes.selectRow(!index)
+    else
+      !this.gridTankVolumes.selectRow(!refNos.size() - 1)
+    endif
+  endif
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onGridTankVolumesAfterSelectChange
+--
+-- Description: called when the selection of the tank grid control is changed
+--              enable the 'delete' button
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       event data
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onGridTankVolumesAfterSelectChange(!data is ARRAY)
+
+  !rowTags = !this.gridTankVolumes.getSelectedRowTags()
+  if !rowTags.empty() then
+    !this.btnDelete.active = false
+    return
+  endif
+
+  !ddseRef = !this.gridTankVolumes.getCell(!rowTags.first(), 'REF_NO').dbref()
+  handle ANY
+    !!alert.error('Cannot get the selected DDSE')
+    !this.populateTankVolumes()
+    return
+  endhandle
+
+  !!ce = !ddseRef
+
+  !this.btnDelete.active = !this.gridTankVolumes.editableGrid()
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onGridTankVolumesBeforeCellUpdate
+--
+-- Description: called before the cell value is updated
+--              validate the input value and update the related dabacon element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       event data
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onGridTankVolumesBeforeCellUpdate(!data is ARRAY)
+
+  if !data.unset() then
+    return
+  endif
+
+  -- maybe the selected element is deleted
+  !ddseRef = !this.gridTankVolumes.getCell(!data[1], 'REF_NO').dbref()
+  handle ANY
+    return
+  endhandle
+
+  !columnKey = !data[2]
+
+  if !columnKey.eq('Name') then
+
+    !newName = !!checkName(!data[0].trim(), 'NEW')
+    if !newName.unset() then
+      !data[3] = false
+      return
+    endif
+
+    !ddseRef.name = !newName
+    handle ANY
+      !!alert.error(!!error.text)
+      !args[3] = false
+    endhandle
+
+  elseif !columnKey.eq('Width') or !columnKey.eq('Depth') or !columnKey.eq('Height') then
+    !distance = !this.stringToDistance(!data[0], false)
+    if !distance.unset() then
+      !args[3] = false
+      return
+    endif
+
+    if !columnKey.eq('Width') then
+      !dkey = 'WIDT'
+    elseif !columnKey.eq('Depth') then
+      !dkey = 'DEPT'
+    else
+      !dkey = 'HEIG'
+    endif
+
+    !ddatRefs = !!collectAllFor('DDAT', |DKEY EQ '$!dkey'|, !ddseRef)
+    if !ddatRefs.empty() then
+      !!ce = !ddseRef
+      NEW DDAT DKEY $!dkey DDPR 1000mm
+      handle ANY
+        !this.populateTankVolumes()
+        return
+      endhandle
+      !ddatRef = !!ce
+    else
+      !ddatRef = !ddatRefs[1]
+    endif
+
+    !!ce = !ddatRef
+    DDPR $!distance
+    handle ANY
+      !!alert.error(!!error.text)
+      !args[3] = false
+    endhandle
+
+  endif
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onGridTankVolumesAfterCellUpdate
+--
+-- Description: called after the cell value is updated
+--              refresh the row of the selected tank
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       event data
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onGridTankVolumesAfterCellUpdate(!data is ARRAY)
+
+  if !data.unset() then
+    return
+  endif
+
+  !ddseRef = !this.gridTankVolumes.getCell(!data[0], 'REF_NO').dbref()
+  handle ANY
+    !this.populateTankVolumes()
+    return
+  endhandle
+
+  if !data[1].eq('Name') then
+    !this.gridTankVolumes.allGridEvents(false)
+    !this.gridTankVolumes.setCellValue(!data[0], 'Name', !ddseRef.name)
+    !this.gridTankVolumes.allGridEvents(true)
+  else
+    !dkey = ''
+    if !data[1].eq('Width') then
+      !dkey = 'WIDT'
+    elseif !data[1].eq('Depth') then
+      !dkey = 'DEPT'
+    elseif !data[1].eq('Height') then
+      !dkey = 'HEIG'
+    endif
+
+    if !dkey.empty() then
+      return
+    endif
+
+    !ddatRefs = !!collectAllFor('DDAT', |DKEY EQ '$!dkey'|, !ddseRef)
+    if !ddatRefs.empty() then
+      return
+    endif
+
+    !block = object BLOCK(!ddatRefs[1].ddProperty)
+    !value = !block.evaluate()
+    handle ANY
+      !this.populateTankVolumes()
+      return
+    endhandle
+
+    !this.gridTankVolumes.allGridEvents(false)
+    !this.gridTankVolumes.setCellValue(!data[0], !data[1], !value.string(!!distanceFmt))
+    !this.gridTankVolumes.allGridEvents(true)
+
+  endif
+
+endmethod
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      stringToDistance
+--
+-- Description: convert string to distance value
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      string value
+--    2   R      BOOLEAN     if true, no error message will be displayed
+-- Return:
+--   [Data Type] [Description]
+--    REAL        distance value
+--------------------------------------------------------------------------------
+define method .stringToDistance(!stringValue is STRING, !silent is BOOLEAN) is REAL
+
+  if !stringValue.trim().empty() then
+    if !silent.not() then
+      !!alert.message('Input distance value!')
+    endif
+    return object REAL()
+  endif
+
+  !distance = !stringValue.real(!!distancefmt)
+  handle ANY
+    if !silent.not() then
+      !!alert.error(|Cannot convert string '| + !stringValue + |' to real!|)
+    endif
+    return object REAL()
+  endhandle
+
+  if !distance.lt(0) then
+    if !silent.not() then
+      !!alert.error('Distance cannot be negative value!')
+    endif
+    return object REAL()
+  endif
+
+  return !distance
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onShowPopupMenu
+--
+-- Description: shows a context menu
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onShowPopupMenu(!data is ARRAY)
+
+  !rowTags = !this.gridTankVolumes.getSelectedRowTags()
+  !rowCount = !this.gridTankVolumes.getNumberRows()
+
+  !this.popupMenu.setFieldProperty('CREATE',    'ACTIVE', !this.editable)
+  !this.popupMenu.setFieldProperty('DELETE',    'ACTIVE', !this.editable and !rowTags.empty().not())
+  !this.popupMenu.setFieldProperty('EXPORT',    'ACTIVE', !rowCount.gt(0))
+  !this.popupMenu.setFieldProperty('PREVIEW',   'ACTIVE', !rowCount.gt(0))
+
+  !this.netControl.showPopup(!data[0], !data[1])
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      exportToExcel
+--
+-- Description: save grid data to excel file
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .exportToExcel()
+
+  import 'PMLFileBrowser'
+  handle ANY
+  endhandle
+
+  using namespace 'Aveva.Pdms.Presentation'
+  !browser = object PMLFILEBROWSER('SAVE')
+  !browser.show('%PDMSUSER%', 'tanks.xls', 'Save', false, 'Excel Documents|*.xls', 1)
+
+  !path = !browser.file().trim()
+  if !path.empty() then
+    return
+  endif
+
+  !this.gridTankVolumes.saveGridToExcel(!path)
+  handle ANY
+    !!alert.error(!!error.text)
+  endhandle
+endmethod

@@ -1,0 +1,698 @@
+--<000-1>-- Published PML 1.0.SP1 >--
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            apptbarcntrl.pmlobj
+--   Type:          Object Definition
+--   Group:         Application Switching
+--     Keyword:     APP
+--   Module:        common
+--   Replaces:
+--
+-- Author:          Jamie Brunning
+-- Created:         Wed Feb 18 09:12:13 2004
+--
+--
+-- Description:     Controls activity and visibility of toolbars across applications
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  addToolbar(STRING)               REAL                register toolbar with name STRING
+--  addToolbar(STRING,ARRAY)         REAL                add toolbar STRING to be visible in apps of ARRAY
+--  addToolbar(STRING,STRING)        REAL                registers toolbar in application
+--  addToolbar(STRING,STRING,BOOLEAN) REAL                registers toolbar in application, setting default visibility
+--  addToolbarDependent(STRING,STRING,STRING) REAL                add toolbar in given app dependent on required application being loaded
+--  appTbarCntrl(STRING,STRING)      -                   Constructor method
+--  appsToLoad()                     ARRAY               returns array of applications we need to be loaded so toolbars can be shown
+--  deactivateGadgets(STRING,STRING) -                   registers gadgets to deactivate in given application
+--  findAllToolbars()                ARRAY               finds all the toolbar frames on the main form
+--  findToolbar(STRING)              REAL                returns index of toolbar if it's registered
+--  getToolbarState(STRING)          -                   gets state of toolbars in the given application
+--  hideGadgets(STRING,STRING)       -                   registers gadgets to hide in given application
+--  loadToolbarState()               -                   load state of toolbars from file
+--  requiredAppsLoaded(REAL)         BOOLEAN             finds out whether the applications required for this toolbar are loaded
+--  saveToolbarState()               -                   save state of toolbars to file
+--  setToolbarState(STRING)          -                   sets the visibility of the toolbars in the given application
+--  setVisible(STRING,BOOLEAN)       -                   sets visibility of individual toolbar
+--
+------------------------------------------------------------------------
+define object APPTBARCNTRL
+  -- this array contains an APPTBAR object for each application
+  member .toolbars is ARRAY
+
+  -- and their corresponding names
+  member .toolbarNames is ARRAY
+
+  -- hiding individual gadgets within a toolbar
+  -- applications in which gadgets are hidden
+  member .apps is ARRAY
+  -- contains an array for each application of gadgets to be made invisible
+  member .hideGadgets is ARRAY
+  -- contains an array for each application of gadgets to made inactive
+  member .deactivateGadgets is ARRAY
+
+  -- name of file to save information to
+  member .statusFile is STRING
+
+  -- used to store information retrieved from status file on startup
+  -- applications that need to be loaded on startup
+  member .appsToLoad is ARRAY
+
+  -- have we checked main form for toolbars
+  member .initialised is BOOLEAN
+
+  -- name of last application we set up the toolbars for
+  member .currentApp is STRING
+endobject
+-- End of object definition for APPTBARCNTRL
+
+------------------------------------------------------------------------
+--
+-- Method:      .appTbarCntrl()
+--
+-- Description: Constructor method
+--
+-- Method Type: Constructor
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+--    2   R      STRING
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .appTbarCntrl(!module is STRING, !project is STRING)
+
+  !this.statusFile = '%PDMSUSER%\' & !module.lowcase() & '-' & !project.lowcase() & '-apptbarcntrl.pmldat'
+
+  -- not initialised to start with
+  !this.initialised = false
+endmethod
+-- End of method definition for .appTbarCntrl(STRING, STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      .loadToolbarState()
+--
+-- Description: load state of toolbars from file
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .loadToolbarState()
+
+  !file = object FILE(!this.statusFile)
+
+  -- don't do anything if file doesn't exist
+  if (!file.exists().not()) then
+    return
+  endif
+
+  -- load file into array
+  !state = !file.readFile()
+
+  -- loop through lines looking for relevant data
+  !mode = 0
+  do !line values !state
+    skip if (!line.trim().empty() or !line.substring(1,1) eq '#')
+    !part1 = !line.part(1, ':').trim().lowcase()
+    -- !part2 = !line.part(2, ':').trim()
+    !part2 = !line.after(':').trim()
+    if (!part1 eq 'toolbarvisibility') then
+      !mode = 1
+    elseif (!part1 eq 'endvisibility') then
+      !mode = 0
+    elseif (!mode eq 1) then
+      !toolbarName = !part1.upcase()
+      !visible = !part2.boolean()
+      !this.setVisible(!toolbarName, !visible)
+    elseif (!part1 eq 'requiredapp') then
+      !appName = !part2.upcase()
+      !this.appsToLoad.append(!appName)
+    endif
+  enddo
+
+  -- remove any duplicates from array
+  !this.appsToLoad.unique()
+endmethod
+-- End of method definition for .loadToolbarState()
+
+------------------------------------------------------------------------
+--
+-- Method:      .saveToolbarState()
+--
+-- Description: save state of toolbars to file
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .saveToolbarState()
+  -- get state of toolbars in current app
+  !this.getToolbarState(!this.currentApp)
+
+  -- initialise arrays
+  !out = ARRAY()
+  !requiredApps = ARRAY()
+
+  -- output list of toolbars, along with the applications that need to have been loaded for them to be present
+  !out.append('toolbarVisibility')
+  do !i indices !this.toolbars
+    !appTbar = !this.toolbars[!i]
+    -- this finds whether the toolbar is visible /at the moment in the current application/, not whether it's registered as visible
+    -- !visibleInApp = !toolbar.visible
+    -- is toolbar active?
+    !active = !appTbar.toolbar.active
+    -- if it's active then we want the required applications to be loaded next time
+    if (!active) then
+      !requiredApps = !requiredApps.union(!appTbar.requiredApps)
+    endif
+
+    -- now find whether it's visible in any apps
+    if (defined(!appTbar.visible)) then
+      !visible = !appTbar.visible
+    else
+      !visible = false
+    endif
+    !out.append(!appTbar.toolbar.name().upcase() & ':' & !visible)
+  enddo
+  !out.append('endVisibility')
+
+  do !app values !requiredApps
+    !out.append('requiredApp: ' & !app)
+  enddo
+
+  !file = object FILE(!this.statusFile)
+  !file.writeFile('OVERWRITE', !out)
+endmethod
+-- End of method definition for .saveToolbarState()
+
+------------------------------------------------------------------------
+--
+-- Method:      .addToolbar()
+--
+-- Description: register toolbar with name STRING
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+-- Return:
+--   [Data Type] [Description]
+--   REAL
+--
+------------------------------------------------------------------------
+define method .addToolbar(!toolbarName is STRING) is REAL
+  -- set the .mainForm member of !!appCntrl if it hasn't already been set
+  -- it's not very nice to do this here, but we register the toolbars before the form has even been fully defined
+  -- it would be possible to complete form definition before registering the toolbars, but that's not the way it's done for now!
+  if (!!appCntrl.mainForm.unset()) then
+    !!appCntrl.setMainForm()
+  endif
+
+  !toolbar = !!appCntrl.mainForm.attribute(!toolbarName)
+  handle (2,766)
+    -- toolbar does not exist on form
+    return REAL()
+  endhandle
+  if (!toolbar.objectType() ne 'GADGET' or !toolbar.type() ne 'FRAME' or !toolbar.subtype() ne 'TOOLBAR') then
+    -- gadget supplied is not of the correct type:
+    --  a) not a gadget
+    --  b) not a frame
+    --  c) not a toolbar frame
+    return REAL()
+  endif
+
+  -- append toolbar to array
+  !index = !this.toolbarNames.findFirst(!toolbarName.upcase())
+  if (!index.unset()) then
+    !this.toolbarNames.append(!toolbarName.upcase())
+    !appTbar = object APPTBAR(!toolbar)
+    !this.toolbars.append(!appTbar)
+    !index = !this.toolbars.maxIndex()
+  endif
+
+  return !index
+endmethod
+-- End of method definition for .addToolbar(STRING) REAL
+
+------------------------------------------------------------------------
+--
+-- Method:      .findToolbar()
+--
+-- Description: returns index of toolbar if it's registered
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+-- Return:
+--   [Data Type] [Description]
+--   REAL
+--
+------------------------------------------------------------------------
+define method .findToolbar(!toolbarName is STRING) is REAL
+  return !this.toolbarNames.findFirst(!toolbarName.upcase())
+endmethod
+-- End of method definition for .findToolbar(STRING) REAL
+
+------------------------------------------------------------------------
+--
+-- Method:      .addToolbar()
+--
+-- Description: add toolbar STRING to be visible in apps of ARRAY
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY
+--    2   R      STRING
+-- Return:
+--   [Data Type] [Description]
+--   REAL
+--
+------------------------------------------------------------------------
+define method .addToolbar(!toolbarName is STRING, !visibleInApps is ARRAY) is REAL
+  !index = !this.addToolbar(!toolbarName)
+  if (!index.set()) then
+    !this.toolbars[!index].visibleInApps = !this.toolbars[!index].visibleInApps.union(!visibleInApps)
+  endif
+  return !index
+endmethod
+-- End of method definition for .addToolbar(ARRAY, STRING) REAL
+
+------------------------------------------------------------------------
+--
+-- Method:      .addToolbar()
+--
+-- Description: registers toolbar in application
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+--    2   R      STRING
+-- Return:
+--   [Data Type] [Description]
+--   REAL
+--
+------------------------------------------------------------------------
+define method .addToolbar(!toolbarName is STRING, !visibleInApp is STRING) is REAL
+  return !this.addToolbar(!toolbarName, !visibleInApp, true)
+endmethod
+-- End of method definition for .addToolbar(STRING, STRING) REAL
+
+------------------------------------------------------------------------
+--
+-- Method:      .addToolbar()
+--
+-- Description: registers toolbar in application, setting default visibility
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+--    2   R      STRING
+--    3   R      BOOLEAN
+-- Return:
+--   [Data Type] [Description]
+--   REAL
+--
+------------------------------------------------------------------------
+define method .addToolbar(!toolbarName is STRING, !visibleInApp is STRING, !visible is BOOLEAN) is REAL
+  !index = !this.addToolbar(!toolbarName)
+  if (!index.set()) then
+    if (!visibleInApp.set() and !this.toolbars[!index].visibleInApps.findFirst(!visibleInApp).unset()) then
+      !this.toolbars[!index].visibleInApps.append(!visibleInApp.upcase())
+    endif
+    !this.toolbars[!index].visible = !visible
+  endif
+  return !index
+endmethod
+-- End of method definition for .addToolbar(STRING, STRING, BOOLEAN) REAL
+
+
+------------------------------------------------------------------------
+--
+-- Method:      .addToolbarDependent()
+--
+-- Description: add toolbar in given app dependent on required application being loaded
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+--    2   R      STRING
+--    3   R      STRING
+-- Return:
+--   [Data Type] [Description]
+--   REAL
+--
+------------------------------------------------------------------------
+define method .addToolbarDependent(!toolbarName is STRING, !visibleInApp is STRING, !requiredApp is STRING) is REAL
+  !index = !this.addToolbar(!toolbarName, !visibleInApp)
+  if (!index.set()) then
+    !this.toolbars[!index].requiredApps.append(!requiredApp)
+  endif
+  return !index
+endmethod
+-- End of method definition for .addToolbarDependent(STRING, STRING, STRING) REAL
+
+------------------------------------------------------------------------
+--
+-- Method:      .getToolbarState()
+--
+-- Description: gets state of toolbars in the given application
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getToolbarState(!appName is STRING)
+  do !toolbar values !this.toolbars
+    -- !toolbar = !this.toolbars[!i]
+    -- change shown flag only if the form is registered to be shown in this app
+    -- visibleInApps[!i] being empty means the form is registered in all apps
+    !visibleInApps = !toolbar.visibleInApps
+    if (!visibleInApps.empty() or !visibleInApps.findFirst('ALL').set() or !visibleInApps.findFirst(!appName.upcase()).set()) then
+      !toolbar.visible = !toolbar.toolbar.visible
+    endif
+  enddo
+
+  -- this method is only ever run when we're about to leave the application, so make it re-show the gadgets that have been hidden
+  -- and reactivate the deactivated ones
+  !hideGadgets = ARRAY()
+  !deactivateGadgets = ARRAY()
+
+  if (!appName.set()) then
+  !index = !this.apps.findFirst(!appName.upcase())
+  if (!index.set()) then
+    !hideGadgets.appendArray(!this.hideGadgets[!index])
+    !deactivateGadgets.appendArray(!this.deactivateGadgets[!index])
+     endif
+  endif
+
+  do !gadget values !hideGadgets
+    !!appCntrl.mainForm.attribute(!gadget).visible = true
+    handle any
+    endhandle
+  enddo
+  do !gadget values !deactivateGadgets
+    !!appCntrl.mainForm.attribute(!gadget).active = true
+    handle any
+    endhandle
+  enddo
+
+  -- !this.shown = !visibility
+endmethod
+-- End of method definition for .getToolbarState(STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      .hideGadgets()
+--
+-- Description: registers gadgets to hide in given application
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+--    2   R      STRING
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .hideGadgets(!gadgets is STRING, !appName is STRING)
+  -- if there's a space in the gadgets argument, assume it's separating multiple gadgets
+  !gadgetsToRemove = !gadgets.split()
+
+  -- add app to register if it's not there
+  !index = !this.apps.findFirst(!appName.upcase())
+  if (!index.unset()) then
+    !this.apps.append(!appName.upcase())
+    !index = !this.apps.maxIndex()
+    !this.hideGadgets[!index] = ARRAY()
+    !this.deactivateGadgets[!index] = ARRAY()
+  endif
+
+  -- add to array of gadgets to remove for this app
+  !this.hideGadgets[!index].appendArray(!gadgetsToRemove)
+endmethod
+-- End of method definition for .hideGadgets(STRING, STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      .deactivateGadgets()
+--
+-- Description: registers gadgets to deactivate in given application
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+--    2   R      STRING
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .deactivateGadgets(!gadgets is STRING, !appName is STRING)
+  !gadgetsToDeactivate = !gadgets.split()
+
+  -- add app to register if it's not there
+  !index = !this.apps.findFirst(!appName.upcase())
+  if (!index.unset()) then
+    !this.apps.append(!appName.upcase())
+    !index = !this.apps.maxIndex()
+    !this.hideGadgets[!index] = ARRAY()
+    !this.deactivateGadgets[!index] = ARRAY()
+  endif
+
+  -- add to array of gadgets to remove for this app
+  !this.deactivateGadgets[!index].appendArray(!gadgetsToDeactivate)
+endmethod
+-- End of method definition for .deactivateGadgets(STRING, STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      .setVisible()
+--
+-- Description: sets visibility of individual toolbar
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+--    2   R      BOOLEAN
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setVisible(!toolbarName is STRING, !visible is BOOLEAN)
+  !index = !this.toolbarNames.findFirst(!toolbarName.upcase())
+  if !index.unset() then
+    return
+  endif
+  !this.toolbars[!index].visible = !visible
+
+  if (!this.initialised) then
+    !this.toolbars[!index].toolbar.visible = !visible
+  endif
+endmethod
+-- End of method definition for .setVisible(STRING, BOOLEAN)
+
+------------------------------------------------------------------------
+--
+-- Method:      .requiredAppsLoaded()
+--
+-- Description: finds out whether the applications required for this toolbar are loaded
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      REAL
+-- Return:
+--   [Data Type] [Description]
+--   BOOLEAN
+--
+------------------------------------------------------------------------
+define method .requiredAppsLoaded(!index is REAL) is BOOLEAN
+  do !appName values !this.requiredApps[!index]
+    if (!!appCntrl.loaded(!appName).not()) then
+      return false
+    endif
+  enddo
+  return true
+endmethod
+-- End of method definition for .requiredAppsLoaded(REAL) BOOLEAN
+
+------------------------------------------------------------------------
+--
+-- Method:      .setToolbarState()
+--
+-- Description: sets the visibility of the toolbars in the given application
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setToolbarState(!appName is STRING)
+  -- if we're setting the state of the toolbars, then we must have finished building the form
+  -- if we haven't done so already, check for the presence of unregistered toolbars, load state information from file and initialise
+  if (!this.initialised.not()) then
+    !this.findAllToolbars()
+    !this.loadToolbarState()
+    !this.initialised = true
+  endif
+
+  do !toolbar values !this.toolbars
+    -- if toolbar is registered in !appName
+    if (!toolbar.visibleInApps.empty() or !toolbar.visibleInApps.findFirst('ALL').set() or !toolbar.visibleInApps.findFirst(!appName).set()) then
+      -- set active state if the toolbar's controlled
+      if (!toolbar.controlled) then
+        !toolbar.toolbar.active = true
+      endif
+      -- make toolbar visible if visibility not remembered from last time and not invisible by default
+      if (undefined(!toolbar.visible)) then
+        !toolbar.visible = true
+      endif
+      -- set visibility of toolbar
+      !toolbar.toolbar.visible = !toolbar.visible
+    else
+      -- set active state if the toolbar's controlled
+      if (!toolbar.controlled) then
+        !toolbar.toolbar.active = false
+      endif
+      -- make toolbar invisible
+      !toolbar.toolbar.visible = false
+    endif
+  enddo
+
+  -- now hide all the gadgets that are made invisible by this application
+  -- and deactivate the ones that are inactive in this application
+  !hideGadgets = ARRAY()
+  !deactivateGadgets = ARRAY()
+
+  !index = !this.apps.findFirst(!appName.upcase())
+  if (!index.set()) then
+    !hideGadgets.appendArray(!this.hideGadgets[!index])
+    !deactivateGadgets.appendArray(!this.deactivateGadgets[!index])
+  endif
+  -- also grey out/hide buttons that are hidden in all applications
+  !index = !this.apps.findFirst('ALL')
+  if (!index.set()) then
+    !hideGadgets.appendArray(!this.hideGadgets[!index])
+    !deactivateGadgets.appendArray(!this.deactivateGadgets[!index])
+  endif
+
+  do !gadget values !hideGadgets
+    !!appCntrl.mainForm.attribute(!gadget).visible = false
+    handle any
+    endhandle
+  enddo
+  do !gadget values !deactivateGadgets
+    !!appCntrl.mainForm.attribute(!gadget).active = false
+    handle any
+    endhandle
+  enddo
+
+  !this.currentApp = !appName
+
+endmethod
+-- End of method definition for .setToolbarState(STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      .findAllToolbars()
+--
+-- Description: finds all the toolbar frames on the main form
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--   ARRAY
+--
+------------------------------------------------------------------------
+define method .findAllToolbars() is ARRAY
+  -- gets all the toolbar frames on the main form
+  -- this catches any toolbars that haven't been explicitly registered
+  -- we can then hide them rather than just leave them lying about!
+
+  -- get all gadgets on main form
+  !gadgets = !!appCntrl.mainForm.gadgets()
+
+  -- loop through the gadgets
+  do !gadget values !gadgets
+    -- we only want to look at gadgets
+    skip if (!gadget.objectType() neq 'GADGET')
+
+    -- try to find type
+    !unusedGadgetType = !gadget.type()
+    handle (61,563)
+      -- F&M: Could not find required gadget error occurs for some gadgets, e.g. .bar object
+      -- skip this gadget
+      skip
+    endhandle
+
+    if (!gadget.type() eq 'FRAME' and !gadget.subtype() eq 'TOOLBAR') then
+      -- this gadget is a toolbar
+      -- get its name
+      !gadgetName = !gadget.name().upcase()
+
+      -- see if toolbar is already registered
+      !index = !this.findToolbar(!gadgetName)
+      -- if we don't have it registered already, add it and make it invisible by default
+      if (!index.unset()) then
+        !index = !this.addToolbar(!gadgetName)
+        !this.toolbars[!index].visible = false
+        -- make toolbar uncontrolled
+        !this.toolbars[!index].controlled = false
+      endif
+    endif
+  enddo
+endmethod
+-- End of method definition for .findAllToolbars() ARRAY
+
+------------------------------------------------------------------------
+--
+-- Method:      .appsToLoad()
+--
+-- Description: returns array of applications we need to be loaded so toolbars can be shown
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--   ARRAY
+--
+------------------------------------------------------------------------
+define method .appsToLoad() is ARRAY
+  if (!!appCntrl.options.restoreToolbars) then
+    return !this.appsToLoad
+  else
+    return ARRAY()
+  endif
+endmethod
+-- End of method definition for .appsToLoad() ARRAY

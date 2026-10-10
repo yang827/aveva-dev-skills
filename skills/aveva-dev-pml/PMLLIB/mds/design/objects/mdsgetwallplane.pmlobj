@@ -1,0 +1,425 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--   File:          mdsgetwallplane.pmlobj
+--   Type:          Object Definition
+--   Group:         Database routines
+--   Keyword:       MDS
+--   Module:        design
+--   Replaces:
+--
+-- Author:          T.Martin
+-- Created:         24/05/2005 14:40
+--
+-- Description:
+-- pick plane on an extrusion object for database element, PANEL, FLOOR, EXTRU, NXTRU....
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  checkend(DBREF)                  BOOLEAN
+--  checkprofile()                   BOOLEAN
+--  evaluate(DBREF)                  -
+--  formatplane(PLANE)               STRING
+--  getHPlateData(DBREF)             -
+--  getPlateData(DBREF)              -
+--  getstatus()                      -
+--  mdsgetwallplane(POINTVECTOR,DBREF) -
+--  posonprofile(POSITION)           BOOLEAN
+--
+----------------------------------------------------------------------------------------------------
+define object MDSGETWALLPLANE
+
+  member .plane           is PLANE
+  member .topplane        is PLANE
+  member .bottomplane     is PLANE
+  member .finalplane      is PLANE
+  member .finalpos        is POSITION
+  member .profile         is PROFILE
+  member .pointvector     is POINTVECTOR
+  member .ploop           is DBREF
+  member .onprofile       is BOOLEAN
+  member .onend           is BOOLEAN
+  member .height          is REAL
+  member .topOffset       is REAL
+  member .bottomOffset    is REAL
+  member .topposition     is POSITION
+  member .bottomposition  is POSITION
+  member .surfaceposition is POSITION
+  member .arrangement     is STRING
+  member .justification   is STRING
+
+endobject
+--------------------------------------------------------------------------------------------------
+
+
+--------------------------------------------------------------------------------------------------
+-- main constructor method where we pass a datum atta pointvector and a panel/floor
+-- returns a plane on ploop intersected by the direction of a pline
+define method .mdsgetwallplane(!pvector is POINTVECTOR,!pane is DBREF)
+
+  !this.pointvector = !pvector
+  -- create a profile from the !pane
+  if (!pane.hardtype.eq('HPLATE')) then
+    !this.getHPlateData(!pane)
+  else
+    !this.getPlateData(!pane)
+  endif
+
+  -- find the intersection plane
+  !this.evaluate(!pane)
+
+endmethod
+
+define method .getstatus()
+
+     -- method to find the final status of above or below
+     !pospv = !this.pointvector.through(!this.finalpos)
+     !testpv = !pospv.towards(!this.pointvector.position)
+
+     if !testpv.direction.angle(!pospv.direction.opposite()).gt(10) then
+        !this.arrangement = 'above'
+     else
+        !this.arrangement = 'below'
+     endif
+
+     if !this.pointvector.position.distance(!pospv.position).lt(25) then
+        !this.arrangement = 'equal'
+     endif
+
+endmethod
+
+-- this is the main method for finding the point and plane on the profile
+define method .checkprofile()is BOOLEAN
+
+  !lineStart = !this.pointvector.offset(100000).position
+  !newpointvector = !this.pointvector
+  !newpointvector.direction = !newpointvector.direction.opposite()
+  !lineEnd = !newpointvector.offset(100000).position
+  !line = object LINE(!lineStart,!lineEnd)
+
+  !possible =  !this.profile.intersections(!line)
+
+   -- possible is an array of positions where the pointvector intersects the profile
+
+   if !possible.size().eq(0) then
+      return FALSE
+   endif
+
+   -- now we need to loop through the possible points to find the nearest to the passed pointvector (ppoint)
+   !pos = !this.pointvector.position
+   !near = 120000
+   do !a index !possible
+     if !pos.distance(!possible[!a]).lt(!near) then
+       !near = !pos.distance(!possible[!a])
+       !index = !a
+     endif
+   enddo
+
+   if undefined(!index) then
+        return FALSE
+   else
+      -- pin 1 at $!possible[$!index]
+     !posonprofile = !possible[!index]
+
+     !edges = !this.profile.edges()
+
+     -- get the zdir of the profile as a direction
+     !zdir = !this.profile.orientation.zdir()
+
+     do !a index !edges
+
+--<wd>may2007<mds12>
+-- The PROFILE crested for a HULL HPLATE in the !edges variable may contain invalid LINE objects i.e. ZERO length lines
+-- ERROR raised by the syntax at line 366 below "if !edges[!a].on(!posonprofile) then" is (2,785)   Unset/Invalid object passed to method
+     skip if !edges[!a].length().lt(1)
+--<wd>may2007<mds12>
+
+     -- test if we have found the correct line/arc
+        if !edges[!a].objecttype().eq('LINE') then
+           if !edges[!a].on(!posonprofile) then
+             !linehit = !edges[!a]
+             !planedir = !linehit.direction().cross(!zdir)
+          !pv = object POINTVECTOR()
+             !pv.position = !posonprofile
+             !pv.direction = !planedir
+           endif
+        else  $* we are looking at an arc
+           if !edges[!a].on(!posonprofile) then
+             !archit = !edges[!a]
+             --q var !archit
+             -- work out the direction of the tangent
+          !pv = object POINTVECTOR()
+             !pv.position = !posonprofile
+             !pv.direction = !pv.position.direction(!archit.position).opposite()
+           endif
+        endif
+     enddo
+
+     -- now we should have a position on the extrusion base which represents the projected line
+     -- we now need to construct a plane in the zdirection of the extrusion based on the direction
+     -- of the extrusion line
+     !plane = !pv.plane()
+     !this.plane = !plane
+     -- now work out where the actual intersection might be
+
+     !actualpos = !this.pointvector.intersection(!plane)
+     handle ANY
+       return FALSE
+     endhandle
+
+     !this.surfaceposition = !actualpos
+
+     return TRUE
+
+--<wd>may2007<mds12>
+    -- Missing from Original Code -- I put it here where it makes NO Difference as the "endmethod" has the same effect!!!--
+   endif
+--<wd>may2007<mds12>
+
+endmethod
+--------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------
+-- method to project the current direction onto the top and bottom planes and see if the point
+-- lies within the profile
+-- also defines top and bottom plane
+define method .checkend(!pane is DBREF) is BOOLEAN
+
+  -- get the panel or hplate
+  if !pane.hardtype.neq('HPLATE') and !pane.hardtype.neq('PANE') then
+    -- it's probably a PLOO or LOOP so go to owner and test again
+    !panel = !pane.owner
+    if !panel.hardtype.neq('HPLATE') and !pane.hardtype.neq('PANE') then
+      handle ANY
+        !!alert.error('Cannot find a panel from this level')
+        return error 67
+      endhandle
+    endif
+  else
+    !panel = !pane
+  endif
+
+  -- get a pointvector at the origin of the panel pointing in the z orientation of the panel
+  !originPvector = !this.profile.plane().pointvector()
+
+  !panelDir = !panel.orientation.zdir().wrt( /* )
+  !originPvector.direction = !panelDir
+
+  if !this.justification.eq('TOP') then
+    !this.topplane = !this.profile.plane()
+    !botplanevec = !originPvector
+    !botplanevec.direction = !botplanevec.direction.opposite()
+    !this.bottomplane = !botplanevec.offset(!this.height).plane()
+  elseif !this.justification.eq('BOTTOM') then
+    !this.bottomplane = !this.profile.plane()
+    !topplanevec = !originPvector
+    !this.topplane = !topplanevec.offset(!this.height).plane()
+  else
+    -- we must have a centre justified panel
+    !this.topplane = !originPvector.offset(!this.height * 0.5).plane()
+    !this.bottomplane = !originPvector.offset(!this.height * -1).plane()
+  endif
+
+   !pos1 = !this.pointvector.intersection(!this.topplane)
+   handle (2,875)
+    -- pointvector is parallel to the top plane so we don't need to go any further
+     return FALSE
+   endhandle
+
+  !pos2 = !this.pointvector.intersection(!this.bottomplane)
+
+        !this.topposition = !pos1
+        !this.bottomposition = !pos2
+
+   if !this.topposition.unset().and(!this.bottomposition.unset()) then
+        return FALSE
+   else
+        return TRUE
+   endif
+
+endmethod
+--------------------------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------------------------
+-- checks to see if the projected point is on the surface (in between the top and bottom planes)
+define method .posonprofile(!pos is POSITION) is BOOLEAN
+
+  if !pos.distance(!this.topplane.near(!pos)) + !pos.distance(!this.bottomplane.near(!pos)) leq !this.height then
+      return TRUE
+  else
+      return FALSE
+  endif
+
+endmethod
+
+--------------------------------------------------------------------------------------------------
+define method .getHPlateData(!extrusion is DBREF)
+
+  !loop  = !extrusion
+  !thk   = !loop.loheight
+  !just  = !loop.sJustification
+
+  !this.height = !thk
+
+  -- Set justification to either, TOP, CENTRE or BOTTOM
+  if(!just.match('CEN') gt 0 or !just.match('MID') gt 0) then
+    !just = 'CENTRE'
+  elseif (!just.match('TOP') gt 0) then
+    !just = 'TOP'
+  else
+    !just = 'BOTTOM'
+  endif
+
+  !this.justification = !just
+
+  -- create a profile that represents the loop
+  !this.profile = object PROFILE(!loop)
+
+endmethod
+
+define method .getPlateData(!extrusion is DBREF)
+
+  -- Extract data if item is a PANE
+  if(!extrusion.hardtype eq 'PANE') then
+    !loop  = PLOO 1 of $!extrusion
+    !thk   = !loop.heig
+    !just  = !loop.sJustification
+
+    -- Extract data if item is a EXTRU
+  else
+    !loop  = LOOP 1 of $!extrusion
+    handle ANY
+      !!alert.error('Cannot find a loop from this level')
+      return error 67
+    endhandle
+    !thk   = !loop.heig
+    !just  = !loop.sJustification
+  endif
+
+  !this.height = !thk
+
+  -- Set justification to either, TOP, CENTRE or BOTTOM
+  if(!just.match('CEN') gt 0 or !just.match('MID') gt 0) then
+    !just = 'CENTRE'
+  elseif (!just.match('TOP') gt 0) then
+    !just = 'TOP'
+  else
+    !just = 'BOTTOM'
+  endif
+
+  !this.justification = !just
+
+  -- create a profile that represents the loop
+  !this.profile = object PROFILE(!loop)
+
+endmethod
+
+define method  .evaluate(!pane is DBREF)
+
+  !this.onend       = !this.checkend(!pane)
+  !this.onprofile   = !this.checkprofile()
+
+  if !this.onend.not().and(!this.onprofile.not()) then
+    --!!alert.error('Projected point does not intersect Extrusion')
+    !this.arrangement = 'unset'
+    -- return error 4
+  endif
+
+  if !this.topposition.set() and !this.bottomposition.set() then $* its likely to be top or bottom
+    if !this.pointvector.position.distance(!this.bottomposition).gt(!this.pointvector.position.distance(!this.topposition)) then
+      -- its the topposition
+      !this.finalpos = !this.topposition
+      !this.finalplane = !this.topplane
+    else
+      !this.finalpos   = !this.bottomposition
+      !this.finalplane = !this.bottomplane
+    endif
+
+  elseif !this.topposition.set() then $* it could be
+    --  check to see if the surface position is within the profile
+    if !this.posonprofile(!this.surfaceposition)then
+      -- use the nearest to the pointvector
+      if !this.pointvector.position.distance(!this.surfaceposition).gt(!this.pointvector.position.distance(!this.topposition)) then
+        -- its the topposition
+        !this.finalpos = !this.topposition
+        !this.finalplane = !this.topplane
+      else
+        !this.finalpos = !this.surfaceposition
+        !this.finalplane = !this.plane
+      endif
+    else
+      !this.finalpos = !this.topposition
+      !this.finalplane = !this.topplane
+    endif
+  elseif !this.bottomposition.set() then
+    if !this.posonprofile(!this.surfaceposition)then
+      -- use the nearest to the pointvector
+      if !this.pointvector.position.distance(!this.surfaceposition).gt(!this.pointvector.position.distance(!this.bottomposition)) then
+        -- its the bottomposition
+        !this.finalpos   = !this.bottomposition
+        !this.finalplane = !this.bottomplane
+      else
+        !this.finalpos   = !this.surfaceposition
+        !this.finalplane = !this.plane
+      endif
+    else
+      !this.finalpos =   !this.bottomposition
+      !this.finalplane = !this.bottomplane
+    endif
+  else   $* top and bottom planes are not set so it MAY be the surface
+    !this.finalpos   = !this.surfaceposition
+    !this.finalplane = !this.plane
+  endif
+
+  -- now work out the status
+  --!newpv = !this.pointvector
+
+  if !this.finalpos.unset() and !this.finalplane.unset() then
+    -- we have failed to find a position on the surface in line with the projected line
+    -- now we need to work out the plane nearest to the pointvector direction
+    -- to do this we need to loop round the planes and evaluate the projected distance
+    !this.getnearestplane()
+  endif
+
+  --we need to ensure that the final plane is opposite in direction from the supplied pointvector
+  --if we don't then the zdir of the finalplane can point away from the given support which can lead to problems
+  --with joints. we do this by getting dot product of the plane zdir and pointvector direction and flipping the
+  --zdir of any planes who have positive dot product values - start
+  !planeZdir = !this.finalplane.orientation.zdir()
+  !pvDir = !this.pointvector.direction
+  !dotp = !pvdir.dot(!planeZdir)
+
+  if !dotp.gt(0) then 	
+  	!tempPv = object POINTVECTOR(!this.finalplane.position, !planeZdir.opposite())
+  	!tempPv = !tempPv.offset(1000) 	
+    !tempPlane = !this.finalplane.towards(!tempPv.position)
+    !this.finalplane = !tempPlane
+  endif
+  --we need to ensure that the final plane is opposite in direction from the supplied pointvector
+  --if we don't then the zdir of the finalplane can point away from the given support which can lead to problems
+  --with joints. we do this by getting dot product of the plane zdir and pointvector direction and flipping the
+  --zdir of any planes who have positive dot product values - end   	
+  -- now go and work out the above,below,unset status
+  !this.getstatus()
+
+endmethod
+
+--------------------------------------------------------------------------------------------------
+define method .formatplane(!plane is PLANE)is STRING
+
+-- formats the plane object string
+-- eg PLANE  POS E 0 N 7689 U 0 WRT /*  ORI Y is E 45 N WRT /* and Z is U WRT /*'
+-- to the old syntax form of plane
+-- eg 'plane N through E 45678 N 0 U 0'
+!planedir = !plane.direction()
+!planepos = !plane.position
+  !string = 'PLANE ' & !planedir.string().before('WRT') & ' through ' & !planepos.string().before('WRT')
+
+  return !string
+
+endmethod
+--------------------------------------------------------------------------------------------------

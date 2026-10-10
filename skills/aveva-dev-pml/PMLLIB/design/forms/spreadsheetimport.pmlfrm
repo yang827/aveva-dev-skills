@@ -1,0 +1,765 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            spreadsheetimport.pmlfrm
+--   Type:          Form Definition
+--   Group:         General Applications
+--
+--     Keyword:     Navigation
+--   Module:        design
+--   Replaces:
+--
+-- Author:          derek.flannery
+--
+--  Created:         Mon Mar 19 18:02:24 2007
+--
+--  Description:     --   Import data from spreadsheet - CSV or XLS--
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  browse()                         -                   Display file browser to open a file
+--  clearMessages()                  -                   Clear message panel
+--  close()                          -                   Tell data handler to tidy up, tidy local data and close form
+--  displayMessage()                 -                   Display message in message panel
+--  filenameCheck()                  -
+--  initialise()                     -
+--  loadData()                       -                   Method to load data from CSV or Excel file
+--  loadGrid()                       -                   Put the imported data into the data grid
+--  netAfterSelectChangeCallback(ARRAY) -                   Callback after dataGrid selection
+--  netPopupCallback(ARRAY)          -                   Callback on dataGrid popup
+--  processData(STRING)              -                   Use the Data handler object to process the imported data
+--  reload()                         -                   Reload data from current file
+--  removeImportCallback(STRING)     -                   Remove the specified import callback
+--  setCellImages(ARRAY)             -
+--  setDataHandler(ANY)              -
+--  setImportCallback(STRING)        -                   Set the import callback
+--  spreadSheetImport()              -
+--  undoCallback()                   -                   Undo callback
+--
+------------------------------------------------------------------------
+--
+import 'GridControl'
+handle any
+endhandle
+
+
+--- form definition
+setup form !!spreadSheetImport varchars dialog resizable
+
+  using namespace 'Aveva.Pdms.Presentation'
+  -- my .Net control
+  member .dataGrid is NETGRIDCONTROL
+
+  !this.formTitle = 'Spreadsheet Import'
+
+  frame .selectFileFrame 'Select File' anchor t+l+r width 62
+    path right
+    text   .filename             anchor l+r+t callback '!this.loadData()' width 54 is STRING
+    button .butFileOpen         anchor t+r  pixmap      at xmax+.2 ymin width 16 height 16 tooltip 'Open File' callback '!this.browse()'
+    button .butReload           anchor t+r  pixmap      at xmax+.2 ymin width 16 height 16 tooltip 'Reload File' callback '!this.reload()'
+    paragraph .operation        anchor l+t+r      at xmin.filename ymax+.2  width 36 lines 1
+  exit
+
+  frame  .pmlFrame2  'Import Data'    anchor all                     at xmin.selectFileFrame ymax  height 12 width.selectFileFrame
+    container .dataFrame nobox PMLNetCONTROL 'NET'  DOCK FILL
+  exit
+
+  frame .messFrame  'Messages' anchor left + right + bottom at xmin.selectFileFrame ymax width.selectFileFrame
+    para .message   anchor left + right + bottom at xmin+1 ymax  width 60 lines 3
+  exit
+
+  button .butCreateAll  'Load All Data' at xmin.messFrame ymax+.25 anchor l+b tooltip 'Load All Data' call '!this.processData(|ALL|)' width 10
+  button .butCreateNew  'Load New Data' at xmax+.2 ymin anchor l+b tooltip 'Load New Data' call '!this.processData(|NEW|)' width 10
+  button .butDismiss    '   Dismiss   ' at xmax.messFrame-size ymin anchor right + bottom tooltip 'Dismiss' call '!this.close()' width 8
+
+  -- Form members
+
+  -- member for use by data handler if required - do not remove
+  member .dataList         is ARRAY
+  -- raw spread sheet data loaded from data source (.CSV or .XLS)
+  member .rawData          is COMSPREADSHEETLOADER
+  -- element 1 records the type of object to be used to process the data
+  -- loaded by this form (equivalent to declaring a member of any object type)
+  member .dataHandler      is ARRAY
+  -- home folder
+  member .homeDirectory    is STRING
+  -- file = data source
+  member .inputFile        is FILE
+  -- Undo event handler
+  member .undoProcess      is UNDOABLE
+  -- Debug mode - if set to true the error handles on data handler calls are disabled
+  member .debug            is BOOLEAN
+  -- Import callback - string evaluated after successfully importing data
+  member .importCallback   is STRING
+
+exit
+
+
+------------------------------------------------------------------------
+--
+-- Method:   spreadSheetImport
+--
+-- Description: Constructor
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .spreadSheetImport()
+
+  using namespace 'Aveva.Pdms.Presentation'
+
+  -- Create instance of .Net control
+  !this.dataGrid = object NETGRIDCONTROL()
+
+  -- Initialise data handler and import callback
+  !this.dataHandler         = ARRAY()
+  !this.importCallback      = STRING()
+
+  -- Add PML event handlers to .Net control
+  !this.dataGrid.addeventhandler('OnPopup', !this, 'NETPopupCallback')
+  !this.dataGrid.addeventhandler('AfterSelectChange', !this, 'NETAfterSelectChangeCallback')
+
+  -- Add .Net control to PML container
+  !this.dataFrame.control = !this.dataGrid.handle()
+
+   -- configure grid presentation
+  !this.dataGrid.editableGrid(FALSE)
+  !this.dataGrid.columnExcelFilter(FALSE)
+  !this.dataGrid.outlookGroupStyle(FALSE)
+  !this.dataGrid.fixedHeaders(FALSE)
+  !this.dataGrid.fixedRows(FALSE)
+  !this.dataGrid.errorIcon(TRUE)
+
+  -- Define dataGrid popup menu
+  !menu = !this.newMenu('dataGridPopup')
+  !menu.add( 'CALLBACK', 'Process Selected Items', '!this.processData(|SELECTION|)' )
+  !menu.add('separator')
+  !menu.add( 'callback', 'Export to Excel...', '!!exportToExcel(!this.dataGrid, ||, |Save As|)' )
+  !menu.add( 'callback', 'Print Preview...', '!this.dataGrid.printpreview()' )
+  !this.dataFrame.popup = !menu
+
+  !this.butFileOpen.addPixmap(!!pml.getPathname('fileopen16.png'))
+  !this.butReload.addPixmap(!!pml.getPathname('refresh16.png'))
+  !this.initialise()
+  !this.cancelCall = '!this.close()'
+  !this.debug      = false
+
+  -- Initialise create button undo
+  !this.undoProcess.description('Import spread sheet data')
+  !this.undoProcess.undoAction('!!spreadSheetImport.undoCallback()')
+  !this.undoProcess.redoAction('!!spreadSheetImport.undoCallback()')
+  !this.butCreateAll.setUndoable(!this.undoProcess)
+  !this.butCreateNew.setUndoable(!this.undoProcess)
+
+  -- Set default directory
+  !folderUser               = object FILE('%PDMSUSER%')
+  !this.homeDirectory       = !folderUser.fullname()
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:   initialise
+--
+-- Description: Initialise form for new input file
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .initialise()
+
+  -- initialise input file name
+  !this.inputFile           = object FILE()
+  !this.filename.val        = ''
+  !this.butCreateAll.active = false
+  !this.butCreateNew.active = false
+  !this.butReload.active    = false
+  !this.dataGrid.clearGrid()
+  !this.operation.val       = 'Please select a file to import.'
+
+endmethod
+-- End of method definition
+
+
+------------------------------------------------------------------------
+--
+-- Method:   setDataHandler
+--
+-- Description: Set the object that will be used to validate and process
+--              data loaded onto this form. This allows the same form to
+--              be configured to load different types of data
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--  1   R      ANY         CSV data handler object
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setDataHandler(!dataHandlerObject is ANY)
+
+  -- record object to be used to process the data loaded from the spreadsheet
+  -- This object must support the following methods
+  -- .setData(Headings ARRAY, ARRAY of rows)
+  -- .validateHeadings()
+  -- .analyseRows()
+  -- .processData()
+  !this.dataHandler[1] = !dataHandlerObject
+
+endmethod
+-- End of method definition
+
+
+------------------------------------------------------------------------
+--
+-- Method:   netPopupCallback
+--
+-- Description: Callback on dataGrid popup
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .netPopupCallback(!a is ARRAY)
+
+      !this.dataFrame.showPopup(!a[0], !a[1])
+
+endmethod
+-- End of method definition
+
+
+------------------------------------------------------------------------
+--
+-- Method:   netAfterSelectChangeCallback
+--
+-- Description: Callback after dataGrid selection
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .netAfterSelectChangeCallback(!selectArray is ARRAY)
+
+  !tempArray = !selectArray[0]
+  -- control single versus multi select options
+  if( !tempArray.size() ne 1 ) then
+    -- zero or multi-select
+    !this.clearMessages()
+  else
+    -- single select
+    !this.displayMessage()
+  endif
+
+  -- do feedback call to data handler
+  !realSelectArray = ARRAY()
+  do !index values !tempArray
+    !realSelectArray.append(!index.real())
+  enddo
+
+  if(!this.debug) then
+    !this.dataHandler[1].feedback(!realSelectArray)
+  else
+    !this.dataHandler[1].feedback(!realSelectArray)
+    handle any
+    endhandle
+  endif
+
+endmethod
+-- End of method definition
+
+
+-------------------------------------------------------------------
+--
+-- Method:      displayMessage
+--
+-- Description: Display message in message panel
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .displayMessage()
+
+  -- get the selected element tag and clear existing messages
+  !selectedElements = !this.dataGrid.getSelectedRowTags()
+  if( !selectedElements.size() neq 1 ) then
+    !this.clearMessages()
+    return
+  endif
+
+  -- ask the data handler for any message associated with this tag
+  !index = !selectedElements[1].real()
+  if(!this.debug) then
+    !this.message.val = !this.dataHandler[1].getMessages()[!index]
+  else
+    !this.message.val = !this.dataHandler[1].getMessages()[!index]
+    handle any
+      !this.clearMessages()
+    endhandle
+  endif
+
+endmethod
+-- End of method
+
+
+-------------------------------------------------------------------
+--
+-- Method:      clearMessages
+--
+-- Description: Clear message panel
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .clearMessages()
+
+  !this.message.val = ' '
+
+endmethod
+-- End of method
+
+
+-------------------------------------------------------------------
+--
+-- Method:      reload
+--
+-- Description: Reload data from current file
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .reload()
+
+  !this.loadData()
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:   loadData
+--
+-- Description: Method to load data from CSV or Excel file
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .loadData()
+
+  -- Initialise the form for new input
+  !this.butCreateAll.active = false
+  !this.butCreateNew.active = false
+  !this.butReload.active    = true
+  !this.clearMessages()
+  !this.dataGrid.clearGrid()
+  !this.operation.val = 'Operation: Data input for processing.'
+
+  -- check for existing file
+  !file = !this.filename.val.trim()
+  if(!file.empty()) then
+    !!alert.error('Please specify import file')
+    return
+  endif
+  -- set the Data source
+  !this.inputFile = object FILE(!file)
+  if(!this.inputFile.exists() eq  FALSE ) then
+    !!alert.error(!file + ' does not exist. Please verify that the correct filename was given')
+    return
+  endif
+
+  if(!this.inputFile.type() eq  'DIRECTORY') then
+    !!alert.error(!file + ' is a directory. Please verify that the correct filename was given')
+    return
+  endif
+
+  if(!this.rawData.setdataSource(!this.inputFile).empty()) then
+    !!alert.error(!file + ' does not exist. Please verify that the correct filename was given')
+    return
+  endif
+  if(not defined(!this.dataHandler[1])) then
+    !!alert.error('System error: Data loader object not specified')
+    return
+  endif
+
+  -- load the raw data from the data source
+  !this.rawData.loadDataSource()
+  handle any
+      return
+  endhandle
+  -- set table data in the data loader object
+  !headingMessage = !this.dataHandler[1].validateSpreadSheetHeadings(!this.rawData.getHeadings())
+  if(!headingMessage.trim().empty().not()) then
+    !this.message.val = !headingMessage
+    !!alert.error(!headingMessage)
+    return
+  endif
+  !this.dataHandler[1].analyseRows(!this.rawData.getRows())
+
+  -- Put data in the grid
+  !this.loadGrid()
+
+  !this.butCreateAll.active = true
+  !this.butCreateNew.active = true
+
+endmethod
+-- End of method definition
+
+
+------------------------------------------------------------------------
+--
+-- Method:   loadGrid
+--
+-- Description: Put the imported data into the data grid
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .loadGrid()
+
+  -- get table rows from the data handler
+  !displayTable = !this.dataHandler[1].getRows()
+
+  -- define data source and bind to the grid
+  !gridName = 'Data'
+  using namespace  'Aveva.Pdms.Presentation'
+  !nds = object NETDATASOURCE(!gridName, !this.dataHandler[1].getHeadings(), !displayTable)
+  !this.dataGrid.bindToDataSource(!nds)
+
+  -- set cell images resulting from analysis of rows
+  !rowStatus = !this.dataHandler[1].getRowState()
+  if( !rowStatus.size() eq !displayTable.size() ) then
+    !this.setCellImages(!rowStatus)
+  endif
+
+endmethod
+-- End of method definition
+
+
+------------------------------------------------------------------------
+--
+-- Method:   processData
+--
+-- Description: Use the Data handler object to process the imported data
+--              and display the results on the grid
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--  1   R      STRING      'SELECTION' Process selected rows
+--                         'ALL' Process all rows, except those marked with an error
+--                         'NEW' Process only new elements - ignore existing elements
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .processData(!mode is STRING)
+
+  -- get rows from the data handler
+  !displayTable = !this.dataHandler[1].getRows()
+  !rowStatus    = !this.dataHandler[1].getRowState()
+
+  if !mode.eq('SELECTION') then
+    -- process only selected rows (in reverse order get the hierarchy correct)
+    !array = !this.dataGrid.getSelectedRowTags()
+    !array.invert()
+    do !i values !array
+      if (!rowStatus[!i.real()] inset ('VALID', 'EXISTS')) then
+        !this.dataHandler[1].processData(!i.real())
+      endif
+    enddo
+
+  elseif !mode.eq('ALL') then
+    -- process all rows - new and update
+    !this.dataHandler[1].processData(true, true)
+
+  elseif !mode.eq('NEW') then
+    -- process only new rows
+    !this.dataHandler[1].processData(true, false)
+
+  endif
+
+  -- set the status icons
+  !rowStatus = !this.dataHandler[1].getRowState()
+  if( !rowStatus.size() eq !displayTable.size() ) then
+    !this.setCellImages(!rowStatus)
+  endif
+
+  -- update message display
+  !this.displayMessage()
+
+  -- set the form for processing complete
+  !this.butCreateAll.active = false
+  !this.butCreateNew.active = false
+  !this.operation.val = 'Operation: Result of processing.'
+
+  -- Evaluate import callback
+  if (!this.importCallback.set() and not !this.importCallback.empty()) then
+    $!<this.importCallback>
+  endif
+
+endmethod
+-- End of method definition
+
+
+------------------------------------------------------------------------
+--
+-- Method:   fileNameCheck
+--
+-- Description: Check that the specified filename is valid
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .filenameCheck()
+
+  !fileObj = object FILE(!this.filename.val)
+  !fileTest = !fileObj.exists()
+
+  -- Check to see if file exists and is in fact .CSV or .XLS file
+  if !fileTest then
+    !fileExtension = !fileObj.name().split('.')[!fileObj.name().split('.').size()]
+    if !fileExtension.upcase().neq('CSV') and !fileExtension.upcase().neq('XLS') then
+      !!alert.error('File must be a .CSV or .XLS file.')
+    else
+      -- load data from the file
+      !this.inputFile = !fileObj
+      !this.loadData()
+    endif
+  endif
+
+endmethod
+-- End of method definition
+
+
+------------------------------------------------------------------------
+--
+-- Method:   browse
+--
+-- Description: Display file browser to open a file
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .browse()
+  -- Use new std browser
+  Import 'pmlFileBrowser'
+  handle (1000,0)
+    -- Check for file browser already loaded
+  endhandle
+  using namespace 'Aveva.Pdms.Presentation'
+  !fileBrowser = object PMLFILEBROWSER('OPEN')
+  !fileBrowser.show(!this.homeDirectory, '',  !this.formTitle , false, 'CSV files (*.csv)|*.csv|Microsoft Excel files (*.xls)|*.xls', 1)
+  !filename = !fileBrowser.file()
+  !this.filename.val = !filename
+
+  -- Abandon if form browser cancelled
+  if( !filename.empty()) then
+    return
+  else
+    -- Load the data into the grid
+    !this.loadData()
+    !this.show()
+
+    -- Remember the file's directory
+    !file = object FILE(!filename)
+    !this.homeDirectory = !file.pathName()
+
+  endif
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:   setCellImages
+--
+-- Description: Set cell image in column 1 to indicate the state of data
+--              in that row
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--  1   R      ARRAY       Status array from data handler
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setCellImages(!rowStatus is ARRAY)
+
+  -- State lookup table
+-- Before data processed:
+--     VALID     New element - no errors found in input data
+--     EXISTS    Existing element - no errors found in input data
+--     ERROR     Error found in input data
+-- After data processed:
+--     SUCCESS   Row processed successfully
+--     FAIL      Error occurred during processing
+  !stateList[1] = 'VALID'
+  !stateList[2] = 'EXISTS'
+  !stateList[3] = 'ERROR'
+  !stateList[4] = 'SUCCESS'
+  !stateList[5] = 'FAIL'
+  -- icon lookup table
+  !icon[1]      = !!pml.getPathname('create12.png')
+  !icon[2]      = !!pml.getPathname('elementmodify12.png')
+  !icon[3]      = !!pml.getPathname('createproblem12.png')
+  !icon[4]      = !!pml.getPathname('valid12.png')
+  !icon[5]      = !!pml.getPathname('failed12.png')
+
+  -- Get mapping from original row order to current row order
+  -- Could have changed if rows have been sorted
+  !rowMapping = ARRAY()
+  do !rowIndex from 1 to !this.dataGrid.getNumberRows()
+    !tag = !this.dataGrid.getRowTag(!rowIndex)
+    !rowMapping[!tag.real()] = !rowIndex
+  enddo
+
+  -- set cell image
+  do !index indices !rowStatus
+    !state = !rowStatus[!index].trim().upcase()
+    skip if( !state.empty() )
+    !iconIndex = !stateList.findfirst(!state)
+    -- set cell image, allowing for mapping from original table row to
+    -- current row, because user may have sorted the columns
+    !this.dataGrid.setCellImage(!rowMapping[!index],1,!icon[!iconIndex])
+  enddo
+
+endmethod
+-- End of method definition
+
+
+------------------------------------------------------------------------
+--
+-- Method:      undoCallback
+--
+-- Description: Undo callback
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .undoCallback()
+
+  -- Reload the file and analyse against current DB in the event of an undo
+  if(!this.shown()) then
+    !this.reload()
+  endif
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:   close
+--
+-- Description: Tell data handler to tidy up, tidy local data and close form
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .close()
+
+  -- Tell data handler to close
+  if(!this.debug) then
+    !this.dataHandler[1].close()
+  else
+    !this.dataHandler[1].close()
+    handle any
+    endhandle
+  endif
+  -- reset local members
+  !this.initialise()
+  !this.importCallback = STRING()
+  !this.dataHandler = ARRAY()
+
+  -- hide the form
+  !this.hide()
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:   setImportCallback
+--
+-- Description: Set the import callback
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--  1   R      STRING      Callback
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setImportCallback(!callback is STRING)
+
+  !this.importCallback = !callback.trim()
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:   removeImportCallback
+--
+-- Description: Remove the import callback
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--  1   R      STRING      Callback
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .removeImportCallback(!callback is STRING)
+
+  if (!this.importCallback eq !callback.trim()) then
+    !this.importCallback = STRING()
+  endif
+
+endmethod
+-- End of method definition

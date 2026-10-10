@@ -1,0 +1,279 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+------------------------------------------------------------------------
+--
+-- File:            MdsComClaimDac.pmlfnc
+--   Type:          Function Definition
+--   Group:         General Application
+--     Keyword:     GEN
+--   Module:        common
+--   Replaces:
+--
+-- Author:          M.A.Ward
+-- Created:         Nov 2001
+--
+--
+-- Description:
+-- Checks if an item can be claimed and modified is some way
+--
+------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--   [1] [R]    [STRING]    [dbRef to check]
+--   [2] [R]    [STRING]    [Dac Option to test]
+--   [3] [R]    [STRING]    [Attribute to check for access]
+-- Return:
+--   [Data Type] [Description]
+--   [BOOLEAN]   [Can the element be claimed]
+--
+------------------------------------------------------------------------
+
+-- Define function
+define function !!mdsComClaimDac(!dbref is DBREF, !dacOption is STRING , !dacType is STRING) is BOOLEAN
+
+-- Turn on DAC control variable
+
+  !!mdsDacControl(true)
+    handle any
+    endhandle
+
+-- ***************
+-- is it writeable
+-- ***************
+
+  if(!dbref.dbwrite.not()) then
+    !!error.text = 'PDMS Object is not in a write DB'
+    !!mdsDacControl(false)
+      handle any
+      endhandle
+    return FALSE
+  endif
+
+-- ************
+-- is it locked
+-- ************
+
+
+  if(!dbref.lock) then
+    !!error.text = 'PDMS Object is Locked'
+    !!mdsDacControl(false)
+      handle any
+      endhandle
+    return FALSE
+  endif
+
+-- ***************************************
+-- Checking for multiwrite databases types
+-- ***************************************
+
+  if(!dbref.dbAccess.eq('MULTIWRITE')) then
+
+-- Is it already claimed by the user
+
+    if(!dbref.lclmh) then
+
+-- Because an MDS element may have access to certain attributes it may be extract claimed
+-- but have no write access to NON MDS attributes therefore if the element is an atta
+-- check the spref points to a MDS spec and if so jump to the next test
+--<KP> 24/10/08 CTSUPP added
+      if !dbref.type.eq('ATTA').or(!dbref.type.eq('CTSUPP')) then
+        if (matchwild (!dbref.spref.name,'/MDS/*')) or (matchwild (!dbref.spref.name,'/MDF/*')) then
+          golabel /ContinueCheck
+        endif
+      endif
+
+      if !dbref.type.eq('STRU') then
+        if  $!!mdsidsatt of zone of $!dbref eq ('$!!mdsidsval') then
+          golabel /ContinueCheck
+        else
+          return TRUE
+        endif
+      else
+         return TRUE
+      endif
+
+    elseif (!dbref.exclto) then
+
+-- Because an MDS element may have access to certain attributes it may be extract claimed
+-- but have no write accees to NON MDS attributes therefore if the element is an atta
+-- check the spref points at a MDS spec and if so jump to the next test
+
+      if !dbref.type.eq('ATTA').or(!dbref.type.eq('CTSUPP')) then
+        if (matchwild (!dbref.spref.name,'/MDS/*')) or (matchwild (!dbref.spref.name,'/MDF/*')) then
+          golabel /ContinueCheck
+        endif
+      endif
+
+      if !dbref.type.eq('STRU')  then
+        if  $!!mdsidsatt of zone eq ('SUPP') then
+          golabel /ContinueCheck
+        else
+          return TRUE
+        endif
+
+      else
+         return TRUE
+      endif
+
+    else
+
+label /ContinueCheck
+
+-- check to see if dac query form is loaded and get the status of the DAC on or OFF
+
+      !checkDacIsOn = !!qryUserAcr.dacIsOn
+        handle ANY
+          pml load form !!qryUserAcr
+          !checkDacIsOn = !!qryUserAcr.dacIsOn
+        endhandle
+
+      if(!checkDacIsOn) then
+        !dacBoolean = $!dacOption $!dacType of $!dbref
+        if(!dacBoolean.not()) then
+          if(!dacOption eq 'DACCRE') then
+            !dacError  = DACERR $!dacType of $!dbref
+          elseif(!dacOption eq 'DACCLA') then
+            !dacError  = DACERR CLAIM of $!dbref
+          elseif(!dacOption eq 'DACDEL') then
+            !dacError  = DACERR delete of $!dbref
+          elseif(!dacOption eq 'DACISS') then
+            !dacError  = DACERR ISSUE of $!dbref
+          elseif(!dacOption eq 'DACDRO') then
+            !dacError  = DACERR DROP of $!dbref
+          elseif(!dacOption.match('DACMOD').eq(1)) then
+            !dacError  = DACERR $!dacType of $!dbref
+          endif
+          !!error.text = !dbref.fullname & ' can not be worked on because: ' & !dacError
+          !!mdsDacControl(false)
+            handle any
+            endhandle
+            return FALSE
+        else
+
+-- is it ok to claim the hierarchy
+
+          EXTRACT CLAIM LATEST
+
+          if(!dbref.list.size() eq 0  and !dbref.okcla ) then
+            return TRUE
+          elseif(!dbref.list.size() gt 0  and !dbref.okclh) then
+            return TRUE
+          else
+-- is it claimed out or extract claimed out to another user
+            if(!dbref.primty) then
+              !extract = !dbref.extrc
+            else
+              !extract = !dbref.owner.extrc
+            endif
+            if(!extract.neq('')) then
+              !dbCheck = '/*' & !extract
+                if(!dbCheck.dbref().isWork.not()) then
+                  if(!dbref.dbName.eq(!extract)) then
+                    !pdmsUser = !dbref.userc
+                  else
+                    !pdmsUser = !extract
+                  endif
+                else
+-- need to fix this
+                  !pdmsUser = ''
+                endif
+            else
+-- create a meaningful error message
+              if(!extract.eq('')) then
+                var !collPrim COLLECT ALL WITH (PRIMTY) for $!dbref
+                do !i values !collPrim
+                  !extract = !i.dbref().extrc
+                  break if (!extract.neq(''))
+                enddo
+              endif
+              !user    = owner of owner of /*$!extract
+              !pdmsUser = !user.namn.string()
+            endif
+            !realName = STRING()
+            !description = DESC OF USER /$!pdmsUser
+              handle ANY
+-- in case the named user is not just a user (a design item)
+                !realName = !pdmsUser
+              elsehandle NONE
+                !realName = !description.after('Id: ')
+-- if not in the format we are expecting, use the description in full
+                if(!realName.eq('')) then
+                  !realName = !description
+                endif
+              endhandle
+-- if the information is still not set, use the pdmsuser
+            if(!realName.eq('')) then
+              !clmt2 = !pdmsUser
+            else
+              !clmt2 = !realName
+            endif
+-- Store user as global variable. Do this because to change the
+-- argument list is too big a change for all the other calls to the function
+            !!pdmsUser   = !clmt2
+            !userc = userc of $!dbref
+            var !user delete
+            var !user user
+            if !userc.neq(!user) then
+              !!error.text = !dbref.name + | is already claimed out to | + !clmt2
+              !!mdsDacControl(false)
+                handle any
+                endhandle
+              return FALSE
+            else
+              !!mdsDacControl(false)
+                handle any
+                endhandle
+            endif
+          endif
+        endif
+      endif
+      return TRUE
+    endif
+  endif
+
+-- ***********************************
+-- Checking for update databases types
+-- ***********************************
+
+  if !dbref.dbAccess.eq('UPDATE') then
+
+-- check to see if dac query form is loaded and get the status of the DAC on or OFF
+    !checkDacIsOn = !!qryUserAcr.dacIsOn
+      handle ANY
+        pml load form !!qryUserAcr
+        !checkDacIsOn = !!qryUserAcr.dacIsOn
+      endhandle
+
+    if(!checkDacIsOn) then
+      !multiWriteList = 'DACCLA,DACISS,DACDRO'
+      if(!multiWriteList.match(!dacOption.upcase()).neq(0)) then
+        return TRUE
+      endif
+      !dacBoolean = $!dacOption $!dacType of $!dbref
+      if(!dacBoolean.not()) then
+        if(!dacOption eq 'DACCRE') then
+          !dacError  = DACERR $!dacType of $!dbref
+        elseif(!dacOption eq 'DACDEL') then
+          !dacError  = DACERR delete of $!dbref
+        elseif(!dacOption eq 'DACMOD') then
+          !dacError  = DACERR $!dacType of $!dbref
+        endif
+        !!error.text = !dbref.fullname & ' can not be worked on because: ' & !dacError
+        !!mdsDacControl(false)
+          handle any
+          endhandle
+        return FALSE
+      else
+        return TRUE
+      endif
+    else
+      return TRUE
+    endif
+  endif
+
+endfunction
+-- End of function definition for !!mdsComClaimDac

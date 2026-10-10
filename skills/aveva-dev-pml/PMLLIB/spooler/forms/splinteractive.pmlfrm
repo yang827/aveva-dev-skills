@@ -1,0 +1,496 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            splinteractive.pmlfrm
+--   Type:          Form Definition
+--   Group:         General Application
+--     Keyword:     GEN
+--   Module:        spooler
+--   Replaces:
+--
+-- Author:          C.Brown
+-- Created:         Thu Jul 24 13:39:56 BST 1997
+--
+--
+-- Description:
+-- This form operates only as a child form of !!splUpdate, it controls
+-- user interaction during all interactive update operations
+--
+-- *** OLD STYLE PML ***
+-- *** COMMAND LINE SYNTAX ***
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  assign()                         -                   Assign selected data for element
+--  generate()                       -                   Generate new data for element
+--  hardCancel()                     -                   Proper cancel used from window menu
+--  init()                           -                   Form initialisation on show action
+--  listData()                       -                   Show available data for selected element
+--  listElements()                   -                   Display the elements to update
+--  processData()                    -                   update the current numbering object
+--  selectData(GADGET,STRING)        -                   selects the correct entries for the data list
+--  softCancel()                     BOOLEAN             Cancel method with confirm
+--  splInteractive()                 -                   Constructor method for form object
+--  start()                          -                   Starts the interactive numbering process
+--  undo()                           -                   Undo operation on interactive update
+--
+------------------------------------------------------------------------
+
+-- Define form
+setup form !!splInteractive
+
+  !!splInteractive.iconTitle     = 'Update'
+  !!splInteractive.callback      = '!!splInteractive.init()'
+  !!splInteractive.formRevision  = ' $Revision: 1.20 $ '
+
+  -- Define members
+
+  -- pointer to the main form !!splUpdate
+  member .main is FORM
+
+  -- index of numbering object that is currently being updated
+  member .objectIndex is REAL
+
+  -- name of numbering object that is currently being updated
+  member .objectName is STRING
+
+  -- Define gadgets
+
+  -- current SPLDRG paragraph
+  paragraph .splDrgName at xmax ymin width 60 height 1
+
+  -- element list frame
+  frame .elementFrame '' at xmin ymax
+
+    -- list of elements to assign data to
+    list .newElements '------------------------------' at xmin+1 ymax width 30 height 15
+
+  exit
+
+  -- data list frame
+  frame .dataFrame '' at xmax+0.5 ymin
+    -- list of data to assign to elements
+    list .newData     'Available attribute data' at xmin+1 ymax multiple width 34 height 14
+
+    -- button to assign selected data to current element
+    button .assign 'Use selected data' at xmin.newData ymax
+    button .generate 'Generate new data' at xmax+1 ymin
+
+  exit
+
+  -- soft cancel - not a cancelCall button
+  button .cancel 'Cancel' at xmax form-size ymax+0.5
+
+exit
+-- End of form definition for !!splInteractive
+
+
+------------------------------------------------------------------------
+--
+-- Method:      !splInteractive()
+--
+-- Description: Constructor method for form object
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .splInteractive()
+
+  -- link the form to its implied owner, it should not be possible
+  -- for this form to be displayed without its owner being visible,
+  -- as this form is shown from the owning update form.
+  !this.main = !!splUpdate
+
+  -- set callbacks
+  !this.cancel.callback      = '!!splInteractive.softCancel()'
+  !this.cancelCall           = '!!splInteractive.hardCancel()'
+  !this.newElements.callback = '!!splInteractive.listData()'
+  !this.newData.callback     = '!!splInteractive.selectData('
+  !this.assign.callback      = '!!splInteractive.assign()'
+  !this.generate.callback    = '!!splInteractive.generate()'
+
+endmethod
+-- End of method definition for .splInteractive()
+
+------------------------------------------------------------------------
+--
+-- Method:      !init()
+--
+-- Description: Form initialisation on show action
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .init()
+
+  -- set splDrg name on form
+  !this.splDrgName.val = !this.main.ce.fullName
+
+  -- initialise the object index and invoke the start action
+  !this.objectIndex = 0
+  !this.start()
+
+endmethod
+-- End of method definition for .init()
+
+------------------------------------------------------------------------
+--
+-- Method:      !start()
+--
+-- Description: Starts the interactive numbering process
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .start()
+
+  -- increment the object index so that the next numbering object is
+  -- used for the update process
+  !this.objectIndex = !this.objectIndex + 1
+
+  -- check if the last numbering object has been used, if it has, then
+  -- clear the list, reset the display and hide the form
+  if (!this.objectIndex gt !this.main.intUpdates.size()) then
+    !this.main.intUpdates.clear()
+    !this.main.attribute(!this.objectName).unhighlight()
+    !this.main.attribute(!this.objectName).alignTidy()
+    !this.main.showProgress('finishing')
+
+    -- If already up to date, we may reach here before the form is shown
+    if (!this.shown()) then
+      -- 'Update complete'
+      !!messageFile.message(154, 35)
+      !this.hide()
+      -- Update main bar menu after hiding form
+      !!ce = !this.main.ce
+      !!splMainBarTrack(!!spooler, 'ISODCE')
+    else
+      -- 'Update complete - no manual selection required'
+      !!messageFile.message(154, 36)
+      return error 1 noalert
+    endif
+
+  else
+
+    -- store the name of the current numbering object
+    !this.objectName = !this.main.intUpdates[!this.objectIndex]
+
+    -- set the form text strings (form title, list titles)
+    !this.formTitle = 'Select Data for ' & !this.main.attribute(!this.objectName).formTitleText
+    !this.newElements.tag = !this.main.attribute(!this.objectName).elementListText
+
+    -- update the progress prompt
+    !this.main.showProgress(!this.main.attribute(!this.objectName).updatingText())
+
+    -- objects for which interactive update is not available
+    -- (these must be done in order, i.e. partN after spoolN)
+    if (!this.objectName eq 'partN' or !this.objectName eq 'bendN') then
+
+      -- recursion from here instead of via !this.processData()
+      !this.main.attribute(!this.objectName).update()
+      !this.start()
+
+    else
+
+      -- start the update for the current numbering object
+      !this.main.attribute(!this.objectName).start()
+      !this.processData()
+
+    endif
+
+  endif
+
+endmethod
+-- End of method definition for .start()
+
+------------------------------------------------------------------------
+--
+-- Method:      !processData()
+--
+-- Description: update the current numbering object
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .processData()
+
+  -- perform all assignments for this numbering object
+  -- that do not require user selection
+  if (!this.main.attribute(!this.objectName).autoAssign()) then
+
+    -- if autoAssign returns true, all assignments have been made
+    -- so move on to next numbering object
+    !this.main.attribute(!this.objectName).unhighlight()
+    !this.start()
+
+  else
+
+    -- elements remain for update requiring user selection
+    !this.listElements()
+    !this.listData()
+
+    -- suppress main bar delete actions
+    !!splMainBarCntrl('nodelete')
+
+  endif
+
+endmethod
+-- End of method definition for .processData()
+
+------------------------------------------------------------------------
+--
+-- Method:      !listElements()
+--
+-- Description: Display the elements to update
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .listElements()
+
+  -- populate new elements list from current action object
+  !tempArray = !this.main.attribute(!this.objectName).listElements()
+  !this.newElements.dText = !tempArray[1]
+  !this.newElements.rText = !tempArray[2]
+
+endmethod
+-- End of method definition for .listElements()
+
+------------------------------------------------------------------------
+--
+-- Method:      !listData()
+--
+-- Description: Show available data for selected element
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .listData()
+
+  -- populate !this.newData gadget with available data for the selected element
+  !tempArray = !this.main.attribute(!this.objectName).listData(!this.newElements.selection().dbRef())
+  !this.newData.dText = !tempArray[1]
+  !this.newData.rText = !tempArray[2]
+
+  -- highlight update current element
+  !this.main.attribute(!this.objectName).highlight(!this.newElements.selection().dbRef())
+
+  -- Make sure the new Data gadget is active again
+  !this.newData.clearSelection()
+  !this.newData.active  = TRUE
+
+endmethod
+-- End of method definition for .listData()
+
+------------------------------------------------------------------------
+--
+-- Method:      !assign()
+--
+-- Description: Assign selected data for element
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .assign()
+
+  -- check for no selected value
+  if (!this.newData.val.unset()) then
+    -- 'No data selected'
+    !!messageFile.error(154, 37)
+  endif
+
+  -- assign the selected data to the current element
+  !this.main.attribute(!this.objectName).assignData(!this.newElements.selection().dbRef(), !this.newData.selection()[1])
+
+  -- continue the process
+  !this.processData()
+
+endmethod
+-- End of method definition for .assign()
+
+------------------------------------------------------------------------
+--
+-- Method:      !generate()
+--
+-- Description: Generate new data for element
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .generate()
+
+  -- assign new data to the current element
+  !this.main.attribute(!this.objectName).assignData(!this.newElements.selection().dbRef(), 'NEW')
+
+  -- continue the process
+  !this.processData()
+
+  -- Make sure the new Data gadget is active again
+  !this.newData.active  = TRUE
+
+endmethod
+-- End of method definition for .generate()
+
+------------------------------------------------------------------------
+--
+-- Method:      !selectData()
+--
+-- Description: selects the correct entries for the data list
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [GADGET] [Gadget that user has selected]
+--   [2] [R] [STRING] [User action]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .selectData(!dummyGadget is GADGET, !action is STRING)
+
+  -- if the last action was an unselect operation then reselect the field
+  if (!action eq 'UNSELECT') then
+    -- Gadget should not be active now. Made inactive when selected
+    -- !this.newData.val = !this.newData.pickedField
+
+  else
+
+    -- the last action was a select operation, the new selection needs
+    -- to be defined, this is done by finding an rtext value, and selecting
+    -- all fields with the same rtext.
+    !val = !this.newData.pickedField
+    !this.newData.clearSelection()
+
+    if (!val gt 0) then
+    !rTextValue = !this.newData.rText[!val]
+
+    if (!rTextValue eq 'NOACTION') then
+      if (!val ne 1) then
+        !rTextValue = !this.newData.rText[!val - 1]
+
+      elseif (!val lt !this.newData.dText.size()) then
+        !rTextValue = !this.newData.rText[!val + 1]
+
+      endif
+    endif
+
+    !inGroup = FALSE
+    do !i indices !this.newData.rText
+      if (!this.newData.rText[!i] eq !rTextValue) then
+        !inGroup = true
+        !this.newData.val = !i
+      else
+        break if (!inGroup)
+      endif
+    enddo
+    -- Inactivate the new Data gadget
+    !this.newData.active  = FALSE
+    endif
+
+  endif
+
+endmethod
+-- End of method definition for .selectData(GADGET, STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      !undo()
+--
+-- Description: Undo operation on interactive update
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .undo()
+
+  -- call the undo method for the current numbering object
+  !this.main.attribute(!this.objectName).undo()
+
+  -- reinitialise the display
+  !this.listElements()
+  !this.listData()
+
+endmethod
+-- End of method definition for .undo()
+
+------------------------------------------------------------------------
+--
+-- Method:      !softCancel()
+--
+-- Description: Cancel method with confirm
+--
+-- Method Type: Function
+-- Return type:
+--   [BOOLEAN]  [True if ok to cancel]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .softCancel() is BOOLEAN
+
+  -- alert the user to the consequences of cancelling in mid update
+  -- 'Cancelling the Update may result in loss of numbering data.
+  --  Are you sure you want to cancel the update operation?'
+  !answer = !!alert.confirm(!!messageFile.messageString(154, 42))
+
+  if (!answer eq 'YES') then
+    !this.hardCancel()
+  endif
+
+  -- Return value if called from parent form
+  return (!answer eq 'YES')
+
+endmethod
+-- End of method definition for .softCancel() BOOLEAN
+
+------------------------------------------------------------------------
+--
+-- Method:      !hardCancel()
+--
+-- Description: Proper cancel used from window menu
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .hardCancel()
+
+  -- Reset display and tidy up
+  !this.main.attribute(!this.objectName).unhighlight()
+  !this.main.attribute(!this.objectName).alignTidy()
+  !this.main.showProgress('finishing')
+  !this.hide()
+
+  -- Update main bar menu after hiding form
+  !!ce = !this.main.ce
+  !!splMainBarTrack(!!spooler, 'ISODCE')
+
+  -- Make sure the new Data gadget is active again
+  !this.newData.clearSelection()
+  !this.newData.active  = TRUE
+
+endmethod
+-- End of method definition for .hardCancel()

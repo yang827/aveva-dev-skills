@@ -1,0 +1,285 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+----------------------------------------------------------------------
+-- File:    mdsInterfaceHangIdSteelType18.pmlfnc
+--   Type:    Function Definition
+--   Group:   Multi Discipline Supports Application
+--     Keyword:   mds
+--   Module:    design
+--   Replaces:
+--
+-- Author:    R.martin
+-- Created:   26/03/2010
+--
+--
+-- Description:
+-- setup the fittings for the hanger steel or reselect hanger steel if necessary
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]             [Description]
+--     1     R         BOOL                  true if the beam reference has been supplied
+--     2     R         BOOL                  true if the fitting is being modified
+--     3     R         DBREF                 dbref of the beam being connected to
+--     3     R         DBREF                 dbref of the atta being connected to
+--     3     R         REAL                  number of the hanger being processed (will be 1 for all but type 31,32 and 19)
+--     3     R         STRING                the prompt string to be used if repicking of elements is required
+--     3     R         DBREF                 dbref of the fitting being connected to
+--     3     R         MDSINTERFACEHANG      the MDSINTERFACEHANG object that called this function
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+define function !!mdsInterFaceHangIdSteelType18(!beamGiven is BOOLEAN, !modifyFitting is BOOLEAN, !beamRef is DBREF, !attaRef is DBREF, !hangerNo is REAL, !steelPrompt is STRING, !fittRef is DBREF, !hangObject is MDSINTERFACEHANG)is STRING
+
+  !attaName = !attaRef.name
+
+  if(!modifyFitting) then
+    -- Fitting exists
+    -- Go to owning SCTN
+    !!ce = !fittRef.owner
+  elseif(!beamGiven) then
+    !!ce = !beamRef
+    handle ANY
+      -- Navigate to the panel from the atta as beamRef is unset
+      -- for a civils panel
+      !x = !!ce.name
+      !z = !x & '/CMPF'
+      !fittRef = !z.dbref()
+      !!ce = !fittRef.owner
+    endhandle
+  else
+    -- We need to create a new fitting
+    -- If user requires to id steel then identify it and put pin 8 at the tos
+    prompt off
+    if(!steelPrompt.eq('')) then
+      -- Default prompt for one beam hangers
+      prompt load escape 'Identify steelwork to connect hanger to'
+    else
+      -- Specific prompt (e.g. for double channel hangers)
+      prompt load escape '$!steelPrompt'
+    endif
+    ID BOX SCTN FLOOR WALL GWALL STWALL SCREED CFLOOR CSCREED CWALL PANE @
+    handle (61,528)
+      -- User exited by hitting the escape key
+      prompt on
+      !!mdspoppin(1)
+      !!mdspoppin(3)
+      !!mdspoppin(7)
+      !!mdspoppin(8)
+      !!mdspoppin(9)
+      return error 99 noalert
+    endhandle
+  endif
+
+  !steelref = !!ce
+  if (!!ce.type eq 'CMPF') then
+    own
+    !steelref = !!ce
+  endif
+
+  --this is civils so beam purpose is always pane
+  !beamPurpose = 'PANE'
+
+  -- check also that the beam can be a part of a double channel beam
+  -- e.g. BSC-BSC
+  !doubleBeamPurpose = !beamPurpose + '-' + !beamPurpose
+
+  if(!beamPurpose inset$!!mdsInterfaceAllHangertypes.groupBeamTypes[18] or $
+    !doubleBeamPurpose inset$!!mdsInterfaceAllHangertypes.groupBeamTypes[18]) then
+    -- beam type is suitable
+  else
+    !!alert.message('Beam of type $!beamPurpose is not suitable for this type of hanger')
+    --return to re-identify
+    return error 51
+  endif
+  --> add this in grinnel check
+
+  --  Check if we can write to the section and add a fitting
+  !readonly = FALSE
+  !write = STRING()
+  !lock  = STRING()
+  if (!!kcheckwrite(!!ce, !lock , !write).not()) then
+    --REFACTOR REMOVED THE RETURN MECHANISM HERE BECAUSE WE WANT TO CONTINUE THROUGH AND CREATE A HANGER EVEN THOUGH WE WON'T HAVE A FITTING (DUN1218) - START
+$(
+    if (!write.eq('R')) then
+      -- READ ONLY Access to the PIPE
+      -- The Identified element is in a read only database. return error 1
+      !!mdspoppin(1)
+      !!mdspoppin(3)
+      !!mdspoppin(7)
+      !!mdspoppin(8)
+      !!mdspoppin(9)
+      return error 1
+    elseif (!lock.eq('Locked')) then
+      -- WRITE Access to the PIPE, BUT it is LOCKED
+      -- The Identified element is locked. return error 2
+      !!mdspoppin(1)
+      !!mdspoppin(3)
+      !!mdspoppin(7)
+      !!mdspoppin(8)
+      !!mdspoppin(9)
+      return error 2
+    endif
+$)
+    !readonly = TRUE
+    --REFACTOR REMOVED THE RETURN MECHANISM HERE BECAUSE WE WANT TO CONTINUE THROUGH AND CREATE A HANGER EVEN THOUGH WE WON'T HAVE A FITTING (DUN1218) - END
+  endif
+
+  -- Checking direction of beam.
+  -- if beam is parallel to the pipe the hanger's atta will be connected to the prev element
+  -- if the beam is perpendicular or angled to the pipe direction, the hanger's atta will be located
+  -- in the intersection of the beam and the pipe.
+  -- Saves the pins
+  !!mdspushpin(3)
+  !!mdspushpin(7)
+  !!mdspushpin(8)
+  !!mdspushpin(9)
+  !!ce = !attaName.dbref()
+
+  pin 8 copy pl of $!attaName
+  !parallel = FALSE
+
+  !!ce = !attaName.dbref()
+  if(!hangerNo eq 1) then
+    -- The atta is moved only for the first hanger
+    -- The other hangers direction and validity is checked using this atta position
+    -- moves the atta to be directly below pin8
+    -- pin7 is perpendicular to the beam axis
+    pin9 copy pl
+  else
+    -- copy pl of atta
+    pin9 copy pl
+    var !href href of $!attaName/H$!hangerNo
+
+    if(!href.set() and (not !href.dbref().badref()) and !href.dbref().type inset('VSPR','HELE')  ) then
+      !oHang = object MDSINTERFACEHANGMEM(!href.dbref())
+      !ppointNum = !oHang.getCrfaPPointNum()
+
+      pin9 at p$!ppointNum of $!href
+    elseif(!href.set() and (not !href.dbref().badref()) and !href.dbref().type.eq('PCLA')) then
+      !oHang = object MDSINTERFACEHANGMEM(!href.dbref())
+      !ppointNum = !oHang.getCrfaPPointNum()
+      pin9 at p$!ppointNum of $!href
+    else
+      pin9 at ht of $!attaName/H1
+    endif
+    -- move pin9 to be inline with the beam connection point
+    pin9 plan pin7 throu pin8
+    !!ce = !attaName.dbref()
+
+  endif
+
+  -- Reorder atta
+  !ceatta = !!ce
+  --!stypToCheck = !hangObject.rest.styp
+
+  !!mdsreoatta(!!ce.own)
+  !!ce = !ceatta
+
+  -- Check that the atta is properly positioned in the pipe path
+  -- Skip check for civil
+  --!iswithintube = TRUE
+
+  --was 14/june/02   pin 8 copy pl
+  pin 8 copy pin9
+  pin 8 dir d wrt /*
+
+  -- Move pin8 to be at bos of beam
+  pin8 clea0 behi $!steelref
+
+  -- set pin3 to the p3 of the atta
+  pin3 copy p3 of $!attaName
+  -- Atta position
+
+  -- If group is 20, dynamic can be connected to walls/floor and ceilings so do not check for
+  -- element being below pipe
+  var !tp3u pin 3 pos wrt /*
+  var !tp8u pin 8 pos wrt /*
+  !p3u = !tp3u.position()
+  !p8u = !tp8u.position()
+
+  -- create the fitting
+  !!ce = !steelref
+
+  if(!modifyFitting) then
+    !!ce = !fittRef
+    !fittName = !!ce
+  else
+    --dun1218 if we are in create mode then reset the mdsHangerType18.virtualFitting member
+    !!mdsHangerType18.virtualFitting = object MDSINTERFACEVIRTUALCMPF()
+
+    --REFACTOR do not attempt to create and manipulate a fitting if we are readonly DUN1218
+    if !readonly then
+      --REFACTOR we will create a new object called a virtualfitting that will be used as a proxy for an actual fitting DUN1218 - start
+      !!mdsHangerType18.virtualFitting = object MDSINTERFACEVIRTUALCMPF(!!ce)
+      !!mdsHangerType18.virtualFitting.name = '$!attaName/CMPF'
+      !position = !!mdsHangerType18.virtualFitting.getPosition()
+      !dir1 = object DIRECTION('N wrt /*')
+      !dir2 = object DIRECTION('E wrt /*')
+      !pv1 = object POINTVECTOR(!position, !dir1)
+      !attaPosition = !attaName.dbref().position.wrt( /* )
+      !pv1 = !pv1.through(!attaPosition)
+      !pv1.direction = !dir2
+      !pv1 = !pv1.through(!attaPosition)
+      !!mdsHangerType18.virtualFitting.setPosition(!pv1.position)
+
+      !sbfiName1 = !attaName + '/SBFI/H1'
+      !sbfiName2 = !attaName + '/SBFI/H2'
+      !sbfiName3 = !attaName + '/SBFI/H3'
+      !!mdsHangerType18.virtualFitting.addSBFI(!!mdsHangerType18.virtualFitting, !sbfiName1)
+      !!mdsHangerType18.virtualFitting.addSBFI(!!mdsHangerType18.virtualFitting, !sbfiName2)
+      !!mdsHangerType18.virtualFitting.addSBFI(!!mdsHangerType18.virtualFitting, !sbfiName3)
+      !fittName = 'VIRTUALFITTING1'
+      --REFACTOR we will create a new object called a virtualcmpf that will be used as a proxy for an actual fitting DUN1218 - end
+    else
+      $!attaName/CMPF
+      handle (2,109)
+        $!steelref
+        new cmpf
+        name $!attaName/CMPF
+        MOVE N wrt /* thro $!attaName
+        MOVE E wrt /* thro $!attaName
+      elsehandle NONE
+        $!attaName/CMPF
+        delete cmpf
+        $!steelref
+        new cmpf
+        name $!attaName/CMPF
+        MOVE N wrt /* thro $!attaName
+        MOVE E wrt /* thro $!attaName
+      endhandle
+      new sbfi
+      name $!attaName/SBFI/H1
+      handle ANY
+      endhandle
+      spref /MDS/LUG-HANG
+      new sbfi
+      name $!attaName/SBFI/H2
+      handle ANY
+      endhandle
+      spref /MDS/LUG-HANG
+      new sbfi
+      name $!attaName/SBFI/H3
+      handle ANY
+      endhandle
+      spref /MDS/LUG-HANG
+      $!attaName/SBFI/H3
+      !fittName = !!ce
+    endif
+    --REFACTOR do not attempt to create and manipulate a fitting if we are readonly DUN1218
+  endif
+
+  -- Set form parallel object
+  if !parallel then
+    !hangObject.form.parallel = TRUE
+  else
+    !hangObject.form.parallel = FALSE
+  endif
+  return !fittName.string()
+
+endfunction

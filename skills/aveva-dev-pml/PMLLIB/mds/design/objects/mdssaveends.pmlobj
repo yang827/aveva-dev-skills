@@ -1,0 +1,329 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-------------------------------------------------------------------
+--
+--   File:      mdssaveends.pmlobj
+--   Type:      Object Definition
+--   Group:     Multi Discipline Supports Application
+--   Keyword:   MDS
+--   Module:    design
+--   Replaces:
+--
+-- Author:  T.Martin
+-- Created: 28/04/2005 11:12
+--
+--
+-- Description:
+-- Multi Discipline support object
+--
+-- object to save and restore end positions for a particular section
+--
+-- objectives:
+-- to ensure that a particular dimension is achieved during build with dimensions
+-- this should only be needed if we are cutting back to a plane
+-- method save the position and plane before the old item is deleted
+-- when the new section has been built,
+-- 1) reset the end cutback direction
+-- 2) measure the new direction
+-- 3) adjust the length to suit
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  drawbox(BOOLEAN)                 -
+--  getdist(REAL,REAL)               REAL
+--  getend(DBREF,REAL)               -
+--  mdssaveends(DBREF,DBREF,REAL)    -
+--  restoreplane(REAL,REAL)          -
+--  swapdimmethod()                  -
+--  swapends()                       -
+--  swapplanes()                     -
+--
+define object mdssaveends
+
+  member .datum      is DBREF
+  member .p10dir     is direction
+  member .sctn       is dbref
+  member .startplane is plane
+  member .endplane   is plane
+  member .sctnname   is STRING
+  member .end        is REAL
+  member .dimmethod  is REAL
+  member .ori        is orientation
+
+endobject
+------------------------------------------------------------------------------------
+
+
+------------------------------------------------------------------------------------
+-- constructor method to save the details of the current section, and its start and
+-- end settings. This object is created in an MDS create macro if the support has been
+-- built before and the user is building by dimensions
+define method .mdssaveends(!sctn is DBREF,!datum is DBREF,!end is REAL)
+
+   !this.datum  = !datum
+   -- may need to use orthdirs to get proper dimensions
+   !this.p10dir = !this.datum.pdir[10].wrt(/* )
+   !this.end    = !end
+   !this.sctn   = !sctn
+
+
+   -- save the name because the dbref will not be any use after the support has
+   -- been regenerated
+   !this.sctnname = !sctn.flnm
+
+   -- create a pointvector to build the position and directions to convert to a plane
+   !pv = object pointvector()
+
+
+   -- Save the section start
+   !pv.position = !sctn.poss.wrt(/* )
+   !pv.direction = !sctn.drns.wrt(/* )
+   !this.startplane = !pv.plane()
+
+   -- Save the section end
+   !pv.position = !sctn.pose.wrt(/* )
+   !pv.direction = !sctn.drne.wrt(/* )
+   !this.endplane = !pv.plane()
+
+
+   -- save the structure orientation so that if the thing has been flipped, we don't bother to extend the ends
+   !stru = !sctn.owner.owner
+   !this.ori = !stru.orientation
+
+
+endmethod
+------------------------------------------------------------------------------------
+
+
+------------------------------------------------------------------------------------
+-- method to restore the plane from the deleted item and adjust the dimensions
+-- passed parameters are:
+-- !dim is the dimension to be achieved
+-- !method is the method to to be used in getoverdim to check the current status
+
+define method .restoreplane(!dim is REAL, !method is REAL)
+  --$P end is $!this.end
+  !this.dimmethod = !method
+  --$P method is $!method
+  --$P sectionname is $!this.sctnname
+  !!ce = $!this.sctnname
+
+  !stru = !!ce.owner.owner
+  !ori = !stru.orientation
+  -- ignore the next bit if the support has been rotated
+  if !ori.eq(!this.ori) then $* the support has not been rotated
+      if !this.end.eq(0) then   $* its the start
+        --$P extend the start
+        extend start thro $!this.startplane.position
+      else
+        --$P extend the end
+        extend end thro $!this.endplane.position
+      endif
+
+  endif
+
+  -- now set the start and end planes
+  if !this.end.eq(0) then   $* its the start
+      !!ce.drns = !this.startplane.orientation.zdir()
+  else
+      !!ce.drne = !this.endplane.orientation.zdir()
+  endif
+
+
+
+  !targetdim = !dim
+
+
+  -- now work out the dimension discrepancy
+  -- loop 10 times to get the adjustment right
+  -- this is only necessary for supports where the true length of the section is not
+  -- the same as the passed dimension (eg. FT52)
+  !prev = 1000000
+  do !a from 1 to 10
+
+     !newdim = !this.getdist(!dim,!this.dimmethod)
+--     !newdim = !!mdsgetoverdim(!this.datum,!!ce,!this.dimmethod)
+     !dist = !targetdim - !newdim
+--     $P adjustment distance is $!dist
+--     $P dimension to be achieved is $!dim
+--     $P current dim is  $!newdim
+     if !dist.abs().leq(1) then
+       break
+     endif
+
+     if !a eq 5 then
+       !this.swapdimmethod()
+     endif
+     --$P method is $!method
+--     q var !a
+
+     if !this.end.eq(0) then   $* its the start
+       !!ce.drns = !this.startplane.orientation.zdir()
+        -- extend the start
+        extend start $!dist
+     else
+       !!ce.drne = !this.endplane.orientation.zdir()
+       -- extend the end
+       extend end $!dist
+     endif
+     !prev = !dist
+  enddo
+
+endmethod
+------------------------------------------------------------------------------------
+
+
+------------------------------------------------------------------------------------
+define method .swapdimmethod()
+
+   if !this.dimmethod.eq(0) then
+      !this.dimmethod = 1
+   elseif !this.dimmethod.eq(1) then
+      !this.dimmethod = 0
+   elseif !this.dimmethod.eq(2) then
+      !this.dimmethod = 3
+   elseif !this.dimmethod.eq(3) then
+      !this.dimmethod = 2
+   endif
+
+endmethod
+------------------------------------------------------------------------------------
+
+
+
+------------------------------------------------------------------------------------
+-- keys are
+-- 0 measure in the direction of p9 past the end of the passed section
+-- 1 measure in the opposite direction to p9 past the end of the passed section
+-- 2 measure in the direction of p10 to the end of the passed section
+-- 3 measure in the direction of p11 to the end of the passed section
+define method .getdist(!dim is REAL,!key is REAL)is REAL
+
+   !!ce = $!this.sctnname
+   !pv = object pointvector()
+   !pv.position = !this.datum.ppos[9].wrt(/* )
+   if !key eq 0 then
+      -- the dimension is in the direction of p9
+      !pv.direction = !this.datum.pdir[9].wrt(/* )
+   elseif !key eq 1 then
+      -- the dimension is in the opposite direction to p9
+      !pv.direction = !this.datum.pdir[9].wrt(/* ).opposite()
+   elseif !key eq 2  then
+      -- the dimension is in the direction of p10 but calculated from p9
+      !pv.direction = !this.datum.pdir[10].wrt(/* )
+     -- $P method is 2
+     -- $P direction is $!pv.direction
+   elseif !key eq 3  then
+      -- the dimension is in the direction of p11 calculated from p9
+      !pv.direction = !this.datum.pdir[10].wrt(/* ).opposite()
+   endif
+
+
+   pin 1 at $!pv.position
+   pin 1 direction $!pv.direction
+
+
+   pin 2 copy pin 1
+   pin 2 clear behind $!!ce
+   -- if pin 2 is at the wrong end of the sctn then we need to move it
+
+
+   var !a const dist pin 1 to pin 2
+   !return = !a.real().string('D0').real()
+
+   -- turn pin 1 and 2 off
+   !!mdsresetpins( 1,2 )
+
+   return !return
+
+endmethod
+------------------------------------------------------------------------------------
+
+
+------------------------------------------------------------------------------------
+define method .swapends()
+
+if !this.end.eq(0) then
+   !this.end = 1
+else
+   !this.end = 0
+endif
+
+endmethod
+------------------------------------------------------------------------------------
+
+-- the following methods are not used
+
+------------------------------------------------------------------------------------
+define method .swapplanes()
+
+ !plane1 = !this.startplane
+  !plane2 = !this.endplane
+  !this.endplane   = !plane1
+  !this.startplane = !plane2
+
+endmethod
+------------------------------------------------------------------------------------
+ $(
+
+------------------------------------------------------------------------------------
+define method .getend(!sctn is DBREF,!number is REAL)
+
+    !line = object line()
+    !line.startposition = !sctn.poss.wrt(/* )
+    !line.endposition   = !sctn.pose.wrt(/* )
+    !angle = !line.direction().angle(!this.p10dir)
+    if !number.eq(10) then
+       !angle = !line.direction().angle(!this.p10dir)
+       if !angle.lt(90).and(!angle.gt(-90)) then
+          -- the section end is the one to extend
+          !this.end = 0
+       else
+          -- the section start is the one to extend
+          !this.end = 1
+       endif
+    else $* its p11 we are looking for
+       !angle = !line.direction().angle(!this.p10dir.opposite() )
+
+
+       if !angle.lt(90).and(!angle.gt(-90)) then
+          -- the section end is the one to extend
+          !this.end = 0
+       else
+          -- the section start is the one to extend
+          !this.end = 1
+       endif
+    endif
+
+if !this.end eq 1 then
+      $P end is start
+else
+    $P end is end
+endif
+
+
+endmethod
+------------------------------------------------------------------------------------
+
+
+------------------------------------------------------------------------------------
+-- method to draw an aid box around the volume of this.sctn
+-- not used anywhere, but saved as it might be useful some other time
+define method .drawbox(!onoff is BOOLEAN)
+
+  if !onoff then
+    !vol = object volume(!this.sctn)
+    !box = !vol.box()
+    aid box number 555 xlen $!box.xlength ylen $!box.ylength zlen $!box.zlength at $!box.position ori $!box.orientation
+  else
+    aid clear box 555
+  endif
+
+endmethod
+------------------------------------------------------------------------------------
+$)

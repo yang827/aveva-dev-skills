@@ -1,0 +1,191 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            admmodadv.pmlfnc
+--   Type:          Function Definition
+--   Group:         General Application
+--     Keyword:     GEN
+--   Module:        admin
+--   Replaces:
+--
+-- Author:          E.conba
+-- Created:         Mon Nov 24 14:07:38 GMT 1997
+--
+--
+-- Description:
+-- Callback to the Apply gadget on the Module Definition
+-- Advanced settings form.
+-- Function to be replaced by method !!admModAdv.cbApply()
+--
+------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define function
+define function !!admModAdv()
+  -- Initialise variables
+  !curPos    = !!ce
+  !modRef    = !!admModDefRefGet()
+  !module    = !modRef.name.after('/').before('*')
+  !dbTypes   = !!admTypeDbGet()
+
+  -- Warn user about changing module setting
+  !answer    = !!alert.confirm(!!messageFile.messageString(141, 027,  !module))
+  if (!answer.boolean().not()) then
+    -- User said no
+    return
+  endif
+
+  -- Check for element being already claimed
+
+  if (not !!dbRefUpdate (!modRef)) then
+    !!alert.error (!!error.text)
+    return
+  endif
+
+  -- Get the current buffer information
+  !!ce       = !modRef
+
+  CMBU 1
+  handle any
+    !curBuf    = |Default|
+  elsehandle none
+    !bufs      = (!!ce.bufs * 1000)
+    !format    = object FORMAT()
+    !format.dp = 0
+    !curBuf    = !bufs.string(!format)
+  endhandle
+
+  -- Modify the buffer if required
+  !buffer    = _buffer.val
+  if (!curBuf neq !buffer) then
+
+    -- Modify the module buffer value
+    !command   = |EDIT MODULE |+ !module +| BUFFER |+ !buffer
+    $!command
+
+  endif
+
+  -- Get the CMMO elements and their DBTYPES
+  !!ce       = !modRef
+  !modes     = !!collectAllFor('CMMO','MODEDB neq |Default|',!!ce)
+  !tBlock    = object BLOCK(|!modes[!evalIndex].tyna|)
+  !modeType  = !modes.evaluate(!tBlock)
+
+  -- Modify the database modes
+  do !dbType values !dbTypes
+
+    !gadget   = |_|+ !dbType.type
+    !setting  = $!<gadget>.selection('rtext')
+    !pos      = !modeType.findFirst(!dbType.type)
+
+    if (!pos.unset() and !setting neq 'unset') then
+      -- Set a new DB mode
+      !answer   = !!alert.confirm(!!messageFile.messageString(141, 028, !dbType.type, !module))
+      if (!answer.boolean()) then
+        -- User wishes to add mode
+        !command  = |EDIT MODULE |+ !module +| MODE |+ !dbType.type +| |+ !setting
+        $!command
+        handle any
+          !!alert.error(!!error.text)
+          $!<gadget>.select('rtext','unset')
+        endhandle
+      else
+        -- User said no
+        $!<gadget>.select('rtext','unset')
+      endif
+
+    elseif (!pos.set() and !setting eq 'unset') then
+
+      -- Mode for this database type is already set
+      !!messageFile.error(141, 026,  !module,  !modeType[!pos],  !modes[!pos].modeDb)
+      handle (06, 026)
+        -- Dummy handle
+      endhandle
+      $!<gadget>.select('rtext', !modes[!pos].modeDb)
+
+    elseif (!pos.set()) then
+
+      -- Checks when user selects the default module and mode is same.
+      if (!dbType.type eq !!admModAdv.default.selection('RTEXT')) then
+           !colldbElem   = !!collectAllFor('CMMO','tyna eq |$!dbType.type|',!!ce)
+        do !dbelem values !colldbElem
+           if (!dbelem.modeDb eq 'Default') then
+               -- Reordered CMMO elements will be repositioned to appropriate locations later.
+               -- To avoid the changes happening in default modedb.
+               reord $!dbelem after last CMMO
+           endif
+        enddo
+      endif
+
+      if (!modes[!pos].modeDb neq !setting) then
+        -- Change the mode
+        !command  = |EDIT MODULE |+ !module +| MODE |+ !dbType.type +| |+ !setting
+        $!command
+        handle any
+            -- On failure to change mode: alert and reset the selector
+            !!alert.error(!!error.text)
+            $!<gadget>.select('rtext', !modes[!pos].modeDb)
+        endhandle
+      endif
+    endif
+
+  enddo
+
+  -- Modify the default database type
+  !defaultDb = _default.selection('rtext')
+  if (!defaultDb neq 'unset') then
+    if (!!admModAdv.attribute(!!admModAdv.default.selection('RTEXT')).selection('RTEXT').upcase() neq 'RW') then
+      -- Ask the question because there is an attempt to override the default RW
+      !answer = !!alert.confirm(|The Module Type and the matching Access Mode for that type, will normally be set to the $
+default 'Read/Write'. Are you sure you wish to override the default?|)
+      if (!answer.boolean().not()) then
+        -- Update the default dbType
+        !command   = |EDIT MODULE |+ !module +| MODE |+ !defaultDb +| DEF|
+        $!command
+        -- Set the gadget to the default RW
+        !!admModAdv.attribute(!!admModAdv.default.selection('RTEXT')).select('RTEXT', 'RW')
+      endif
+    else
+      -- Update the default dbType
+      !command   = |EDIT MODULE |+ !module +| MODE |+ !defaultDb +| DEF|
+      $!command
+    endif
+  endif
+
+  -- Reorder the modules members (just for neatness in Q MOD)
+  !!ce      = !modRef
+  !clause   = 'TYPE neq |RUNF|'
+  !members  = !!collectAllFor('',!clause,!!ce)
+  !tBlock   = object BLOCK(|!members[!evalIndex].type|)
+  !types    = !members.evaluate(!tBlock)
+  !order    = !types.sortedIndices()
+  !oldOrder = !members
+  !members.reIndex(!order)
+  !count    = !members.size()
+  do !ref value !members
+    !index    = !oldOrder.findFirst(!ref)
+    REO $!index after $!count
+    !oldOrder.remove(!index)
+  enddo
+
+  -- Put the default db last
+  !!ce       = !modRef
+  !dbRef     = !!collectAllFor('CMMO','MODEDB eq |Default|',!!ce)
+  if (!dbRef.set()) then
+    !pos       = !members.findFirst(!dbRef[1])
+    REO $!pos before CMMO 1
+  endif
+
+  -- Restore database position
+  !!ce      = !curPos
+
+endfunction
+-- End of function definition for !!admModAdv

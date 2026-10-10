@@ -1,0 +1,1671 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File: Mdsselectsupp.pmlfnc
+--   Type:    Function Definition
+--   Group:   Multi Discipline Supports Application
+--     Keyword:   MDS
+--   Module:    design
+--   Replaces:          IMODSUP UCSUPP
+--
+-- Author:    I.osborne
+-- Created: Tuesday May 13
+--
+--
+-- Description:
+-- function to select existing support
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R        STRING        Qualifier to denote selection 'DELETE, MODIFY, COPY, MODIFYNAME,
+--                                                         or      SPECIAL'
+--
+--     2     R        STRING        Method of selecting 'CURSOR, NAME or CE'
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsSelectSupp(!qualifier is STRING, !selectBy is STRING, !silent is STRING) is REAL
+
+  -- from the lock unlock form we are passed lock,CE,Verbose
+
+  -- This macro is used for the silent deletion of a support from 3DMM
+  -- The second argument will be either VERBOSE or BRIEF
+  -- VERBOSE for deletion from with PDMS
+  -- BRIEF for deletion from 3DMM
+  -- If BRIEF then any errors will need to be returned to the calling function
+
+  -- Initialise Variables
+  !origin = !!ce
+  !formC = 'builtforms' + '2'
+
+  !zyx = 'h.yx6$h095454360537'
+  !errorFormShown = FALSE
+  !!mdsDeleteSupp.isPartOfGroup = FALSE
+  !!mdsDeleteSupp.reNameHanger = FALSE
+  !!mdsDeleteSupp.connectedHangers.clear()
+  if (!qualifier.upcase() eq 'MODIFY')then
+    !action = !qualifier.lowcase()
+    !form   = !!mdsModifySupp
+    if !form.cancel.active.not() then
+      !!alert.error('Unable to modify a support when a support is already being modified')
+      return
+    endif
+  elseif (!qualifier.upcase() eq 'DELETE')then
+    !action = !qualifier.lowcase()
+    !form   = !!mdsDeleteSupp
+    !form.deleteRefSupp.active = false
+  elseif (!qualifier.upcase() eq 'COPY') then
+    !action = !qualifier.lowcase()
+    !form   = !!mdsCopySupp
+  elseif (!qualifier.upcase() eq 'MODIFYNAME') then
+    !action = 'Modify Name'
+    !form   = !!mdsModifyName
+  elseif (!qualifier.upcase() eq 'SPECIAL') then
+    !action = 'ADD (Existing MDS Support) to a Special Framework'
+    !form   = !!mdssplframe
+  elseif (!qualifier.upcase() eq 'LOCK') then
+    !action = !qualifier.lowcase()
+    !form   = !!mdsLockSupp
+  elseif (!qualifier.upcase() eq 'AVACLASHERUI') then
+    !action = 'clash'
+    !form   = !!avaclasherui
+  else
+    !!alert.error('Incorrect qualifier argument passed. Contact your MDS Administrator.')
+    return
+  endif
+
+  !vec = !zyx.substring(10,!formC)
+
+  -- Clear references to previous pick
+  UNENHANCE ALL
+  !form.supportMem.clear()
+
+  -- Enhance All References in The Special Support
+  if (!qualifier.upcase().eq('SPECIAL')) then
+    !!kenhanceList(!form.specialmem)
+  endif
+
+  -- Select support by what method
+  if (!selectBy.upcase() eq 'CURSOR')then
+
+    -- Pick support by identifying support atta or structure
+    prompt off
+    prompt load escape 'Identify support to $!action'
+    id @
+    handle (61,528)
+      prompt on
+      golabel /Reset
+    endhandle
+    prompt dismiss
+    prompt on
+
+  elseif (!selectBy.upcase() eq 'NAME')then
+
+    -- Initialise variable
+    !name = !form.name.val
+
+    -- Check to see if the name is valid
+    if (!name.upcase() eq |UNSET|)then
+      golabel /Reset
+    endif
+
+    -- Test to see if the Element exists
+    if (subs(!name,1, 1) eq '/')then
+      !form.name.val = after(!name, '/')
+      !name = !form.name.val
+    endif
+
+    -- Navigate to element
+    !!ce = object DBREF('/' & !name)
+    handle ANY
+      if !silent.eq('BRIEF') then
+        !!error.text = 'Support $!name does not exist'
+        !form.name.val = 'unset'
+        return 0
+      else
+        !!alert.error('Support $!name does not exist.')
+      endif
+      golabel /Reset
+    endhandle
+
+  elseif (!selectBy.upcase() eq 'CE') then
+
+    -- Added to cater for new trunnion branches NCM
+
+    if !!ce.type.eq('BRAN') then
+      if !!ce.:mDSTrun then
+        !suppName = !!mdsGetSuppName(!!ce)
+        if (!suppName eq 'ABORT') then
+          !!ce = !origin
+          !form.name.val = 'unset'
+          !form.name.setFocus()
+          return
+        endif
+        !!ce = !suppName.dbref()
+      endif
+    elseif !!ce.type.eq('HANG') then
+      !!ce = href
+      handle ANY
+        !!alert.error('Unable to navigate to associated atta.')
+        golabel /Reset
+      endhandle
+    endif
+  else
+    !!alert.error('Incorrect selection argument passed. Contact your MDS Administrator.')
+    return
+  endif
+
+  -- Set Focus to Gadget '.newname' form is '!!mdsModifyName'
+  if (!form.string() eq 'MDSMODIFYNAME') then
+    !!mdsModifyName.newname.val = |unset|
+    !!mdsModifyName.newname.setFocus()
+  endif
+
+  if !vec.not() then
+    !!messageFile.warning(43,292)
+    !form.name.val = 'unset'
+    return error 45 noalert
+  endif
+
+  -- Check Element Picked
+  !element = !!ce
+
+  --<kp>may2012 handle unique naming (e.g.kKS)
+  -- qualifiers:DELETE, MODIFY, COPY, MODIFYNAME, SPECIAL LOCK AVACLASHERUI
+  !oldName = !!ce.name
+  !uniquenames = !!mdsoptions.mdsuniquenames
+  if !uniquenames.and(!!ce.type.eq('ATTA')) then
+    !isMdssupp = !!ce.spown.name.eq('/MDS').or(!!ce.spown.name.eq('/MDP'))
+    !nonDatum = !!ce.name.match('/DATUM').eq(0).and(!!ce.name.match('/SREF').eq(0))
+    !assoc = !!ce.dassci
+    !isRefatta = !isMdssupp.and(defined(!assoc[1])).and(!nonDatum)
+    if !isRefatta then
+      if !qualifier.upcase().eq('MODIFY').or(!qualifier.upcase().eq('AVACLASHERUI')).or(!qualifier.upcase().eq('LOCK')) then
+        !element = !assoc[1]
+        !!ce = !element
+      elseif !qualifier.upcase().eq('DELETE') then
+        !error = 'The support ' & !oldName & ' cannot be deleted as it belongs to frame ' & !assoc[1].name
+        !!ce = !origin
+        if !silent.eq('BRIEF') then
+          !!error.text = !error
+          return 0
+        else
+          !!alert.error(!error)
+          !form.name.val = 'unset'
+          handle ANY
+          endhandle
+          return
+        endif
+      endif
+    endif
+  endif
+
+  !suppName = !!mdsGetSuppName(!!ce)
+  if (!suppName eq 'ABORT') then
+    !error = 'Supplied name $!oldName is not a support'
+    if !silent.eq('BRIEF') then
+      !!error.text = !error
+      return 0
+    else
+      !!ce = !origin
+      if (!action.upcase() neq 'CLASH')then
+        !form.name.val = 'unset'
+        !form.name.setFocus()
+      endif
+      return
+    endif
+  endif
+
+  --<wd>18mar2002
+  -- Check and Reject Selected Support If the Element Belongs to a
+  -- MDS Support CURRENTLY in the process of Creation or Modification
+  !error =''
+  if (!!mdscheckstatus(!form, !suppName, !error)) then
+    if !silent.eq('BRIEF') then
+      !!error.text = 'The support $!oldName cannot be deleted as it is being modified with the MDS Application'
+      return 0
+    else
+      !!alert.error(!error)
+      return
+    endif
+  endif
+
+  -- Do not allow bedplate to be added to the special form
+
+  if (!qualifier.upcase() eq 'SPECIAL') then
+    --<ge-04/11/04> Navigate to the STRU
+    STRU
+    handle (2,111)
+    endhandle
+    --<ge-04/11/04>
+    !unusedTest = !!ce.mdsSuppType
+    handle NONE
+      if !!ce.:mdsSuppType.eq('FT22') then
+        !!alert.error('Cannot add a bedplate as part of a special.')
+        golabel /Reset
+      endif
+    elsehandle ANY
+      rest
+      handle NONE
+        !!alert.error('Hangers cannot be added as part of a special.')
+        golabel /Reset
+      elsehandle ANY
+      endhandle
+    endhandle
+  endif
+
+  -- Check what type of element is now we have found it to be a support
+
+  !element = !suppName.dbref()
+  handle (2,109)
+    !!alert.error('Cannot find support associated with picked element')
+    golabel /Reset
+  endhandle
+
+  !!ce = !element
+  if !vec.not() then
+    !form.name.val = 'unset'
+    return error 22 noalert
+  endif
+
+
+  !stru     = !!ce
+  --dtf >>> 11.10.04 See if  Stru IsPartOfGroup and Has hanger members
+  if (!qualifier.upcase() eq 'COPY') then
+    if !stru.name.matchwild('*[*]') then
+      !!mdsCopySupp.connectedHangers.clear()
+      !suppcopy = FALSE
+      !groupMemberList = ARRAY()
+      !rootName = !stru.name.before('[')
+      do !gindex from 2 to 20
+        $!rootName[$!gindex]
+        handle (2,109)
+        elsehandle NONE
+          !groupMemberList.append(!!ce)
+        endhandle
+      enddo
+      if !groupMemberList.size().gt(0) then
+        if !!alert.confirm('Groups with Other Members Cannot be copied. Would you like to Continue Copying the support $!stru.name?').eq('NO') then
+          golabel /Reset
+        else
+          !!mdsCopySupp.isPartOfGroup = TRUE
+          !!mdsCopySupp.connectedHangers = !groupMemberList
+        endif
+      endif
+    endif
+  endif
+  -- dtf <<< End of Mod
+
+  -- Added to cater for new trunnion branches NCM
+  -- If the type is a trunnion branch identified
+  -- by :MDSTrun eq true
+
+  !!ce = bran
+  handle ANY
+    -- Get support type of framework
+    !suppType = !!ce.:MDSsuppType
+    if (!suppType eq '')then
+      if !silent.eq('BRIEF') then
+        !!error.text = 'Cannot $!action support. Type is unknown.'
+        return 0
+      else
+        !!alert.error('Cannot $!action support. Type is unknown.')
+        golabel /Reset
+      endif
+    endif
+  elsehandle NONE
+    if !!ce.:mdstrun then
+      -- This may be an additional guide on a trunnion so check first
+      -- This can be done by the name of the guide not being the name
+      -- of the branch
+      !branName = !!ce.name
+      !!ce = !element
+      !suppName = !!mdsGetSuppName(!!ce)
+      if !suppName.match(!branName).gt(0) then
+        -- !suppName = !!ce.name.after(!!ce.owner.name)
+        !srefName = !suppName + '/SREF'
+        !!ce = !srefName.dbref()
+        handle ANY
+        endhandle
+      else
+        -- Goto datum atta
+        -- Strip pipe name from name
+        !srefName = !suppName + '/SREF'
+        !!ce = !srefName.dbref()
+        handle ANY
+          -- add by <ab>
+          -- restr connected to a welded elbow lug or trunnion
+          !!ce = !suppName.dbref()
+        endhandle
+      endif
+      !suppType = !!ce.:MDSsuppType
+      handle ANY
+        !!ce = !element.dbref()
+        handle ANY
+          !!ce = !element
+        endhandle
+        !suppType = !!ce.:MDSsuppType
+      elsehandle NONE
+        -- Manufacturers Hanger MH01 added ge/Dec/2003
+        if(!suppType.substring(1,2) inset('FH','VH','MH'))then
+          -- Hanger support (fixed or variable)
+        else
+          same
+        endif
+      endhandle
+    else
+
+      --> Modified <ab> Mar 13 2002
+      --  Back to support
+      !!ce = !suppName.dbref()
+      --< Modified <ab> Mar 13 2002
+      !suppType = !!ce.:mDSsuppType
+      handle ANY
+        !!ce = !element
+        !suppType = !!ce.:mDSsuppType
+        handle ANY
+          !form.name.val = 'unset'
+          !!alert.error('Current Element is not a support')
+          golabel /Reset
+        endhandle
+      elsehandle NONE
+        --> Modified <ab> Mar 13 2002
+        -- Stay in the support (Atta)
+        -- same
+        --< Modified <ab> Mar 13 2002
+      endhandle
+    endif
+  endhandle
+
+  --------------------------------------------------------------------------------
+  -- Check that SPECIAL Structure Currently being Created is NOT Selected
+  if (!qualifier.upcase() eq 'SPECIAL') then
+    if ( (!form.strname.val.trim() eq !form.name.val.trim()) or (!form.strname.val.trim() eq !stru.namn ) ) then
+      !form.name.val = 'unset'
+      !!alert.error('Cannot Select the Current SPECIAL Structure being Created')
+      golabel /Reset
+    endif
+  endif
+
+  --------------------------------------------------------------------------------
+  --------------------------------------------------------------------------------
+  -- Check if type being constructed is a 'SPECIAL', and if it is FIRST in the List Check that the Support has an Associated Structure
+
+  if (!qualifier.upcase() eq 'SPECIAL') then
+    !xsupptyp = !!mdsNameSpl.type.selection('dtext').upcase()
+    !spectype = !!mdsspltype(!!mdsNameSpl.type.selection('rtext'),!stru,'INCLUDE')
+    if (!spectype[2].match('MULTI') eq 1) then
+      !textsupp = ''
+    else
+      !textsupp = 'Support'
+    endif
+    if (!!mdssplframe.list.dtext.empty()) then
+      if (!stru.type.string().neq('STRU')) then
+        !!alert.error('The First Support in the list will be the MASTER support, and it MUST have an Associated Structure. the selected support (ATTA only) does not have an Associated Structure.')
+        golabel /Reset
+      endif
+      if (!spectype[1].not()) then
+        !!alert.error('The First Support in the list will be the MASTER support, and it may NOT be a $!spectype[2] $!textsupp for a  SPECIAL $!xsupptyp')
+        golabel /Reset
+      endif
+    endif
+  endif
+
+  -- Check Selected Support against Type of Support Required i.e. 'MDS', RACKING or HVAC Special Support Required.
+  if (!qualifier.upcase() eq 'SPECIAL') then
+    if (!spectype[1].not()) then
+      !!alert.error('The Selected Support is NOT a $!xsupptyp type, and it may NOT be added to this SPECIAL $!xsupptyp')
+      golabel /Reset
+    endif
+  endif
+
+  if !vec.not() then
+    !form.name.val = 'unset'
+    return error 65 noalert
+  endif
+  --------------------------------------------------------------------------------
+  --------------------------------------------------------------------------------
+  -- Check for Support Types that are CURRENTLY unable to be COPIED
+  -- Set variable '!text' to the Display Text for the Type of Support for the Error Form
+  if (!qualifier.upcase() eq 'COPY') then
+    if (!suppType.matchwild('AT10*')) then
+      !suppcopy = FALSE
+      !index = !!mdsgeneral.standard.rtext.findfirst('$!suppType')
+      !text  = !!mdsgeneral.standard.dtext[!index]
+      handle (61,567) (61,615)
+        !!mdspopulate(!!mdsgeneral,'GENERAL')
+        !index = !!mdsgeneral.standard.rtext.findfirst('$!suppType')
+        !text  = !!mdsgeneral.standard.dtext[!index]
+      endhandle
+    elseif (!suppType.matchwild('AT11*')) then
+      !suppcopy = FALSE
+      !index = !!mdsgeneral.standard.rtext.findfirst('$!suppType')
+      !text  = !!mdsgeneral.standard.dtext[!index]
+      handle (61,567) (61,615)
+        !!mdspopulate(!!mdsgeneral,'GENERAL')
+        !index = !!mdsgeneral.standard.rtext.findfirst('$!suppType')
+        !text  = !!mdsgeneral.standard.dtext[!index]
+      endhandle
+    elseif (!suppType.matchwild('AN01*')) then
+      !suppcopy = FALSE
+      !index = !!mdsanchor.standard.rtext.findfirst('$!suppType')
+      !text  = !!mdsanchor.standard.dtext[!index]
+      handle (61,567) (61,615)
+        !!mdspopulate(!!mdsanchor,'ANCHOR')
+        !index = !!mdsanchor.standard.rtext.findfirst('$!suppType')
+        !text  = !!mdsanchor.standard.dtext[!index]
+      endhandle
+    elseif (!suppType.matchwild('GT04*')) then
+      !suppcopy = FALSE
+      !index = !!mdsguide.standard.rtext.findfirst('$!suppType')
+      !text  = !!mdsguide.standard.dtext[!index]
+      handle (61,567) (61,615)
+        !!mdspopulate(!!mdsguide,'GUIDE')
+        !index = !!mdsguide.standard.rtext.findfirst('$!suppType')
+        !text  = !!mdsguide.standard.dtext[!index]
+      endhandle
+    elseif (!suppType.matchwild('HT01*')) then
+      !suppcopy = FALSE
+      !index = !!mdshanger.standard.rtext.findfirst('$!suppType')
+      !text  = !!mdshanger.standard.dtext[!index]
+      handle (61,567) (61,615)
+        !!mdspopulate(!!mdshanger,'HANGER')
+        !index = !!mdshanger.standard.rtext.findfirst('$!suppType')
+        !text  = !!mdshanger.standard.dtext[!index]
+      endhandle
+    elseif (!suppType.matchwild('HT02*')) then
+      !suppcopy = FALSE
+      !index = !!mdshanger.standard.rtext.findfirst('$!suppType')
+      !text  = !!mdshanger.standard.dtext[!index]
+      handle (61,567) (61,615)
+        !!mdspopulate(!!mdshanger,'HANGER')
+        !index = !!mdshanger.standard.rtext.findfirst('$!suppType')
+        !text  = !!mdshanger.standard.dtext[!index]
+      endhandle
+      --> Added <ab> to handle hangers and springs - March 13 2002
+      -- Currently can not be copied
+    elseif (!suppType.matchwild('FH*')) then
+      !suppcopy = FALSE
+      !index = !!mdsfhanger.standard.rtext.findfirst('$!suppType')
+      !text  = !!mdsfhanger.standard.dtext[!index]
+      handle (61,567) (61,615)
+        !!mdspopulate(!!mdsfhanger,'FIXED HANGER')
+        !index = !!mdsfhanger.standard.rtext.findfirst('$!suppType')
+        !text  = !!mdsfhanger.standard.dtext[!index]
+      endhandle
+    elseif (!suppType.matchwild('VH*')) then
+      !suppcopy = FALSE
+      !index = !!mdsfhanger.standard.rtext.findfirst('$!suppType')
+      !text  = !!mdsfhanger.standard.dtext[!index]
+      handle (61,567) (61,615)
+        !!mdspopulate(!!mdsfhanger,'VARIABLE HANGER')
+        !index = !!mdsfhanger.standard.rtext.findfirst('$!suppType')
+        !text  = !!mdsfhanger.standard.dtext[!index]
+      endhandle
+
+      -- Manufacturers Hanger MH01 added ge/Dec/2003
+    elseif (!suppType.matchwild('LI*') or !suppType.matchwild('MH*')) then
+      !suppcopy = FALSE
+      !text = 'Hanger has been designed with an external interface'
+      handle (61,567) (61,615)
+      endhandle
+      --< Added <ab> to handle hangers and springs - March 13 2002
+    else
+      !suppcopy = TRUE
+    endif
+
+    if (!suppcopy.not()) then
+      !form.name.val = 'unset'
+      !form.name.setFocus()
+      !!alert.error(|Support Type ** $!text **  may not be COPIED|)
+      return
+    endif
+  endif
+  -----------------------------------------------------------------------------------------
+
+  -- Get all components associated with this support
+  !name = !suppName.after('/')
+  -- This method of collecting the atta by scanning the database has proved to take to long
+  -- add the data variable by adding existing names
+
+  !data = ARRAY()
+  !ce = !!ce
+  /$!<name>
+  handle NONE
+    !data.append(!!ce)
+    same
+  elsehandle ANY
+  endhandle
+
+  /$!<name>/DATUM
+  handle NONE
+    !data.append(!!ce)
+    same
+  elsehandle ANY
+  endhandle
+
+  /$!<name>/SREF
+  handle NONE
+    !data.append(!!ce)
+    same
+  elsehandle ANY
+  endhandle
+
+  /$!<name>/MAKEUP
+  handle NONE
+    !data.append(!!ce)
+    same
+  elsehandle ANY
+  endhandle
+
+  -- RM 26/01/2006 - This was Added so that the initech ft54b and ft55b supports are deleted properly
+  /$!<name>/TEE
+  handle NONE
+    !data.append(!!ce)
+    same
+  elsehandle ANY
+  endhandle
+
+  -- RM 08/06/2007 - This was Added so that the FT61 support is deleted properly
+  /$!<name>/OLET
+  handle NONE
+    !data.append(!!ce)
+    same
+  elsehandle ANY
+  endhandle
+
+  --<dw>Sep2007 To account for bracing attas
+  !bracexists = TRUE
+  if (defined(!!mdsFRAMEBRACING)) then
+    if (!!mdsFRAMEBRACING eq 'true') then
+      do !attanumber to 6
+        /$!<name>/BR$!attanumber
+        handle(2,109)
+          !bracexists = FALSE
+        endhandle
+        if (!bracexists) then
+          !data.append(!!ce)
+          same
+        endif
+      enddo
+    endif
+  endif
+  --<dw> To account for bracing attas--------
+
+  -- Check if trunnion and claim branch
+
+  !wasHere = !!ce
+  /$!<name>/SREF
+  handle ANY
+  elsehandle NONE
+    if !!ce.owner.name.matchwild('*$!name*') and !!ce.owner.:mdstrun then
+      bran
+      !data.append(!!ce)
+    endif
+  endhandle
+
+  !!ce = !wasHere
+
+  do !countNotes from 1 to 10
+    /$!<name>/NOTE$!countNotes
+    handle NONE
+      !data.append(!!ce)
+      same
+    elsehandle ANY
+    endhandle
+  enddo
+
+  do !count from 1 to 40
+    /$!<name>.$!count
+    handle NONE
+      if !!ce.type.eq('ATTA') or !!ce.type.eq('BEND') or !!ce.type.eq('CTSUPP') then
+        !data.append(!!ce)
+        same
+        do !countLugs from 1 to 10
+          /$!<name>.$!count/LUG$!countLugs
+          handle NONE
+            if !!ce.type.eq('OLET') then
+              !data.append(!!ce)
+            endif
+            same
+            break
+          elsehandle ANY
+            skip
+          endhandle
+        enddo
+      endif
+    elsehandle ANY
+      skip
+    endhandle
+  enddo
+
+  do !countLugs1 from 1 to 10
+    /$!<name>/LUG$!countLugs1
+    handle NONE
+      if !!ce.type.eq('OLET') then
+        !data.append(!!ce)
+      endif
+      same
+      --break
+    elsehandle ANY
+      skip
+    endhandle
+  enddo
+  do !countLugs2 from 1 to 10
+    /$!<name>/DATUM/LUG$!countLugs2
+    handle NONE
+      if !!ce.type.eq('OLET') then
+        !data.append(!!ce)
+      endif
+      same
+      break
+    elsehandle ANY
+      skip
+    endhandle
+  enddo
+
+  -- handle unique naming
+  if !uniquenames.and(!element.type.eq('STRU')) then
+    !addRefSupp = !qualifier.upcase().eq('COPY').or(!qualifier.upcase().eq('MODIFYNAME')).not()
+    if !qualifier.upcase().eq('DELETE') then
+      !form.deleteRefSupp.active = true
+      !addRefSupp = !form.deleteRefSupp.val
+    endif
+    if !addRefSupp then
+      do !refsupp values !element.dassci
+        skip if !refsupp.badref()
+        !data.append(!refsupp)
+        !refSuppName = !refsupp.name.after('/')
+
+        do !countLugs3 from 1 to 10
+          /$!refSuppName/LUG$!countLugs3
+          handle NONE
+            if !!ce.type.eq('OLET') then
+              !data.append(!!ce)
+            endif
+            same
+            --break
+          elsehandle ANY
+            skip
+          endhandle
+        enddo
+      enddo
+    else
+      do !refsupp values !element.dassci
+        skip if !refsupp.badref()
+        !refsupp.:mdssupptype = !refsupp.styp
+        handle any
+        endhandle
+      enddo
+    endif
+  endif
+
+  !!ce = !ce
+
+  -- In case of an Hanger (FH01, VH01,...) add the restr element to the data
+  -->>>-<wd>aug2002
+  -- Manufacturers Hanger MH01 added ge/Dec/2003
+  !xhang = ARRAY()
+  !hang  = ARRAY()
+  if(!suppType.upcase().match('FH') gt 0 OR !suppType.upcase().match('VH') gt 0 OR !suppType.upcase().match('MH') gt 0) then
+    -- If the hanger icon 61 is deactivate do not allow users to modify hangers
+    if !!isPDMS116() then
+      !mainForm = !!appDesMain
+    else
+      !mainForm = !!cdmdsapp
+    endif
+
+      --check the mds application defaults to determine which hanger functionality is active
+      !current = !!ce
+
+      /MDS/ICON/DEFAULTS/VARIABLE/IVAL
+      handle ANY
+      	!varVal = 'FALSE'
+      elsehandle NONE
+      	!tempVal = !!ce.ppro
+      	!varVal = $!tempVal
+      endhandle
+
+      /MDS/ICON/DEFAULTS/FIXED/IVAL
+      handle ANY
+      	!fixedVal = 'FALSE'
+      elsehandle NONE
+      	!tempVal = !!ce.ppro
+      	!fixedVal = $!tempVal
+      endhandle
+
+      !!ce = !current
+
+      if !suppType.upcase().match('FH').gt(0) and !fixedVal.eq('FALSE') then
+        if !silent.eq('BRIEF') then
+          !!error.text = 'Cannot modify a fixed hanger type when fixed hangers are deactivated'
+          !form.name.val = 'unset'
+          return 0
+        else
+          !!alert.error('Cannot modify a fixed hanger type when fixed hangers are deactivated')
+          !form.name.val = 'unset'
+          return 0
+        endif
+      elseif !suppType.upcase().match('VH').gt(0) and !varVal.eq('FALSE') then
+        if !silent.eq('BRIEF') then
+          !!error.text = 'Cannot modify a variable hanger type when variable hangers are deactivated'
+          !form.name.val = 'unset'
+          return 0
+        else
+          !!alert.error('Cannot modify a variable hanger type when variable hangers are deactivated')
+          !form.name.val = 'unset'
+          return 0
+        endif
+      elseif !suppType.upcase().match('MH').gt(0) and !fixedVal.eq('FALSE') or !varVal.eq('FALSE') then
+      	--this is the standard response for interface hangers i.e. !suppType eq 'MH'
+        if !silent.eq('BRIEF') then
+          !!error.text = 'Cannot modify an interface hanger when fixed or variable hangers are deactivated'
+          !form.name.val = 'unset'
+          return 0
+        else
+          !!alert.error('Cannot modify an interface hanger when fixed or variable hangers are deactivated')
+          !form.name.val = 'unset'
+          return 0
+        endif
+      endif
+
+    !xhang = !!mdsgethanglist(!!ce)
+    do !xx index !xhang
+      if (!xhang[!xx].type.eq('REST')) then
+        !restmem = !xhang[!xx].mem
+      elseif (!xhang[!xx].type.eq('FITT')) then
+        -- Check to see if Fitting part of same group
+        !fittStruname = (name of stru of $!xhang[$!xx] )
+        if !fittStruname.after('/').before('[') eq !name.before('[') then
+          !!mdsDeleteSupp.isPartOfGroup = TRUE
+        endif
+      endif
+    enddo
+    !xhang.appendArray(!restmem)
+    !xhang.unique()
+    !hang = !xhang.invert()
+    --<<<-<wd>aug2002
+  endif
+
+  --< Added for Hanger handling <ab> March 14 2002
+  if !data.empty() then
+    /$!name
+    handle NONE
+      if !!ce.type.eq('ATTA') then
+        !data.append(!!ce)
+      endif
+      same
+    elsehandle ANY
+    endhandle
+  endif
+  --> Added for Hanger handling <ab> March 14 2002
+  if(not !hang.empty()) then
+    !data.appendArray(!hang)
+    do !hangMem values !data
+      add $!hangMem
+      handle ANY
+      endhandle
+    enddo
+  endif
+  --< Added for Hanger handling <ab> March 14 2002
+
+
+  -- dtf >>> Check for hanger groups 7.10.04 in delete mode
+  if ((!qualifier.upcase() inset ('DELETE') and !!ce.type.eq('STRU') ) or  !qualifier.upcase() eq 'MODIFYNAME') then
+    !groupMemberList = ARRAY()
+    !!mdsDeleteSupp.connectedHangers.clear()
+    !!mdsModifyName.connectedHangers.clear()
+    !suppName = |/$!name|
+    if !suppName.dbref().type.eq(|STRU|) or !suppName.dbref().type.eq(|ATTA|) then
+      !rootName = !name.before('[')
+
+      -- if the new name is in group
+      if ( !!mdsModifyName.newname.val.matchwild('*[*]') or !!mdsModifyName.newname.val.lowcase().eq('unset') ) then
+        do !gindex from 1 to 20
+          /$!rootName[$!gindex]
+          handle (2,109)
+          elsehandle NONE
+            !groupMemberList.append(!!ce)
+          endhandle
+        enddo
+      endif
+    endif
+
+
+    -- Get all possible physical connections
+    !orice = !!ce
+    var !coll coll all fitt with (not(unset(cref))) for $!suppName
+    var !coll append coll all sjoi with (not(unset(cref))) for $!suppName
+    var !connections Eval cref for all from !coll
+    do !i values !connections
+      $!i
+      --<tm> fix to avoid going to SBFI elements
+      if !!ce.type.eq('SBFI') then
+        skip
+      endif
+      --<tm> fix
+      !ceSuppName = !!mdsGetSuppName(!!ce)
+      if !ceSuppName.neq(!suppName) then
+        !groupMemberList.append(!ceSuppName.dbref())
+      endif
+    enddo
+    !!ce = !orice
+    !groupMemberList.sortunique()
+    do !iindex values !groupMemberList
+      if (!iindex.name.before('[') eq !stru.name.before('[')  ) then
+
+        if (!iindex.type.eq(|PLAT|)) then
+          -- $P Trunnion
+          -- Add branch
+          !data .append(!iindex.owner)
+
+        elseif (!iindex.type.eq(|STRU|)) then
+          !data .append(!iindex)
+          $!iindex.name/DATUM
+          handle NONE
+            !data.append(!!ce)
+          elsehandle ANY
+          endhandle
+          $!iindex.name/SREF
+          handle NONE
+            !data.append(!!ce)
+          elsehandle ANY
+          endhandle
+
+
+        elseif (!iindex.cref.unset()) then
+          !data .append(!iindex.owner)
+
+
+        elseif (!iindex.cref.type.eq(|HANG|)) then
+          -- $P Hanger
+          -- Add Hang
+          !data.append(!iindex.cref )
+          -- Add Rest
+          !data.append(!iindex.cref.owner )
+          -- Add Atta
+          !data.append(!iindex)
+        endif
+
+        if (!qualifier.upcase() inset ('DELETE') ) then
+          !!mdsDeleteSupp.connectedHangers.append(!iindex.namn)
+          !!mdsDeleteSupp.isPartOfGroup = TRUE
+        elseif (!qualifier.upcase() inset ('MODIFYNAME') ) then
+          !!mdsModifyName.connectedHangers.append(!iindex.namn)
+          !!mdsModifyName.isPartOfGroup = TRUE
+        endif
+
+      else
+        if (!qualifier.upcase() inset ('DELETE') ) then
+          if (!iindex.type.eq(|PLAT|)) then
+            -- $P Trunnion
+            -- Add branch
+            !data .append(!iindex.owner)
+
+          elseif (!iindex.cref.unset()) then
+            !data .append(!iindex.owner)
+
+
+          elseif (!iindex.cref.type.eq(|HANG|)) then
+            -- $P Hanger
+            -- Add Hang
+            !data.append(!iindex.cref )
+            -- Add Rest
+            !data.append(!iindex.cref.owner )
+            -- Add Atta
+            !data.append(!iindex)
+          endif
+        endif
+        if (!qualifier.upcase() inset ('DELETE') ) then
+          !!mdsDeleteSupp.connectedHangers.append(!iindex.namn)
+          !!mdsDeleteSupp.isPartOfGroup = FALSE
+
+        endif
+      endif
+    enddo
+  endif
+  -- dtf <<< End of Mod
+
+
+
+  -------------------------------------------------------------------------------------
+  --<wd>12dec2000
+  -- Check if the USER can Modify/Delete etc... the Selected Support
+
+  --<wd>7jul2004
+  -- *** Added the word 'LOCK' to be checked when passed and set to the variable !qualifier.upcase() ***
+  --if (!qualifier.upcase() inset ('MODIFY','DELETE','SPECIAL','MODIFYNAME','COPY'))then
+  if (!qualifier.upcase() inset ('MODIFY','DELETE','SPECIAL','MODIFYNAME','COPY','LOCK'))then
+    --<wd>7jul2004
+
+    !write = STRING()
+    !lock  = STRING()
+    !actionup = !action.upcase()
+
+    -- Check USER access
+    -- this bit seems to deal with the locked bit, but never passes the next line
+    if (!!kcheckwrite(!!ce, !lock , !write).not()) then
+
+      --     if (!!kcheckwrite(!!ce, !lock , !write)) then
+      -- READ ONLY Access to the $!idtype
+      if (!write.eq('R')) then
+        !suppName = !!mdsGetSuppName(!!ce)
+        !!alert.error('Unable to ''$!actionup'' as the selected MDS Support ''$!suppName'' is in a READ ONLY Database.')
+        golabel /Reset
+        return
+        -- WRITE Access to the $!idtype, BUT it is LOCKED
+      elseif (!lock.eq('Locked')) then
+        !suppName = !!mdsGetSuppName(!!ce)
+        if !action.upcase().neq('COPY') then
+          if !silent.eq('BRIEF') then
+            !!error.text = 'Unable to delete the selected MDS Support ''$!suppName'' as it is LOCKED.'
+            return 0
+          else
+            if !!alert.confirm('Unable to ''$!actionup'' as the selected MDS Support ''$!suppName'' is LOCKED. would you like to unlock the support?').eq('YES') then
+
+              --<tm> 06/06/2005 10:30 commented out the next line
+              --!!mdsSelectSupp('LOCK', 'CE','BRIEF')
+              --<tm>06/06/2005 10:30 added the next line to fix locking.unlocking supports
+              !!mdsLockSupp.supportMem = !data
+              !!mdsLockSupp.unlock('$!suppName')
+            else
+              -- !!alert.error('Unable to ''$!actionup'' as the selected MDS Support ''$!suppName'' is LOCKED')
+              golabel /Reset
+            endif
+          endif
+        else
+          !!alert.error('Unable to ''$!actionup'' as the selected MDS Support ''$!suppName'' is LOCKED')
+          golabel /Reset
+        endif
+      endif
+    endif
+
+    -- Added NCM 17/04/03
+    -------------------------------------------------------------------------------------
+
+    -- Check for Claim and DACS for all support members
+    -- Main Support members
+
+    !!mdsErrors.ok.active = TRUE
+    if (!qualifier.upcase() eq 'MODIFY') then
+      !!mdsErrors.formTitle = 'Modify Support Status Report'
+      --<wd>7jul2004
+      -- Modified Warning Text to USERS to ensure they understand the consequences of CONTINUING to MODIFY the MDS Support.
+      --!!mdsErrors.text1.val = ' Selecting OK will continue with the modify process but you will be restricted on'
+      --!!mdsErrors.text2.val = ' the operations you may perform. Selecting Cancel will end the modify operation.'
+      !!mdsErrors.text1.val = '(1) Select ''OK'' to MODIFY. the modify process will be restricted and ERRORS may'
+      !!mdsErrors.text2.val = 'occur which are NOT handled by the MDS application. - (2) Select ''Cancel'' to exit.'
+      --<wd>7jul2004
+      !!mdsErrors.ok.active = TRUE
+      !dacAction = 'DACMOD'
+      !dacType = 'POS'
+      !actionText = 'can be modified.'
+      !tempdesc = (desc of /MDS/TEMPLATES )
+      if !tempdesc.upcase().eq('FRAMATOME TEMPLATES') then
+        !!mdsErrors.ok.active = FALSE
+      endif
+
+    elseif (!qualifier.upcase() eq 'DELETE') then
+      !!mdsErrors.formTitle = 'Delete Support Status Report'
+      !!mdsErrors.text1.val = ' Unable to continue to delete the support as detailed above.'
+      !!mdsErrors.text2.val = ''
+      !!mdsErrors.ok.active = FALSE
+      !dacAction = 'DACDEL'
+      !dacType = ''
+      !actionText = 'can be deleted.'
+    elseif (!qualifier.upcase() eq 'LOCK') then
+      !!mdsErrors.formTitle = 'Lock Support Status Report'
+      !!mdsErrors.text1.val = ' Unable to continue to lock/unlock the support as detailed above.'
+      !!mdsErrors.text2.val = ''
+      !!mdsErrors.ok.active = FALSE
+      !dacAction = 'DACMOD'
+      !dacType = 'POS'
+      !actionText = 'can be locked/unlocked'
+    elseif (!qualifier.upcase() eq 'COPY') then
+      !!mdsErrors.formTitle = 'Copy Support Status Report'
+      !!mdsErrors.text1.val = ' Unable to continue to copy the support as detailed above.'
+      !!mdsErrors.text2.val = ''
+      !!mdsErrors.ok.active = FALSE
+      !dacAction = 'DACMOD'
+      !dacType = 'POS'
+      !actionText = 'can be copied'
+    elseif (!qualifier.upcase() eq 'MODIFYNAME') then
+      !!mdsErrors.formTitle = 'Modify Name Status Report'
+      !!mdsErrors.text1.val = ' Unable to modify the name of the support as detailed above.'
+      !!mdsErrors.text2.val = ''
+      !!mdsErrors.ok.active = FALSE
+      !dacAction = 'DACMOD'
+      !dacType = 'NAME'
+      !actionText = 'can be renamed'
+    elseif (!qualifier.upcase() eq 'SPECIAL') then
+      !!mdsErrors.formTitle = 'Special Status Report'
+      !!mdsErrors.text1.val = ' Unable to include the support as detailed above.'
+      !!mdsErrors.text2.val = ''
+      !!mdsErrors.ok.active = FALSE
+      !dacAction = 'DACMOD'
+      !dacType = 'NAME'
+      !actionText = 'can be included'
+    endif
+
+    !errorsDtext = ARRAY()
+    !errorsRtext = ARRAY()
+    !errorsArray = ARRAY()
+    !operationErrors = FALSE
+
+    !isInterfaceHanger = FALSE
+    do !checkOthers values !data
+
+      --REFACTOR add check for whether or not an item in a read only db can be modified via the connection macro mechanism
+      --the criteria for this is that the atta supptype is 'MH01' i.e. an interface hanger and that the item in the read only db is a FITT or SBFI
+      if !checkOthers.type.eq('ATTA') then
+        if !checkOthers.:MDSSuppType.eq('MH01') then
+          !isInterfaceHanger = TRUE
+        endif
+      endif
+
+      if (!!mdsComClaimDac(!checkOthers,'$!dacAction','$!dacType').not()) then
+        if !checkOthers.type.eq('FITT') or !checkOthers.type.eq('SBFI') then
+          if !isInterfaceHanger then
+            !errorName = !checkOthers.name
+            !errorsDtext.append(!errorName + ' ' + !actionText)
+            --<wd>7jul2004
+            -- The ARRAY !errorsRtext is now appended with the CORRECT element as in the PML code above
+            --!errorsRtext.append(!!ce.string())
+            !errorsRtext.append(!checkOthers.string())
+            --<wd>7jul2004
+
+            !errorsArray.append(TRUE)
+          else
+            if !silent.eq('BRIEF') then
+              !errorName = !checkOthers.name
+              !!error.text = '$!errorName - $!!error.text'
+              !errorsDtext.append(!errorName + ' ' + !!error.text)
+              !errorsRtext.append(!checkOthers.string())
+              !errorsArray.append(FALSE)
+              !operationErrors = TRUE
+              return 0
+            else
+              !errorName = !checkOthers.name
+              if !!error.text.match(!errorName).gt(0) then
+                !errorsDtext.append(!!error.text)
+              else
+                !errorsDtext.append(!errorName + ' ' + !!error.text)
+              endif
+              !errorsRtext.append(!checkOthers.string())
+              !errorsArray.append(FALSE)
+              !operationErrors = TRUE
+              -- return
+            endif
+          endif
+        endif
+      else
+        !errorName = !checkOthers.name
+        !errorsDtext.append(!errorName + ' ' + !actionText)
+        --<wd>7jul2004
+        -- The ARRAY !errorsRtext is now appended with the CORRECT element as in the PML code above
+        --!errorsRtext.append(!!ce.string())
+        !errorsRtext.append(!checkOthers.string())
+        --<wd>7jul2004
+
+        !errorsArray.append(TRUE)
+      endif
+    enddo
+
+    !!mdsErrors.disableCancel = FALSE
+
+    if !operationErrors then
+      !!mdsErrors.errorList.dtext = !errorsDtext
+      !!mdsErrors.errorList.rtext = !errorsRtext
+      !errorName = !!mdsGetSuppName(!!ce)
+      !!mdsErrors.name.val = !errorName
+      !errorFormShown = TRUE
+      if !!mdsErrors.ok.active then
+        !!mdsErrors.ok.callback = 'Call !!kActionCommands(!!mdsModifySupp.applyForm)'
+      endif
+
+      ----------------------------------------------------------------------------------------------
+      --<wd>7jul2004
+      -- Clients requested that USERS be allowed to continue ** AT THEIR OWN PERIL ** with the MODIFICATION
+      -- of a MDS SUPPORT even when a MDS STRU or any  MDS ATTA element on the support is LOCKED etc...
+      -- ** Therefore the CODE below has been COMMENTED OUT **
+      ----------------------------------------------------------------------------------------------
+      --        !errorsArray.unique()
+      --        if !errorsArray.size().eq(1) and !errorsArray.find(false).size().gt(0) then
+      --          !!mdsErrors.ok.active = false
+      --          !!mdsErrors.ok.callback = ''
+      --          !!mdsErrors.text1.val = ' Unable to continue as detailed above.'
+      --          !!mdsErrors.text2.val = ''
+      --        elseif !errorsArray.size().eq(2) then
+      --          !!mdsErrors.ok.active = false
+      --          !!mdsErrors.ok.callback = ''
+      --          !!mdsErrors.text1.val = ' Unable to continue as detailed above.'
+      --          !!mdsErrors.text2.val = ''
+      --        else
+      --          !!mdsErrors.ok.active = true
+      --        endif
+      --<wd>7jul2004
+      ----------------------------------------------------------------------------------------------
+
+
+      !!mdsErrors.disableCancel = TRUE
+
+      --<wd>20jul2004
+      -- Set CANCELCALLBACK to Unclaim ALL MEMBERS of Current MDS Support on clicking the ' Cancel ' Button on the !!mdsErrors form
+      !!mdsErrors.supportMem = !data
+      !!mdsErrors.supportMem.unique()
+      !!mdsErrors.cancel.callback = '!!mdsErrors.cancel(!!mdsErrors.supportMem)'
+      --<wd>20jul2004
+
+      -- If the !!mdsErrors form is being displayed and the support number is displayed from the bar menu
+      -- you cannot display another form, therefore if the error is trapped unset the name gadget
+      show !!mdsErrors
+      handle (61,495)
+        !form.name.val = 'unset'
+      endhandle
+
+    endif
+
+  endif
+  --<<< ???? - The CODE above ONLY Checks '!!ce' - what about the other MDS SUPPORT MEMBERS - ????
+
+  -- Check if MDS Support has already been CLAIMED
+
+  -- Navigate to correct element
+
+  if (!!ce.type.eq('ATTA')) then
+    if (!!ce.cref.badref()) then
+      -- Ancillary
+      !!ce = !!ce.owner
+    else
+      -- Hanger
+      !!ce = !!ce.cref
+    endif
+  elseif (!!ce.owner.type.eq('HANG')) then
+    !!ce = !!ce.owner
+  endif
+
+  !iamHere = !!ce
+  !claimErrors = FALSE
+
+  -- Test to see if the support is a trunnion and if so
+  -- claim the bran hier
+
+  !displayedError = 0
+
+  do !claimAll values !data
+    !!ce = !claimAll
+    claim ce hier
+    --<wd>23sep2004
+    --handle(2,608)
+    handle (2,608)
+    elsehandle (2,614)
+      !claimErrors = TRUE
+      if !!ce.type.eq('REST') then
+        if !qualifier.upcase().eq('MODIFY') or !qualifier.upcase().eq('DELETE') then
+          !form.name.val = 'unset'
+        endif
+        !displayedError = !displayedError + 1
+        if !displayedError.eq(1) then
+          !!alert.error('$!!error.text')
+        endif
+      else
+        !displayedError = !displayedError + 1
+        if !displayedError.eq(1) then
+          !!alert.error('$!!error.text')
+        endif
+      endif
+      --<wd>23sep2004
+    elsehandle (2,633)
+      extract claim ce hier
+      handle ANY
+        !!alert.error('$!!error.text')
+        !claimErrors = TRUE
+      elsehandle NONE
+        claim ce hier
+        handle ANY
+          !!alert.error('$!!error.text')
+          !claimErrors = TRUE
+        endhandle
+      endhandle
+    elsehandle ANY
+      !!alert.error('$!!error.text')
+      !claimErrors = TRUE
+    elsehandle NONE
+      if !!ce.type.eq('OLET') then
+        end
+        extract claim ce hier
+        handle (43,383)
+          --this is not an extract just claim the hierarchy
+          claim ce hier
+          handle ANY
+            !!alert.error('$!!error.text')
+            !claimErrors = TRUE
+          endhandle
+        elsehandle ANY
+          !!alert.error('$!!error.text')
+          !claimErrors = TRUE
+        elsehandle NONE
+          claim ce hier
+          handle ANY
+            !!alert.error('$!!error.text')
+            !claimErrors = TRUE
+          endhandle
+        endhandle
+
+      endif
+    endhandle
+  enddo
+
+  if !claimErrors then
+    do !unclaim values !data
+      !!ce = !unclaim
+      unclaim ce hier
+      handle ANY
+      endhandle
+    enddo
+    !!ce = !origin
+    return
+  endif
+
+  !!ce = !iamHere
+
+  --------------------------------****** connexions ******* -------------------------------
+  --<wd>19dec2000
+  --Determine the Connected Joints for the selected MDS support
+  -- so that they can be added to;
+  --(1)the array !colourList for enhancing
+  -- and
+  --(2)the array !form.supportMem
+
+  !vertDBref    = ARRAY()
+  !vert1        = '/' & !name & '-V1'
+  !vertDBref[1] = !vert1.dbref()
+  handle ANY
+    -- in case  no Verticals (bed plate) (may be (-BAR-1 as for 'FT07', 'FT15'))
+    !vert1        = '/' & !name & '-BAR-1'
+    !vertDBref[1] = !vert1.dbref()
+    handle ANY
+    endhandle
+  elsehandle NONE
+    !vert2        = '/' & !name & '-V2'
+    !vertDBref[2] = !vert2.dbref()
+    handle ANY
+      -- Supports where ONE Cross Bar may also be connected (FT10,FT11,FT13,FT15,DT02,FT38)
+      !vert2        = '/' & !name & '-BAR-1'
+      !vertDBref[2] = !vert2.dbref()
+      handle ANY
+        -- in case only one SCTN exists
+      endhandle
+    endhandle
+  endhandle
+
+  -- Check if the support is a trunnion branch and contains another support if so
+  -- refuse the delete request
+  if (!qualifier.upcase() inset ('DELETE'))then
+    !inHere = !!ce
+    bran
+    handle ANY
+    elsehandle NONE
+      !mdsTrun = :Mdstrun
+      same
+      if !mdsTrun then
+        bran
+        !mem = mem count
+        !unusedSupportMem = 0
+        !branName = name
+        !listOfNames = ARRAY()
+        do !listMem from 1 to $!mem
+          bran
+          $!listMem
+
+          --<dw>dec2008 dun1052 Skip weld if found as not a support element
+          skip if !!ce.type.eq('WELD')
+
+          !listOfNames.append(!!mdsGetSuppName(!!ce))
+        enddo
+        !listOfNames.unique()
+        -- get the support name of the trunnion
+        bran
+        !trunnionName = (!!mdsGetSuppName(!!ce))
+        if !suppName.eq(!trunnionName) and !listOfNames.size().gt(1) then
+          !!alert.error('Cannot delete trunnion support as it owns other supports. please delete these supports first')
+          golabel /Reset
+        endif
+      endif
+    endhandle
+    !!ce = !inHere
+  endif
+
+  label /Enhance
+
+
+  -- Enhance elements using colour set for highlight
+  !colourList = ARRAY()
+  if (defined (!stru))then
+    !colourList.append(!stru)
+    -- dtf >>> Check for hanger groups 7.10.04 in delete mode
+    if (!qualifier.upcase() inset ('DELETE'))then
+      !rootName = !!ce.name.before('[')
+      do !gindex from 2 to 20
+        /$!rootName[$!gindex]
+        handle (2,109)
+        elsehandle NONE
+          !colourList.append(!!ce)
+        endhandle
+      enddo
+    endif
+    -- dtf <<< End of Mod
+  endif
+  if (!data.empty().not())then
+    !colourList.appendArray(!data)
+  endif
+
+  --------------------------------****** connexions ******* -------------------------------
+  --<wd>19dec2000
+  -- Add the External Connected Joints, if any EXIST, to the array !colourList
+  !colourList.appendArray(!!mdsgetNodes(!vertDBref))
+  handle ANY
+  endhandle
+  --<wd>19dec2000
+  -----------------------------------------------------------------------------------------
+
+  -- Add support in case its not in the drawlist
+  !addName = !suppName.after('/')
+
+
+  !!mdsAddAll('$!addName')
+
+  -- Colour Support
+  Call !!kenhanceList(!colourList)
+
+  -- Determine function to be carried out
+
+  if (!action.upcase() eq 'MODIFY')then
+
+    -- Change function to run on apply button taking into account there may be an alias
+
+    !aliasName = !!mdsAliasList(!suppType)
+
+    if (!aliasName eq 'Unset') then
+      !function = |!!mdsI| & !suppType
+    else
+      --REFACTOR WE NEED TO BE MORE SPECIFIC ABOUT WHICH FORM WE NEED TO START BECAUSE
+      --WE NOW HAVE DIFFERENT FORMS FOR EACH INTERFACE HANGER TYPE -- START
+      if !aliasName.eq('FH01') then
+        --get the config of the hanger, the spec of the hanger and the current interface being used to make sure that
+        --a) we are modifying a hanger with the right interface
+        --b) we are using the correct form to modify it with
+        !hangerApp = !!mdsHangif
+        if !name.substring(1,1).neq(|/|) then
+          !name = |/| + !name
+        endif
+        !hangerConfig = !name.dbref().:MDSHConfig
+
+        --if this is an interface hanger type then find out which interface else we are using standard MDS
+        if !name.dbref().:MDSSuppType.eq('MH01') then
+          !hangerInterfaceSpec = !name.dbref().cref.hspec.namn
+        else
+          !hangerInterfaceSpec = 'MDS'
+        endif
+
+        if !hangerInterfaceSpec.match(!hangerApp).eq(0) then
+          !!alert.error('cannot modify a hanger of type ' + !hangerInterfaceSpec + ' with the ' + !hangerApp + ' interface')
+        endif
+
+        !hangerType = !hangerConfig.replace('V', '')
+        !hangerType = !hangerType.replace('H', '')
+        !hangerType = !hangerType.trim()
+        !tuberef = !name.dbref()
+
+        if !hangerApp.eq('MDS') then
+          !function = |!!mdsI| & !aliasName
+        else
+          !initName = 'HangerType' + !hangerType
+          !function = |!!mdsI| & !initName
+
+        endif
+      else
+        !function = |!!mdsI| & !aliasName
+      endif
+      --REFACTOR WE NEED TO BE MORE SPECIFIC ABOUT WHICH FORM WE NEED TO START BECAUSE
+      --WE NOW HAVE DIFFERENT FORMS FOR EACH INTERFACE HANGER TYPE -- END
+    endif
+    !alias = !suppType
+    if (!suppType eq 'FT25') then
+      !formname = '!!mdsFT25'
+      !form.applyForm[1] = |Call $!function('MODIFY', '$!name','$!alias', $!formname, /* , /* )|
+--<kp>feb07 check if it is not lighting support
+      elseif !suppType.eq(!!mdslsuppdefs.type) then
+        !form.applyForm[1] = 'call !!mdsils(''$!suppName'')'
+--<kp>feb07
+    else
+      -- !form.applyForm[1] = |Call $!function('MODIFY', '$!name','$!alias')|
+      !suppNamn = !suppName.dbref().namn
+      --REFACTOR ADDED ALTERNATIVE INIT FUNCTION CALL TO ACCOUNT FOR ADDITIONAL CALLING VARIABLES - START
+      if !function.upcase().match('MDSIHANGERTYPE').gt(0) then
+        !form.applyForm[1] = |Call $!function('MODIFY', '$!suppNamn','$!alias', $!hangerType, $!tuberef ,object ARRAY())|
+      else
+        !form.applyForm[1] = |Call $!function('MODIFY', '$!suppNamn','$!alias')|
+      endif
+      --REFACTOR ADDED ALTERNATIVE INIT FUNCTION CALL TO ACCOUNT FOR ADDITIONAL CALLING VARIABLES - END
+    endif
+
+  endif
+
+  -- Set lock form apply gadget
+
+  if !action.upcase().eq('LOCK') then
+    !foundName = '/' + !name
+    !supportName = !!mdsGetSuppName(!foundName.dbref())
+    !form.applyForm[1] = |!!mdsLockSupp.action('$!supportName')|
+  endif
+
+  -- Set form gadgets
+  if (defined (!stru))then
+    !form.supportMem.append(!stru)
+  endif
+  --if (defined (!sref))then
+  --!form.supportMem.append(!sref)
+  --endif
+  !form.supportMem.appendArray(!data)
+
+  --------------------------------****** connexions ******* -------------------------------
+  !form.supportMem.appendArray(!!mdsgetNodes(!vertDBref))
+  handle ANY
+  endhandle
+
+
+  -----------------------------------------------------------------------------------------
+  -- Ensure No Duplicate DBREFs Exist in the form member '.supportMem'
+  !form.supportMem.unique()
+
+  -- If we are deleting check we can delete all members
+
+  !canDelete = TRUE
+  if (!qualifier.upcase() eq 'DELETE')then
+    do !checkMem values !form.supportMem
+      if (!!mdsComClaimDac(!checkMem,'DACDEL','').not()) then
+        !canDelete = FALSE
+      endif
+    enddo
+
+    if !canDelete.not() then
+      if !silent.eq('BRIEF') then
+        !!error.text = 'Unable to delete all members of support $!name'
+        !form.name.val = 'unset'
+        return 0
+      else
+        -- !!alert.error('Unable to delete members of support $!name')
+      endif
+    endif
+  endif
+
+  -- If we are brief mode then check if the support references any guide if so reject deletion
+
+  if (!qualifier.upcase() eq 'DELETE')then
+    -- Ignore supports where :mdsSupptype begin with a GT as they are real guides
+    if !silent.eq('BRIEF') then
+      !listOfReferences = ARRAY()
+      do !checkMem values !form.supportMem
+        if !checkMem.type.eq('ATTA') then
+          !refType = :mdssupptype of $!checkMem
+          if !checkMem.:MdsGuideRef.badref().not() and !refType.match('GT').eq(0) then
+            !listOfReferences.append(!checkMem.:mdsGuideRef)
+          endif
+        endif
+      enddo
+      if !listOfReferences.size().gt(0) then
+        !stringRefs = ''
+        do !stringOfRefs values !listOfReferences
+          !stringRefs = !stringRefs + ' ' + !stringOfRefs.name
+        enddo
+        !!error.text = 'Unable to delete support $!name because it references support/s' + !stringRefs
+        return 0
+      endif
+    else
+      -- dtf >>>  07.10.04 Check to see if we have found a hanger in the same group
+      if !!mdsDeleteSupp.isPartOfGroup then
+        if (type of /$!name eq 'STRU' ) then
+          -- Confirm decision if hanger found
+          --if (!!alert.confirm('Other Group Members Detected! are you sure you want to delete highlighted support $!<name>.') eq 'NO')then
+          --  golabel /Reset
+          --endif
+        elseif (type of /$!name eq 'ATTA' ) then
+          -- Set the Rename flag because any other hangers may need renaming
+          !!mdsDeleteSupp.reNameHanger = TRUE
+        endif
+      elseif !!mdsDeleteSupp.connectedHangers.size().gt(0) then
+        !!alert.error('Other attached Supports Detected! you must delete them before you delete this Support!')
+        !!mdsDeleteSupp.name.val = |unset|
+        return
+      endif
+      -- dtf <<<  End of Mod
+    endif
+  endif
+
+  -- Set Form member for Special Support Type
+  if (!qualifier.upcase().eq('SPECIAL')) then
+    if (!form.specialmem.empty()) then
+      !form.specialmem = !form.supportMem
+    else
+      -----------------------------------
+      -----------------------------------
+      -- For SPECIAL Supports redefine the variable '!form.specialmem' to ONLY contain the MDS Support Members
+      -- (Structures and/or Attas.) shown in the 'Support List to Create a SPECIAL' gadget.
+      unenhance all
+      if (!form.list.dtext.empty()) then
+        !form.specialmem = !form.supportMem
+      else
+        !array   = !form.list.dtext
+        !spldata = !!mdssplcollect(!array)
+        !form.specialmem  = !spldata
+      endif
+
+      !!kenhanceList(!form.specialmem)
+      !!kenhanceList(!form.supportMem)
+
+      -----------------------------------
+      -----------------------------------
+    endif
+  endif
+
+  if (!action.upcase() neq 'CLASH')then
+  !form.name.val = after(!suppName,'/')
+  endif
+
+
+  if (!action.upcase() eq 'MODIFY')then
+
+    -- Set the .pack and .dPack gadgets of the Form to Active/Inactive
+    !split = !function.split('I')
+    !formcomp = !split[1] & !split[2]
+    if ( !suppType inset ('CT01','CT02','CT03','CT04','CT05','CT06','CT07','CT08','DT01','DT02','DT03','DT04' )) then
+      !formfals  = !formcomp & '.pack.active = false '
+      $!formfals
+      handle ANY $* Form does not contain .pack gadget
+      endhandle
+
+      !dformfals = !formcomp & '.dPack.active = false '
+      $!dformfals
+      handle ANY $* Form does not contain .dPack gadget
+      endhandle
+    else
+      !formtrue  = !formcomp & '.pack.active = true '
+      $!formtrue
+      handle ANY
+      endhandle
+
+      !dformtrue = !formcomp & '.dPack.active = true '
+      $!dformtrue
+      handle ANY
+      endhandle
+    endif
+
+  endif
+
+
+  -- Navigate to support
+  !!ce = !suppName.dbref()
+  handle any
+    !!ce = !element
+  endhandle
+
+
+  -- If the action is to copy and a trunnion has been selected then trap as these cannot be copied.
+
+  if !action.upcase().eq('COPY') then
+    bran
+    handle ANY
+    elsehandle NONE
+      if !!ce.:mDSTrun then
+        !!alert.error('Trunnions cannot be copied. please use the create option.')
+        golabel /Reset
+      endif
+      same
+    endhandle
+  endif
+
+  if !action.upcase().eq('MODIFY') then
+    !!mdsModifySupp.applyForm[5] = |!!mdsModifySupp.cancel.active = FALSE|
+  endif
+
+  !!mdsDacControl(FALSE)
+
+  if !errorFormShown then
+    golabel /Reset
+  endif
+  return 1
+
+  label /Reset
+  !!ce = !origin
+  if (!action.upcase() neq 'CLASH')then
+  !form.name.val = 'unset'
+  !form.name.setFocus()
+  !form.cancel.active = TRUE
+  else
+    return error 99
+  endif
+  UNENHANCE ALL
+
+  -- Re-Enhance All References in The Special Support
+  if (!qualifier.upcase().eq('SPECIAL')) then
+    !!kenhanceList(!form.specialmem)
+  endif
+
+  !form.supportMem.clear()
+
+
+  !!mdsDacControl(FALSE)
+
+
+  -- End function
+endfunction

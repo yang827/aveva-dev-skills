@@ -1,0 +1,674 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+--   File:      mdssetdatat40.pmlfnc
+--   Type:      Function Definition
+--   Group:     Multi Discipline Supports Application
+--   Keyword:   MDS
+--   Module:    DESIGN
+--   Replaces:
+--
+--   Author:    Wayne Dodwell
+--   Created:   5th February 2003
+--
+--
+
+-- Description:
+-- Creation function for general ancillary AT40
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsSetDatat40()
+
+  -- Find current units and set the distance unit to metric
+  !currentunits = !!kGetSetUnits()
+
+  -- Initialise variables
+  !tubeType = !!mdsOptions.pipes
+  !datum    = !!mdsAT40.support.datum
+  !name     = !!mdsAT40.name.val
+  !alias    = !!mdsAT40.support.alias
+  !!mdsAT40.bedplate.active = true
+  !fromAtta = !!mdsAT40.support.preliminaryStore.set()
+  if (!fromAtta) then
+    !pre = object DBREF('/' & !name & '_Pre')
+  endif
+
+  !replace  = !!mdsAT40.support.replace
+
+  !cecomp = !!ce
+
+  if (!datum.set()) then
+    !!alert.error('Atta for support $!name already exists')
+    !!kRestoreUnits(!currentunits)
+    return
+  endif
+
+  -- Set Pipe Creation Type, 'SHOE' for Insulated Pipe , 'PIPE' for UNINSULATED Pipe and 'TRUNNION' for Trunnion with Base Plate
+  !insutype = !!mdsAT40.type.selection()
+
+  --------------------------------------------------------------------------------------------
+  --------------------------------------------------------------------------------------------
+  --------------------------------------------------------------------------------------------
+  -- Select -(1) Identify Pipe SHOE if Pipe is INSULATED i.e. !insutype = 'SHOE'
+  if (!insutype.eq('SHOE')) then
+    !id = 'Pipe Shoe'
+
+    label /atta
+
+    -- Identify shoe from preliminary support
+    -- <sk> 22/06/2012
+    if (defined (!!mdsAutoTubePicker) AND !!mdsAutoTubePicker.enabled()) then
+
+      -- return if limit of pick tries exceeded
+      if (!!mdsAutoTubePicker.allowedPicks.eq(0)) then
+        !!mdsAutoTubePicker.cancel()
+        return FALSE
+      endif
+
+      -- number of .allowedPicks is decreased here
+      !picked = !!mdsAutoTubePicker.pick('ATTA', '')
+      if unset(!picked) then
+        !!alert.warning ('There is no pipe shoe next to preliminary support.')
+        !!mdsAutoTubePicker.cancel()
+        !!kRestoreUnits(!currentunits)
+        return false
+      else
+        !!ce = !picked
+      endif
+
+    else
+      -- </sk> 22/06/2012
+
+      prompt off
+      prompt load escape |Identify $!id|
+      id atta @
+      handle (61,528)
+        prompt on
+        !!kRestoreUnits(!currentunits)
+        return
+      endhandle
+      prompt dismiss
+      prompt on
+
+    endif
+
+    -- Identified Component
+    !atta = !!ce
+    -- Check if a DATUM or SREF Atta
+    if (!atta.name.match('/DATUM').gt(1)) then
+      -- DATUM ATTA of a MDS FRAMEWORK Support Identified
+      !datumnam = !atta.name
+      !srefname = !atta.name.replace('/DATUM','/SREF')
+      !srefatta = !srefname.dbref()
+      !srefsele = true
+    elseif (!atta.name.match('/SREF').gt(1)) then
+      -- SREF ATTA of a MDS FRAMEWORK Support Identified
+      !srefname = !atta.name
+      !srefatta = !atta.name.dbref()
+      !srefsele = true
+      !datumnam = !atta.name.replace('/SREF','/DATUM')
+      !atta = !datumnam.dbref()
+    else
+      -- Independent MDS Pipe Support Atta Selected
+      !datumnam = !atta.name
+      !srefsele = false
+    endif
+
+    -- Is it a Pipe SHOE or the SREF Atta of a DATUM Atta which is Pipe SHOE
+    if (!atta.catref.owner.:MdsType.neq('SHOE')) then
+      !!alert.error('Identified element is not a Pipe SHOE')
+      golabel /atta
+    else
+      -- Is the Identified Pipe SHOE UNINSULATED
+      if  !!ce.inth.unset().or(!!ce.inth.eq(0)) then
+        if(!!alert.confirm('Identified SHOE is on an UNINSULATED Pipe. Do you want to continue?').eq('NO')) then
+          golabel /atta
+        endif
+      endif
+    endif
+    --------------------------------------------------------------------------------------------
+
+    -- Select -(2) Identify PIPE if PIPE is UNINSULATED i.e. !insutype = 'PIPE'
+  elseif (!insutype.eq('PIPE')) then
+
+    if (!tubeType eq 'FTUB')then
+      !pipeType = 'lined section'
+    else
+      !pipeType = 'tube'
+    endif
+    !idtype = 'pipe'
+    !purp = 'PIPE'
+
+    label /again
+    if (!!mdsidtube(!tubeType, 'identify $!pipeType of $!idtype',!purp).not())then
+      !!kRestoreUnits(!currentunits)
+      return
+    endif
+
+    -- Is the Identified Pipe UNINSULATED
+    if  !!ce.inth.unset().or(!!ce.inth.eq(0)).not() then
+      !!alert.error('Identified Pipe has INSULATION')
+      golabel /again
+    endif
+
+    -- Check if the Selected Pipe belongs to a Trunnion Branch
+    if (!!ce.type.eq('BRAN')) then
+      if (!!ce.:mdstrun) then
+        !!alert.error('Identified Pipe belongs to a Trunnion Branch, and is unsuitable')
+        golabel /again
+      endif
+    else
+      if (!!ce.owner.:mdstrun) then
+        !!alert.error('Identified Pipe belongs to a Trunnion Branch, and is unsuitable')
+        golabel /again
+      endif
+    endif
+
+    -- ALWAYS Set the Variable !srefsele to FALSE for This OPTION
+    !srefsele = false
+
+    --------------------------------------------------------------------------------------------
+    --------------------------------------------------------------------------------------------
+    --------------------------------------------------------------------------------------------
+    -- Select -(3) Identify Trunnion Base Plate if Pipe is a TRUNNION Branch i.e. !insutype = 'TRUNNION'
+  elseif (!insutype.eq('TRUNNION')) then
+    !id = 'Trunnion Base Plate'
+
+    label /trunnion
+
+    -- Identify trunnion plate from preliminary support
+    -- <sk> 22/06/2012
+    if (defined (!!mdsAutoTubePicker) AND !!mdsAutoTubePicker.enabled()) then
+
+      -- return if limit of pick tries exceeded
+      if (!!mdsAutoTubePicker.allowedPicks.eq(0)) then
+        !!mdsAutoTubePicker.cancel()
+        return FALSE
+      endif
+
+      -- number of .allowedPicks is decreased here
+      !picked = !!mdsAutoTubePicker.pick('PLAT', '')
+      if unset(!picked) then
+        !!alert.warning ('Preliminary support is expected next to trunnion base plate')
+        !!mdsAutoTubePicker.cancel()
+        !!kRestoreUnits(!currentunits)
+        return false
+      else
+        !!ce = !picked
+      endif
+      -- </sk> 22/06/2012
+
+    else
+
+      prompt off
+      prompt load escape |Identify $!id|
+      --<wd>may2003
+      --      id atta @
+      --<wd>may2003
+      id plat @
+      handle (61,528)
+        prompt on
+        !!kRestoreUnits(!currentunits)
+        if !fromAtta then
+          !!mdsRestorePre(!!mdsAT40, true)
+        endif
+        return
+      endhandle
+      prompt dismiss
+      prompt on
+
+    endif
+
+    -- Identified Atta Component
+    !atta = !!ce
+
+    -- Check if the Selected Atta is on a Trunnion Branch
+    if (!atta.owner.:mdstrun) then
+      !mCount = !!ce.owner.mCount()
+      if (!fromAtta AND  !pre.order.eq(!mCount - 1) AND !mCount.eq(!atta.order)) then
+        -- for preliminary support, preliminary should be last before PLAT (!atta), if not - reorder applied
+        $!!ce.owner
+        -- reorder preliminary after plate
+        REORDER $!pre AFTER $!atta
+        handle any
+        endhandle
+      endif
+
+      -- Check if the Selected Atta is a VALID Trunnion Base Plate
+      --      if (!atta.styp inset ('AC18A','AC18B','AC30','AC47')) then
+      --ge/07/12/04 Fix for HPD0027087 AC57 is not recognised as a base plate
+      if (!atta.styp inset ('AC18A','AC18B','AC30','AC47','AC57','AC60','AC61','AC62','AC63','AC64','AC65','AC66','AC67')) then
+        -- Check if the Selected Atta is the LAST Member of the Trunnion Branch
+        -- for preliminary support, preliminary should be last before PLAT (!atta)
+        if  ((!fromAtta AND  !atta.order.eq(!mCount - 1) AND !mCount.eq(!pre.order)) OR !mCount.eq(!atta.order)) then
+          -- It is now OK to Continue with the Creation
+          !datumnam = !atta.name
+          !srefname = !datumnam & '/SREF'
+          !srefdbrf = !srefname.dbref()
+          !srefsele = false
+        else
+          --!!alert.error('Identified Atta/Trunnion Base Plate MUST be the LAST Branch Member')
+          !!alert.error('Identified Trunnion Base Plate MUST be the LAST Branch Member')
+          golabel /trunnion
+        endif
+      else
+        --!!alert.error('Identified Atta is NOT a VALID Trunnion Base Plate')
+        !!alert.error('Identified Plate is NOT a VALID Trunnion Base Plate')
+        golabel /trunnion
+      endif
+    else
+      --!!alert.error('Identified Atta is NOT on a Trunnion Support')
+      !!alert.error('Identified Plate is NOT on a Trunnion Support')
+      golabel /trunnion
+    endif
+
+  endif
+
+  forwards
+
+  -- Check if PIPE is NOT Vertical and within the Maximum Slope Allowed,
+  -- for Horizontal Pipes, displayed on the 'Settings>Options...' form.
+  !currcomp = !!ce
+  if (!!ce.type eq 'BRAN') then
+    !hdir = hdir wrt /*
+  else
+    !hdir = pl dir wrt /*
+  endif
+
+  if (!hdir neq U and !hdir neq D ) then
+    if (!!mdsgradient(!currcomp)) then
+      !!alert.message ('The pipe identified is not within the maximum slope for horizontal pipes as defined in the application defaults ($!!mdsOptions.slope.val)')
+      !!ce = !cecomp
+      !!kRestoreUnits(!currentunits)
+      if (!fromAtta) then
+        -- restore preliminary (reorder cancelled if applied)
+        !!mdsRestorePre(!!mdsAT40, true)
+      endif
+      return
+    endif
+  endif
+
+  -- Select ancillary
+  if(!!kGetBoreUnits()) then
+    UNITS INCH BORE
+  endif
+
+  !bore = Pl bore
+  handle any
+    !bore = ph bore
+  endhandle
+
+  -----------------------------------------------------------------------------------------
+  -----------------------------------------------------------------------------------------
+  -- The CODE below is REDUNDANT as AT40,AT41 and AT35 Ancillaries are NOT ALLOWED on MDS FRAMEWORKS
+  -----------------------------------------------------------------------------------------
+  --*****************
+  -----------------------------------------------------------------------------------------
+  -- Create the AT40, AT41 Atta after the SREF ATTA of a MDS FRamework Support Pipe SHOE
+  if (!srefsele) then
+    if (!fromAtta) then
+      -- make sure preliminary is after selected one
+      $!pre.owner
+      REORDER $!pre AFTER $!srefatta
+      handle any
+      endhandle
+    endif
+    !!ce = !srefatta
+  endif
+  -----------------------------------------------------------------------------------------
+  --*****************
+  -----------------------------------------------------------------------------------------
+
+  !currentunits = !!kGetSetUnits()
+
+  !!mdsDacControl(TRUE)
+
+  -- <sk> 04/06/2012
+  if !fromAtta then
+    !!ce = !pre
+    :mdssupptype default
+    :mdssuppfunc default
+    -- set datum in the form for distance
+    !!mdsAT40.support.datum = !pre
+    -- Set distance gadget
+    !!mdsDistance(!!mdsAT40)
+  else
+    new atta
+  endif
+  -- <sk> 04/06/2012
+
+  spkbrk true
+  --    $P SELECT SPEC /MDS WITH STYP '$!alias'
+  !choice = SELECT SPEC /MDS WITH STYP '$!alias'
+  handle any
+    !projStandard = !!mdsAT40.support.replace
+    !!alert.error('Unable to select ancillary ' & !projStandard & ' at this bore(' & !bore & ')')
+    -- <sk> 04/06/2012
+    !!kRestoreUnits(!currentunits)
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsAT40, true)
+      return
+    endif
+    delete atta
+    !!mdsDacControl(FALSE)
+    return
+  elsehandle none
+    ------------------------------------------------------------------------------
+    -- mjb >>> 13.04.06 <mds12>
+    -- The element may exist in the specification but the project may not contain the size in the parameters file
+    units mm bore
+    spref $!choice[1]
+    --!atta = !!ce
+    !lbor = !!ce.lbor.real().value()
+    !mds12test = !!mdssetdespars(!!ce)
+    if (!mds12test.not()) then
+      --if undefined(!!mdspar$!alias[$!bore]) then
+      -- mjb <<< end of mod
+      ------------------------------------------------------------------------------
+
+      !projStandard = !!mdsAT40.support.replace
+      !!alert.error('Unable to select ancillary ' & !projStandard & ' at this bore(' & !bore & ')')
+      -- <sk> 04/06/2012
+      !!kRestoreUnits(!currentunits)
+      if !fromAtta then
+        !!mdsRestorePre(!!mdsAT40, true)
+        return
+      endif
+      delete atta
+      !!mdsDacControl(FALSE)
+      return
+    endif
+  endhandle
+  ------------------------------------------------------------------------------
+  -- mjb >>> 13.04.06 <mds12>
+  --mm bore
+  --spref $!choice[1]
+
+  -- Set the AT40 Pad Design Parameters
+  --!!mdssetdespars(!!ce)
+  -- mjb <<< end of mod
+  ------------------------------------------------------------------------------
+
+  !!mdsDacControl(true)
+
+  ------------------------------------------------------------------------------
+  -- mjb >>> 13.04.06 <mds12>
+  -- Check Pipe Insulation Thickness is within the limits of the Selected ancillary Standard
+  -- If the MNIN (Minimum Insulation) data property does not exist in the ancillary's dataset
+  -- the OBJECT 'Mdscheckstd.insu()' will return 'TRUE' and skip the code shown below
+  !mdsattaobj  = object MDSREADPARSDATA()
+  !mdsattadefs = !mdsattaobj.mdsdefsdata(!!ce.stype,!lbor)
+
+  if (!mdsattadefs.not()) then
+    !!alert.error (|ERROR: ABORTING the creation of this MDS ANCILLARY|)
+    !!kRestoreUnits(!currentunits)
+    -- <sk> 04/06/2012
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsAT40, true)
+      return
+    endif
+    delete atta
+    !!mdsDacControl(FALSE)
+    return
+  endif
+  !check = object MDSCHECKSTD(!mdsattaobj)
+
+  --!check = object MDSCHECKSTD()
+  -- mjb <<< end of mod
+  ------------------------------------------------------------------------------
+  !min = STRING()
+  !max = STRING()
+  !materror = STRING()
+
+  if (!check.material(!materror).not()) then
+    !!alert.error (!materror)
+    !!kRestoreUnits(!currentunits)
+    -- <sk> 04/06/2012
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsAT40, true)
+      return
+    endif
+
+    delete atta
+    !!mdsDacControl(FALSE)
+    return
+  endif
+
+  if (!check.insu(!alias,!min,!max).not()) then
+    !!mdsInsulationError(!currentunits, !min, !max, !replace)
+    !!kRestoreUnits(!currentunits)
+    -- <sk> 04/06/2012
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsAT40, true)
+      return
+    endif
+    delete atta
+    !!mdsDacControl(FALSE)
+    return
+  endif
+
+  -- Check branch temperature is within the limits of the Selected ancillary Standard
+  -- If the MINT (Minimum Temperature) data property does not exist in the ancillary's dataset
+  -- the OBJECT 'Mdscheckstd.temp()' will return 'TRUE' and skip the code shown below
+
+  !tMin = STRING()
+  !tMax = STRING()
+  if (!check.temp(!alias,!tMin,!tMax).not()) then
+    var !temp temp of branch
+    !!alert.message ('The temperature of the identified pipe ($!temp) is not within the minimum/maximum temperatures ($!tMin / $!tMax)')
+    !!kRestoreUnits(!currentunits)
+    -- <sk> 04/06/2012
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsAT40, true)
+      return
+    endif
+    delete atta
+    return
+  endif
+
+  -- Test if the ancillary is available at this elevation
+
+  if !check.elevation(!alias).not() then
+    !position = !!ce.position.wrt(/* )
+    !selectedElevation = !position.up
+    ------------------------------------------------------------------------------
+    -- mjb >>> 13.04.06 <mds12>
+    !minimumElevation = !mdsattaobj.elevation
+    --!minimumElevation = !!mdspar$!alias[0].despars[1]
+    -- mjb <<< end of mod
+    ------------------------------------------------------------------------------
+    !!alert.message ('The elevation selected is unsuitable for this ancillary. Selected elevation $!selectedElevation Minimum elevation $!minimumElevation')
+    !!kRestoreUnits(!currentunits)
+    -- <sk> 04/06/2012
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsAT40, true)
+      return
+    endif
+    delete atta
+    return
+  endif
+
+  -- <sk> 06/07/2012 Check user criteria
+  !criteria = !check.criteria()
+  if (!criteria.empty().not()) then
+    !!alert.error (!criteria)
+    !!kRestoreUnits(!currentunits)
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsAT40, true)
+      return
+    endif
+    delete atta
+    return
+  endif
+  -- <sk> 06/07/2012
+
+  -- Set the ATTA material
+  !!mdssetmatref(!!ce)
+
+  -- Activate DAC Control ON
+  !!mdsDacControl(true)
+
+  --  When !insutype is equal to 'SHOE' and the Pad default Design Parameters have already been set
+  !form   = !!mdsAT40
+  !at40ce = !!ce
+  --------------
+  if (!insutype.eq('SHOE')) then
+    -- Navigate to the Shoe/Datum Atta to Check and Adjust the Height of the Identified Shoe
+    !!ce = !atta
+    !shoewarning = STRING()
+
+    -- Pad Atta Length and Shoe Atta Height are always MODIFIED in the <!check.shoeheight(w,x,y,z) method> below
+    -- Issue a Warning if SHOE Height and/or the PAD Length is NOT within the MDS Standards Permissible Height/Length Range
+    if (!check.shoeheight(!form,!atta,!at40ce,!shoewarning).not()) then
+      !!alert.warning(!shoewarning)
+    endif
+
+    -- Set the Cross Reference Attribute :mdsguideref at Both the SHOE and PAD Attas
+    !!mdsDacControl(TRUE)
+    !atta.:mdsguideref   = !at40ce
+    !at40ce.:mdsguideref = !atta
+
+    -- Orientate Isolation Pad to the P9 Orientation of The Associated Shoe
+    !shoep9dir = !atta.pdir[9].wrt(/* )
+    !!ce = !at40ce
+    ori and p9 is $!shoep9dir
+
+    --------------
+  elseif (!insutype.eq('PIPE')) then
+    -- When !insutype.eq('PIPE') reset XHEI DESPAR num 5 to be ZERO(for AT40*, AT41* and AT42)
+    !at40ce.desp[5] = 0
+
+    --------------
+    --------------
+  elseif (!insutype.eq('TRUNNION')) then
+    -- Get the associated trunnion type e.g 'tt23', from the sref atta in the trunnion branch
+    --      !truntyp = !srefdbrf.stype
+
+    -- Get the min and max length values of the trunnion
+    --      !trunabor = !srefdbrf.abor
+    ---------------------------------------------------------------------------------
+    -- mjb >>> 13.04.06 <mds12> variables !minlen and !maxlen not used
+    --!minlen   = !!mdspar$!truntyp[$!trunabor].minimum
+    --!maxlen   = !!mdspar$!truntyp[$!trunabor].maximum
+    --mjb <<< end
+    ---------------------------------------------------------------------------------
+    -- Get the existing length of the associated trunnion branch
+    !!ce = !atta.owner
+    pin 9 copy ph
+    pin 8 copy pt
+    pin 9 dir d
+    pin 9 plane d thro p0 of href
+    !xtrlen = !!kstrreal('cons dist pin 9 to plane pin 8')
+    !!mdsresetpins(8,9)
+    !!mdsAT40.tlength = !xtrlen
+
+    -- Connect isolation pad to trunnion base plate
+    !!ce = !at40ce
+    conn
+    handle any
+      fconn
+    endhandle
+
+    -- Adjust trunnion length within the min/max trunnion length limits to accommodate the isolation pad
+    !trunlenwarn = STRING()
+    if (!!mdsadjtrunlen(!atta,!at40ce,!srefdbrf,!form,'CREATE',!trunlenwarn).not()) then
+      !!alert.warning(!trunlenwarn)
+    endif
+
+    -- Set the cross reference attribute :mdsguideref at both the trunnion base plate and isolation pad attas
+    !!mdsDacControl(TRUE)
+    !atta.:mdsguideref   = !at40ce
+    !at40ce.:mdsguideref = !atta
+
+    --------------
+    --------------
+  endif
+
+  -- navigate back to new isolation pad atta
+  !!ce = !at40ce
+  -- name support
+  name /$!name
+  :mdssupptype |$!!mdsAT40.support.type|
+  !!ce.:mdscp3 = !!mdsAT40.type.selection()
+
+  !!mdsSetIspe()
+
+  -- Add stex for isometrics
+  -- set stex for atta
+  !sAtta = !!ce
+
+  !!mdsSelLstu(!!ce)
+
+  !!mdsDacControl(true)
+
+  if (!insutype.eq('TRUNNION')) then
+    ------------------
+    ------------------
+    ------------------
+    ------------------
+  else
+    -- <sk> 04/06/2012
+    -- do not modify POS and ORI in atta from preliminary
+    if !fromAtta.not() then
+      POS AT PREV
+      handle any
+        pos at ph
+      endhandle
+      ori
+    endif
+    if (defined(!shoep9dir))then
+      !!ce = !at40ce
+      ori and p9 is $!shoep9dir
+    endif
+  endif
+  Call !!mdsTransport(!sAtta,!name)
+
+  -- Always add atta to support object
+  !!ce = !at40ce
+  !!mdsAT40.support.atta.clear()
+  !!mdsAT40.support.atta.append(!!ce)
+  !!mdsAT40.support.datum  = !!ce
+  !!mdsAT40.support.pADir  = Pa Dir wrt world
+  !!mdsAT40.support.pLDir  = Pl Dir wrt world
+  !!mdsAT40.support.p9Dir  = P9 Dir wrt world
+
+  -- Add marker text
+  !!mdsaidtext(!!mdsAT40)
+
+  -- Enhance elements using colour set for highlight
+  !colourList = ARRAY()
+  !colourList.appendarray(!!mdsAT40.support.atta)
+
+  -- Colour Support
+  Call !!kEnhanceList(!colourList)
+
+  -- When finished grey out datum gadget and reset height,length and setsteel
+  !!mdsAT40.datum.active = false
+  !!mdsSetGadgets(!!mdsAT40,!!ce,!!mdsAT40.support.type)
+
+  --Deactivate Pipe Creation Type radio group
+  !!mdsAT40.type.active = false
+
+  -- Reset Units
+  !!kRestoreUnits(!currentunits)
+
+  -- set focus to the distance text gadget
+  !!mdsAT40.dist.setFocus()
+
+  !!mdsDacControl(false)
+
+  -- End function
+endfunction

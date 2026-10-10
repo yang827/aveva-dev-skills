@@ -1,0 +1,263 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            hmrestrictionbgen.pmlobj
+--   Type:          Object Definition
+--   Group:
+--     Keyword:     Hole Management
+--   Module:        All
+-- Author:          Martin Ward
+--  Created:        January 2008
+--
+-- Description:
+--   Object used to verify an association in the Hole Management system
+--    1.  Get profile of virtual hole
+--    2.  If hole status is approved, loop all ASSMBRs. THIS IS NOT CURRENTLY ENABLED
+--    2.1.  Get the profile of the real hole. THIS IS NOT CURRENTLY ENABLED
+--    3.  Get profile of penetrated panel (bail out if any knuckle plates)
+--    4.  Test that virtual hole intersects panel profile
+
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  checkHolePanelIntersect()        BOOLEAN             check the Fixing and the panel intersect
+--  gatherData()                     -
+--  hmRestrictionBGen()              -
+--  testEv()                         BOOLEAN
+--
+------------------------------------------------------------------------
+
+define object HMRESTRICTIONBGEN
+
+ -- MEMBER names are compulsory to tie in with ASSOCIATIONS
+ -- COMPONENT = RESTRICTION element
+   member .association   is DBREF
+   member .component     is DBREF
+
+   member .fixing        is DBREF
+   member .panel         is DBREF
+   member .allAssMbr     is ARRAY
+   -- Additional members required to simplify processing
+   member .hmHole       is HMHOLE
+
+   member .debug         is BOOLEAN
+endobject
+-- End of object definition
+
+
+------------------------------------------------------------------------
+--
+-- Method:      hmRestrictionBGen
+--
+-- Description: Constructor method
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .hmRestrictionBGen()
+
+  !this.debug = FALSE
+  if (defined(!!debug) ) then
+    !this.debug = TRUE
+  endif
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      testEv
+--
+-- Description: make sure the fixing and panel intersect
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .testEv() is BOOLEAN
+
+-- Manually trigger the CONSTRUCTOR - does not get run automatically at the moment
+  !this.hmRestrictionBGen()
+
+  !this.gatherData()
+
+-- Check on profile of Hole Owner
+  !result = !this.checkHolePanelIntersect()
+  handle any
+    !result = FALSE
+  endhandle
+  if ( !result.not() ) then
+    if (!this.debug ) then
+      write 'Failed check in hmRestrictionC.checkHolePanelIntersect()'
+    endif
+    return FALSE
+  endif
+
+-- Once all checks completed successfully...
+  return TRUE
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      GatherData
+--
+-- Description: Collect all key information for member variables
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .gatherData()
+
+ -- Gather all hole data for this association
+  !this.hmHole = object HMHOLE(!this.association)
+
+  !this.fixing = !this.hmHole.virtualHole
+  !this.panel  = !this.hmHole.holeOwner
+  !this.allAssMbr = object ARRAY()
+
+-- Locate ALL the Assmbr elements for this ASSOCIATION
+  !find = object COLLECTION()
+  !find.type('Assmbr')
+  !find.scope(!this.hmHole.element)
+  !this.allAssMbr = !find.results()
+
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      checkHolePanelIntersect
+--
+-- Description: check the Fixing and the panel intersect
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .checkHolePanelIntersect() is BOOLEAN
+
+  if (badref(!this.fixing)) then
+    !!setRestrictionError(!this.association, !this.component, |Bad reference to fixing|)
+    return FALSE
+  elseif (badref(!this.panel)) then
+    !!setRestrictionError(!this.association, !this.component, |Bad reference to panel|)
+    return FALSE
+  endif
+--    1.  Get profile of virtual hole
+  if (!this.fixing.spre.set()) then
+    !fixingProfile = !!hmFindHoleProfile(!this.fixing)
+    handle ANY
+      !!setRestrictionError(!this.association, !this.component, |Unable to get hole profile from fixing|)
+      return FALSE
+    endhandle
+  else
+    -- find the profile from the template
+    !loop = object COLLECTION()
+    !loop.scope(!this.fixing)
+    !loop.type('loop')
+    !result = !loop.results()
+    !fixingProfile = object PROFILE(!result[1])
+  endif
+  if (!this.panel.hardtype inset('CPANEL', 'CPLATE', 'SCTN', 'GENSEC')) then
+    -- no point in doing any queries at the moment
+    return TRUE
+  endif
+
+  -- data collected here doesn't seem to be used later. Would be better to limit real hole testing to
+  -- restriction d anyway so for now leave this out.
+--    2.  If hole status is approved, loop all ASSMBRs
+$(  if (!this.hmHole.getFullStatus() eq 'APPROVED') then
+    do !i values !this.allAssMbr
+      if (badref(!i.amemrf)) then
+        !!setRestrictionError(!this.association, !this.component, |Bad reference in an AMEMRF field in one of the elements in the hole association|)
+        return FALSE
+      endif
+      if (!i.amemrf.type eq 'NXTR') then
+        !realHoleProfile = object PROFILE(!i.amemrf.member[1])
+      elseif (!i.amemrf.type eq 'HHOLE') then
+        !realHoleProfile = object PROFILE(!i.amemrf)
+      endif
+    enddo
+  endif
+$)
+--    3.  Get profile of penetrated panel (bail out if any knuckle plates)
+  if( !this.panel.hardtype eq 'PANE' ) then
+    -- find the loop to get the profile
+    !loop = object COLLECTION()
+    !loop.scope(!this.panel)
+    !loop.type('PLOO')
+    !result = !loop.results()
+    !profileElement = object PROFILE(!result[1])
+    handle any
+      !!setRestrictionError(!this.association, !this.component, |Unable to create profile from panel|)
+      return FALSE
+    endhandle
+  else
+    !profileElement = !this.panel
+  endif
+
+  --can this be tidied up so that if profileElement successfully created a profile based on the panels' PLOO
+  --it doesn't create a copy?
+
+
+  !panelProfile = object PROFILE(!profileElement)
+  handle ANY
+    -- if the PANEL is an HPANEL and contains any knuckle plates then that's OK
+    if (!this.panel.type eq 'HPANEL') then
+      !find = object COLLECTION()
+      !find.scope(!this.panel)
+      !find.type('HPLATE')
+      !find.filter(object EXPRESSION('knuckl'))
+      if (!find.results().size() gt 0 ) then
+        !!setRestrictionError(!this.association, !this.component, |Knuckle plates cannot be validated|)
+        return TRUE
+      else
+        !!setRestrictionError(!this.association, !this.component, |Unable to get profile of HPANEL|)
+        return FALSE
+      endif
+    endif
+  endhandle
+--    4.  Test that virtual hole intersects panel profile
+  !test = !panelProfile.isWithout(!fixingProfile)
+  handle any
+    !!setRestrictionError(!this.association, !this.component, |Unable to test whether fixing inside/intersects panel boundary|)
+    return FALSE
+  endhandle
+  if (!test.not()) then
+    !!setRestrictionError(!this.association, !this.component, |No Error|)
+    return TRUE
+  else
+    !!setRestrictionError(!this.association, !this.component, |Panel does not intersect with fixing profile|)
+    return FALSE
+  endif
+
+endmethod
+-- End of method

@@ -1,0 +1,890 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            aslinstance.pmlobj
+--   Type:          Object Definition
+--   Group:         Access, Stairs & Ladders Application
+
+--     Keyword:     ASL
+--   Module:        design
+--   Replaces:
+--
+-- Author:          M.Barlow
+-- Created:         Sat Dec 12 18:05:55 "GMT 1998
+--
+--
+-- Description:
+-- Object containing parameters and constraints which define an ASL
+-- item. Holds information about ASL item about to be created, or
+--  one that already exists.
+-- *** OLD STYLE PML ***
+-- *** COMMAND LINE SYNTAX ***
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  adjustments(DBREF)               -                   handles repeats and special user functions
+--  aslInstance()                    -                   Constructor
+--  aslRealign(STRING)               BOOLEAN             realign the owning GENSEC with the TMPL selected
+--  create()                         -                   create an ASL item using data extracted from properties.
+--  edit(DBREF,STRING)               DBREF
+--  modify()                         -                   modify an ASL item using data extracted from properties.
+--  setStore()                       DBREF               Determine storage area for asl creation.
+--  setStore(DBREF)                  DBREF               Set storage area for asl creation to given DBREF.
+--
+------------------------------------------------------------------------
+
+-- Define object
+define object ASLINSTANCE
+
+  -- Current ASL element
+  member .currentElement is DBREF
+
+  -- Current ASL owner
+  member .store          is DBREF
+
+  -- Working Data and Maximums
+  member .aslGeometry    is ASLCONSTRAINGEOM
+
+  -- specification and property information
+  member .specData       is SPECDATA
+  member .spec           is DBREF
+  member .propertyData   is ASLPROPERTYDATA
+
+  -- Property data (from properties form)
+  member .despars        is ARRAY
+  member .default        is ARRAY
+  member .maxMin         is ARRAY
+  member .specComp       is DBREF
+  member .fixedGradient  is BOOLEAN
+  member .freeEnd        is STRING
+  member .justification  is STRING
+
+  -- create or modify mode
+  member .opMode         is STRING
+
+endobject
+-- End of object definition for ASLINSTANCE
+
+------------------------------------------------------------------------
+--
+-- Method:      aslInstance
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .aslInstance()
+
+  -- initialise variables that may not be retrieved from ASL object
+
+  -- fixedGradient indicates whether an adjustment must be made to the
+  -- GENSEC owning the Template because the angle is set by the need
+  -- to fit in an exact number of steps, as near to the optimum step
+  -- size as possible. If fixedGradient is true then one end of the
+  -- ASL GENSEC will be adjusted to achieve the required angle
+  !this.fixedGradient = false
+
+  -- freeEnd identifies which end will be adjusted if fixedGradient is
+  -- true. This is set to the END as set by the user. Note that the
+  -- the actual start and end of the ASL GENSEC may be swapped when the
+  -- template is loaded, so this setting is needed to record the user
+  -- defined end.
+  !this.freeEnd = 'END'
+
+  -- For stairs, ladders etc., the datum point can be top or bottom
+  -- setting out point. If the value is 'DEFAULT' then the template
+  -- will be defined wrt the start of the ASL GENSEC.
+  -- if the value is 'TOP', then the start of the GENSEC will be at the
+  -- highest elevation, and if the value is 'BOTTOM' then the start of
+  -- the GENSEC will be at the lowest elevation.
+  -- If this property not set or badly set then 'DEFAULT' is assumed
+  !this.justification = 'DEFAULT'
+
+endmethod
+-- End of method definition for .aslInstance()
+
+------------------------------------------------------------------------
+--
+-- Method:      setStore( )
+--
+-- Description: Determine storage area for asl creation.
+--  Return null ref if storage area cannot be determined.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--   DBREF        dbref of storage for asl (nullref if failed to find store)
+--
+------------------------------------------------------------------------
+
+define method .setStore() is DBREF
+
+  -- get storage area
+  !storeGroup = 'ASL'
+  !storeArea  = 'ASL'
+  -- Check we can create an ASL GENSEC at this point
+  !store = !!getStorageArea(!storeGroup, !storeArea)
+
+  -- If store is unset, can we create the ASL GENSEC in or above where we are
+  if(!store.unset()) then
+
+    -- find owner of gensec, but do not allow template GENSEC in a template
+    !type  = 'GENSEC'
+    !place = !!ce
+    do
+      !store = !!dtbOwnerOfType(!place, !type)
+      if(!store.unset()) then
+        return object DBREF()
+      endif
+      break if(!store.type neq 'TMPL' )
+      !place = !store.owner
+    enddo
+
+  endif
+
+  !this.store = !store
+  return !store
+
+endmethod
+-- End of method definition for .setStore() DBREF
+
+------------------------------------------------------------------------
+--
+-- Method:      setStore( DBREF )
+--
+-- Description: Set storage area for asl creation to given DBREF.
+--  Return null ref if storage area not valid.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--   DBREF        dbref of storage for asl (nullref if failed to find store)
+--
+------------------------------------------------------------------------
+
+define method .setStore( !store is DBREF ) is DBREF
+
+  -- check that given storage area is OK
+  if(badref(!store)) then
+    !storageRef = object DBREF()
+  elseif(!store.type ne 'SBFR' and !store.type ne 'FRMW' ) then
+    !storageRef = object DBREF()
+  else
+    !storageRef = !store
+  endif
+
+  !this.store = !storageRef
+  return !storageRef
+
+endmethod
+-- End of method definition for .setStore( DBREF ) DBREF
+
+------------------------------------------------------------------------
+--
+-- Method:      edit
+--
+-- Description: initialise the object to edit the given ASL object.
+--  The input DBREF() can be a member of the ASL object.
+--  The returned DBREF is the DBREF() of the ASL object itself.
+--  CURRENT ELEMENT MAY BE CHANGED.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Item to be edited
+--    2   R      STRING      'GENSEC'     - find ASL GENSEC
+--                           'FIXING'     - find ASL FIXING
+--                           'ANY'        - find ASL FIXING or GENSEC
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       Returns DBREF of ASL object, or nullref if bad input arg.
+--
+------------------------------------------------------------------------
+
+define method .edit( !aslRef is DBREF, !aslType is STRING ) is DBREF
+
+  !curRef = !!ce
+  !!ce    = !aslRef
+  handle any
+    !!ce = !!curRef
+    return object DBREF()
+  endhandle
+
+  if( !aslType eq 'GENSEC' or !aslType eq 'FIXING' ) then
+    -- go up to template to skip any template owned gensecs or fixings
+    TMPL
+    handle any
+      -- no template above this element
+    endhandle
+    !aslItem = !!dtbGetOwnerType(!!ce, !aslType)
+    if( !aslItem.unset() ) then
+      -- ASL item not found
+      !!ce = !!curRef
+      return object DBREF()
+    else
+      -- make ASL item the current element
+      !!ce = !aslItem
+    endif
+  endif
+  -- then try to find the GENSEC or FIXING owning the template
+  if( !!ce.hardType eq 'GENSEC' ) then
+    -- got a template
+    !aslItem   = !!ce
+    !aslGensec = !!ce
+  elseif( !!ce.hardType eq 'FIXING' ) then
+    !aslItem   = !!ce
+    !aslGensec = GENSEC OF $!aslItem
+  else
+    -- may be in template area, abort
+    !curRef = !!ce
+    return object DBREF()
+  endif
+
+  -- set reference data
+  !this.currentElement = !aslItem
+  !this.store          = !aslItem.owner
+
+  -- get data from aslItem to load form
+  !poss = !aslGensec.poss.wrt(world)
+  !pose = !aslGensec.pose.wrt(world)
+  !this.aslGeometry.start(!poss)
+  !this.aslGeometry.end(!pose)
+  -- if this is vertical, get direction from gensec
+   var !fixTmplRefs COLLECT ALL TMPL WITH ( HARDTYPE OF OWNER EQ 'FIXING' ) FOR CE
+    !this.aslGeometry.direction(!aslGensec.yDir.wrt(WORLD))
+
+  -- make sure that spref is set
+  !spref = !aslItem.spref
+
+  if( badref(!spref) ) then
+    !this.spec = object DBREF()
+    !this.justification = 'DEFAULT'
+    !this.fixedGradient = false
+  else
+    !this.spec = !spref
+    !this.justification = ( PROP JUST OF $!aslItem )
+    handle any
+      !this.justification = 'DEFAULT'
+    endhandle
+    !gradientType = ( PROP GRAD OF $!aslItem )
+    handle any
+      !this.fixedGradient = false
+    elsehandle none
+      !this.fixedGradient = ( !gradientType.upcase() eq 'FIXED' )
+    endhandle
+  endif
+
+  return !aslItem
+
+endmethod
+-- End of method definition for .edit( DBREF, STRING ) DBREF
+
+------------------------------------------------------------------------
+--
+-- Method:      create
+--
+-- Description: create an ASL item using data extracted from properties.
+-- Creates Instance and set the design parameters accordingly.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .create()
+
+  -- get spec selection
+  !specSelect = !this.spec
+
+  -- CREATE ASL OBJECT --
+--CLOCK INIT
+  PROMPT 'Create ASL item...'
+  -- get storage area
+  !storeGroup = 'ASL'
+  !storeArea  = 'ASL'
+  -- Check we can create an ASL GENSEC at this point
+  !store = !!getStorageArea(!storeGroup, !storeArea)
+
+  -- If store is unset, can we create the ASL GENSEC in or above where we are
+  if(!store.unset()) then
+    !store = !this.store
+  else
+    !this.store = !store
+  endif
+
+  -------------------------------------------------------------
+  -- create ASL GENSEC
+  !!ce = !store
+  NEW GENSEC
+  PURP ASL
+  !this.currentElement = !!ce
+  !aslItemRef = !!ce
+  -- set spre
+  SPRE $!<specSelect>
+  -------------------------------------------------------------
+
+  -- get properties that adjust geometry
+  if( badref(!specSelect) ) then
+    !this.justification = 'DEFAULT'
+    !this.fixedGradient = false
+  else
+    if( badref( TMPREF OF $!specSelect ) ) then
+      -- no template reference on this spec
+      !this.justification = 'DEFAULT'
+      !this.fixedGradient = false
+    else
+      -- got a template - find the justification and gradient setting
+      !this.justification = ( DEPR JUST OF TMPREF OF $!specSelect )
+      handle any
+        !this.justification = 'DEFAULT'
+      endhandle
+      !gradientType = ( DEPR GRAD OF TMPREF OF $!specSelect )
+      handle any
+        !this.fixedGradient = false
+      elsehandle none
+        !this.fixedGradient = ( !gradientType.upcase() eq 'FIXED' )
+      endhandle
+    endif
+  endif
+
+  -- Working Points
+
+  !startInWorld    = !this.aslGeometry.start.wrt(WORLD)
+  !endInWorld      = !this.aslGeometry.end.wrt(WORLD)
+
+  -- swap start and end if required by the selected template
+  if( abs( !startInWorld.up - !endInWorld.up ) gt 1mm ) then
+    -- gensec has a slope
+    !startOnTop = ( !startInWorld.up gt !endInWorld.up )
+    if( !this.justification eq 'BOTTOM' and !startOnTop ) then
+      !this.aslGeometry.reverseSense()
+      !this.freeEnd = 'START'
+    elseif( !this.justification eq 'TOP' and !startOnTop.not() ) then
+      !this.aslGeometry.reverseSense()
+      !this.freeEnd = 'START'
+    endif
+  endif
+
+  -- reset working points in case they have just been changed
+  !start    = !this.aslGeometry.start
+  !end      = !this.aslGeometry.end
+  !angle    = !this.aslGeometry.angle
+
+  -- Get horizontal direction of ASL
+  !aslDir   = !this.aslGeometry.direction
+
+  -- Set yDir direction of ASL GENSEC
+  if(!angle neq 90) then
+    -- yDir must point up for horizontal items
+    !aslYDir = U WRT WORLD
+  else
+    !aslYDir = !aslDir
+  endif
+
+  -------------------------------------------------------------
+  -- create ASL gensec geometry
+  !!ce = !aslItemRef
+  POS  $!<start>
+  ORI Z IS U AND Y IS $!aslDir
+  NEW SPINE YDIR $!<aslYDir>
+--       NEW POINSP AT  $!<start>
+--       NEW POINSP AT  $!<end>
+  NEW POINSP
+  NEW POINSP AT  $!<end>
+  GENSEC
+
+  -- set ends perp to start with
+  DRNS PERP
+  DRNE PERP
+  -------------------------------------------------------------
+
+  -- Set name of ASL GENSEC
+  !flnn = !!ce.flnn
+
+  -- set correct gtyp
+  if( not badref(!specSelect.catRef) ) then
+    !gtype = !specSelect.catRef.gtyp
+  elseif( not badref(!specSelect.tmpRef) ) then
+    !gtype = !specSelect.tmpr.gtyp
+  else
+    !gtype = ''
+  endif
+
+  if( !gtype.empty().not() ) then
+    GTYP $!<gtype>
+  endif
+
+  -- Set DRNE and DRNS
+  if(!gtype neq |LADD|) then
+    !tempDir = !aslDir.opposite()
+    DRNE $!tempDir
+    DRNS $!aslDir
+  endif
+
+  -- check to see if properties set
+ --  if( !this.despars.empty() ) then
+--     -- get default properties
+--     !this.propertyData = object aslPropertyData(!specSelect)
+--     !this.despars = !this.propertyData.despDefault
+--   endif
+--
+--   -- Pick up design para from the Instance
+--   !despars = !this.despars
+--
+--   -- Set Design Parameters from the gen property Instance
+--   do !i indices !despars
+--     DESP NUMB $!i $!despars[$!i]
+--   enddo
+--
+--   -- when its a catref, nothing more to do
+--   if(!specSelect.tmpr.unset()) then
+--     return
+--   endif
+--
+--   -- Create template instance
+--   if( !this.spec.tmpr.set()) then
+-- --CLOCK read
+--     PROMPT 'Create template...'
+--     !tmpl = !specSelect.tmpr.name
+--     NEW TMPL COPY REXE $!tmpl
+--     UNLOCK ALL
+--     !templateRef = !!ce
+--     -- Go back to OWNER
+--     OWNER
+-- -- Create DDSE at Gensec level if spref's are variable
+--     !built = !!aslCmpSprefInvo(FALSE)
+--     if(!built) then
+--       call !!aslCmpSpref('')
+--     endif
+--
+    -- Check if the GENSEC needs reAlignment for fixed gradient
+    if( !this.fixedGradient ) then
+      !reAlignFlg = !this.aslRealign( !this.freeEnd )
+      if (!reAlignFlg.not()) then
+        !!alert.error(|Unable to realign the Owning Points with the TMPL, because the Dataset is incorrectly set up.|)
+        return error 1
+      endif
+    endif
+
+ -- new properties object
+    !!aslGeomDefn.template.setProperties(!this.currentElement)
+    !!aslGeomDefn.template.unsetDesiElement()
+
+    !!ce = !this.currentElement
+    TMPL 1
+    !templateRef = !!ce
+    UNLOCK ALL
+    -- now make final adjustments to the template (repeats & special functions)
+    PROMPT 'Repeat items and special functions...'
+    !this.adjustments( !templateRef )
+  --
+--     -- final execution of rules
+--     PROMPT 'Executing rules...'
+--     !!ce = !aslItemRef
+--     RULE EXECUTE SPRE ON ALL FOR CE
+--     RULE REXE
+--
+--     PROMPT DISMISS
+--
+
+--  endif
+
+endmethod
+-- End of method definition for .create()
+
+------------------------------------------------------------------------
+--
+-- Method:      modify
+--
+-- Description: modify an ASL item using data extracted from properties.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .modify()
+
+  -- get spec selection
+  !specSelect = !this.spec
+
+  -- Working Points
+  !startInWorld    = !this.aslGeometry.start.wrt(WORLD)
+  !endInWorld      = !this.aslGeometry.end.wrt(WORLD)
+
+  -- swap start and end if required by the selected template
+  if( abs( !startInWorld.up - !endInWorld.up ) gt 1mm ) then
+    -- gensec has a slope
+    !startOnTop = ( !startInWorld.up gt !endInWorld.up )
+    if( !this.justification eq 'BOTTOM' and !startOnTop ) then
+      !this.aslGeometry.reverseSense()
+    elseif( !this.justification eq 'TOP' and !startOnTop.not() ) then
+      !this.aslGeometry.reverseSense()
+    endif
+  endif
+
+  -- reset working points in case they have just been changed
+  !start    = !this.aslGeometry.start
+  !end      = !this.aslGeometry.end
+  !angle    = !this.aslGeometry.angle
+
+  -- Get horizontal direction of ASL
+  !aslDir   = !this.aslGeometry.direction
+
+  -- Set yDir direction of ASL GENSEC
+  if(!angle neq 90) then
+    -- yDir must point up for horizontal items
+    !aslYDir = U WRT WORLD
+  else
+    !aslYDir = !aslDir
+  endif
+
+  -- create Generic Section owning template
+
+  -- MODIFY ASL ACCESSWAY OBJECT --
+  !!ce = !this.currentElement
+  !aslItemRef = !!ce
+  !flnn = !!ce.flnn
+--CLOCK INIT
+  !prompt = 'Modifying ASL item: ' & !flnn
+  PROMPT '$!prompt'
+
+  UNLOCK ALL
+  POS    $!<start>
+  ORI Z IS U AND Y IS $!aslDir
+  POSEND $!<end>
+
+  -- check for change in spref
+-- !currentSpref = !!ce.spref
+-- check for unset spref on current GENSEC
+--  if( badref( !currentSpref ) ) then
+--     !changeSpref = true
+--   else
+--     -- check for changed spref
+--     if( !currentSpref neq !specSelect ) then
+--       !changeSpref = true
+--     else
+--       -- new and old spref are the same, check for changed tmpl ref
+--       if( not badref(!currentSpref.catRef) ) then
+--         !oldTmplGeomRef = !currentSpref.catRef
+--       elseif( not badref(!currentSpref.tmpRef) ) then
+--         !oldTmplGeomRef = !currentSpref.tmpRef
+--       else
+--         !oldTmplGeomRef = object DBREF()
+--       endif
+--       if( not badref(!specSelect.catRef) ) then
+--         !newTmplGeomRef = !specSelect.catRef
+--       elseif( not badref(!specSelect.tmpRef) ) then
+--         !newTmplGeomRef = !specSelect.tmpRef
+--       else
+--         !newTmplGeomRef = object DBREF()
+--       endif
+--
+--       -- check for changed geometry
+--       !changeSpref = !oldTmplGeomRef neq !newTmplGeomRef
+--     endif
+--
+--   endif
+
+  -- set correct gtyp
+  if( not badref(!specSelect.catRef) ) then
+    !gtype = !specSelect.catRef.gtyp
+  elseif( not badref(!specSelect.tmpRef) ) then
+    !gtype = !specSelect.tmpr.gtyp
+  else
+    !gtype = ''
+  endif
+
+  if( !gtype.empty().not() ) then
+    GTYP $!<gtype>
+  endif
+
+--   -- changed to catref or changed spref: delete template if there is one
+--   if( !changeSpref ) then
+--     TMPL 1
+--     handle any
+--     elsehandle none
+--       -- delete template for change to catref
+--       DELETE TMPL
+--       --------------  **** NEED TO DELETE SPREF DDSE
+--     endhandle
+--   endif
+--
+  !!ce = !aslItemRef
+--   -- set spre
+--   SPRE $!<specSelect>
+--
+--   -- check to see if properties set
+--   if( !this.despars.empty() ) then
+--     -- get default properties
+--     !this.propertyData = object aslPropertyData(!specSelect)
+--     !this.despars = !this.propertyData.despDefault
+--   endif
+--
+--   -- Pick up design para from the Instance
+--   !despars = !this.despars
+--
+--   -- Set Design Parameters from the gen property Instance
+--   do !i indices !despars
+--     DESP NUMB $!i $!despars[$!i]
+--   enddo
+
+  -- Set DRNE and DRNS
+  if(!gtype neq |LADD|) then
+    !tempDir = !aslDir.opposite()
+    DRNE $!tempDir
+    DRNS $!aslDir
+  endif
+
+  -- if this is a catref then no more to do
+  if(!specSelect.catRef.set()) then
+    return
+  endif
+
+  ----------  TEMPLATE ASL ITEM  ----------
+
+--   -- if template not there, then force a change so a new template is copied
+--   TMPL 1
+--   handle any
+--     !changeSpref = true
+--   elsehandle none
+--     !templateRef = !!ce
+--   endhandle
+--
+--   -- Create template if changed
+--   if( !changeSpref ) then
+-- --CLOCK read
+--     PROMPT 'Create template...'
+--     !tmpl = !specSelect.tmpr.name
+-- --        Q VAR !tmpl
+--     NEW TMPL COPY REXE $!tmpl
+--     handle any
+--       TMPL 1
+--       UNLOCK ALL
+--       DELETE TMPL
+--       NEW TMPL COPY REXE $!tmpl
+--     endhandle
+--     UNLOCK ALL
+--     !templateRef = !!ce
+--
+--     -- Go back to ASL GENSEC
+--     OWNER
+--     !backToGensec = !!ce
+--
+--     -- Create DDSE at GENSEC level if spref's are variable
+--     !built = !!aslCmpSprefInvo(FALSE)
+--     if(!built) then
+--       call !!aslCmpSpref('')
+--     endif
+--   else
+--     -- just modifying parameters
+--     UNLOCK ALL
+--     !templateRef = ( TMPL 1 )
+--   endif
+--
+    !!ce = !this.currentElement
+    TMPL 1
+    !templateRef = !!ce
+    UNLOCK ALL
+
+  -- Check if the GENSEC needs reAlignment for fixed gradient
+  if( !this.fixedGradient ) then
+    !reAlignFlg = !this.aslRealign( !this.freeEnd )
+    if (!reAlignFlg.not()) then
+      !!alert.error(|Unable to realign the Owning Points with the TMPL, because the Dataset is incorrectly set up.|)
+      return error 1
+    endif
+  endif
+ --
+   -- now make final adjustments to the template (repeats & special functions)
+   PROMPT 'Repeat items and special functions...'
+   !this.adjustments(!templateRef)
+
+   -- find all template fixings, and rerun repeats
+  PROMPT 'Repeat items and special functions (Fixings)...'
+   var !fixTmplRefs COLLECT ALL TMPL WITH ( HARDTYPE OF OWNER eq 'FIXING' ) FOR CE
+   do !fixTmpl values !fixTmplRefs
+     -- now make final adjustments to any fixing templates (repeats & special functions)
+     !this.adjustments(!fixTmpl.dbRef())
+   enddo
+--
+--   -- final execution of rules
+--   PROMPT 'Executing rules...'
+--   !!ce = !aslItemRef
+--   RULE EXECUTE SPRE ON ALL FOR CE
+--   RULE REXE
+--
+  PROMPT DISMISS
+
+    -- new properties object
+    !!aslGeomDefn.template.setProperties(!this.currentElement)
+    !!aslGeomDefn.template.unsetDesiElement()
+
+  -- find all templates and relock them
+  !!ce = !templateRef
+  LOCK ALL
+  handle any
+  endhandle
+  -- lock fixing templates
+  do !fixTmpl values !fixTmplRefs
+    $!fixTmpl
+    LOCK ALL
+    handle any
+    endhandle
+  enddo
+
+  !!ce = !aslItemRef
+
+endmethod
+-- End of method definition for .modify()
+
+------------------------------------------------------------------------
+--
+-- Method:      adjustments
+--
+-- Description: handles repeats and special user functions
+-- generates repeat items and runs special user functions for ASL
+-- instance create & modify.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       ref of template element to adjust
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .adjustments( !template is DBREF )
+
+  !aslItemRef = !this.currentElement
+  !!ce        = !aslItemRef
+
+  -- create any repeats
+--CLOCK read
+ -- !!genRepeat( !template )
+ -- handle any
+ --   !!alert.error(!!error.text)
+ --   !!ce = !aslItemRef
+ --   return
+ -- endhandle
+
+  -- remove repeats from the drawlist (for performance)
+--CLOCK read
+  -- run any functions not generic
+  !!aslFunctionExec(!template)
+  handle any
+    !!alert.error(!!error.text & 'in user special function')
+  endhandle
+  -- Re-evaluate the rules. SPREF first in case other rules use properties
+  -- of item with spref rule
+--CLOCK read
+
+  !!ce = !aslItemRef
+
+endmethod
+-- End of method definition for .adjustments( DBREF )
+
+------------------------------------------------------------------------
+--
+-- Method:      aslRealign
+--
+-- Description: realign the owning GENSEC with the TMPL selected
+--  if ADJU property set, then GENSEC end will be modified to actual
+--  position determined by the template rules,
+--  e.g. the step/going will may force a change to the angle
+--  and length of the ASL component if the TMPL is
+--  governed by the gradient formula eg 2h + g = 630.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      'START' or 'END'
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     TRUE if adjustment data OK & adjustment done, FALSE if error
+--
+------------------------------------------------------------------------
+
+define method .aslRealign( !whichEnd is STRING ) is BOOLEAN
+
+  !return = true
+  !refe   = !!ce
+  !gensec = !this.currentElement
+
+-- Get the distance from the Dataset
+-- ***** OLD STYLE PML *****
+
+     var !adjustmentTmp (PROP ADJU OF $!gensec )
+      handle any
+       return false
+      endhandle
+     var !unusedAngle   (PROP ANGL OF $!gensec )
+      handle any
+       return false
+      endhandle
+     var !unusedDfltAngle (PRDE ANGL OF $!gensec )
+      handle any
+       return false
+      endhandle
+
+-- Convert to PML II
+
+    !adjustment  = !adjustmentTmp.real()
+    -- leave if no adjustment (to 1mm tolerance)
+    if( !adjustment.abs() lt 1mm ) then
+      return true
+    endif
+
+----------------------------------------
+  !uPlane    = !!planePntDir(!gensec.position,U)
+
+--!zDir       = !!directionFromTo(!gensec.poss, !gensec.pose)
+  !zDir      = !gensec.zDir.wrt(world)
+
+  !genSecDir = !!directionOnPlane(!zDir,!uPlane)
+  !!ce = !gensec
+
+  if(!whichEnd eq 'START') then
+    -- move the GENSEC origin ( then compensate by moving the END
+    !adjOrigin = !adjustment * -1
+    MOVE $!genSecDir DIST $!adjOrigin
+  endif
+
+  -- move end to change angle
+  POINSP 2 OF SPINE 1 OF CE
+
+  -- PDMS SYNTAX to reposition the start or end of the GENSEC
+  MOVE $!genSecDir DIST $!adjustment
+  !!ce = !gensec
+  RULE REXE
+
+  -- reset the instance values for the adjustment
+  !this.edit( !gensec, 'ANY' )
+
+  !!ce = !refe
+  return !return
+
+endmethod
+-- End of method definition for .aslRealign( STRING ) BOOLEAN

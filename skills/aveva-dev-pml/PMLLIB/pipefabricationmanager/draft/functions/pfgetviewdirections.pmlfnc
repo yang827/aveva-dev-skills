@@ -1,0 +1,328 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            pfgetviewdirections.pmlfnc
+--    Type:          Function Definition
+--    Group:         Pipe Fabrication
+--      Keyword:     PF
+--    Module:        Design
+--  Author:          Jaehun Choi(Daniel)
+--  Created:         08 January 2014
+--
+--  Description:     evaluate view directions
+--
+----------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       spool reference
+--    2    R     BOOLEAN     flag to evaluate for view
+-- Return:
+--   [Data Type] [Description]
+--    1    R     REAL        return to evaluated view directions
+--
+------------------------------------------------------------------------
+-- Define function
+define function !!pfGetViewDirections(!spoolRef is DBREF, !isFourViewFlag is BOOLEAN) is ARRAY
+  !debugMode = false
+
+  !result = object ARRAY()
+
+  !pieceComponent = !spoolRef.belrfa
+
+  if (!pieceComponent.unset()) then
+    return !result
+  endif
+
+  -- collect component position and direction
+  !compPosList  = object ARRAY()
+  !compDirList  = object ARRAY()
+
+  !partCompList = object ARRAY()
+  do !compRef values !pieceComponent
+    !additionalDir = object DIRECTION()
+    !compDir       = object DIRECTION()
+    !compLeaveDir  = object DIRECTION()
+
+    if (!compRef.hardType eq 'TUBI') then
+      !compPos = !compRef.itPos.wrt(world)
+      skip if (!compRef.aPos.distance(!compRef.lPos) lt 0.5mm)
+
+      !compDir = !compRef.aPos.direction(!compRef.lPos).wrt(world)
+    elseif (!compRef.hardType eq 'BRAN') then
+      !compPos = !compRef.hPos.wrt(world)
+      !compDir = !compRef.hDir.wrt(world)
+    else
+      !compPos = !compRef.pos.wrt(world)
+      !compDir = !compRef.aDir.wrt(world)
+      handle any
+        skip
+      endhandle
+
+      if (!compRef.aDir.isParallel(!compRef.lDir).not()) then
+        !compLeaveDir = !compRef.lDir.wrt(world)
+        handle any
+        endhandle
+      endif
+
+      if (!compRef.type inset ('TEE','OLET','REDU','CROS')) then
+          !p1pos = !compRef.ppos[1]
+          !p2pos = !compRef.ppos[2]
+
+          if (!p1pos.distance(!p2pos) gt 1mm) then
+          if (!compRef.type inset ('TEE','OLET','CROS')) then
+              !partCompList.append(!compRef)
+
+              !compPosList.append(!compRef.ppos[3])
+              handle any
+              elsehandle none
+                !additionalDir = !compRef.pDir[3]
+                handle any
+                endhandle
+              endhandle
+            else
+              !compPosList.append(!p1pos)
+              !compPosList.append(!p2pos)
+
+              !additionalDir = !compRef.ori.zDir().wrt(world)
+
+              !partCompList.append(!compRef)
+          endif
+        endif
+      endif
+    endif
+
+    !compPosList.append(!compPos)
+
+    if (!additionalDir.set()) then
+      if (!compDir.isParallel(!additionalDir)) then
+        if (!compLeaveDir.set() and !compLeaveDir.isParallel(!additionalDir)) then
+          !additionalDir = object DIRECTION()
+        else
+          !additionalDir = object DIRECTION()
+        endif
+      endif
+    endif
+
+    if (!compDirList.unset()) then
+      if (!compDir.set()) then
+        !compDirList.append(!compDir)
+      endif
+
+      if (!compLeaveDir.set()) then
+        !compDirList.append(!compLeaveDir)
+      endif
+
+      if (!additionalDir.set()) then
+        !compDirList.append(!additionalDir)
+      endif
+    else
+      !insertCompDir       = true
+      !insertLeaveDir      = true
+      !insertAdditionalDir = true
+
+      if (!compDir.set()) then
+        do !checkDir values !compDirList
+          if (!insertCompDir and !checkDir.isParallel(!compDir)) then
+            !insertCompDir = false
+          endif
+
+          if (!insertLeaveDir and !compLeaveDir.set() and !checkDir.isParallel(!compLeaveDir)) then
+            !insertLeaveDir = false
+          endif
+
+          if (!insertAdditionalDir and !additionalDir.set() and !checkDir.isParallel(!additionalDir)) then
+            !insertAdditionalDir = false
+          endif
+
+          break if (!insertCompDir.not() and !insertLeaveDir.not() and !insertAdditionalDir.not())
+        enddo
+      endif
+
+      if (!insertCompDir and !compDir.set()) then
+        !compDirList.append(!compDir)
+      endif
+
+      if (!insertLeaveDir and !compLeaveDir.set()) then
+        !compDirList.append(!compLeaveDir)
+      endif
+
+      if (!insertAdditionalDir and !additionalDir.set()) then
+        !compDirList.append(!additionalDir)
+      endif
+    endif
+  enddo
+
+  !compPosList.unique()
+  !compDirList.unique()
+
+  if (!compDirList.size() gt 2) then
+    if (!compDirList[1].dot(!compDirList[2]).abs() gt 0.999) then
+      !crossDir = !compDirList[1].cross(!compDirList[3])
+    else
+      !crossDir = !compDirList[1].cross(!compDirList[2])
+    endif
+
+    !checkDirList = !compDirList
+    !checkDirList.append(!crossDir)
+
+    !samePlane = false
+    ------------------------------------------------this loop decides which direction is finalized
+    do !dir values !checkDirList
+      !plane = object PLANE(!compPosList[1], object ORIENTATION('Z is ' & !dir))
+      handle any
+        skip
+      endhandle
+
+      !canIncluded = true
+      do !compPos values !compPosList
+        !nearPos = !plane.near(!compPos)
+
+        if (!nearPos.distance(!compPos) gt 0.5mm) then
+          !canIncluded = false
+          break
+        endif
+      enddo
+
+      if (!canIncluded) then
+        !samePlane = true
+        !baseDir = !dir
+        break
+      endif
+    enddo
+
+    if (!samePlane) then
+      !tempDirList = object ARRAY()
+      !tempDirList.append(!baseDir)
+
+      !compDirList = !tempDirList
+    endif
+  endif
+  !wasteDirections = object ARRAY()
+
+  do !i from 1 to !compDirList.size() - 1
+    do !j from !i + 1 to !compDirList.size()
+      !canIgnore = !compDirList[!i].dot(!compDirList[!j]).abs() gt 0.999
+      if (!canIgnore and !wasteDirections.findFirst(!compDirList[!j]).unset()) then
+
+        !wasteDirections.append(!compDirList[!j])
+        skip
+      endif
+    enddo
+  enddo
+
+  if (!wasteDirections.set()) then
+    !tempDirList = object ARRAY()
+    do !dir values !compDirList
+      skip if (!wasteDirections.findFirst(!dir).set())
+
+      !tempDirList.append(!dir)
+    enddo
+
+    !compDirList = !tempDirList
+  endif
+
+  if (!compDirList.size() eq 1) then
+    !basePlane   = object PLANE(!compPosList[1], object ORIENTATION('X is ' & !compDirList[1]))
+    !singlePlane = true
+  elseif (!compDirList.size() eq 2) then
+    !crossDir    = !compDirList[1].cross(!compDirList[2])
+    !basePlane   = object PLANE(!compPosList[1], object ORIENTATION('Z is ' & !crossDir))
+    !singlePlane  = true
+  else
+    if (!partCompList.set()) then
+      !basePlane   = object PLANE(!compPosList[1], !partCompList[1].ori.wrt(world))
+    else
+      if (!compPosList.size() eq 1) then
+        !basePlane   = object PLANE(!compPosList[1], !partCompList[1].ori.wrt(world))
+      else
+        !basePlane   = object PLANE(!compPosList[1], object ORIENTATION('X is ' & !compDirList[1] & ' AND Y is ' & !compDirList[2]))
+      endif
+    endif
+    !singlePlane  = false
+  endif
+
+  if (!singlePlane and !isFourViewFlag.not()) then
+    !baseOri = !basePlane.orientation
+    !result.append(!baseOri.zDir().wrt(world))
+    !result.append(!baseOri.yDir().wrt(world))
+    !result.append(!baseOri.xDir().wrt(world))
+  else
+    !baseOri = !basePlane.orientation
+
+    if (!compDirList.size() eq 2) then
+      if (!compDirList[1].dot(!compDirList[2]) ne 0) then
+        !tempCrossDir = !compDirList[2].cross(!crossDir)
+
+        if (!tempCrossDir.dot(!compDirList[2]) eq 0) then
+          !result.append(!tempCrossDir.wrt(world))
+          !result.append(!compDirList[2])
+        else
+          !result.append(!compDirList[1].cross(!crossDir))
+          !result.append(!compDirList[1])
+        endif
+      else
+        !result.append(!compDirList[1].wrt(world))
+        !result.append(!compDirList[2].wrt(world))
+      endif
+
+      !result.append(!crossDir.wrt(world))
+    else
+      !result.append(!baseOri.zDir().wrt(world))
+      !result.append(!baseOri.yDir().wrt(world))
+      !result.append(!baseOri.xDir().wrt(world))
+    endif
+  endif
+
+
+  if (!result.size() gt 1) then
+
+
+	!LineOffsetList = object ARRAY()	
+    do !i index !result
+      !plane = object PLANE(!compPosList[1], object ORIENTATION('Z is ' & !result[!i]))
+
+      do !component values !pieceComponent
+        skip if (!component.hardType eq 'BRAN')
+
+        skip if (!component.aPos.distance(!component.lPos) lt 0.1mm)
+		if (Undefine(!LineOffsetList[!i])) then
+			!LineOffsetList[!i] = 0
+		endif
+
+        !LineOffsetList[!i] = !LineOffsetList[!i] + !plane.Near(!component.aPos).Distance(!plane.Near(!component.lPos))		
+      enddo
+    enddo
+    !result.reIndex(!LineOffsetList.sortedIndices().invert())
+  endif
+
+  if (!debugMode) then
+    !gphPlane = object GPHPLANE()
+
+    do !i index !result
+      !tempPlane = object PLANE(!compPosList[1], object ORIENTATION('Z is ' & !result[!i].string().before('WRT')))
+      !gphPlane.plane = !tempPlane
+      !gphPlane.draw(!i)
+
+      !debugString = '[Direction : ' & !result[!i].string().before('WRT')
+      write '$!<debugString>'
+    enddo
+  endif
+
+  !tempArray = !result
+  !result.clear()
+
+  do !dir values !tempArray
+    !result.append(!dir.string().before('WRT'))
+  enddo
+
+  if (!singlePlane and !isFourViewFlag.not()) then
+    !tempArray = object ARRAY()
+    !tempArray.append(!result.first())
+    !result = !tempArray
+  endif
+
+  return !result
+endfunction

@@ -1,0 +1,415 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            splmtotube.pmlobj
+--   Type:          Object Definition
+--   Group:         General Application
+--     Keyword:     GEN
+--   Module:        spooler
+--   Replaces:
+--
+-- Author:          M.Lewis
+-- Created:         Mon Apr 6 15:07:13 BST 1998
+--
+--
+-- Description:
+-- MTO data for a tube cut piece
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  append(SPLMTOCOMP)               -                   append a component to the tube array
+--  bendAllows(SPLMTOOPTIONS)        -                   add pulled bend grip length allowances
+--  copyFrom(SPLMTOCOMP)             BOOLEAN             copy mto data from component
+--  listMembers()                    -                   list members to screen
+--  nominalSize()                    STRING              return nominal size string
+--  quantify()                       -                   calculate tube quantities
+--  quantity()                       STRING              return quantity string
+--  splMtoTube(SPLMTOCOMP)           -                   constructor
+--
+------------------------------------------------------------------------
+
+define object SPLMTOTUBE
+
+  -- tubes and pulled bends forming cut piece
+  member .members is ARRAY
+
+  -- dbref for implied tube from which attribute data is taken for whole
+  member .ce is DBREF
+
+  -- spool/field reference
+  member .sfref is DBREF
+
+  -- included in MTO
+  member .included is BOOLEAN
+
+  -- fabrication/erection
+  member .shop is BOOLEAN
+
+  -- part number
+  member .partNumber is REAL
+
+  -- spool number
+  member .spoolNumber is STRING
+
+  -- description
+  member .description is STRING
+
+  -- pipe spec
+  member .spec is STRING
+
+  -- itemCode
+  member .itemCode is STRING
+
+  -- nominal sizes
+  member .nominalSize is BORE
+
+  -- resolved length
+  member .tubeLength is REAL
+
+  -- centre of gravity
+  member .centOfGrav is POSITION
+
+  -- weights
+  member .dryWeight is REAL
+  member .wetWeight is REAL
+
+  -- internal volume
+  member .volume is REAL
+
+  -- start and end cut positions
+  member .aPos is POSITION
+  member .lpos is POSITION
+
+  -- pulled bend count
+  member .bendCount is REAL
+
+  -- tube overlength flag
+  member .overLength is BOOLEAN
+
+  -- list of allowances added
+  member .allowances is ARRAY
+
+  -- indexes into SplMto member array of previous and next members
+  member .prev is REAL
+  member .next is REAL
+
+  -- index into SplMto member array of flange for flare operation on tube
+  member .flarePtr is ARRAY
+
+endobject
+-- End of object definition for SPLMTOTUBE
+
+------------------------------------------------------------------------
+--
+-- Method:      !splMtoTube(SplMtoComp)
+--
+-- Description: constructor
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [SplMtoComp] [First tube component to add to cut piece]
+--
+------------------------------------------------------------------------
+
+define method .splMtoTube(!component is SPLMTOCOMP)
+
+  -- add first element to tube array
+  !this.append(!component)
+
+endmethod
+-- End of method definition for .splMtoTube(SPLMTOCOMP)
+
+------------------------------------------------------------------------
+--
+-- Method:      !append(SplMtoComp)
+--
+-- Description: append a component to the tube array
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [SplMtoComp] [Tube component to add to cut piece]
+--
+------------------------------------------------------------------------
+
+define method .append(!component is SPLMTOCOMP)
+
+  -- add element to tube array
+  !this.members.append(!component)
+
+endmethod
+-- End of method definition for .append(SPLMTOCOMP)
+
+------------------------------------------------------------------------
+--
+-- Method:      !quantify()
+--
+-- Description: calculate tube quantities
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .quantify()
+
+  -- initialise data
+  !this.included = false
+  !this.tubeLength = 0
+  !this.bendCount = 0
+  !this.overLength = false
+  !this.dryWeight = 0
+  !gotDescrip = false
+  !sumEast = 0
+  !sumNorth = 0
+  !sumUp = 0
+
+  -- start and end cut positions
+  !this.aPos = !this.members.first().aPos
+  !this.lpos = !this.members.last().lpos
+
+  -- prev and next pointers into SplMto member array
+  !this.prev = !this.members.first().prev
+  !this.next = !this.members.last().next
+
+  -- calculate cut length and accumulate CofG factors
+  do !member values !this.members
+    if (!member.included) then
+
+      -- tube is included in MTO if any part of it is included
+      !this.included = true
+
+      -- calculate weight (this excludes any allowances)
+      !member.dryWeight = !member.dryWeight * !member.tubeLength / 1000
+      !this.dryWeight = !this.dryWeight + !member.dryWeight
+
+      -- get description, etc from first tube member
+      if (!gotDescrip.not() and !member.ce.type eq 'TUBI') then
+        !gotDescrip = !this.copyFrom(!member)
+      endif
+
+      -- count pulled bends
+      if (!member.isBend) then
+        !this.bendCount = !this.bendCount + 1
+      endif
+
+      -- accumulate length
+      !this.tubeLength = !this.tubeLength + !member.tubeLength
+
+      -- sum CofG components
+      !sumEast = !sumEast + !member.centOfGrav.east * !member.tubeLength
+      !sumNorth = !sumNorth + !member.centOfGrav.east * !member.tubeLength
+      !sumUp = !sumUp + !member.centOfGrav.east * !member.tubeLength
+
+      -- unset member pointers into SplMto member array
+      -- (these will become invalid after arrays are compressed)
+      !member.prev = REAL()
+      !member.next = REAL()
+
+    endif
+  enddo
+
+  -- fallback for description, etc from first member
+  if (!gotDescrip.not()) then
+    !gotDescrip = !this.copyFrom(!this.members[1])
+  endif
+
+  -- calculate CofG
+  if (!this.tubeLength gt 0) then
+    !this.centOfGrav.east = !sumEast / !this.tubeLength
+    !this.centOfGrav.north = !sumNorth / !this.tubeLength
+    !this.centOfGrav.up = !sumUp / !this.tubeLength
+  endif
+
+  -- check for consistent partnumbers
+  do !member values !this.members
+    if (!member.partNumber ne !this.partNumber) then
+      -- 'Change of tube partnumber between #name and #name'
+      !!messageFile.error(154, 163, !this.ce.fullName, !member.ce.fullName)
+    endif
+  enddo
+
+  -- calculate internal volume using actual bore if available into m3
+  !bore = !this.ce.spref.cmpref.acbo.real()
+  handle any
+    !bore = 0
+  endhandle
+  if (!bore.unset()) then
+    !bore = 0
+  endif
+  if (!bore eq 0) then
+    !bore = !this.nominalSize.real()
+  endif
+  -- !this.volume = 3.14159 * !bore * !bore * !this.tubeLength / 4000000000
+
+  !rad = !bore / 2
+  !mmVolume = 3.14159 * !rad.power(2) * !this.tubeLength
+  -- convert volume from mm3 to m3
+  !this.volume = !mmVolume / 1000000000
+
+endmethod
+-- End of method definition for .quantify()
+
+------------------------------------------------------------------------
+--
+-- Method:      !bendAllows(SplMtoOptions)
+--
+-- Description: add pulled bend grip length allowances
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [SplMtoOptions] [mto options]
+--
+------------------------------------------------------------------------
+
+define method .bendAllows(!options is SPLMTOOPTIONS)
+
+  -- don't check if no rules defined
+  if (!options.bendGripLengths.size() gt 0) then
+    do !i indices !this.members
+      if (!this.members[!i].ce.type eq 'BEND') then
+
+        -- copy bend dbref into temporary array for evaluation block
+        !bends[1] = !this.members[!i].ce
+
+        -- get minimum grip length for this size by first rule satisfied
+        do !j indices !options.bendGripLengths
+          !ruleCheck = !bends.evaluate(OBJECT BLOCK(!options.bendGripRules[!j]))
+          !ruleNumber = !j
+          break if (!ruleCheck[1])
+        enddo
+        !allowance = !options.bendGripLengths[!ruleNumber]
+
+        -- check previous total implied tube length
+        !prevTubeLength = 0
+        do !j from (!i - 1) to 1 by -1
+          break if (!this.members[!j].ce.type ne 'TUBI')
+          !prevTubeLength = !prevTubeLength + !this.members[!j].tubeLength
+        enddo
+        if (!prevTubeLength lt !allowance) then
+          if (!options.trace) then
+            !message = 'Add bend grip allowance before ' & !this.members[!i].ce.fullName
+            WRITE '$!message'
+          endif
+          -- flag overlength, list allowance, add to length
+          !this.overLength = true
+          !this.allowances.append(!allowance - !prevTubeLength)
+          !this.tubeLength = !this.tubeLength + !allowance - !prevTubeLength
+        endif
+
+        -- check next total implied tube length
+        !nextTubeLength = 0
+        do !j from (!i + 1) to !this.members.size()
+          break if (!this.members[!j].ce.type ne 'TUBI')
+          !nextTubeLength = !nextTubeLength + !this.members[!j].tubeLength
+        enddo
+        if (!nextTubeLength lt !allowance) then
+          if (!options.trace) then
+            !message = 'Add bend grip allowance after ' & !this.members[!i].ce.fullName
+            WRITE '$!message'
+          endif
+          -- flag overlength, list allowance, add to length
+          !this.overLength = true
+          !this.allowances.append(!allowance - !nextTubeLength)
+          !this.tubeLength = !this.tubeLength + !allowance - !nextTubeLength
+        endif
+
+      endif
+    enddo
+  endif
+
+endmethod
+-- End of method definition for .bendAllows(SPLMTOOPTIONS)
+
+------------------------------------------------------------------------
+--
+-- Method:      !copyFrom(SplMtoComp)
+--
+-- Description: copy mto data from component
+--
+-- Method Type: Function
+-- Arguments:
+--   [1] [R] [SplMtoComp] [Tube component to copy data from]
+-- Returns:
+--   [BOOLEAN] [flag to indicate copied]
+--
+------------------------------------------------------------------------
+
+define method .copyFrom(!component is SPLMTOCOMP) is BOOLEAN
+
+  -- copy data from selected member
+  !this.ce           = !component.ce
+  !this.partNumber   = !component.partNumber
+  !this.spoolNumber  = !component.spoolNumber
+  !this.description  = !component.description
+  !this.spec         = !component.spec
+  !this.itemCode     = !component.itemCode
+  !this.nominalSize  = !component.nominalSize1
+  !this.shop         = !component.shop
+  !this.sfref        = !component.ce.sfref
+
+  return true
+
+endmethod
+-- End of method definition for .copyFrom(SPLMTOCOMP) BOOLEAN
+
+------------------------------------------------------------------------
+--
+-- Method:      !listMembers()
+--
+-- Description: list members to screen
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .listMembers()
+
+  do !i indices !this.members
+    !name = !this.members[!i].ce.fullName.replace(|'|, |''|)
+    WRITE '  $!i  $!name'
+  enddo
+
+endmethod
+-- End of method definition for .listMembers()
+
+------------------------------------------------------------------------
+--
+-- Method:      !quantity()
+--
+-- Description: return quantity string
+--
+-- Method Type: Function
+-- Returns:
+--   [STRING] [quantity]
+--
+------------------------------------------------------------------------
+
+define method .quantity() is STRING
+
+  return !this.tubeLength.string(!!splMtoDistFmt)
+
+endmethod
+-- End of method definition for .quantity() STRING
+
+------------------------------------------------------------------------
+--
+-- Method:      !nominalSize()
+--
+-- Description: return nominal size string
+--
+-- Method Type: Function
+-- Returns:
+--   [STRING] [nominal size]
+--
+------------------------------------------------------------------------
+
+define method .nominalSize() is STRING
+
+  return !this.nominalSize.string(!!splMtoBoreFmt)
+
+endmethod
+-- End of method definition for .nominalSize() STRING

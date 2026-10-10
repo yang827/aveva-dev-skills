@@ -1,0 +1,1524 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            civtracefloor.pmlfrm
+--   Type:          Form Definition
+--   Group:         Floor Tracing
+--     Keyword:     CIV
+--   Module:        design
+--   Replaces:
+--
+-- Author:          S.Bentley
+-- Created:         Fri Dec  4 14:44:08 GMT 1998
+--
+--
+-- Description:
+-- Form for tracing floors or screeds with walls
+--
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  apply()                          -                   Apply the form
+--  civTraceFloor()                  -                   Constructor
+--  close()                          -                   Close form down
+--  createPnodes(ARRAY)              -                   Create all the Pnodes on the newly created walls
+--  expandable()                     -                   Can the boundary offset be achieved ?  If so, create
+--  getLoop()                        -                   Get the loop db element
+--  init()                           -                   Initialise Form
+--  mitreWalls(ARRAY)                -                   Mitre the newly created walls
+--  offsetEdges()                    -                   expand / contract boundary
+--  pickPacket()                     -                   Picks element to trace
+--  picked(DBREF)                    -
+--  popWrt(STRING)                   -                   Sets the wrt field using the choice from the popup menu
+--  reOrderWalls(ARRAY)              -
+--  setBy()                          -                   Set the Move By value for the elevation offset
+--  setOffset()                      -                   Set the elevation offset to the offset of the current storage level.
+--  setWrt()                         -                   Set up with new wrt item
+--  showAxes()                       -                   Show Axes at position or proposed position
+--  tidy(STRING,BOOLEAN)             -                   Deletes the walls/floor/screed last created (pnodes also)
+--  update()                         -                   Updates gadgets depending on the 'with' selection
+--
+
+ setup form !!civTraceFloor
+
+  !!civTraceFloor.formTitle     = 'Boundary Tracing'
+  !!civTraceFloor.iconTitle     = 'Tracing'
+  !!civTraceFloor.callback      = '!this.init()'
+  !!civTraceFloor.formRevision  = ' $Revision: 1.28 $ '
+
+  -- Form Members -------------------------------------------------
+  -- Link to form which invoked this form
+
+  -- Element
+  member .traceElement   is DBREF
+
+  -- Trace element position
+  member .tracePosition  is POSITION
+  member .oldWrtElement  is DBREF
+  member .newWrtElement  is DBREF
+
+  -- Axes definition
+  member .axes           is GPHAXES
+  -- Aid number being modified
+  member .aidAxes        is REAL
+  -- Aid numbers for position & axes
+  member .aidNumber      is REAL
+  -- Position
+  member .position       is POSITION
+
+  -- Aid numbers for text.
+  member .aidNumberA     is REAL
+
+  -- Aid number for expand/contract
+  member .aidGroup       is REAL
+
+  -- group member for expanding/contracting
+  member .group          is DBELOOPGROUP
+
+  -- Loop Name
+  member .loop           is DBREF
+
+  -- Trace element extrusion
+  member .extrusion      is DBEGEXTRUSION
+
+  -- Trace element vertices
+  member .vertices       is ARRAY
+
+  -- Trace element definition
+  member .definition     is ARRAY
+
+  -- Array of walls created
+  member .walls          is ARRAY
+
+  -- Array of pnodes created
+  member .pNodes         is ARRAY
+
+  -- Record of floor created
+  member .floor          is DBREF
+
+  -- Record of floor created
+  member .screed         is DBREF
+
+  -- Move by value for elevation offset
+  member .by             is REAL
+
+  -- Body of form definition -------------------------------------------------
+
+  -- CE / Pick
+  option .ce '' at xmin+0.1 ymax+0.2   callback | !this.init() | width 4
+  var list _ce
+    pairs |CE|    |CE|
+          |Pick|  |PICK|
+  exit
+
+  -- Paragraph showing trace element / CE name
+  para .ceName  at xmax ymin width 26 lines 2
+
+  -- Frame stating what is to be traced with what.
+  frame .trace at x0 ymax 'Trace'
+    para .ceType  at x6 ymax width 20 lines 1
+
+    option .with '' at xmax+2 ymin   callback | !this.update()| width 6
+    var list _with
+      pairs |Walls|   |WALLS|
+            |Floor|   |FLOOR|
+            |Screed|  |SCREED|
+    exit
+  exit
+
+  -- Offsets
+  frame .offsets at x0 ymax+0.5 'Offsets'
+
+    -- Boundary
+    text .boundaryOffset   at x2 ymax |Boundary | call | !this.offsetEdges() | width 26 is REAL format !!distanceFmt
+    !this.boundaryOffset.val = 0
+    -- Elevation Offset
+    text .elevationOffset  at x2 ymax |Elevation| call | !this.setWrt() | width 26 is REAL format !!distanceFmt
+    !this.elevationOffset.val = 0
+    -- With respect to element
+    text .wrt  at x2 ymax.elevationOffset+0.5 tooltip '' |wrt| call '!this.setWrt()' width 32 string
+
+  exit
+
+  -- toggle for wall mitres
+  toggle .mitre    'Mitre Walls' at x12 ymax+0.5
+
+-- Bottom Line
+  button .apply    |Apply|   at xmin form-0     ymax  callback '!this.apply()'
+  -- button .undo     |Undo|    at xmax+1          ymin  callback '!this.tidy(|WALLS|)'
+  button .dismiss  |Dismiss| at xmax form-size  ymin  callback '!this.close()' CANCEL
+
+-- End of form definition for !!civTraceFloor
+exit
+
+------------------------------------------------------------------------
+--
+-- Method:      civTraceFloor
+--
+-- Description:
+--   Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .civTraceFloor()
+
+  -- Allocate aid numbers
+  !this.aidNumber  = !!aidNumbers.add('TraceAxes')
+  !this.aidNumberA = !!aidNumbers.add('TracePosition')
+  !this.aidGroup   = !!aidNumbers.add('Expand Loop')
+
+  -- Define default axes
+  !gphAxes             = object GPHAXES()
+  !gphAxes.tag         = false
+  !gphAxes.detail      = false
+  !gphAxes.position    = object POSITION('N0')
+  !gphAxes.orientation = object ORIENTATION('Y is N')
+  !this.axes           = !gphAxes
+
+  -- Collect all levels to put on the wrt gadget as a right hand mouse pull down
+  var !coll COLLECT ALL STRU WITH (PURP EQ 'LEVL')
+
+  !menu = !this.newMenu('WRTS')
+  !menu.clear()
+    !menu.add('CALLBACK', |CE       |,   '!this.popWrt(|ce|)')
+    !menu.add('CALLBACK', |Structure|,   '!this.popWrt(|stru|)')
+    !menu.add('CALLBACK', |Zone     |,   '!this.popWrt(|zone|)')
+    !menu.add('CALLBACK', |Site     |,   '!this.popWrt(|site|)')
+    !menu.add('CALLBACK', |World    |,   '!this.popWrt(|/*|)')
+    !menu.add('MENU',     |Levels|,      'LEVELS')
+--    !menu.add('CALLBACK', |Update   |,   '!this.popWrt(|update|)')
+  !menu = !this.newMenu('LEVELS')
+  !menu.clear()
+  do !i indices !coll
+    !name = !coll[!i].dbRef().namn
+    !refe = !coll[!i].dbRef().refe
+    !menu.add('CALLBACK', |$!name|, '!this.popWrt(|$!refe|)')
+  enddo
+  !this.wrt.setPopup(!this.wrts)
+
+  !menu = !this.newMenu('TIDY')
+  !menu.clear()
+    !menu.add('CALLBACK', |Tidy Walls|,   '!this.tidy(|Walls|, false)')
+    !menu.add('CALLBACK', |Tidy Floor|,   '!this.tidy(|Floor|, false)')
+    !menu.add('CALLBACK', |Tidy Screed|,  '!this.tidy(|Screed|, false)')
+  --!this.with.setPopup(!this.tidy)
+
+  !menu = !this.newMenu('PopBoundary')
+  !menu.clear()
+    !menu.add('CALLBACK', |0.0|,  '!this.boundaryOffset.val = 0
+    !this.offsetEdges()')
+    !menu.add('CALLBACK', |+/-|, '!this.boundaryOffset.val = !this.boundaryOffset.val * -1
+    !this.offsetEdges()')
+  !this.boundaryOffset.setPopup(!this.popBoundary)
+
+  !menu = !this.newMenu('PopElevation')
+  !menu.clear()
+    !menu.add('CALLBACK', |0.0|,   '!this.elevationOffset.val = 0
+    !this.setWrt()')
+    !menu.add('CALLBACK', |+/-|,   '!this.elevationOffset.val = !this.elevationOffset.val * -1
+    !this.setWrt()')
+    !menu.add('CALLBACK', |Storage Level|,   '!this.setOffset()')
+  !this.elevationOffset.setPopup(!this.popElevation)
+
+endmethod
+-- End of method definition for .civTraceFloor()
+
+------------------------------------------------------------------------
+--
+-- Method:      init
+--
+-- Description:  Initialise Form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .init()
+
+  --  PICK selected
+  if (!this.ce.selection() eq 'PICK') then
+    !this.apply.active = false
+    !this.pickPacket()
+    return
+  else
+    !!edgCntrl.remove('Pick Element for Boundary Tracing.')
+  endif
+
+  -- Apply button active as default
+  !this.apply.active = true
+  --!this.undo.active  = false
+
+  -- Element to be traced
+  !traceElement = !!dtbGetOwnerType(!!ce, 'FLOOR SCREED NXTR')
+
+  -- Validity of element
+  if (!traceElement.set()) then
+    if (!traceElement.type inset('FLOOR', 'SCREED')) then
+      !this.traceElement = !traceElement
+      !!ce = !traceElement
+    elseif (!traceElement.type inset('NXTR')) then
+      if (!traceElement.owner.type inset('FLOOR', 'SCREED')) then
+        !this.traceElement = !traceElement
+        !!ce = !traceElement
+      else
+        !!alert.warning('Navigate to a negative extrusion of a floor or screed.')
+        -- if form has never been shown before
+        if (!this.traceElement.unset()) then
+          !this.apply.active = false
+          !this.pickPacket()
+        else
+          !this.apply.active = true
+        endif
+        return
+      endif
+    endif
+  else
+    !!alert.warning('Navigate to a floor, screed or negative extrusion.')
+    -- if form has never been shown before
+    if (!this.traceElement.unset()) then
+      !this.apply.active = false
+      !this.pickPacket()
+    else
+      !this.apply.active = true
+    endif
+    return
+  endif
+
+  -- Show ce as the trace element
+  !this.ceType.val = !traceElement.type + ' boundary with  '
+  !this.ceName.val = !!ce.fullName
+
+  -- Reset the wrt gadget and associated members
+  !this.oldWrtElement       = !!ce
+  !this.newWrtElement       = !!ce
+  !this.tracePosition       = !!ce.position.wrt(world)
+  !this.wrt.val             = !!ce.fullName
+  !this.elevationOffset.val = 0
+
+  -- Get the loop
+  !this.getLoop()
+
+  -- Initialise the default boundary offset as zero
+  !this.boundaryOffset.val = 0
+
+  -- Define generic extrusion
+  if (!this.traceElement.type eq 'FLOOR') then
+    !this.extrusion  = object DBEGEXTRUSION(FLOOR)
+  elseif (!this.traceElement.type eq 'SCREED') then
+    !this.extrusion  = object DBEGEXTRUSION(SCREED)
+  elseif (!this.traceElement.type eq 'NXTR') then
+    !this.extrusion  = object DBEGEXTRUSION(NXTR)
+  endif
+
+  -- Remove any coincident vertices
+  !this.extrusion.removeCoincident(false)
+
+  -- Definition
+  !this.definition      = !this.extrusion.basicDefinition()
+  !this.vertices        = !this.extrusion.vertexDefinition()
+
+  -- Set the DBELOOPGROUP member
+  !this.group.dbeLoopGroup(!this.loop)
+  !this.group.draw(!this.aidGroup, false)
+
+  -- reset Axes position at trace element
+  !this.position = !this.traceElement.position.wrt(world)
+  !this.setWrt()
+
+  -- Use of current storage area if one exists
+  !this.setOffset()
+
+  -- Update the active gadgets
+  !this.update()
+
+endmethod
+-- End of method definition for .init()
+
+
+------------------------------------------------------------------------
+--
+-- Method:      close
+--
+-- Description:  Close form down
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .close()
+
+  -- Don't leave it in EDG mode
+  !!edgCntrl.remove('Pick Element for Boundary Tracing.')
+
+  -- Hide the Axes
+  !!aidNumbers.hide(!this.aidNumber)
+
+  -- Hide Position text
+  !!aidNumbers.hide(!this.aidNumberA)
+
+  -- Hide Expand aids
+  !!aidNumbers.hide(!this.aidGroup)
+
+endmethod
+-- End of method definition for .close()
+
+------------------------------------------------------------------------
+--
+-- Method:      apply
+--
+-- Description: Apply the form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .apply()
+
+  -- Navigate to the traceElement
+  !!ce = !this.traceElement
+
+  -- Define generic extrusion
+  if (!this.traceElement.type eq 'FLOOR') then
+    !this.extrusion  = object DBEGEXTRUSION(FLOOR)
+  elseif (!this.traceElement.type eq 'SCREED') then
+    !this.extrusion  = object DBEGEXTRUSION(SCREED)
+  elseif (!this.traceElement.type eq 'NXTR') then
+    !this.extrusion  = object DBEGEXTRUSION(NXTR)
+  endif
+
+  -- Definition
+  !this.definition      = !this.extrusion.basicDefinition()
+  !this.vertices        = !this.extrusion.vertexDefinition()
+
+  -- WALLS CODE
+  if (!this.with.selection() eq 'WALLS') then
+
+    -- If there is no wall spec defined do we want to continue
+    if (!!appDesMain.wallSpec.val.upcase() eq 'UNSET') then
+      !answer = !!alert.confirm('No wall specification defined, do you wish to continue?')
+      if (!answer eq 'NO') then
+        return
+      endif
+    endif
+
+    if (!this.boundaryOffset.val eq 0) then
+
+      -- Is it a full ring
+      if (!this.definition.size() eq 1) then
+        !fullRing = true
+      else
+        !fullRing = false
+      endif
+
+      do !i indices !this.definition
+
+        -- Build an array of all the walls created
+        if (!i eq 1) then
+          !wallArray = ARRAY()
+        endif
+
+        -- Create the actual walls
+        if(!this.definition[!i].objectType() eq 'ARC') then
+          call !!strRingCreate(!this.definition[!i], 'WANDF', 'WALL', !this.traceElement, !fullRing, 'WALL', 'WALL')
+
+          -- Append to the wall array
+          !wallArray[!i] = !!ce
+
+        elseif(!this.definition[!i].objectType() eq 'LINE') then
+          call !!strSctnCreate(!this.definition[!i], 'WANDF', 'WALL', !this.traceElement, 'STWALL', 'WALL')
+
+          -- Append to the wall array
+          !wallArray[!i] = !!ce
+
+        endif
+      enddo
+
+      -- Set the walls array member
+      !this.walls.clear()
+      !this.walls = !wallArray
+
+      -- Mitre the walls
+     !this.mitreWalls(!wallArray)
+
+      -- Move the walls to the elevation offset
+      do !i indices !wallArray
+        !!ce = !wallArray[!i]
+        BY U$!this.by
+      enddo
+
+      -- Create the nodes
+      !this.createPnodes(!wallArray)
+
+    else
+
+      -- Boundary offset floor screed
+      !this.expandable()
+
+    endif
+
+  -- FLOOR/SCREED/NXTR CODE
+  else
+
+    !createType = !this.with.selection()
+
+    --Get storage area
+    !store = !!getStorageArea('WANDF', !createType)
+
+    -- If store is unset, can we create the panel in or above where we are
+    if(!store.unset()) then
+      !store   = !!ce
+    endif
+
+    -- Move to creation area
+    !!ce = !store
+
+
+    -- Get the loop element attributes
+    !this.getLoop()
+
+    -- Having got the boundary loop
+    if (!this.traceElement.type inset('FLOOR', 'SCREED')) then
+      !thickness     = !this.loop.height
+      !justification = !this.loop.sJustification
+      !spref         = !this.loop.spref
+    else
+      -- must be a negative extrusion
+
+      -- Default the attributes to the attributes of the owning floor/screed
+      !memArray = !this.traceElement.owner.members
+
+      do !i indices !memArray
+        !oltype = !memArray[!i].type
+        !ownersLoop = !memArray[!i]
+        break if (!oltype eq 'PLOO')
+      enddo
+
+      -- What if this is a trace element owner without a loop
+      if (undefined(!oltype) or (!oltype ne 'PLOO')) then
+        !justification = 'UTOP'
+      endif
+
+      !thickness     = !ownersLoop.height
+      !justification = !ownersLoop.sJustification
+      !spref         = !ownersLoop.spref
+    endif
+
+     -- Check if spec defaults have been loaded
+     if(undefined(!!spcDefaults)) then
+       call !!comDefineGlobal(object SPCDEFAULTS())
+     endif
+
+    -- Get Spec Defaults
+    !default = !!spcDefaults.get('default-CIV-FLR')
+    if(!default.attributesData.set()) then
+      !spref         = !default.component
+      !thickness     = !default.attributesData[1]
+    endif
+
+    -- Create the basic element
+    NEW $!createType
+    !newElement = !!ce
+    POSITION $!this.traceElement
+    ORIENTATION $!this.traceElement.ori
+    BY U$!this.by
+    SPREF $!spref
+
+    -- Record the floor/screed as created
+    if (!createType eq 'FLOOR') then
+      !this.floor   = !!ce
+      !justification = 'UTOP'
+    else
+      !this.screed  = !!ce
+      !justification = 'UBOT'
+    endif
+
+    NEW PLOOP
+    HEIG  $!thickness
+    SJUST $!justification
+
+    -- Make an Array to store all new pave elements
+    !!newPave = ARRAY()
+    do !i indices !this.vertices
+      NEW PAVE
+      !newPave[!i] = !!ce
+      !position       = !!ce.position.wrt(owner)
+      !position.east  = !this.vertices[!i].position.x
+      !position.north = !this.vertices[!i].position.y
+      if (!this.boundaryOffset.val ne 0) then
+        !position.east  = !this.group.polygon.positions[!i].x
+        !position.north = !this.group.polygon.positions[!i].y
+      endif
+      AT $!position
+      if (!this.vertices[!i].radius neq 0) then
+        !fRadius  = !this.vertices[!i].radius + !this.boundaryOffset.val
+        FRADIUS $!fRadius
+      endif
+    enddo
+
+    !errorA = false
+    -- Has the new floor been graphically shown
+    if (!newElement.gvol.between(-1, 1)) then
+      !errorA = true
+      -- try setting all radii to radii minus boundary offset
+      !!alert.message('Could not Expand/Contract all vertices radii. Modify individually using Modify > Floor/Screed > Definition...')
+      do !i indices !this.vertices
+        !!ce = !newPave[!i]
+        if (!!ce.fRadius neq 0) then
+          !fRadius  = !this.vertices[!i].radius - !this.boundaryOffset.val
+          FRADIUS $!fRadius
+        endif
+      enddo
+    endif
+
+    if (!errorA) then
+      -- Has the new floor been graphically shown
+      if (!newElement.gvol.between(-1, 1)) then
+        !errorA = true
+        -- try setting all radii to 0
+        !!alert.message('Could not Expand/Contract all vertices radii. Set individually using Modify > Floor/Screed > Definition...')
+        do !i indices !this.vertices
+          !!ce = !newPave[!i]
+          FRADIUS 0
+        enddo
+      endif
+    endif
+
+    !errorB = false
+    if (!errorA) then
+      -- Has the new floor now been graphically shown
+      if (!newElement.gvol.between(-1, 1)) then
+          !errorB = true
+        -- Put it back as it was
+        !!alert.message('Could not Expand/Contract. Boundary is self intersecting. Modify using Modify > Floor/Screed > Definition...')
+        do !i indices !this.vertices
+          !!ce = !newPave[!i]
+          !position       = !!ce.position.wrt(owner)
+          !position.east  = !this.vertices[!i].position.x
+          !position.north = !this.vertices[!i].position.y
+          AT $!position
+          !fRadius  = !this.vertices[!i].radius
+          FRADIUS $!fRadius
+        enddo
+      endif
+    endif
+
+  endif
+
+
+  -- Navigate to the traceElement
+  !!ce = !this.traceElement
+
+
+  -- The whole Apply is now complete, so ask the user if ok to retain.
+  if (!this.with.selection() eq 'WALLS') then
+    --!this.undo.callback = |!this.tidy('WALLS', false)|
+
+    -- Are there any walls to delete
+    if (!this.walls.size() eq 0) then
+      !!alert.message('No walls recorded.')
+      --!this.undo.active  = false
+      return
+    else
+      do !i indices !this.walls
+        ENHANCE $!this.walls[$!i] COLOUR $!!gphColOpt.highlight.code
+      enddo
+     --!this.undo.active  = true
+    endif
+
+    !this.tidy('WALLS', true)
+
+  elseif (!this.with.selection() eq 'FLOOR') then
+    --!this.undo.callback = |!this.tidy('FLOOR', false)|
+
+    -- Is there a floor to delete
+    if (!this.floor.unset()) then
+      !!alert.message('No floor recorded.')
+      --!this.undo.active  = false
+      return
+    else
+      ENHANCE $!this.floor COLOUR $!!gphColOpt.highlight.code
+      --!this.undo.active  = true
+    endif
+
+    !this.tidy('FLOOR', true)
+
+  elseif (!this.with.selection() eq 'SCREED') then
+    --!this.undo.callback = |!this.tidy('SCREED', false)|
+
+    -- Is there a screed to delete
+    if (!this.screed.unset()) then
+      !!alert.message('No screed recorded.')
+      --!this.undo.active  = false
+      return
+    else
+      ENHANCE $!this.screed COLOUR $!!gphColOpt.highlight.code
+      --!this.undo.active  = true
+    endif
+
+    !this.tidy('SCREED', true)
+
+  endif
+
+endmethod
+-- End of method definition for .apply()
+------------------------------------------------------------------------
+--
+-- Method:      pickPacket
+--
+-- Description: Picks element to trace
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .pickPacket()
+
+ !packet = object EDGPACKET()
+
+ !packet.elementPick('Pick Element for Boundary Tracing.')
+ !packet.description = 'Pick Element for Boundary Tracing.'
+ !packet.action      = '!!civTraceFloor.picked(!this.return[1].item)'
+ !packet.key         = 'PickBoundary'
+ !packet.pickPacket.picks[1].pick.input[3] = '(TYPE inset(|FLOOR|, |SCREED|))  or  (TYPE eq |NXTR| and TYPE OF OWNER inset(|FLOOR|, |SCREED|))'
+ !packet.pickPacket.picks[1].pick.modifiable = false
+
+
+ !!edgCntrl.add(!packet)
+
+endmethod
+-- End of method definition for .pickPacket()
+------------------------------------------------------------------------
+--
+-- Method:      picked
+--
+-- Description: Action from the pickPacket
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#]         [R/RW] [Data Type]   [Description]
+--   1              R      DBREF       Picked Element
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .picked( !passedDbref is DBREF )
+
+  -- Navigate to the picked element
+  !!ce = !passedDbref
+
+  -- Set the ce gadget from PICK to CE
+  !this.ce.select('RTEXT', 'CE')
+
+  -- Initialise the form with the new item
+  !this.init()
+
+  -- Only one pick allowed
+  !!edgCntrl.remove('Pick Element for Boundary Tracing.')
+
+endmethod
+-- End of method definition for .picked( DBREF )
+------------------------------------------------------------------------
+--
+-- Method:      setWrt
+--
+-- Description: Set up with new wrt item
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .setWrt()
+
+   -- re-defined reference
+  !wrtElement   = !this.wrt.val.dbRef()
+  handle any
+    !wrtElement = object DBREF()
+  endhandle
+
+  -- use current positions origin if it null
+  if (!this.oldWrtElement.unset()) then
+    !!alert.message('Navigate to a floor, screed or negative extrusion.')
+    return
+  endif
+  if(!wrtElement.unset()) then
+    !wrtElement      = !this.oldWrtElement
+  else
+  !this.newWrtElement = !wrtElement
+  endif
+
+ !oldWrt = !this.oldWrtElement.position.wrt(world).up
+ !newWrt = !this.newWrtElement.position.wrt(world).up
+  handle ANY
+    -- element may not have a position (example frmw)
+    !!alert.message('Reference element does not have a position.')
+    !newWrt = !this.oldWrtElement.position.wrt(world).up
+    -- reset wrt new element as it was
+    !this.newWrtElement = !this.oldWrtElement
+    !wrtElement = !this.newWrtElement
+  endhandle
+
+  -- Maintain/display the elevation in the gadget
+  !this.elevationOffset.val = !this.elevationOffset.val + (!oldWrt - !newWrt)
+  !this.oldWrtElement = !this.newWrtElement
+
+  -- Set gadget with name of item
+  !this.wrt.val = !wrtElement.fullName
+  -- This feature will be allowed in pdms11.3
+--  !this.wrt.setTooltip('!wrtElement.fullName')
+
+-- Show Axes
+ !this.showAxes()
+
+endmethod
+-- End of method definition for .setWrt()
+------------------------------------------------------------------------
+--
+-- Method:      update
+--
+-- Description: Updates gadgets depending on the 'with' selection
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .update()
+
+  if (!this.with.selection() eq 'WALLS') then
+    !this.mitre.active = true
+  else
+    !this.mitre.active = false
+  endif
+
+  -- There may be storage for screed, but not floors or walls etc
+  !this.setOffset()
+
+endmethod
+-- End of method definition for .update()
+------------------------------------------------------------------------
+--
+-- Method:      popWrt
+--
+-- Description: Sets the wrt field using the choice from the popup menu
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     string      Choice from popup
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .popWrt(!refe is STRING)
+
+  if (!this.wrt.val eq '') then
+    return
+  endif
+
+  if (!refe eq 'update') then
+    -- Collect all levels to put on the wrt gadget as a right hand mouse pull down
+    var !coll COLLECT ALL STRU WITH (PURP EQ 'LEVL')
+    !menu = !this.levels
+    !menu.clear()
+    do !i indices !coll
+      !name = !coll[!i].dbRef().namn
+      !refea = !coll[!i].dbRef().refe
+      !menu.add('CALLBACK', |$!name|, '!this.popWrt(|$!refea|)')
+    enddo
+  else
+    !this.wrt.val = !refe
+    !this.setWrt()
+  endif
+
+endmethod
+-- End of method definition for .popWrt(STRING)
+------------------------------------------------------------------------
+--
+-- Method:      showAxes
+--
+-- Description: Show Axes at position or proposed position
+--
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .showAxes()
+
+  -- To move the walls/floors/screed to the elevation offset
+  !this.setBy()
+
+  !this.position = !this.traceElement.position.wrt(world)
+  !this.position.up = !this.position.up + !this.by
+  !this.axes.position = !this.position
+  !this.axes.draw(!this.aidNumber)
+
+  -- Show the Inside/Outside aid text
+  AID CLEAR TEXT $!this.aidNumberA
+  handle any
+  endhandle
+
+  AID TEXT NUMBER $!this.aidNumberA 'Position' AT $!this.position
+
+  -- Show the loop boundary at the new elevation level
+  !this.group.polygon.plane.position.up = !this.axes.position.wrt(!this.group.polygon.plane.position.origin).up
+  !this.group.draw(!this.aidGroup, false)
+
+endmethod
+-- End of method definition for .showAxes()
+------------------------------------------------------------------------
+--
+-- Method:      offsetEdges
+--
+-- Description: expand / contract boundary
+--
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .offsetEdges()
+
+  -- Initialise Variables
+
+  -- Set the DBELOOPGROUP member
+  if (!this.loop.unset()) then
+    !!alert.message('Navigate to a floor, screed or negative extrusion.')
+    return
+  endif
+  !this.group.dbeLoopGroup(!this.loop)
+  !this.group.draw(!this.aidGroup, false)
+
+  !offset = !this.boundaryOffset.val
+
+  !this.group.offsetEdges(!offset)
+
+  -- Reset distance
+  !this.boundaryOffset.val = !offset
+
+  -- Re-draw group
+  !this.group.draw(!this.aidGroup, false)
+
+  -- re-show axes
+  !this.showAxes()
+
+endmethod
+-- End of method definition for .offsetEdges()
+------------------------------------------------------------------------
+--
+-- Method:      getLoop
+--
+-- Description: Get the loop db element
+--
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .getLoop()
+
+    -- Get the loop element attributes
+    !memArray = !this.traceElement.members
+    do !i indices !memArray
+      !type = !memArray[!i].type
+      !this.loop = !memArray[!i]
+      break if (!type eq 'LOOP' or !type eq 'PLOO')
+    enddo
+
+    -- What if this is a trace element without a loop
+    if (undefined(!type) or (!type ne 'LOOP' and !type ne 'PLOO')) then
+      !!alert.message('Undefined Boundary')
+      return
+    endif
+
+endmethod
+-- End of method definition for .getLoop()
+------------------------------------------------------------------------
+--
+-- Method:      createPnodes
+--
+-- Description: Create all the Pnodes on the newly created walls
+--
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#]   [R/RW] [Data Type]  [Description]
+--    1      R      ARRAY      Array of all walls created
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .createPnodes(!wallArray is ARRAY)
+
+  -- Clear pnodes array member
+  !this.pNodes.clear()
+
+  -- Create the nodes
+  do !i indices !wallArray
+
+    !!ce = !!ce.owne
+    TAIL
+
+    -- create a PNOD at the start of every wall
+    !poss = !wallArray[!i].poss
+    NEW PNOD AT $!poss
+
+    -- Append to pnodes Array
+    !this.pNodes.append(!!ce)
+
+    -- create a PJOI referenced to each wall
+    NEW PJOI
+    CREF $!wallArray[$!i]
+    CUTPLANE DRNS OF CREF
+    --!jLine = !!ce.cref.jLine
+    --JLINE $!jLine
+    !pjoi = !!ce
+    !!ce = !wallArray[!i]
+    JOIS $!pjoi
+    !!ce = !pjoi
+
+    NEW PJOI
+    if (!i eq 1) then
+      !maxi = !wallArray.size()
+      CREF $!wallArray[$!maxi]
+      CUTPLANE DRNE OF CREF
+      --!jLine = !!ce.cref.jLine
+      --JLINE $!jLine
+      !pjoi = !!ce
+      !!ce = !wallArray[!maxi]
+      JOIE $!pjoi
+      !!ce = !pjoi
+    else
+      !prei = !i - 1
+      CREF $!wallArray[$!prei]
+      CUTPLANE DRNE OF CREF
+      --!jLine = !!ce.cref.jLine
+      --JLINE $!jLine
+      !pjoi = !!ce
+      !!ce = !wallArray[!prei]
+      JOIE $!pjoi
+      !!ce = !pjoi
+    endif
+
+  enddo
+
+endmethod
+-- End of method definition for .createPnodes(ARRAY)
+------------------------------------------------------------------------
+--
+-- Method:      setBy
+--
+-- Description: Set the Move By value for the elevation offset
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .setBy()
+
+  -- To move the walls/floors/screed to the elevation offset
+  !a = !this.traceElement.position.wrt(world).up
+  !b = !this.newWrtElement.position.wrt(world).up
+  !diffab = !a - !b
+  !this.by = !this.elevationOffset.val - !diffab
+
+endmethod
+-- End of method definition for .setBy()
+------------------------------------------------------------------------
+--
+-- Method:      setOffset
+--
+-- Description: Set the elevation offset to the offset of the current storage level.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .setOffset()
+
+  -- Use of current storage area if one exists
+  if (defined(!!civLevels)) then
+
+    -- Make sure level is set
+    !level = !!civLevels.level().level()
+    handle any
+      -- Returning Array index unset
+      !this.wrt.val = !this.traceElement.fullName
+      !this.setWrt()
+      !this.elevationOffset.val = 0
+      !this.setWrt()
+      return
+    endhandle
+
+    -- Is the storage area for floor, screed, walls set
+    if (!this.with.selection().eq('FLOOR')) then
+      !specificLevel =  !!civLevels.level().stores[1]
+    elseif (!this.with.selection().eq('SCREED')) then
+      !specificLevel =  !!civLevels.level().stores[2]
+    elseif (!this.with.selection().eq('WALLS')) then
+      !specificLevel =  !!civLevels.level().stores[3]
+    endif
+
+    -- If the specific storage area set then set the value to that
+    if (!specificLevel.set() and !specificLevel neq =0/0) then
+      !this.wrt.val = !level.fullName
+      !this.setWrt()
+      !this.elevationOffset.val = !!civLevels.level().offset()
+      !this.setWrt()
+    -- If the specific storage area unset then set the value to trace element
+    else
+      !this.wrt.val = !this.traceElement.fullName
+      !this.setWrt()
+      !this.elevationOffset.val = 0
+      !this.setWrt()
+
+    endif
+
+  endif
+
+endmethod
+-- End of method definition for .setOffset()
+
+------------------------------------------------------------------------
+--
+-- Method:      tidy
+--
+-- Description: Deletes the walls/floor/screed last created (pnodes also)
+--
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#]         [R/RW] [Data Type]   [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .tidy(!choice is STRING, !ask is BOOLEAN)
+
+  -- Reference element
+  !refe = !!ce
+
+  if (!choice eq 'WALLS') then
+
+     -- Confirm that user wishes to delete walls and pnodes
+     if (!ask) then
+       !answer = !!alert.confirm('Retain walls created?')
+     else
+       !answer = 'NO'
+     endif
+     if (!answer eq 'YES') then
+     do !i indices !this.walls
+       UNENHANCE $!this.walls[$!i]
+     enddo
+     -- Reorder the newly created walls, to be start-end next start-end next...
+     !this.reOrderWalls(!this.walls)
+
+     elseif (!answer eq 'NO') then
+       -- Delete walls
+       do !i indices !this.walls
+         !!ce = !this.walls[!i]
+         handle any
+           -- must have already been deleted
+           skip
+         endhandle
+         if (!!ce.type eq 'STWALL') then
+           DELETE STWALL
+           handle any
+             -- must not have access
+             !!alert.error(!!error.text)
+           endhandle
+         elseif (!!ce.type eq 'WALL') then
+           DELETE WALL
+           handle any
+             -- must not have access
+             !!alert.error(!!error.text)
+           endhandle
+         endif
+       enddo
+       -- Delete pnodes
+       do !i indices !this.pNodes
+         !!ce = !this.pNodes[!i]
+         handle any
+           -- must have already been deleted
+           skip
+         endhandle
+         DELETE PNODE
+         handle any
+           -- must not have access
+           !!alert.error(!!error.text)
+         endhandle
+       enddo
+
+       -- Clear the arrays
+       !this.walls.clear()
+       !this.pNodes.clear()
+
+      --!this.undo.active  = false
+
+     endif
+
+  elseif (!choice eq 'FLOOR') then
+
+    -- Confirm that user wishes to delete floor
+    if (!ask) then
+      !answer = !!alert.confirm('Retain floor created?')
+    else
+      !answer = 'NO'
+    endif
+    if (!answer eq 'YES') then
+      UNENHANCE $!this.floor
+    elseif (!answer eq 'NO') then
+      !!ce = !this.floor
+      DELETE FLOOR
+      -- Clear the member
+      !this.floor = =0/0
+      --!this.undo.active  = false
+    endif
+  elseif (!choice eq 'SCREED') then
+
+    -- Confirm that user wishes to delete screed
+    if (!ask) then
+      !answer = !!alert.confirm('Retain screed created?')
+    else
+      !answer = 'NO'
+    endif
+    if (!answer eq 'YES') then
+      UNENHANCE $!this.screed
+    elseif (!answer eq 'NO') then
+      !!ce = !this.screed
+      DELETE SCREED
+      -- Clear the member
+      !this.screed = =0/0
+      --!this.undo.active  = false
+    endif
+  endif
+
+  -- navigate back to reference element
+  !!ce = !refe
+  handle any
+    -- Must have been at one of the elements just deleted
+  endhandle
+
+endmethod
+-- End of method definition for .tidy(STRING, BOOLEAN)
+------------------------------------------------------------------------
+--
+-- Method:      mitreWalls
+--
+-- Description: Mitre the newly created walls
+--
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#]         [R/RW] [Data Type]   [Description]
+--    1            R      ARRAY      Array of all walls created
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .mitreWalls(!wallArray is ARRAY)
+
+  -- Mitre the walls
+  do !i indices !wallArray
+
+    if (!this.mitre.val) then
+      if (!i eq 1) then
+        call !!strMitre(!wallArray[!i], 'start', !wallArray[!wallArray.size()], 'end')
+        handle any
+          -- if it cant do it then move on
+        endhandle
+      else
+        call !!strMitre(!wallArray[!i], 'start', !wallArray[!i - 1], 'end')
+        handle any
+          -- if it cant do it then move on
+        endhandle
+      endif
+    endif
+
+  enddo
+
+endmethod
+-- End of method definition for .mitreWalls(ARRAY)
+------------------------------------------------------------------------
+--
+-- Method:      reorderWalls
+--
+-- Description: Reorder the newly created walls
+--
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type]   [Description]
+--    1      R      ARRAY      Array of all walls created
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .reOrderWalls(!wallArray is ARRAY)
+
+  -- Find out the size of the array
+  !maxi = !wallArray.size()
+
+  -- Find out the hierarchy sequence of the first and last wall created
+  !first = !wallArray[!maxi].sequence
+  -- Navigate to the wall storage area
+  !!ce = !wallArray[1].owner
+
+  !count = !first
+  -- Reorder the walls
+  do !i indices !wallArray
+    REORDER $!count BEFORE $!first
+    !count = !count + 1
+  enddo
+
+endmethod
+-- End of method definition for .reOrderWalls(ARRAY)
+
+------------------------------------------------------------------------
+--
+-- Method:      expandable
+--
+-- Description: Can the boundary offset be achieved ?  If so, create
+--
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .expandable()
+
+  --Get storage area
+  !store = !!getStorageArea('WANDF', 'WALL')
+
+  -- If store is unset, can we create the panel in or above where we are
+  if(!store.unset()) then
+    !store   = !!ce
+  endif
+
+  -- Move to creation area
+  !!ce = !store
+
+
+  -- Get the loop element attributes
+  !this.getLoop()
+
+  -- Create the basic element
+  NEW FLOOR
+  DESCR 'Dummy/Temporary floor'
+  !newElement = !!ce
+  POSITION $!this.traceElement
+  ORIENTATION $!this.traceElement.ori
+
+  NEW PLOOP
+  HEIG  100mm
+  SJUST UTOP
+
+  -- Make an Array to store all new pave elements
+  !!newPave = ARRAY()
+  do !i indices !this.vertices
+    NEW PAVE
+    !newPave[!i] = !!ce
+    !position       = !!ce.position.wrt(owner)
+    !position.east  = !this.group.polygon.positions[!i].x
+    !position.north = !this.group.polygon.positions[!i].y
+    AT $!position
+    if (!this.vertices[!i].radius neq 0) then
+      !fRadius  = !this.vertices[!i].radius + !this.boundaryOffset.val
+      FRADIUS $!fRadius
+    endif
+  enddo
+
+  !errorA = false
+  -- Has the new floor been graphically shown
+  if (!newElement.gvol.between(-1, 1)) then
+    !errorA = true
+    -- try setting all radii to radii minus boundary offset
+    do !i indices !this.vertices
+      !!ce = !newPave[!i]
+      if (!!ce.fRadius neq 0) then
+        !fRadius  = !this.vertices[!i].radius - !this.boundaryOffset.val
+        FRADIUS $!fRadius
+      endif
+    enddo
+  endif
+
+  if (!errorA) then
+    -- Has the new floor been graphically shown
+    if (!newElement.gvol.between(-1, 1)) then
+      !errorA = true
+      -- try setting all radii to 0
+      do !i indices !this.vertices
+        !!ce = !newPave[!i]
+        FRADIUS 0
+      enddo
+    endif
+  endif
+
+  !errorB = false
+  if (!errorA) then
+    -- Has the new floor now been graphically shown
+    if (!newElement.gvol.between(-1, 1)) then
+      !errorB = true
+      -- Put it back as it was
+      do !i indices !this.vertices
+        !!ce = !newPave[!i]
+        !position       = !!ce.position.wrt(owner)
+        !position.east  = !this.vertices[!i].position.x
+        !position.north = !this.vertices[!i].position.y
+        AT $!position
+        !fRadius  = !this.vertices[!i].radius
+        FRADIUS $!fRadius
+      enddo
+    endif
+  endif
+
+  -- Evaluate errors
+  if (!errorA and !errorB) then
+    !!alert.message('Boundary offset cannot be resolved successfully. Recommend that a traceable boundary is created using Create > Floor...')
+  elseif (!errorA.not() and !errorB) then
+    !!alert.message('Boundary is self intersecting. Recommend that a traceable boundary is created using Create > Floor...')
+  elseif (!errorA and !errorB.not()) then
+    !!alert.message('Curved walls radii could not be resolved. Wall modification will be required.')
+  else
+    -- !!alert.message('No problems expanding this boundary, Great!')
+  endif
+
+  -- If there are no errors or just a question about the radii then go ahead and create walls
+  if ((!errorA and !errorB.not()) or (!errorA.not() and !errorB.not())) then
+    !this.extrusion  = object DBEGEXTRUSION(FLOOR)
+
+    -- Definition
+    !this.definition      = !this.extrusion.basicDefinition()
+    !this.vertices        = !this.extrusion.vertexDefinition()
+
+    do !i indices !this.definition
+
+      -- Is it a full ring
+      if (!this.definition.size() eq 1) then
+        !fullRing = true
+      else
+        !fullRing = false
+      endif
+
+      -- Build an array of all the walls created
+      if (!i eq 1) then
+        !wallArray = ARRAY()
+      endif
+
+      -- Create the actual walls
+      if(!this.definition[!i].objectType() eq 'ARC') then
+        call !!strRingCreate(!this.definition[!i], 'WANDF', 'WALL', !this.traceElement, !fullRing, 'WALL', 'WALL')
+
+        -- Append to the wall array
+        !wallArray[!i] = !!ce
+
+      elseif(!this.definition[!i].objectType() eq 'LINE') then
+        call !!strSctnCreate(!this.definition[!i], 'WANDF', 'WALL', !this.traceElement, 'STWALL', 'WALL')
+
+        -- Append to the wall array
+        !wallArray[!i] = !!ce
+
+      endif
+    enddo
+
+    -- Set the walls array member
+    !this.walls.clear()
+    !this.walls = !wallArray
+
+    -- Mitre the walls
+    !this.mitreWalls(!wallArray)
+
+    -- Move the walls to the elevation offset
+    do !i indices !wallArray
+      !!ce = !wallArray[!i]
+      BY U$!this.by
+    enddo
+
+    -- Create the nodes
+    !this.createPnodes(!wallArray)
+
+  -- Tidy up after creation of this temporary element
+  !!ce = !newElement
+  DELETE FLOOR
+
+  endif
+
+endmethod
+-- End of method definition for .expandable()

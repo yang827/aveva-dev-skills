@@ -1,0 +1,378 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:  Mdssetdatgt26.pmlfnc
+--   Type:  Function Definition
+--   Group:  Multi Discipline Supports Application
+--     Keyword:  MDS
+--   Module:  design
+--   Replaces:
+--
+-- Author:  N.morris
+-- Created:  Tue Oct 28
+--
+--
+-- Description:
+-- Creation function for guide Gt26
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsSetDatGt26()
+
+  -- Force into forwards mode
+  FORWARDS
+
+  -- Find current units and set the distance unit to metric
+
+  !currentUnits = !!kGetSetUnits()
+
+  -- Initialise variables
+  !datum       = !!mdsGT26.support.datum
+  !name        = !!mdsGT26.name.val
+  !alias       = !!mdsGT26.support.alias
+  !fromAtta    = !!mdsGT26.support.preliminaryStore.set()
+
+  !cecomp = !!ce
+
+  if (!datum.set()) then
+    !!alert.error('Atta for support $!name already exists')
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+  -- Identify shoe to attach guide to
+  -- <ak> 21/06/2012
+  if (defined (!!mdsAutoTubePicker) AND !!mdsAutoTubePicker.enabled()) then
+
+    -- return if limit of pick tries exceeded
+    if (!!mdsAutoTubePicker.allowedPicks.eq(0)) then
+      !!mdsAutoTubePicker.cancel()
+      return FALSE
+    endif
+
+    !picked = !!mdsAutoTubePicker.pickShoe()
+    if unset(!picked) then
+      !!alert.warning ('There is no pipe shoe suitable to guide next to preliminary support.')
+      !!mdsAutoTubePicker.cancel()
+      !!kRestoreUnits(!currentUnits)
+      return false
+    else
+      !!ce = !picked
+    endif
+
+  else
+    prompt off
+    prompt load escape 'Identify pipe shoe to guide'
+    ID ATTA @
+    handle (61,528)
+      prompt on
+      !!kRestoreUnits(!currentUnits)
+      return false
+    endhandle
+    prompt on
+  endif
+  -- </ak> 06/06/2012
+
+  !atta = !!ce
+
+  -- Is it a shoe
+
+  if !!ce.catref.owner.:MdsGuidable then
+  else
+    !!alert.error('The identified element is not suitable to guide with this type, it must be a pipe shoe')
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+  -- Select ancillary
+
+  !bore = Pl bore
+  handle any
+    !bore = ph bore
+  endhandle
+
+  !!mdsDacControl(true)
+
+  -- <sk> 06/06/2012
+  if !fromAtta then
+    !!ce = object DBREF('/' & !name & '_Pre')
+    :mdssupptype default
+    :mdssuppfunc default
+    -- set datum in the form for distance
+    !!mdsGT26.support.datum = !!ce
+  else
+    new atta
+  endif
+  -- <sk> 06/06/2012
+
+  SPKBRK TRUE
+  !choice = SELECT SPEC /MDS WITH STYP '$!alias'
+  handle any
+    !projStandard = !!mdsGT26.support.replace
+    !!alert.error('Unable to select ancillary $!projStandard at this bore($!bore)')
+    !!mdsDacControl(false)
+    -- <ak> 21/06/2012
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsGT26, true)
+      return
+    endif
+    delete atta
+    !!kRestoreUnits(!currentUnits)
+    return
+  elsehandle NONE
+    ------------------------------------------------------------------------------
+    -- mjb >>> 07.04.06 <mds12>
+    spref $!choice[1]
+
+    !guideatta = !!ce
+
+    !lbor = !guideatta.lbor.real().value()
+    !mds12test = !!mdsSetDespars(!guideatta)
+
+    if (!mds12test.not()) then
+
+      -- The element may exist in the specification but the project may not contain the size in the parameters file
+      --if undefined(!!mdsPar$!alias[$!bore]) then
+      -- mjb <<< end of mod
+      ------------------------------------------------------------------------------
+      !projStandard = !!mdsGT26.support.replace
+      !!alert.error('Unable to select ancillary ' & !projStandard & ' at this bore(' & !bore & ')')
+      -- <ak> 21/06/2012
+      if !fromAtta then
+        !!mdsRestorePre(!!mdsGT26, true)
+        return
+      endif
+      delete atta
+      !!mdsDacControl(false)
+      !!kRestoreUnits(!currentUnits)
+      return
+    endif
+  endhandle
+
+  ------------------------------------------------------------------------------
+  -- mjb >>> 07.04.06 <mds12>
+  --spref $!choice[1]
+
+  --!!mdsSetDespars(!!ce)
+  -- mjb <<< end of mod
+  ------------------------------------------------------------------------------
+
+  --<wd>dec2003->>>
+  !!mdsDacControl(true)
+  -- Check Pipe Insulation Thickness is within the limits of the Selected ancillary Standard
+  -- If the MNIN (Minimum Insulation) data property does not exist in the ancillary's dataset
+  -- the OBJECT 'Mdscheckstd.insu()' will return 'TRUE' and skip the code shown below
+
+  ------------------------------------------------------------------------------
+  -- mjb >>> 07.04.06 <mds12>
+  !mdsattaobj  = object MDSREADPARSDATA()
+  !mdsattadefs = !mdsattaobj.mdsdefsdata(!guideatta.stype,!lbor)
+
+  if (!mdsattadefs.not()) then
+    !!alert.error (|ERROR: ABORTING the creation of this MDS ANCILLARY|)
+    !!kRestoreUnits(!currentUnits)
+    -- <ak> 21/06/2012
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsGT26, true)
+      return
+    endif
+    delete atta
+    !!mdsDacControl(FALSE)
+    return
+  endif
+  !check = object MDSCHECKSTD(!mdsattaobj)
+
+  --!check = object MDSCHECKSTD()
+  -- mjb <<< end of mod
+  ------------------------------------------------------------------------------
+
+  !min = STRING()
+  !max = STRING()
+  !matError = STRING()
+
+  if (!check.material(!matError).not()) then
+    !!alert.error (!matError)
+    !!kRestoreUnits(!currentUnits)
+    -- <ak> 21/06/2012
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsGT26, true)
+      return
+    endif
+    delete atta
+    return
+  endif
+
+  -- <ak> 03/07/2012
+  !criteria = !check.criteria()
+  if (!criteria.empty().not()) then
+    !!alert.error (!criteria)
+    !!kRestoreUnits(!currentUnits)
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsGT26, true)
+      return
+    endif
+    delete atta
+    return
+  endif
+  -- </ak> 03/07/2012
+
+  if (!check.insu(!alias,!min,!max).not()) then
+    var !insu insu
+    !!kformattext.text.val  = $!max
+    !maxval = !!kformattext.text.val.string(!!distancefmt)
+    !!kformattext.text.val = $!min
+    !minval = !!kformattext.text.val.string(!!distancefmt)
+    !!kformattext.text.val = $!insu
+    !insval = !!kformattext.text.val.string(!!distancefmt)
+    !!alert.message ('The INSULATION on the identified pipe ($!<insval>$!<units>) is not within the MIN ($!<minval>$!<units>) and MAX ($!<maxval>$!<units>) limits of the Insulation Thickness Values for the selected ancillary support type')
+    !!kRestoreUnits(!currentUnits)
+    -- <ak> 21/06/2012
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsGT26, true)
+      return
+    endif
+    delete atta
+    return
+  endif
+  --<wd>dec2003-<<<
+
+  -- Check branch temperature is within the limits of the Selected ancillary Standard
+  -- If the MINT (Minimum Temperature) data property does not exist in the ancillary's dataset
+  -- the OBJECT 'Mdscheckstd.temp()' will return 'TRUE' and skip the code shown below
+
+  !tMin = STRING()
+  !tMax = STRING()
+  if (!check.temp(!alias,!tMin,!tMax).not()) then
+    var !temp temp of branch
+    !!alert.message ('The temperature of the identified pipe ($!temp) is not within the minimum/maximum temperatures ($!tMin / $!tMax)')
+    !!kRestoreUnits(!currentUnits)
+    -- <ak> 21/06/2012
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsGT26, true)
+      return
+    endif
+    delete atta
+    return
+  endif
+
+  -- Test if the ancillary is available at this elevation
+
+  if !check.elevation(!alias).not() then
+    !position = !!ce.position.wrt(/* )
+    !selectedElevation = !position.up
+    ------------------------------------------------------------------------------
+    -- mjb >>> 07.04.06 <mds12>
+    !minimumElevation = !mdsattaobj.elevation
+    --!minimumElevation = !!mdsPar$!alias[0].despars[1]
+    -- mjb <<< end of mod
+    ------------------------------------------------------------------------------
+    !!alert.message ('The elevation selected is unsuitable for this ancillary. Selected elevation $!selectedElevation Minimum elevation $!minimumElevation')
+    !!kRestoreUnits(!currentUnits)
+    -- <ak> 21/06/2012
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsGT26, true)
+      return
+    endif
+    delete atta
+    return
+  endif
+
+  -- Set the ATTA material
+  !!mdssetmatref(!!ce)
+
+  --<wd>22sep2004
+  !!mdsDacControl(TRUE)
+
+  -- Name support
+  :MDSSuppType |$!!mdsGT26.support.type|
+  Name /$!name
+  --xxx  !!ce = !attaname.dbref()
+
+  -- Set Guide Atta :MDSGuideRef to Shoe Atta
+  :MDSGuideRef $!atta
+  !guide = !!ce
+
+  -- Navigate back to Shoe Atta and Set :MDSGuideRef to Guide Atta
+  !!ce  = !atta
+  :MDSGuideRef $!guide
+  handle ANY
+    claim ce
+    :MDSGuideRef $!guide
+  elsehandle NONE
+  endhandle
+
+  --------------------------------------------------------------------------------
+  -- Set guide dims to the shoe that it is supporting
+  !!mdsResetGuide()
+  !!ce = !guide
+
+  !!mdsSetIspe()
+
+  --  Add stex for isometrics
+  call !!mdsTransport(!!ce,!name)
+
+  !!mdsSelLstu(!!ce)
+
+  !!mdsDacControl(true)
+
+  POS AT PREV
+  ori and p3 is p3 of prev
+
+  -- Add marker text
+  VAR !pOS POS P9 WRT WORLD
+  $M/%PDMSUI%/DES/CLIB/GAIDTEXT 210 Datum $<$!pOS$>
+
+  -- Always add atta to support object
+  !!mdsGT26.support.atta.clear()
+  !!mdsGT26.support.atta.append(!!ce)
+  !!mdsGT26.support.datum  = !!ce
+  !!mdsGT26.support.pADir  = Pa Dir wrt world
+  !!mdsGT26.support.pLDir  = Pl Dir wrt world
+  !!mdsGT26.support.p9Dir  = P9 Dir wrt world
+  !!mdsGT26.support.position = true
+
+  -- Enhance elements using colour set for highlight
+  !colourList = ARRAY()
+  !colourList.appendarray(!!mdsGT26.support.atta)
+
+  -- Colour Support
+  call !!kEnhanceList(!colourList)
+
+  -- When finished grey out datum gadget and reset gadgets
+
+  !!mdsSetGadgets(!!mdsGT26,!!ce,!!mdsGT26.support.type)
+
+  !!mdsGT26.datum.active = false
+
+  -- Special for GT08 is the requirement of setting the BCCL dkey to the cross
+  -- centre of the beam it is sitting on
+  -- Special for ST06 is the requirement of setting the SBFW dkey to the width
+  -- of the beam it is sitting on
+
+
+  !!mdsDacControl(false)
+
+  !!kRestoreUnits(!currentUnits)
+
+  label /end
+
+  !!mdsGT26.setdefault.active = true
+  !!mdsGT26.adjust.active = false
+
+  !!mdsDacControl(false)
+
+  !!ce = !cecomp
+
+endfunction

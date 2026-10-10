@@ -1,0 +1,756 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            hvacsplitmanager.pmlobj
+--   Type:          Object Definition
+--   Group:         HVAC Application
+--
+--     Keyword:     HVAC
+--   Module:        Design
+--
+-- Author:          Steve Bentley
+-- Created:         Wed Jun 14 09:00:00 BST 2006
+--
+--
+-- Description:
+-- Object to manage the functions of HVAC splitting
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  createBranches(DBREF)            -                   Creates HVAC branches to store split elements
+--  createSplitMarkers()             -                   Creates the split atta at the intersection points
+--  deleteUsedSplitAttachments()     -                   Deletes Split Attachments used to split elements in a branch
+--  getAllSplitAttachments()         -                   Collects all Split Attachments of current branch to split
+--  nextValidElement(DBREF)          DBREF               Return a valid element, not an ATTA, STIF
+--  setBranches(ARRAY)               -                   Sets the member to store the branches to be split
+--  setHvacName(STRING)              -                   Sets the name of existing HVAC to store split members
+--  setPlane(GPHPLANE)               -                   Sets the member to store the plane of the passed gphPlane
+--  split()                          -                   Splits the elements and moves into new branches
+--
+------------------------------------------------------------------------
+define object HVACSPLITMANAGER
+
+  -- Members
+
+  -- Branches to split (Array of DBREFS)
+  member .branchesToSplit is ARRAY
+
+  -- Split Atta elements to split on. (Array of DBREFS)
+  member .splitAttachments        is ARRAY
+
+  -- Split Atta elements sequence in the hierarchy (Array of Real)
+  member .splitAttaSequence is ARRAY
+
+  -- Where to put the new branches (AUTO, CURRENT, OTHER)
+  -- AUTO requires new name;
+  -- CURRENT should be current HVAC name
+  -- OTHER requires existing HVAC name
+  member .storageOption   is STRING
+
+  -- Name of where to put the new branches (without the /)
+  member .existingHvacName is STRING
+
+  -- Array to store new branches created for storing the split items
+  member .newBranches      is ARRAY
+
+  -- Plane to create the split markers at the intersection points
+  member .plane           is PLANE
+
+endobject
+-- End of object definition
+------------------------------------------------------------------------
+--
+-- Method:      getAllSplitAttachments
+--
+-- Description: Collects all Split Attachments of current branch to split
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getAllSplitAttachments()
+
+  -- Initialise member
+  !this.splitAttachments = ARRAY()
+
+  !collection = object COLLECTION()
+  !collection.scope(!!ce)
+  !collection.type('ATTA')
+
+  !expression = object EXPRESSION( |ATTRIB attype eq 'SPLI' | )
+  !collection.filter(!expression)
+
+  !this.splitAttachments = !collection.results()
+
+endmethod
+-- End of method definition for .getAllSplitAttachments()
+------------------------------------------------------------------------
+--
+-- Method:      deleteUsedSplitAttachments
+--
+-- Description: Deletes Split Attachments used to split elements in a branch
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .deleteUsedSplitAttachments()
+
+  !memory = !!ce
+
+  -- Loop through all the split attachments because we
+  do !i indices !this.splitAttachments
+    !!ce = !this.splitAttachments[!i]
+    DELETE ATTA
+  enddo
+
+  !!ce = !memory
+  handle ANY
+    -- it may have been deleted
+  endhandle
+
+endmethod
+-- End of method definition for .deleteUsedSplitAttachments()
+------------------------------------------------------------------------
+--
+-- Method:      setPlane
+--
+-- Description: Sets the member to store the plane of the passed gphPlane
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      GPHPLANE    Graphic plane object
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setPlane(!gphPlane is GPHPLANE)
+
+    !this.plane = !gphPlane.plane
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      setBranches
+--
+-- Description: Sets the member to store the branches to be split
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       Array of branches that needs to be split
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setBranches(!elements is ARRAY)
+
+  if(!elements.set()) then
+     !this.branchesToSplit  = !elements
+  else
+     !!alert.error('No Branches for splitting')
+     return
+  endif
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      setHvacName
+--
+-- Description: Sets the name of existing HVAC to store split members
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING     Name of an existing HVAC system
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setHvacName(!name is STRING)
+
+  -- unset the value
+  !this.existingHvacName  = STRING()
+
+  if(!name.unset() or !name.trim().empty()) then
+     !!alert.error('Name of existing HVAC System is unset')
+     return
+  else
+    !hvacName  = !!checkName(!name,'old')
+    if(!hvacName.set() and !hvacName.dbref().type eq 'HVAC') then
+       !this.existingHvacName  = !hvacName
+    else
+       !!alert.error('Invalid HVAC name')
+       return
+    endif
+  endif
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      createSplitMarkers
+--
+-- Description: Creates the split atta at the intersection points
+--               between the defined plane and the implied tubes
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createSplitMarkers()
+
+   -- Mark the database for Undo functionality
+   !undoCreate = object UNDOABLE()
+   !undoCreate.description('Create Split Atta')
+   !undoCreate.add()
+
+   if(!this.plane.unset())then
+      !!alert.error('Plane not defined. Define a Plane to create split markers.')
+      return
+   endif
+
+   -- Change mode to forward
+   var !mode mode
+   FORWARD
+
+   !refElem    =   !!ce
+
+   -- Set up a limit box using the cutting plane geometry
+   !planeXDir     =   !this.plane.orientation.xDir()
+   !planeYDir     =   !this.plane.orientation.yDir()
+
+   -- setting the limit of the plane to extend 100,000mm from the current position
+   !planeSizeLimit     =   100000
+
+   !limitBoxPos1      =   !this.plane.position.offset(!planeXDir,!planeSizeLimit)
+   !limitBoxPosStart  =   !limitBoxPos1.offset(!planeYDir,!planeSizeLimit)
+
+   !limitBoxPos2      =   !this.plane.position.offset(!planeXDir,-!planeSizeLimit)
+   !limitBoxPosEnd    =   !limitBoxPos2.offset(!planeYDir,-!planeSizeLimit)
+
+   -- Initialise array to store the start component (mtbe of tubi)
+   !startComp     =   ARRAY()
+
+   -- Initialise array to store the intersection points between Plane and implied leave tubes
+   !intersectionPoints  = ARRAY()
+
+   -- Initialise array to store the implied tubes to be split
+   !elementsToSplit = ARRAY()
+
+   -- array to store the warning and error messages
+   !warning = ARRAY()
+
+   do !branch values !this.branchesToSplit
+
+      -- check if the branch is updatable
+      !isUpdatable  = !!dbRefUpdatable(!branch)
+      if(!isUpdatable.not()) then
+         !!alert.error(!!error.text)
+         skip
+      endif
+
+      -- Collect all elements falling within the limit box
+      var !elements coll all BRAN MEM within $!limitBoxPosStart to $!limitBoxPosEnd for $!branch
+      if(!elements.unset()) then
+         !warning.append('No elements in Branch ' & !branch.flnm)
+         skip
+      endif
+
+      -- Loop through the elements to find out the intersection points
+      do !k indices !elements
+
+         !currentElement  = !elements[!k].dbref()
+
+         if(!currentElement.type eq 'TUBI') then
+
+           !tube           =  !currentElement
+           !tubeLength =  !tube.itle
+
+             !mtbeRefStr     = !elements[!k].after('IL TUB OF ')
+           !tubeStartComp = !mtbeRefStr.dbref()
+
+           if(!tubeStartComp.type eq 'BRAN')then
+              !tubeStartPos  =  !tubeStartComp.hpos
+              !tubeDir       =  !tubeStartComp.hdir
+           else
+              !tubeStartPos  =  !tubeStartComp.lpos
+              !tubeDir       =  !tubeStartComp.ldir
+           endif
+
+           !tubeEndPos    =  !tubeStartPos.offset(!tubeDir,!tubeLength)
+
+           -- Replace the tube with a line object
+           !line       =   object LINE(!tubeStartPos,!tubeEndPos)
+
+         else
+
+            -- Are we interested in the arrive or leave
+            !testArrive = object LINE(!currentElement.apos, !this.plane.position)
+            !testLeave  = object LINE(!currentElement.lpos, !this.plane.position)
+
+            if (!testArrive.length() gt !testLeave.length()) then
+              -- We are interested in Leave and Next
+
+              !nextElement  = !elements[!k].dbref().owner.members[!elements[!k].dbref().sequence + 1]
+              handle ANY
+                SKIP
+              endhandle
+            else
+
+              -- We are interested in Arrive and Previous
+              !nextElement = !currentElement
+              !currentElement = !elements[!k].dbref().owner.members[!elements[!k].dbref().sequence - 1]
+              handle ANY
+                SKIP
+              endhandle
+            endif
+
+            -- if next element is a tubi it will be handled as tubi
+            skip if(!nextElement.type eq 'TUBI')
+            !lineReverseDir = !currentElement.adir
+            !lineStartPos   = !currentElement.lpos.offset(!lineReverseDir,1mm)
+            !lineDir        = !currentElement.ldir
+            !lineEndPos     = !currentElement.lpos.offset(!lineDir,1mm)
+
+            -- Create a line(of length 1mm) object between the two components
+            !line        =   object LINE(!lineStartPos,!lineEndPos)
+         endif
+
+         -- Take out the intersection point of the plane and the line
+         !intersectionPoint  =   !this.plane.intersection(!line)
+         handle (2,873) (2,785) (2,876) ANY
+           !warning.append(!!error.text)
+           skip
+         endhandle
+
+         -- Check if the intersection point is set and it actually lies on the implied tube
+         skip if(!intersectionPoint.unset() or !line.onProjected(!intersectionPoint).not())
+
+         -- check if the intersection point lies on the Head or tail position of the branch.
+         if(!intersectionPoint eq !currentElement.owner.hposition or !intersectionPoint eq !currentElement.owner.tposition) then
+            !warning.append('Intersection point of plane on ' & !elements[!k] & ' lies on the HPOS/TPOS of the Branch')
+            skip
+         else
+            -- check if an ATTA is already created at the intersection position
+            var !splitAttachments collect all ATTA with (atty eq 'SPLI') for $!branch
+            if(!splitAttachments.set()) then
+              !attaPosition = !splitAttachments.evaluate(object BLOCK('!splitAttachments[!evalIndex].dbref().position.wrt(world)'))
+              if(!attaPosition.findFirst(!intersectionPoint).set()) then
+                 !warning.append('Split Atta already created in the same position on ' & !currentElement.flnm)
+                 skip
+              endif
+            endif
+         endif
+
+         -- If we have had this intersection point before then skip
+         if(!intersectionPoints.findFirst(!intersectionPoint).set()) then
+            skip
+         endif
+
+         -- <RM> 02/10/07 this code ensures that the correct element is input so that the atta is positioned correctly in the hierarchy
+         -- otherwise if we have brco's or other elements after a strt then they get ignored and not included in the correct branch
+         -- when it is split
+
+         -- There may be more than 1
+         if (defined(!nextElement)) then
+           !splitElement = !this.nextValidElement(!nextElement)
+         else
+           !splitElement = !!ce
+         endif
+
+         !elementsToSplit.append(!currentElement)
+
+         if(!currentElement.type eq 'TUBI') then
+           !startComp.append(!tubeStartComp)
+         else
+           !startComp.append(!splitElement)
+         endif
+
+         !intersectionPoints.append(!intersectionPoint)
+
+      enddo
+   enddo
+
+   -- If no intersection points are obtained stop proceeding.
+   if(!intersectionPoints.unset())then
+      !!alert.error('No valid split points have been found.' )
+      !undoCreate.endUndoable()
+      -- Reset the mode and stored CE
+      $!mode
+      !!ce   =   !refElem
+      return
+   endif
+
+
+   -- Insert the split marker at the intersection points
+   do !i indices !elementsToSplit
+
+      !!ce =  !startComp[!i]
+      -- if the tube is the first element in the branch
+      if(!!ce.type eq 'BRAN') then
+         !hconType = !!ce.hcon
+         if(!hconType inset('RECT','CIRC','OVAL') ) then
+            !!hvacSplitAtta(!hconType)
+            POS PL AT $!intersectionPoints[$!i]
+
+         elseif(!hconType eq 'MAIN') then
+            !tubeEndComp = !elementsToSplit[!i].mten
+            if(!tubeEndComp.set()) then
+               if(!tubeEndComp.type eq 'BRAN' and !tubeEndComp.tcon eq 'MAIN') then
+                  -- alert an error here
+                  skip
+               elseif(!tubeEndComp.type eq 'BRAN') then
+                  !connType  = !tubeEndComp.tcon
+               else
+                  !connType  = !tubeEndComp.acon
+               endif
+               !!hvacSplitAtta(!connType)
+               POS PL AT $!intersectionPoints[$!i]
+            endif
+
+         else
+            -- new connection type to be handled.
+            !!alert.error('Find a solution to the connection type ' & !hconType)
+         endif
+         skip
+      endif
+
+      var !shape  desp[30]
+
+      if(!shape inset('RECT','CIRC','OVAL') ) then
+         !!hvacSplitAtta(!shape)
+
+      elseif(!shape eq 'TRAN') then
+         if(leave eq 1) then
+           var !leaveSize desp[3]
+         else
+           var !leaveSize desp[5]
+         endif
+
+         -- check if var leaveSize is a real value
+         if(!leaveSize eq 'DIAM' or !leaveSize eq '0') then
+            !!hvacSplitAtta('CIRC')
+         else
+           var !desc desp[1]
+           if(!desc.matchwild('*FO*') ) then
+              !!hvacSplitAtta('OVAL')
+           else
+              !!hvacSplitAtta('RECT')
+           endif
+        endif
+      else
+        -- We have not got a valid shape. Possibly an MDS ATTA
+        !!hvacSplitAtta('RECT')
+      endif
+
+      POS PL AT $!intersectionPoints[$!i]
+
+   enddo
+
+   -- Reset the mode and stored CE
+   $!mode
+
+   -- Reset CE
+   !!ce   =   !refElem
+
+   !undoCreate.endUndoable()
+
+endmethod
+-- End of method definition .createSplitMarkers()
+------------------------------------------------------------------------
+--
+-- Method:      split
+--
+-- Description: Splits the elements and moves into new branches
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .split()
+
+  !memory   = !!ce
+  !fromHvac = object DBREF()
+
+  -- Mark the database for Undo functionality
+  !undoSplit = object UNDOABLE()
+  !undoSplit.description('Split HVAC')
+  !undoSplit.add()
+
+  -- Start the splitting
+  do !i indices !this.branchesToSplit
+
+    -- array to store the branches to be created
+    !this.newBranches       = ARRAY()
+    -- array to store the split atta sequence
+    !this.splitAttaSequence = ARRAY()
+
+    -- Navigate to each branch to split from
+    !!ce = !this.branchesToSplit[!i]
+    !fromBranch = !this.branchesToSplit[!i]
+    !fromHvac   = !this.branchesToSplit[!i].owner
+
+    -- Get the split attachments for this branch
+    !this.getAllSplitAttachments()
+    if(!this.splitAttachments.unset()) then
+      skip
+    endif
+
+    !this.createBranches(!this.branchesToSplit[!i])
+
+    -- Make arrays of the elements to be included in the new branches
+    --Loop through new branches in reverse order
+    do !m from !this.newBranches.size() to 1 by -1
+       -- get the from branch members
+       !fromBranchMembers = !this.branchesToSplit[!i].mcount
+       -- Navigate to new branches in reverse order
+       !!ce = !this.newBranches[!m]
+       -- Loop through from branch elements starting from the last member
+       do !n from !fromBranchMembers to 0 by -1
+          if(!n gt !this.splitAttaSequence[!m]) then
+             if (mcount eq 0) then
+              INCLUDE $!n of $!fromBranch
+             else
+              INCLUDE $!n of $!fromBranch before 1
+             endif
+          else
+           -- we must have all the elements for this branch
+             break
+          endif
+       enddo
+    enddo
+
+    -- Set the head ref and tail ref of new branches created
+    do !k indices !this.newBranches
+
+      !!ce = !this.newBranches[!k]
+
+      -- First connect the tails...
+      if(!k eq !this.newBranches.size()) then
+
+         -- For last split branch, Tail to be as the original branch tail
+         !tref  = !fromBranch.tref
+         if(!tref.set()) then
+            CONN PT to PH of $!tref
+         else
+            POS PT at PT of $!fromBranch
+            !!ce.tbore  = !fromBranch.tbore
+            handle ANY
+              -- could be unset bore
+            endhandle
+            !!ce.tdir   = !fromBranch.tdir
+            !!ce.tconn  = !fromBranch.tconn
+         endif
+
+         var !tailSize :TXYSIZE of $!fromBranch
+         :TXYSIZE $!tailSize
+
+      else
+         -- connect Tail to the last member (the split Atta)
+         POS PT AT PL OF LAST MEM
+         TDIR PA OF LAST MEM
+         var !a DDESP[4] OF LAST MEM
+         var !b DDESP[5] OF LAST MEM
+         TBORE ($!a + $!b)
+         var !c WDESP[30] OF LAST MEM
+         TCONN $!c
+         :TXYSIZE $!a $!b
+      endif
+
+    enddo
+
+    -- Sort out the tail of the original branch
+    !!ce = !fromBranch
+    -- Tail to connected to the last member (the split Atta)
+    POS PT AT PL OF LAST MEM
+    TDIR PA OF LAST MEM
+    var !a DDESP[4] OF LAST MEM
+    var !b DDESP[5] OF LAST MEM
+    TBORE ($!a + $!b)
+    var !c WDESP[30] OF LAST MEM
+    TCONN $!c
+    :TXYSIZE $!a $!b
+
+    -- Now sort out the head connection
+    do !k indices !this.newBranches
+       !!ce = !this.newBranches[!k]
+       -- Connect the heads...
+       -- For last split branch
+       if(!k eq 1) then
+         -- Head connect to the original branch tail
+         FCONN PH to PT OF $!fromBranch
+         handle ANY
+         endhandle
+
+       -- For other split branch
+       else
+         -- Head to connected to the tail of the previous branch
+         !previousNumber = !k - 1
+         --$P branch to connect to is PT of $!this.newBranches[$!previousNumber]
+         FCONN PH to PT OF $!this.newBranches[$!previousNumber]
+         handle ANY
+         endhandle
+
+       endif
+
+       -- Sort out the correct Head Tubes
+       !headSizes = :TXYSIZE OF HREF
+       :HXYSIZE $!headSizes[1] $!headSizes[2]
+       handle ANY
+         :HXYSIZE $!headSizes[1]
+       endhandle
+       if (HCONN eq 'RECT') then
+         hstube  /$:AVEVAHVACSPEC$:/HRTUBEB
+       elseif (HCONN eq 'CIRC') then
+         hstube  /$:AVEVAHVACSPEC$:/HCTUBE
+       elseif (HCONN eq 'OVAL') then
+         hstube  /$:AVEVAHVACSPEC$:/HFOTUBEB
+       endif
+
+    enddo
+
+    -- Delete to used Split Attachments for this branch
+    !this.deleteUsedSplitAttachments()
+
+  enddo
+  -- end of splitting (branchesToSplit loop )
+
+  -- Mark the database for End of the Undo function.
+  !undoSplit.endUndoable()
+
+  !!ce = !memory
+  handle ANY
+    -- it may have been deleted
+  endhandle
+
+endmethod
+-- End of method definition for .split()
+------------------------------------------------------------------------
+--
+-- Method:      createBranches
+--
+-- Description: Create HVAC branches to store split elements
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Branch from which elements are to be split
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createBranches(!fromBranch is DBREF)
+
+    !this.splitAttaSequence = ARRAY()
+
+    -- create as many branches as split Attachments.
+    do !j indices !this.splitAttachments
+
+      -- Record to sequence number of the Split Atta
+      !this.splitAttaSequence[!j] = !this.splitAttachments[!j].sequence
+
+      if(!this.storageOption.upcase() eq 'CURRENT') then
+
+        -- Compose the new names for these branches
+        !fromBranchName = !fromBranch.namn
+        !newBranchName = '/' & !fromBranchName & '/Split(' & !j.string() & ')'
+        NEW BRAN $!newBranchName
+        COPY LIKE $!fromBranch
+
+      elseif(!this.storageOption.upcase() eq 'AUTO') then
+
+        -- Compose the new names for new HVAC elements
+        !fromHvacName = !fromBranch.owner.namn
+        !newHvacName = '/' & !fromHvacName & '/Split(' & !j.string() & ')'
+
+        do !k from !j
+           !unusedRef  = !newHvacName.dbref()
+           handle (2,109) ANY
+              break
+           elsehandle NONE
+              !n  = !k + 1
+              !newHvacName = '/' & !fromHvacName & '/Split(' & !n.string() & ')'
+           endhandle
+        enddo
+
+        NEW HVAC $!newHvacName
+        !newBranchName  = !newHvacName & '/B1'
+        NEW BRAN $!newBranchName
+        COPY LIKE $!fromBranch
+
+      elseif(!this.storageOption.upcase() eq 'OTHER') then
+
+        if(!this.existingHvacName.unset()) then
+           !!alert.error('Existing HVAC system name is not given')
+           return
+        endif
+
+        !!ce = $!this.existingHvacName
+
+        -- Compose the new names for these branches
+        !fromBranchName = !fromBranch.namn
+        !newBranchName  = '/' & !fromBranchName & '/Split(' & !j.string() & ')'
+
+        NEW BRAN $!newBranchName
+        COPY LIKE $!fromBranch
+
+      endif
+
+      !this.newBranches[!j] = !!ce
+    enddo
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      nextValidElement
+--
+-- Description: Return a valid element, not an ATTA, STIF
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element for potential split
+-- Return:
+--   [Data Type] [Description]
+--     DBREF        Exact element for split
+--
+------------------------------------------------------------------------
+define method .nextValidElement(!element is DBREF) is DBREF
+
+  !!ce = !element
+  PREV
+  handle any
+    -- There is no previous so make sure we navigate to the branch
+    BRAN
+    return !!ce
+  endhandle
+  do from 1 to 100
+    NEXT
+    handle ANY
+      -- There is no next
+      break
+    elsehandle NONE
+      -- if the have an attachment keep on searching
+      if ((not(TYPE inset('BRCO','STIF'))) and (not(HARDTYPE inset('ATTA')))) then
+        PREV
+        break
+      endif
+    endhandle
+  enddo
+
+  return !!ce
+
+endmethod
+-- End of method definition

@@ -1,0 +1,208 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            rtrpidpreprocess.pmlfnc
+--   Type:          Function Definition
+--   Group:         Router application
+--     Keyword:     RTR
+--   Module:        router
+--   Replaces:      MPASS1
+--
+-- Author:          Patricia Gardener
+-- Created:
+--
+--
+-- Description:
+--
+-- Pass 1 of the import file looks for multiway components and figures
+-- out which branch owns it. PEGS outputs all TREF's of a branch and
+-- includes the components as a component. Hence the same component
+-- can be included in several branches.
+--
+-- If a branch is found that has the component but its TREF is not set
+-- to it then it is made the owner. If all branches have the component
+-- and the TREF set to it, the first branch is picked. The copies are
+-- removed from the array so Pass 2 never see them.
+--
+------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R/W    ARRAY       The lines of the import file
+--    1   R      FILE        The logFile
+--
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     Can processing continue?
+--
+------------------------------------------------------------------------
+
+define function !!rtrPIDPreprocess(!lines is ARRAY, !logFile is FILE) is BOOLEAN
+
+  !branchName  = ''
+  !pipeName    = ''
+  !compArray   = ARRAY()
+  !branchArray = ARRAY()
+  !lineNumber  = 0
+
+  do !line values !lines
+
+    !lineNumber = !lineNumber + 1
+    !words      = !line.split()
+
+    !i = !lineNumber  / 100
+    !i = !i.nint() * 100
+
+    if((!i - !lineNumber) eq 0) then
+      !string = !!messageFile.messageString(162,54,!lineNumber.string())
+      !!rtrWriteLog( !logFile, !string)
+    endif
+
+    if(!line eq '') then
+      -- !lines[!lineNumber].delete()
+      skip
+
+    elseif(!words[1] eq '--') then
+      -- !lines[!lineNumber].delete()
+      skip
+
+    elseif (!words[1] eq |START| AND !words[2] eq |PIPE|) then
+      !pipeName = !words[3]
+
+    elseif (!words[1] eq |START| AND !words[2] eq |BRANCH|) then
+      !branchName = !words[3]
+      !index      = !words.findFirst('TREF')
+
+      if(!index.set() eq TRUE) then
+        !tRef = !words[!index + 1]
+      endif
+
+    elseif(!words[1] eq 'END') then
+      if(!branchName ne '') then
+        !branchName = ''
+        !tRef       = ''
+      else
+        !pipeName = ''
+      endif
+
+      skip
+
+    elseif(!branchName ne '') then
+      -- look at component only if TREF *may* point to it.
+
+      if( !tRef.set() and !tRef ne '') then
+
+        -- All component definitions will have at least 2 words. If it does not
+        -- there is no name so we can not check for future references to it.
+
+        if(!words.size() ge 2) then
+
+          if(!tRef eq !words[2]) then
+            !flag = TRUE
+          else
+            !flag = FALSE
+          endif
+
+          -- Is component already in array?
+
+          !componentIndex = !compArray.findFirst(!words[2])
+
+          if(!componentIndex.set()) then
+            !branchDetail = '# ' + !branchName + ' ' + !flag.string() + ' ' + !lineNumber.string()
+
+            !branchArray[!componentIndex] = !branchArray[!componentIndex] + !branchDetail
+
+            skip
+          else
+            !index               = !compArray.maxIndex() + 1
+            !compArray[!index]   = !words[2]
+            !branchDetail        = !branchName + ' ' + !flag.string() + ' ' + !lineNumber.string()
+            !branchArray[!index] = !branchDetail
+
+            skip
+          endif
+        else
+          !string = '  WARNING: Line ' + !lineNumber.string() + '. '
+          !string = !string + !!messageFile.messageString(162,55, !words[1])
+          !!rtrWriteLog( !logFile, !string )
+          skip
+        endif
+      endif
+
+    else
+      !string = '  ERROR: Line ' + !lineNumber.string()  + '. '
+      !string = !string + !!messageFile.messageString(162,56)
+      !!rtrWriteLog( !logFile, !string )
+      skip
+    endif
+
+  enddo
+
+  --------------------------------------------------
+  -- Got all components, now figure out which branch
+  -- owns which component
+  --------------------------------------------------
+
+  !!rtrWriteLog( !logFile, '' )
+
+  if(!compArray.set()) then
+
+    do !x to !compArray.maxIndex()
+      !foundOwner     = false
+      !componentName  = !compArray[!x]
+
+      !branches       = !branchArray[!x].split('#')
+
+      do !y to !branches.maxIndex()
+
+        !branch = !branches[!y].split()
+
+        if(!branch[2] eq 'FALSE') then
+
+          do !z to !branches.maxIndex()
+            !branch = !branches[!z].split()
+
+            if(!z ne !y) then
+              !lines[!branch[3].real()].delete()
+
+              !num = !branch[3]
+
+              !string = !!messageFile.messageString(162,57, !componentName)
+              !string = !string + !!messageFile.messageString(162,58, !num )
+              !!rtrWriteLog( !logFile, !string )
+            endif
+          enddo
+
+          !foundOwner = true
+          break
+        endif
+
+        -- if looked at all branches and not found branch with TREF not
+        -- equal to component, delete all occurrences but the first
+
+        if(!y eq !branches.maxIndex() and !foundOwner eq false) then
+
+          do !z from 2 to !branches.maxIndex()
+
+            !branch = !branches[!z].split()
+
+            !lines[!branch[3].real()].delete()
+            !num = !branch[3]
+
+            !string = !!messageFile.messageString(162,57, !componentName)
+            !string = !string + !!messageFile.messageString(162,58, !num )
+            !!rtrWriteLog( !logFile, !string )
+          enddo
+        endif
+
+      enddo
+    enddo
+  endif
+
+!lines.compress()
+
+  return true
+
+endfunction

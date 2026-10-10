@@ -1,0 +1,694 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            edgtubing.pmlobj
+--   Type:          Object Definition
+--   Group:         Database routines
+--     Keyword:     DTB
+--   Module:        common
+--   Replaces:
+--
+-- Author:          N.Holmes
+-- Created:         Wed Mar 11 16:21:25 WAT 1998
+--
+--
+-- Description:
+-- Tubing Handles
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  arc(DBREF)                       ARC                 Return circle definition
+--  arc(DBREF,POSITION)              ARC                 Return circle definition through a reference position
+--  distance(DBREF,REAL,LINE,BOOLEAN) POSITION            Return nearest distance point on line using a passed line
+--  distance(DBREF,REAL,POINTVECTOR,BOOLEAN) POSITION            Return nearest distance point on line using a passed point vector
+--  exact(DBREF,LINE)                POSITION            Return the intersection of the passed line with the tube
+--  exact(DBREF,POINTVECTOR)         POSITION            Return the intersection of the passed point vector with the tube
+--  fraction(DBREF,REAL,LINE,BOOLEAN) POSITION            Return nearest fraction point on line using a passed line
+--  fraction(DBREF,REAL,POINTVECTOR,BOOLEAN) POSITION            Return nearest fraction point on line using a passed point vector
+--  line(DBREF)                      LINE                Return tube definition as a line
+--  line(DBREF,STRING)               LINE                Return tube definition as a line
+--  lineExtended(DBREF)              LINE                Return line definition using the tube as a basis, ignoring the
+--  pointVector(DBREF,BOOLEAN)       POINTVECTOR
+--  pointVector(DBREF,STRING)        POINTVECTOR         Return the arrive/leave as a pointVector
+--  proportion(DBREF,REAL,LINE,BOOLEAN) POSITION            Return nearest proportion point on line using a passed line
+--  proportion(DBREF,REAL,POINTVECTOR,BOOLEAN) POSITION            Return nearest proportion point on line using a passed point vector
+--  snap(DBREF,LINE,BOOLEAN)         POSITION            Return nearest snap point on line using a passed line
+--  snap(DBREF,POINTVECTOR,BOOLEAN)  POSITION            Return nearest snap point on line using a passed point vector
+--  through(DBREF,POSITION,BOOLEAN)  POSITION
+--
+------------------------------------------------------------------------
+
+define object EDGTUBING
+
+  -- Ignore flags (some of these are mutually exclusive)
+  -- Attachments
+  member .attachments     is BOOLEAN
+  -- Welds
+  member .welds           is BOOLEAN
+  -- Offline components
+  member .offline         is BOOLEAN
+  -- Inline components
+  member .inline          is BOOLEAN
+  -- Stop at change in direction
+  member .directionChange is BOOLEAN
+
+endobject
+-- End of object definition for EDGTUBING
+
+------------------------------------------------------------------------
+--
+-- Method:      arc
+--
+-- Description: Return circle definition
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Cylinder DBREF
+--    2   R      STRING      End
+-- Return:
+--   [Data Type] [Description]
+--    ARC         Tube NB as a ARC
+--
+------------------------------------------------------------------------
+
+define method .arc(!dbRef is DBREF) is ARC
+
+  -- Initialise Variables
+
+  -- Pick head tube
+  if(!dbRef.hardType eq 'BRAN') then
+    !arc = !!appMathLib.arc.newCircle(!dbRef.hPosition, object ORIENTATION('Z is ' & !dbRef.hDirection), !dbRef.hBore / 2)
+
+  -- Picked leave tube of item
+  else
+    !arc = !!edgTypes.pPoint.arc(!dbRef, !dbRef.leave)
+  endif
+
+  -- Return
+  return !arc
+
+endmethod
+-- End of method definition for .arc(DBREF) ARC
+
+------------------------------------------------------------------------
+--
+-- Method:    arc
+--
+-- Description: Return circle definition through a reference position
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Cylinder DBREF
+--    2   R      REAL        Ppoint number
+--    3   R      POSITION    Reference point through which the arc passed
+-- Return:
+--   [Data Type] [Description]
+--    ARC         Cylinder as a ARC
+--
+------------------------------------------------------------------------
+
+define method .arc(!dbRef is DBREF, !position is POSITION) is ARC
+
+  -- Initialise Variables
+  !arc  = !this.arc(!dbRef)
+
+  -- Line reference position is to be projected onto
+  !pv              = object POINTVECTOR(!arc.position, !arc.orientation.zDir())
+  !arc.position    = !pv.line(1000).near(!position).wrt(World)
+  !arc.orientation = !arc.orientation.wrt(World)
+
+  -- Return
+  return !arc
+
+endmethod
+-- End of method definition for .arc(DBREF, POSITION) ARC
+
+------------------------------------------------------------------------
+--
+-- Method:      line
+--
+-- Description: Return tube definition as a line
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Database Element
+-- Return:
+--   [Data Type] [Description]
+--    LINE        Tubing as a line
+--
+------------------------------------------------------------------------
+
+define method .line(!dbRef is DBREF) is LINE
+
+  -- Initialise Variables
+
+  -- If branch passed, used HEAD tube
+  if(!dbRef.type eq 'BRAN') then
+    return !this.line(!dbRef, 'HEAD')
+
+  -- Return leave tube of component
+  else
+    return !this.line(!dbRef, 'LEAVE')
+  endif
+
+endmethod
+-- End of method definition for .line(DBREF) LINE
+
+------------------------------------------------------------------------
+--
+-- Method:      line
+--
+-- Description: Return tube definition as a line
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Database Element
+--    2   R      STRING      Tube end (HEAD, LEAVE)
+-- Return:
+--   [Data Type] [Description]
+--    LINE        Tubing as a line
+--
+------------------------------------------------------------------------
+
+define method .line(!dbRef is DBREF, !end is STRING) is LINE
+
+  -- Initialise Variables
+  !line = object LINE()
+
+  -- Head type identified
+  if(!end.upcase() eq 'HEAD') then
+    !line.startPosition = !dbRef.hPosition.wrt(World)
+    !line.endPosition   = !dbRef.tPosition.wrt(World)
+
+    -- Does the branch have any members
+    if(!dbRef.mCount gt 0) then
+      -- Loop until we find an valid element
+      do !component values !dbRef.members
+        -- Ignore attachment points
+        skip if(!component.type inset('ATTA'))
+        !line.endPosition = !component.aPosition.wrt(World)
+        break
+      enddo
+    endif
+
+  -- Leave tube identified
+  else
+
+    -- Definition for deriving length of implied tube. The method can return a zero length line
+    -- where the adjacent component is connected to the component passed, in this case the
+    -- calling routine MUST handle the zero length line, otherwise this routine will return
+    -- an incorrect value.
+    !line.startPosition = !dbRef.lPosition.wrt(World)
+    !line.endPosition   = !dbRef.owner.tPosition.wrt(World)
+
+    if(!dbRef.sequence ne !dbRef.owner.mCount) then
+      -- Get next components arrive position, this is used rather than using the implied tube
+      -- length and direction as it handles bad alignment between components correctly.
+      do !i from !dbRef.sequence + 1 to !dbRef.owner.mCount
+        -- Ignore attachment points
+        skip if(!dbRef.owner.members[!i].type inset('ATTA'))
+        !line.endPosition = !dbRef.owner.member[!i].aPosition.wrt(World)
+        break
+      enddo
+    endif
+  endif
+
+  -- Return a line object
+  return !line
+
+endmethod
+-- End of method definition for .line(DBREF, STRING) LINE
+
+------------------------------------------------------------------------
+--
+-- Method:      lineExtended
+--
+-- Description: Return line definition using the tube as a basis, ignoring the
+--   flagged items
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Database Element
+-- Return:
+--   [Data Type] [Description]
+--    LINE        Tubing as a line
+--
+------------------------------------------------------------------------
+
+define method .lineExtended(!dbRef is DBREF) is LINE
+
+  -- Initialise Variables
+
+  -- If branch passed, used HEAD tube
+  if(!dbRef.type eq 'BRAN') then
+    return !this.line(!dbRef, 'HEAD')
+
+  -- Return leave tube of component
+  else
+    return !this.line(!dbRef, 'LEAVE')
+  endif
+
+endmethod
+-- End of method definition for .lineExtended(DBREF) LINE
+
+------------------------------------------------------------------------
+--
+-- Method:      snap
+--
+-- Description: Return nearest snap point on line using a passed point vector
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Branch/Component DBREF
+--    2   R      POINTVECTOR Point vector to nearest to snap point
+--    3   R      BOOLEAN     Extended tube
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    Snap position on line
+--
+------------------------------------------------------------------------
+
+define method .snap(!dbRef is DBREF, !pointVector is POINTVECTOR, !extended is BOOLEAN) is POSITION
+
+  -- Convert point vector into a line and use snap line method
+  return !this.snap(!dbRef, !pointVector.line(1000mm), !extended)
+
+endmethod
+-- End of method definition for .snap(DBREF, POINTVECTOR, BOOLEAN) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      snap
+--
+-- Description: Return nearest snap point on line using a passed line
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Branch/Component DBREF
+--    2   R      LINE        Line to nearest to snap point
+--    3   R      BOOLEAN     Extended tube
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    Snap position on line
+--
+------------------------------------------------------------------------
+
+define method .snap(!dbRef is DBREF, !refLine is LINE, !extended is BOOLEAN) is POSITION
+
+  -- Tube or extended tube
+  if(!extended) then
+    !tubeLine = !this.lineExtended(!dbRef)
+  else
+    !tubeLine = !this.line(!dbRef)
+  endif
+
+  -- Intersection of lines
+  !iPosition   = !tubeLine.intersection(!refLine)
+  handle any
+    -- handle zero length or parallel line
+    return !tubeLine.startPosition
+  endhandle
+
+  -- Determine the nearest end
+  if(!tubeLine.startPosition.distance(!iPosition) le !tubeLine.endPosition.distance(!iPosition)) then
+    !nearPosition = !tubeLine.startPosition
+  else
+    !nearPosition = !tubeLine.endPosition
+  endif
+
+  -- Get intersection point on tube line of reference line
+  return !nearPosition.wrt(World)
+
+endmethod
+-- End of method definition for .snap(DBREF, LINE, BOOLEAN) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      distance
+--
+-- Description: Return nearest distance point on line using a passed point vector
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Branch/Component DBREF
+--    2   R      REAL        Distance
+--    3   R      POINTVECTOR Point vector to nearest to distance point
+--    4   R      BOOLEAN     Extended tube
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    Distance position on line
+--
+------------------------------------------------------------------------
+
+define method .distance(!dbRef is DBREF, !distance is REAL, !pointVector is POINTVECTOR, !extended is BOOLEAN) is POSITION
+
+  -- Convert point vector into a line and use distance line method
+  return !this.distance(!dbRef, !distance, !pointVector.line(1000mm), !extended)
+
+endmethod
+-- End of method definition for .distance(DBREF, REAL, POINTVECTOR, BOOLEAN) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      distance
+--
+-- Description: Return nearest distance point on line using a passed line
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Branch/Component DBREF
+--    2   R      REAL        Distance
+--    3   R      POINTVECTOR Point vector to nearest to distance point
+--    4   R      BOOLEAN     Extended tube
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    distance position on line
+--
+------------------------------------------------------------------------
+
+define method .distance(!dbRef is DBREF, !distance is REAL, !refLine is LINE, !extended is BOOLEAN) is POSITION
+
+  -- Tube or extended tube
+  if(!extended) then
+    !tubeLine = !this.lineExtended(!dbRef)
+  else
+    !tubeLine = !this.line(!dbRef)
+  endif
+
+  -- Intersection of lines
+  !iPosition   = !tubeLine.intersection(!refLine)
+  handle any
+    -- handle zero length or parallel line
+    return !tubeLine.startPosition
+  endhandle
+
+  -- Determine the distance from end of line
+  !gmfLine = object GMFLINE(!tubeLine)
+
+  return !gmfLine.distance(!distance, !iPosition)
+
+endmethod
+-- End of method definition for .distance(DBREF, REAL, LINE, BOOLEAN) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      proportion
+--
+-- Description: Return nearest proportion point on line using a passed point vector
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Branch/Component DBREF
+--    2   R      REAL        proportion
+--    3   R      POINTVECTOR Point vector to nearest to proportion point
+--    4   R      BOOLEAN     Extended tube
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    proportion position on line
+--
+------------------------------------------------------------------------
+
+define method .proportion(!dbRef is DBREF, !proportion is REAL, !pointVector is POINTVECTOR, !extended is BOOLEAN) is POSITION
+
+  -- Convert point vector into a line and use proportion line method
+  return !this.proportion(!dbRef, !proportion, !pointVector.line(1000mm), !extended)
+
+endmethod
+-- End of method definition for .proportion(DBREF, REAL, POINTVECTOR, BOOLEAN) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      proportion
+--
+-- Description: Return nearest proportion point on line using a passed line
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Branch/Component DBREF
+--    2   R      REAL        proportion
+--    3   R      POINTVECTOR Point vector to nearest to proportion point
+--    4   R      BOOLEAN     Extended tube
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    proportion position on line
+--
+------------------------------------------------------------------------
+
+define method .proportion(!dbRef is DBREF, !proportion is REAL, !refLine is LINE, !extended is BOOLEAN) is POSITION
+
+  -- Tube or extended tube
+  if(!extended) then
+    !tubeLine = !this.lineExtended(!dbRef)
+  else
+    !tubeLine = !this.line(!dbRef)
+  endif
+
+  -- Intersection of lines
+  !iPosition   = !tubeLine.intersection(!refLine)
+  handle any
+    -- handle zero length or parallel line
+    return !tubeLine.startPosition
+  endhandle
+
+  -- Determine the distance from end of line
+  !gmfLine = object GMFLINE(!tubeLine)
+
+  return !gmfLine.proportion(!proportion, !iPosition)
+
+endmethod
+-- End of method definition for .proportion(DBREF, REAL, LINE, BOOLEAN) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      fraction
+--
+-- Description: Return nearest fraction point on line using a passed point vector
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Branch/Component DBREF
+--    2   R      REAL        fraction
+--    3   R      POINTVECTOR Point vector to nearest to fraction point
+--    4   R      BOOLEAN     Extended tube
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    fraction position on line
+--
+------------------------------------------------------------------------
+
+define method .fraction(!dbRef is DBREF, !fraction is REAL, !pointVector is POINTVECTOR, !extended is BOOLEAN) is POSITION
+
+  -- Convert point vector into a line and use fraction line method
+  return !this.fraction(!dbRef, !fraction, !pointVector.line(1000mm), !extended)
+
+endmethod
+-- End of method definition for .fraction(DBREF, REAL, POINTVECTOR, BOOLEAN) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      fraction
+--
+-- Description: Return nearest fraction point on line using a passed line
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Branch/Component DBREF
+--    2   R      REAL        fraction
+--    3   R      POINTVECTOR Point vector to nearest to fraction point
+--    4   R      BOOLEAN     Extended tube
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    fraction position on line
+--
+------------------------------------------------------------------------
+
+define method .fraction(!dbRef is DBREF, !fraction is REAL, !refLine is LINE, !extended is BOOLEAN) is POSITION
+
+  -- Tube or extended tube
+  if(!extended) then
+    !tubeLine = !this.lineExtended(!dbRef)
+  else
+    !tubeLine = !this.line(!dbRef)
+  endif
+
+  -- Intersection of lines
+  !iPosition   = !tubeLine.intersection(!refLine)
+  handle any
+    -- handle zero length or parallel line
+    return !tubeLine.startPosition
+  endhandle
+
+  -- Determine the distance from end of line
+  !gmfLine = object GMFLINE(!tubeLine)
+
+  return !gmfLine.fraction(!fraction, !iPosition)
+
+endmethod
+-- End of method definition for .fraction(DBREF, REAL, LINE, BOOLEAN) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      exact
+--
+-- Description: Return the intersection of the passed point vector with the tube
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Branch/Component DBREF
+--    2   R      POINTVECTOR Point vector
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    position on line
+--
+------------------------------------------------------------------------
+
+define method .exact(!dbRef is DBREF, !pointVector is POINTVECTOR) is POSITION
+
+  -- Convert point vector into a line and use snap line method
+  return !this.exact(!dbRef, !pointVector.line(1000mm))
+
+endmethod
+-- End of method definition for .exact(DBREF, POINTVECTOR) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      exact
+--
+-- Description: Return the intersection of the passed line with the tube
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Branch/Component DBREF
+--    2   R      LINE        Line
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    position on line
+--
+------------------------------------------------------------------------
+
+define method .exact(!dbRef is DBREF, !refLine is LINE) is POSITION
+
+  -- Tube
+  !tubeLine = !this.line(!dbRef)
+
+  -- Intersection of lines
+  !iPosition   = !tubeLine.intersection(!refLine)
+  handle any
+    -- handle zero length or parallel line
+    !iPosition = !tubeLine.startPosition
+  endhandle
+
+  -- Intersection of lines
+  return !iPosition
+
+endmethod
+-- End of method definition for .exact(DBREF, LINE) POSITION
+
+-----------------------------------------------------------------------
+--
+-- Method: pointVector
+--
+-- Description returns a vector representing either the arrive or
+-- leave directions of the passed element
+-----------------------------------------------------------------------
+define method .pointVector(!dbRef is DBREF,!flow is BOOLEAN ) is POINTVECTOR
+
+  -- Initialise Variables
+
+  -- If branch passed, used HEAD tube vector
+  if(!dbRef.type eq 'BRAN') then
+    if !flow then
+      return !this.pointVector(!dbRef, 'HEAD')
+    else
+      return !this.pointVector(!dbRef, 'TAIL')
+    endif
+  -- Return leave tube vector of component
+  else
+    if !flow then
+      return !this.pointVector(!dbRef, 'LEAVE')
+    else
+      return !this.pointVector(!dbRef, 'ARRIVE')
+    endif
+  endif
+
+endmethod
+-- End of method definition for .pointVector(DBREF) LINE
+
+------------------------------------------------------------------------
+--
+-- Method:      pointVector
+--
+-- Description: Return the arrive/leave as a pointVector
+--
+------------------------------------------------------------------------
+
+define method .pointVector(!dbRef is DBREF, !end is STRING) is POINTVECTOR
+
+  -- Initialise Variables
+  !pointVector = object POINTVECTOR()
+
+  -- Head type identified
+  if(!end.upcase() eq 'HEAD') then
+    !pointVector.position = !dbRef.hPosition.wrt(World)
+    !pointVector.direction   = !dbRef.hDirection.wrt(World)
+  elseif (!end.upcase() eq 'TAIL') then
+    !pointVector.position = !dbRef.tPosition.wrt(World)
+    !pointVector.direction   = !dbRef.tDirection.wrt(World)
+  elseif (!end.upcase() eq 'ARRIVE') then
+    !pointVector.position = !dbRef.aPosition.wrt(World)
+    !pointVector.direction   = !dbRef.aDirection.wrt(World)
+  -- Leave tube identified
+  else
+    !pointVector.position = !dbRef.lPosition.wrt(World)
+    !pointVector.direction   = !dbRef.lDirection.wrt(World)
+  endif
+
+  -- Return a pointvector object
+  return !pointVector
+
+endmethod
+-- End of method definition for .line(DBREF, STRING) LINE
+-----------------------------------------------------------------------
+--
+-- Method:      through
+--
+-- Description: Return the intersection of the tube with the passed position
+--
+--
+------------------------------------------------------------------------
+
+define method .through(!dbRef is DBREF, !throughPosition is POSITION, !flow is BOOLEAN )is POSITION
+
+  !lineVector = !this.pointVector(!dbRef,!flow)
+  -- Intersection of lines
+  !iPosition   = !lineVector.through(!throughPosition)
+  handle any
+    -- handle zero length or parallel line
+    !iPosition = !lineVector
+  endhandle
+
+  -- Intersection of lines
+  return !iPosition.position
+
+endmethod
+-- End of method definition for .exact(DBREF, LINE) POSITION

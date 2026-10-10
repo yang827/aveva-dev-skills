@@ -1,0 +1,285 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            edgpane.pmlfnc
+--   Type:          Function Definition
+--   Group:         Event Driven Graphics
+--     Keyword:     EDG
+--   Module:        design
+--   Replaces:
+--
+-- Author:          P.Mooney
+-- Created:         Tue May 13 11:44:42 BST 1997
+--
+--
+-- Description:
+-- Works out edgGeomData for Panes.
+-- If the Intermediate snap toggle button is off, consider the PANE as
+-- a plane.
+--
+-- If intermediate snap is on and none of the consider toggle buttons
+-- are set on the Intermediate Snap form, consider the panel as a linear
+-- item. The line is the nearest edge on the panel.
+--
+-- This function needs to be split into smaller functions, but
+-- performance was a problem.
+--
+------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define function !!edgPane() is BOOLEAN
+
+  !interSnap = BOOLEAN()
+
+  !interSnap   = !!edgGeomTBar.sflg.val
+
+  !selected    = !!edgData.list.selection()
+  !option      = !selected.part(2, '\')
+
+  !vector           = object VECTOR()
+  !vector.position  = !!edgGeomData.pickPosition
+  !vector.direction = !!edgGeomData.pickLine
+
+  !extruInfo = !!lineOnExtrusion(!vector, !!edgGeomData.pickedItem)
+
+  !!edgGeomData.nearestVertex = !extruInfo.vertex
+  !!edgGeomData.nearestLine   = !extruInfo.line
+  !!edgGeomData.edgePos       = !extruInfo.edgePos
+  !!edgGeomData.lineDist      = !extruInfo.distance
+--  !!edgGeomData.realPosition  = !extruInfo.surfacePos
+
+  !!edgGeomData.vector        = !!edgGeomData.nearestLine
+
+  --------------------------------
+  -- Panel, else it's an extrusion
+  --------------------------------
+
+  if(!!edgGeomData.pickedItem.type eq 'PANE') then
+    var !thickness  (HEIG of PLOO 1 of $!!edgGeomData.pickedItem )
+  else
+    var !thickness  (HEIG of $!!edgGeomData.pickedItem )
+  endif
+
+  ------------------------------------
+  -- WORK OUT DIRECTION TO USE
+  ------------------------------------
+
+  var !dir     (AFTER(STRING(ORI OF $!!edgGeomData.pickedItem WRT WORLD ),|AND Z IS |))
+  !direction = !dir.direction()
+
+  if(!extruInfo.surface eq 'TOP') then
+    !!edgGeomData.direction = !direction
+  else
+    !!edgGeomData.direction = !!oppositeDir(!direction)
+  endif
+
+  ------------------------------------
+  -- WORK OUT PLANE TO USE:
+  -- ORDER ON Panel/Extrusion FORM
+  --   PLbFLG = Surface
+  --   PLaFLG = Origin
+  --   PLcFLG = Centre
+  --   PLdFLG = Opposite Surface
+  ------------------------------------
+
+  if(|$_cdGeomExtr_plBFlg| eq |true|) then
+    var !mainPlane CONST PLANE $!!edgGeomData.direction THROUGH $!extruInfo.pickedPlane.position
+
+  elseif(|$_cdGeomExtr_plAFlg| eq |true|) then
+    var !mainPlane CONST PLANE $!!edgGeomData.direction THROUGH $!!edgGeomData.pickedItem.position
+
+  elseif(|$_cdGeomExtr_plCFlg| eq |true|) then
+    !halfThick =  - (!thickness.real() / 2)
+    var !mainPlane CONST PLANE $!!edgGeomData.direction THROUGH $!extruInfo.pickedPlane.position DIST $!halfThick
+
+  elseif(|$_cdGeomExtr_plDFlg| eq |true|) then
+    !!edgGeomData.direction = !!oppositeDir(!!edgGeomData.direction)
+    var !mainPlane CONST PLANE $!extruInfo.oppositePlane.direction THROUGH $!extruInfo.oppositePlane.position
+  endif
+
+  ------------------------------------------
+  -- IF NO Intermediate Snap
+  ------------------------------------------
+
+  if( (!interSnap eq false)              or  $
+      ((|$_cdGeomSnap_line| eq |false|)  and $
+       (|$_cdGeomSnap_pfit| eq |false|)  and $
+       (|$_cdGeomSnap_vert| eq |false|))) then
+    if(!option eq 'EXACT') then
+
+      ------------------
+      -- SURFACE PICKED
+      ------------------
+
+      if(|$_cdGeomExtr_plBFlg| eq |true|) then
+        !!edgGeomData.position  = !extruInfo.surfacePos
+
+      --------------------------------------
+      -- OPPOSITE SURFACE PICKED (Pick Line)
+      --------------------------------------
+
+      elseif(|$_cdGeomExtr_plDFlg| eq |true|) then
+
+        if(|$_cdGeomExtr_line| eq 'PickLine') then
+          var !oppositePlane CONST PLANE $!extruInfo.oppositePlane.direction THROUGH $!extruInfo.oppositePlane.position
+          var !pickLine      CONST LINE  $!!edgGeomData.pickLine THRO $!!edgGeomData.pickPosition
+          var !pos CONST POS INTER $!pickLine $!oppositePlane
+          !!edgGeomData.position  = !pos.position().wrt(WORLD)
+        else
+          var !plane3  CONST PLANE $!!edgGeomData.direction THROUGH $!extruInfo.surfacePos DIST $!thickness
+          !!edgGeomData.position  = !plane3.after('through').position()
+        endif
+
+      --------------------------
+      -- ORIGIN
+      --------------------------
+
+      elseif(|$_cdGeomExtr_plAFlg| eq |true|) then
+        if(|$_cdGeomExtr_line| eq 'PickLine') then
+          var !plane3  CONST PLANE $!direction THROUGH $!!edgGeomData.pickedItem.pos
+          var !line    CONST LINE  $!!edgGeomData.pickLine THRO $!!edgGeomData.pickPosition
+          var !pos     CONST POS   INTER $!line $!plane3
+
+          !!edgGeomData.position  = !pos.position()
+        else
+          !!edgGeomData.position  = !mainPlane.string().after('through').position()
+        endif
+
+      --------------------------
+      -- CENTRE (on Pick Line)
+      --------------------------
+
+      elseif(|$_cdGeomExtr_plCFlg| eq |true|) then
+
+        if(|$_cdGeomExtr_line| eq 'PickLine') then
+          var !line    CONST LINE  $!!edgGeomData.pickLine THRO $!!edgGeomData.pickPosition
+          var !pos     CONST POS   INTER $!line $!mainPlane
+          !!edgGeomData.position  = !pos.position()
+
+        else
+          !!edgGeomData.position  = !mainPlane.string().after('through').position()
+        endif
+
+      else
+        -- should never get here if all options have been covered
+        !!edgGeomData.position  = !!edgGeomData.pickedItem.position.wrt(WORLD)
+      endif
+
+    else
+      var !pos CONST POS NEAR $!!edgGeomData.pickedItem.position ON $!mainPlane
+      !!edgGeomData.position  = !pos.position().wrt(WORLD)
+    endif
+
+  ----------------------------------------------
+  -- IF INTERMEDIATE SNAP IS ON BUT FITTING OR
+  -- VERTICES NOT SELECTED, GIVE NEAREST VERTEX
+  -- AND DIRECTION ALONG EDGE.
+  --
+  -- RealPos IS ON THE 'TOP' PLANE TO START WITH
+  -- AND MAPPED LATER...
+  ----------------------------------------------
+
+  elseif((!interSnap eq true) and (|$_cdGeomSnap_line| eq |true|)) then
+
+    !nextVertex              = !extruInfo.vertex.owner.member[!extruInfo.vertex.sequ + 1]
+    handle any
+      !nextVertex            = !extruInfo.vertex.owner.member[1]
+    endhandle
+
+    !nextVertexPos           = !nextVertex.position.wrt(WORLD)
+
+    var !length CONST DIST  $!extruInfo.vertex.position TO $!nextVertexPos
+    !!edgGeomData.itemLength = !length.real()
+    !!edgGeomData.direction  = !!edgGeomData.vector.direction
+    !!edgGeomData.position   = !!edgGeomData.vector.position
+
+    var !vertexLine CONST LINE JOIN  $!extruInfo.vertex.position TO   $!nextVertexPos
+    var !realLine   CONST LINE       $!!edgGeomData.pickLine     THRO $!!edgGeomData.pickPosition
+    var !realPos    CONST POS  INTER $!vertexLine $!realLine
+
+    !!edgGeomData.realPosition = !realPos.position()
+
+    var !distHead  CONST DIST $!!edgGeomData.realPosition TO $!extruInfo.vertex.position
+    var !distTail  CONST DIST $!!edgGeomData.realPosition TO $!nextVertexPos
+
+    !distanceToHead = !distHead.real()
+    !distanceToTail = !distTail.real()
+
+    if(!distanceToTail gt !distanceToHead) then
+      !!edgGeomData.position   = !!edgGeomData.vector.position
+      !!edgGeomData.direction  = !!edgGeomData.vector.direction
+    else
+      !!edgGeomData.position   = !nextVertexPos
+      !!edgGeomData.direction  = !!edgGeomData.vector.direction
+
+      !!edgGeomData.direction.east   = !!edgGeomData.direction.east  * -1
+      !!edgGeomData.direction.north  = !!edgGeomData.direction.north * -1
+      !!edgGeomData.direction.up     = !!edgGeomData.direction.up    * -1
+    endif
+
+    if( (!!edgGeomData.option eq 'EXACT') ) then
+      !!edgGeomData.position  = !extruInfo.edgePos
+    endif
+
+    -- SET REAL POSITION TO MAP ONTO MainPlane. NOT DONE ABOVE
+    -- SO VERTICES POSITIONS WOULD NOT HAVE TO BE MAPPED TOO.
+
+    !tempPos                    = !!edgGeomData.realPosition.wrt(WORLD)
+    var !stringPos CONST POS NEAR $!tempPos ON $!mainPlane
+    !!edgGeomData.realPosition  = !stringPos.position()
+
+  ----------------------------------------------
+  -- IF CONSIDER AS FITTING and/or VERTICES
+  ----------------------------------------------
+
+  elseif( (!interSnap eq true)             and $
+          ( (|$_cdGeomSnap_pfit| eq |true|) or  $
+            (|$_cdGeomSnap_vert| eq |true|) )) then
+
+     if(|$_cdGeomSnap_pfit| eq |true|) then
+       var !coll COLLECT ALL (PFIT CMPF SBFI) FOR $!!edgGeomData.pickedItem
+     endif
+
+     if(|$_cdGeomSnap_vert| eq |true|) then
+       var !coll APPEND COLLECT ALL (VERT PAVE) FOR $!!edgGeomData.pickedItem
+     endif
+
+     if(!coll.empty())then
+       !!alert.error('Unable to find any items.')
+       return FALSE
+     endif
+
+     var !plane    CONST PLANE $!!edgGeomData.direction THROUGH $!!edgGeomData.pickedItem.pos
+     var !pickLine CONST LINE  $!!edgGeomData.pickLine  THROUGH $!!edgGeomData.pickPosition
+     var !posi EVALUATE (POS WRT World) FOR ALL FROM !coll IGNORE ANY
+
+     do !i indices !posi
+       var !posi[$!i] CONST POS NEAR $!posi[$!i] ON $!plane
+       var !dist[$!i] CONST DIST $!posi[$!i] TO $!pickLine
+     enddo
+
+     -- Get the shortest distance to the pick line
+     var !sort SORT !dist NUMERIC
+     var !dpos $!sort[1]
+
+     -- Item nearest
+     var !temp |$!coll[$!dpos]|
+
+    !tempPos                = !temp.pickedItem().position.wrt(WORLD).string()
+    var !tempPos CONST POS NEAR $!tempPos ON $!mainPlane
+    !!edgGeomData.position  = !tempPos.position()
+
+  endif $* Intermediate Snap
+
+  return TRUE
+
+endfunction
+-- End of function definition for !!edgPane

@@ -1,0 +1,913 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            splfunctions.pmlobj
+--   Type:          Object
+--   Group:         General Application
+--     Keyword:     GEN
+--   Module:        spooler
+--   Replaces:
+--
+-- Author:          C.Brown
+-- Created:         Thu Jul 24 13:39:56 BST 1997
+--
+--
+-- Description:
+-- Function to control edg picking in spooler
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  dbSwitch(MENU,STRING)            -                   Database Switch callback method
+--  extractClaims(MENU,STRING)       -                   Switch on/off extract claim marker callback method
+--  gadgetSetup(DBREF)               -                   Method to setup form gadgets
+--  includeFields()                  -                   Include fields setting
+--  init()                           -                   form initialisation method
+--  isoDepGadgetSet(DBREF)           -                   Method to set form gadgets for an ISODEP element
+--  isoDwlGadgetSet(DBREF)           -                   Method to set form gadgets for an ISOD WORLD element
+--  isoRegGadgetSet(DBREF)           -                   Method to set form gadgets for an ISOREG element
+--  iweldGadgetSet(DBREF)            -                   Method to set form gadgets for an A/I/RWELD or IJOINT element
+--  linkMembers(FORM)                -                   constructor
+--  otherGadgetSet(DBREF)            -                   Method to set form gadgets for Elements not
+--  pcompsGadgetSet(DBREF)           -                   Method to set form gadgets for all Piping Components
+--  pick(STRING)                     -                   Method to control picking operation
+--  removeEdg()                      -                   remove EDG packet
+--  rollbackEdg()                    -                   update form following EDG rollback on graphics form
+--  splDrgAdd(DBREF,STRING)          -                   add elements to splDrg
+--  splDrgGadgetSet(DBREF)           -                   Method to set form gadgets for an SPLDRG element
+--  splDrgRemove(DBREF,STRING)       -                   remove elements from a splDrg
+--  splFunctions()                   -                   constructor
+--  splTmpGadgetSet(DBREF)           -                   Method to set form gadgets for a SPLTMP element
+--  spoolGadgetSet(DBREF)            -                   Method to set form gadgets for a SPOOL/FIELD/WLDGRP/JNTGRP/AITEMS element
+--  track(FORM,STRING)               -                   Database tracking method
+--  unlinkMembers()                  -                   constructor
+--
+------------------------------------------------------------------------
+
+define object SPLFUNCTIONS
+
+  member .mainForm is FORM
+  member .members is FORM
+
+  member .updateMembers is BOOLEAN
+
+  member .isodCe     is DBREF
+  member .desiCe     is DBREF
+  member .currentDb  is STRING
+  member .splDrg     is DBREF
+  member .edgPacket is EDGPACKET
+
+  member .pickMode is STRING
+
+endobject
+-- End of object definition for SPLFUNCTIONS
+
+------------------------------------------------------------------------
+--
+-- Method:      !splFunctions()
+--
+-- Description: constructor
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .splFunctions()
+
+  !this.updateMembers = false
+  !this.pickMode = 'NAVIGATE'
+
+endmethod
+-- End of method definition for .splFunctions()
+
+------------------------------------------------------------------------
+--
+-- Method:      !linkMembers()
+--
+-- Description: constructor
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .linkMembers(!form is FORM)
+
+  !this.members = !form
+  !this.updateMembers = true
+
+  !this.init()
+
+endmethod
+-- End of method definition for .linkMembers(FORM)
+
+------------------------------------------------------------------------
+--
+-- Method:      !unlinkMembers()
+--
+-- Description: constructor
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .unlinkMembers()
+
+  !this.updateMembers = false
+  !this.members = object FORM()
+
+endmethod
+-- End of method definition for .unlinkMembers()
+
+------------------------------------------------------------------------
+--
+-- Method:      !init()
+--
+-- Description: form initialisation method
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .init()
+
+  -- initialise tracking
+  if (!!ce.dbType eq 'ISOD') then
+    !this.isodCe = !!ce
+    if (!this.updateMembers) then
+      !this.members.switchMenu.select('Fabrication', true)
+      !this.members.switchMenu.select('Design', false)
+    endif
+    !track = 'ISODCE'
+  elseif (!!ce.dbType eq 'DESI') then
+    !this.desiCe = !!ce
+    if (!this.updateMembers) then
+      !this.members.switchMenu.select('Fabrication', false)
+      !this.members.switchMenu.select('Design', true)
+    endif
+    !track = 'DESICE'
+  else
+    -- in another db whilst members form not tracking
+    /*
+    !this.isodCe = !!ce
+    if (!this.updateMembers) then
+      !this.members.switchMenu.select('Fabrication', true)
+      !this.members.switchMenu.select('Design', false)
+    endif
+    !track = 'ISODCE'
+  endif
+
+  -- set the canvas to navigate mode and set radio gadget
+  !this.removeEdg()
+  !this.pickMode = 'navigate'
+
+  -- do include fields core setting but make inactive until add pick
+  !this.includeFields()
+  !this.mainForm.includeFields.active = false
+
+  !this.track(!this.mainForm, !track)
+
+endmethod
+-- End of method definition for .init()
+
+------------------------------------------------------------------------
+--
+-- Method:      !track()
+--
+-- Description: Database tracking method
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [STRING] [Database type of current element]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .track(!form is FORM, !type is STRING)
+
+  -- constrain navigation within design and isod dbs
+  if (!type ne 'DESICE' and !type ne 'ISODCE') then
+    -- navigate back to previously displayed member
+    if (!this.currentDb eq 'ISOD') then
+      !!ce = !this.isodCe
+    else
+      !!ce = !this.desiCe
+    endif
+    return
+  endif
+
+  !element = !!ce
+
+  -- select database type and set CE accordingly
+  !this.currentDb = !element.dbType
+  if (!element.dbType eq 'ISOD') then
+    !this.isodCe = !element
+    if (!this.updateMembers) then
+      !this.members.switchMenu.select('Fabrication', true)
+      !this.members.switchMenu.select('Design', false)
+    endif
+  elseif (!element.dbType eq 'DESI') then
+    !this.desiCe = !element
+    if (!this.updateMembers) then
+      !this.members.switchMenu.select('Fabrication', false)
+      !this.members.switchMenu.select('Design', true)
+    endif
+  endif
+
+  -- setup the form gadgets
+  !this.gadgetSetup(!element)
+
+  !!splMainBarTrack(!!spooler, !type)
+
+endmethod
+-- End of method definition for .track(FORM, STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      !dbSwitch()
+--
+-- Description: Database Switch callback method
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [MENU] [menu gadget]
+--   [2] [R] [STRING] [select state]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .dbSwitch(!menu is MENU, !dummySelect is STRING)
+
+  if (!menu.pickedField eq 'Fabrication') then
+
+    if (!this.updateMembers) then
+      !this.members.switchMenu.select('Fabrication', true)
+      !this.members.switchMenu.select('Design', false)
+    endif
+
+    if (!this.isodCe.badRef()) then
+      !!ce = !!dbeWorldGet('ISOD')
+    else
+      !!ce = !this.isodCe
+    endif
+
+  elseif (!menu.pickedField eq 'Design') then
+
+    if (!this.updateMembers) then
+      !this.members.switchMenu.select('Fabrication', false)
+      !this.members.switchMenu.select('Design', true)
+    endif
+
+    if (!this.desiCe.badRef()) then
+      !!ce = !!dbeWorldGet('DESI')
+    else
+      !!ce = !this.desiCe
+    endif
+
+  endif
+
+endmethod
+-- End of method definition for .dbSwitch(MENU, STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      !pick()
+--
+-- Description: Method to control picking operation
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [GADGET] [Gadget to action]
+--   [2] [R] [STRING] [Pick type to invoke]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .pick(!action is STRING)
+
+  if (!action.upcase() eq 'ADD') then
+
+    -- Define the EDG packet for add to splDrg mode
+    !packet = object EDGPACKET()
+    !packet.key         = 'SpldrgAdd'
+    !packet.description = 'Add to active Spldrg'
+    !packet.type        = 'Spooler'
+    !packet.priority    = 0
+    !packet.action      = '!!spooler.functions.splDrgAdd(!this.return[1].item, !this.return[1].type)'
+    !packet.remove      = false
+    !packet.close       = '!!spooler.functions.rollbackEdg()'
+    !packet.pickPacket.stdElement('Pick a Piping Component to add to SPLDRG ')
+    !packet.pickPacket.picks[1].pick.input[3]   = '((type of owner) eq |BRAN| and (unset(sfref)))'
+    -- no type criterion on tube check so works for head and leave tubes
+    !packet.pickPacket.picks[1].pick.input[5]   = '(unset(sfref))'
+    !packet.pickPacket.picks[1].pick.modifiable = false
+
+    -- Add the packet if mode is changed
+    if (!this.edgPacket ne !packet) then
+      -- Remove current packet (this will cause !this.rollbackEdg to ba called)
+      !!edgCntrl.remove(!this.edgPacket)
+      -- Packet and pick selection must be set after remove
+      !this.edgPacket = !packet
+      !this.pickMode = 'ADD'
+      !this.mainForm.includeFields.active = true
+      -- Swap may be cancelled by user if already in a major EDG mode
+      if (!!edgCntrl.add(!packet).not()) then
+        !this.rollbackEdg()
+      endif
+    endif
+
+  elseif (!action.upcase() eq 'REMOVE') then
+
+    -- Define the EDG packet for remove from splDrg mode
+    !packet = object EDGPACKET()
+    !packet.key         = 'SpldrgRemove'
+    !packet.description = 'Remove from active Spldrg'
+    !packet.type        = 'Spooler'
+    !packet.priority    = 0
+    !packet.action      = '!!spooler.functions.splDrgRemove(!this.return[1].item, !this.return[1].type)'
+    !packet.remove      = false
+    !packet.close       = '!!spooler.functions.rollbackEdg()'
+    !packet.pickPacket.stdElement('Pick a Piping Component to remove from SPLDRG ')
+    !packet.pickPacket.picks[1].pick.input[3]   = '((type of owner) eq |BRAN| and not(unset(sfref)) and (ref of owner of sfref) eq $!!<spooler.functions.splDrg> )'
+    -- no type criterion on tube check so works for head and leave tubes, but needs ileav tube here at present
+    !packet.pickPacket.picks[1].pick.input[5]   = '(not(unset(sfref)) and (ref of owner of sfref of ileav tube) eq $!!<spooler.functions.splDrg> )'
+    !packet.pickPacket.picks[1].pick.modifiable = false
+
+    -- Add the packet if mode is changed
+    if (!this.edgPacket ne !packet) then
+      -- Remove current packet (this will cause !this.rollbackEdg to ba called)
+      !!edgCntrl.remove(!this.edgPacket)
+      -- Packet and pick selection must be set after remove
+      !this.edgPacket = !packet
+      !this.pickMode = 'REMOVE'
+      !this.mainForm.includeFields.active = true
+      -- Swap may be cancelled by user if already in a major EDG mode
+      if (!!edgCntrl.add(!packet).not()) then
+        !this.rollbackEdg()
+      endif
+    endif
+
+  else
+
+    -- Navigate mode is the default
+    !this.removeEdg()
+
+  endif
+
+endmethod
+-- End of method definition for .pick(STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      !includeFields()
+--
+-- Description: Include fields setting
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .includeFields()
+
+  SPOOLING OPTIONS INCLUDEFIELDS $!<this.mainForm.includeFields.val>
+
+endmethod
+-- End of method definition for .includeFields()
+
+------------------------------------------------------------------------
+--
+-- Method:      !gadgetSetup()
+--
+-- Description: Method to setup form gadgets
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [DBREF] [Element to initialise form gadgets to]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .gadgetSetup(!element is DBREF)
+
+  -- dynamic creation of navigate menu requires clearing it ahead of specific
+  -- type gadget setup (so pcomps can add a menu entry)
+  if (!this.updateMembers) then
+    !this.members.navigateMenu.clear()
+  endif
+
+  -- Dynamic gadgets are changed depending on the database type and the element
+  -- type, initially an object is returned from a function specific to the
+  -- element type that is current on the form, the object is then modified
+  -- for the current database type, and static items are added.  The object
+  -- is then transferred to the form.
+
+  if (!element.type eq 'WORL') then
+    if (!element.dbType eq 'ISOD') then
+      !this.isoDwlGadgetSet(!element)
+    else
+      !this.otherGadgetSet(!element)
+    endif
+
+  elseif (!element.type eq 'ISODEP') then
+    !this.isoDepGadgetSet(!element)
+
+  elseif (!element.type eq 'ISOREG') then
+    !this.isoRegGadgetSet(!element)
+
+  elseif (!element.type eq 'SPLDRG') then
+    !this.splDrgGadgetSet(!element)
+
+  elseif (!element.type eq 'SPLTMP' or !element.owner.type eq 'SPLTMP') then
+    !this.splTmpGadgetSet(!element)
+
+  elseif (!element.type eq 'SPOOL' or !element.type eq 'FIELD' or $
+          !element.type eq 'WLDGRP' or !element.type eq 'JNTGRP' or $
+          !element.type eq 'AITEMS') then
+    !this.spoolGadgetSet(!element)
+
+  elseif (!element.type eq 'AWELD' or !element.type eq 'IWELD' or $
+          !element.type eq 'RWELD' or !element.type eq 'IJOINT') then
+    !this.iweldGadgetSet(!element)
+
+  elseif (!element.owner.type eq 'BRAN') then
+    -- it is necessary to check here for 'type not equal to world', as we could
+    -- be at a CATA, PADD or PROP world, where !element.owner would fail
+    !this.pcompsGadgetSet(!element)
+
+  else
+    !this.otherGadgetSet(!element)
+
+  endif
+
+  -- dynamic creation of navigate menu to allow goto spool/field at top
+  -- could make owner and member dynamic rather than control activation
+  -- but this would make it inconsistent with Design
+  if (!this.updateMembers) then
+    !this.members.navigateMenu.add('callback', 'Owner', 'OWNER')
+    !this.members.navigateMenu.add('callback', 'First', 'FIRST')
+    !this.members.navigateMenu.add('callback', 'Last', 'LAST')
+    !this.members.navigateMenu.add('callback', 'First member', 'FIRST MEM')
+    !this.members.navigateMenu.add('callback', 'Last member', 'LAST MEM')
+    !this.members.navigateMenu.add('callback', 'Old CE', 'SAME')
+    !this.members.navigateMenu.setActive('Owner', !element.owner.set())
+    !this.members.navigateMenu.setActive('First', !element.owner.set())
+    !this.members.navigateMenu.setActive('Last', !element.owner.set())
+    if (!element.type eq 'TUBI') then
+      !active = false
+    else
+      !active = !element.members.set()
+    endif
+    !this.members.navigateMenu.setActive('First member', !active)
+    !this.members.navigateMenu.setActive('Last member', !active)
+  endif
+
+  -- if there is no active splDrg set then the add/remove toggles need to be
+  -- made inactive, having done this it is necessary to check that the pickMode
+  -- is set to navigate, if it is not it should be changed.
+  if (!this.splDrg.badRef()) then
+    !this.splDrg = object DBREF()
+    !this.mainForm.activeSpldrg.val = 'None'
+
+    if (!this.pickMode.upcase() eq 'NAVIGATE') then
+      -- set the canvas to navigate mode and set radio gadget
+      !this.removeEdg()
+      -- these must be done even if no EDG to remove
+      !this.pickMode = 'NAVIGATE'
+      !this.mainForm.includeFields.active = false
+    endif
+    !active = false
+  else
+    !this.mainForm.activeSpldrg.val = !this.splDrg.fullName
+    !active = true
+  endif
+  -- no need to make the navigate mode inactive, as it is the default mode
+--  !this.mainForm.pickNavigate.active = !active
+  !this.mainForm.pickAdd.active = !active
+  !this.mainForm.pickRemove.active = !active
+  !this.mainForm.update.active = !active
+  !this.mainForm.modify.active = !active
+
+endmethod
+-- End of method definition for .gadgetSetup(DBREF)
+
+------------------------------------------------------------------------
+--
+-- Method:      !isoDwlGadgetSet()
+--
+-- Description: Method to set form gadgets for an ISOD WORLD element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [DBREF] [Element to initialise gadgets to]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .isoDwlGadgetSet(!element is DBREF)
+
+  !dText[1] = 'Department'
+  !rText[1] = 'ISODEP'
+  !this.mainForm.createType.dText = !dText
+  !this.mainForm.createType.rText = !rText
+  !this.mainForm.createType.active = true
+  !this.mainForm.create.active = true
+
+endmethod
+-- End of method definition for .isoDwlGadgetSet(DBREF)
+
+------------------------------------------------------------------------
+--
+-- Method:      !isoDepGadgetSet()
+--
+-- Description: Method to set form gadgets for an ISODEP element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [DBREF] [Element to initialise gadgets to]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .isoDepGadgetSet(!element is DBREF)
+
+  !dText[1] = 'Department'
+  !rText[1] = 'ISODEP'
+  !dText[2] = 'Registry'
+  !rText[2] = 'ISOREG'
+  !this.mainForm.createType.dText = !dText
+  !this.mainForm.createType.rText = !rText
+  !this.mainForm.createType.active = true
+  !this.mainForm.create.active = true
+
+endmethod
+-- End of method definition for .isoDepGadgetSet(DBREF)
+
+------------------------------------------------------------------------
+--
+-- Method:      !isoRegGadgetSet()
+--
+-- Description: Method to set form gadgets for an ISOREG element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [DBREF] [Element to initialise gadgets to]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .isoRegGadgetSet(!element is DBREF)
+
+  !dText[1] = 'Department'
+  !rText[1] = 'ISODEP'
+  !dText[2] = 'Registry'
+  !rText[2] = 'ISOREG'
+  !dText[3] = 'Spool Drawing'
+  !rText[3] = 'SPLDRG'
+  !this.mainForm.createType.dText = !dText
+  !this.mainForm.createType.rText = !rText
+  !this.mainForm.createType.active = true
+  !this.mainForm.createType.val = 2
+  !this.mainForm.create.active = true
+
+endmethod
+-- End of method definition for .isoRegGadgetSet(DBREF)
+
+------------------------------------------------------------------------
+--
+-- Method:      !splDrgGadgetSet()
+--
+-- Description: Method to set form gadgets for an SPLDRG element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [DBREF] [Element to initialise gadgets to]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .splDrgGadgetSet(!element is DBREF)
+
+  !dText[1] = 'Department'
+  !rText[1] = 'ISODEP'
+  !dText[2] = 'Registry'
+  !rText[2] = 'ISOREG'
+  !dText[3] = 'Spool Drawing'
+  !rText[3] = 'SPLDRG'
+  !this.mainForm.createType.dText = !dText
+  !this.mainForm.createType.rText = !rText
+  !this.mainForm.createType.active = true
+  !this.mainForm.createType.val = 3
+  !this.mainForm.create.active = true
+  !this.splDrg = !element
+
+endmethod
+-- End of method definition for .splDrgGadgetSet(DBREF)
+
+------------------------------------------------------------------------
+--
+-- Method:      !splTmpGadgetSet()
+--
+-- Description: Method to set form gadgets for a SPLTMP element
+-- or its members
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [DBREF] [Element to initialise gadgets to]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .splTmpGadgetSet(!element is DBREF)
+
+  !dText[1] = 'Department'
+  !rText[1] = 'ISODEP'
+  !dText[2] = 'Registry'
+  !rText[2] = 'ISOREG'
+  !dText[3] = 'Spool Drawing'
+  !rText[3] = 'SPLDRG'
+  !this.mainForm.createType.dText = !dText
+  !this.mainForm.createType.rText = !rText
+  !this.mainForm.createType.active = true
+  !this.mainForm.createType.val = 3
+  !this.mainForm.create.active = true
+
+endmethod
+-- End of method definition for .splTmpGadgetSet(DBREF)
+
+------------------------------------------------------------------------
+--
+-- Method:      !spoolGadgetSet()
+--
+-- Description: Method to set form gadgets for a SPOOL/FIELD/WLDGRP/JNTGRP/AITEMS element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [DBREF] [Element to initialise gadgets to]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .spoolGadgetSet(!element is DBREF)
+
+  !dText[1] = 'Department'
+  !rText[1] = 'ISODEP'
+  !dText[2] = 'Registry'
+  !rText[2] = 'ISOREG'
+  !dText[3] = 'Spool Drawing'
+  !rText[3] = 'SPLDRG'
+  !this.mainForm.createType.dText = !dText
+  !this.mainForm.createType.rText = !rText
+  !this.mainForm.createType.active = true
+  !this.mainForm.createType.val = 3
+  !this.mainForm.create.active = true
+  !this.splDrg = !element.owner
+
+endmethod
+-- End of method definition for .spoolGadgetSet(DBREF)
+
+------------------------------------------------------------------------
+--
+-- Method:      !iweldGadgetSet()
+--
+-- Description: Method to set form gadgets for an A/I/RWELD or IJOINT element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [DBREF] [Element to initialise gadgets to]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .iweldGadgetSet(!element is DBREF)
+
+  if (!element.type eq 'RWELD') then
+    if (!this.updateMembers) then
+      !this.members.navigateMenu.add('callback', 'WELD', '!!ce = !!ce.rwdowner')
+    endif
+  endif
+
+  !dText[1] = 'Department'
+  !rText[1] = 'ISODEP'
+  !dText[2] = 'Registry'
+  !rText[2] = 'ISOREG'
+  !dText[3] = 'Spool Drawing'
+  !rText[3] = 'SPLDRG'
+  !this.mainForm.createType.dText = !dText
+  !this.mainForm.createType.rText = !rText
+  !this.mainForm.createType.active = true
+  !this.mainForm.createType.val = 3
+  !this.mainForm.create.active = true
+  !this.splDrg = !element.owner.owner
+
+endmethod
+-- End of method definition for .iweldGadgetSet(DBREF)
+
+------------------------------------------------------------------------
+--
+-- Method:      !pcompsGadgetSet()
+--
+-- Description: Method to set form gadgets for all Piping Components
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [DBREF] [Element to initialise gadgets to]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .pcompsGadgetSet(!element is DBREF)
+
+  if (!element.sfref.set()) then
+    if (!this.updateMembers) then
+      !this.members.navigateMenu.add('callback', !element.sfref.type, '!!ce = !!ce.sfref')
+    endif
+    !this.splDrg = !element.sfref.owner
+    !this.mainForm.activeSpldrg.val = !this.splDrg.name
+  endif
+
+  if (!element.type eq 'WELD') then
+    if (!element.wldref[1].set()) then
+      if (!this.updateMembers) then
+        !this.members.navigateMenu.add('callback', 'RWELD', '!!ce = !!ce.wldref[1]')
+      endif
+    endif
+  endif
+
+  !this.mainForm.create.active = false
+  !this.mainForm.createType.active = false
+
+endmethod
+-- End of method definition for .pcompsGadgetSet(DBREF)
+
+------------------------------------------------------------------------
+--
+-- Method:      !otherGadgetSet()
+--
+-- Description: Method to set form gadgets for Elements not
+-- covered by a specific method
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [DBREF] [Element to initialise gadgets to]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .otherGadgetSet(!element is DBREF)
+
+  !this.mainForm.create.active = false
+  !this.mainForm.createType.active = false
+
+endmethod
+-- End of method definition for .otherGadgetSet(DBREF)
+
+------------------------------------------------------------------------
+--
+-- Method:      !splDrgAdd()
+--
+-- Description: add elements to splDrg
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [DBREF]  [Element to add to Spldrg]
+--   [2] [R] [STRING] [ELEMENT or TUBING]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .splDrgAdd(!element is DBREF, !pickType is STRING)
+
+  if (!pickType eq 'TUBING') then
+    !tempElem = ILEAVE TUBE OF $!element
+  else
+    !tempElem = !element
+  endif
+
+  !!ce = !this.splDrg
+  SPOOLING ADD $!<this.splDrg> $!tempElem
+
+  -- handle error so EDG does not complain
+  handle any
+    !!alert.error(!!error.text)
+  endhandle
+
+endmethod
+-- End of method definition for .splDrgAdd(DBREF, STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      !splDrgRemove()
+--
+-- Description: remove elements from a splDrg
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [DBREF]  [Element to be removed from splDrg]
+--   [2] [R] [STRING] [ELEMENT or TUBING]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .splDrgRemove(!element is DBREF, !pickType is STRING)
+
+  if (!pickType eq 'TUBING') then
+    !tempElem = ILEAVE TUBE OF $!element
+  else
+    !tempElem = !element
+  endif
+
+  !splDrgMem = !tempElem.sfref
+
+  -- ce must not be element about to be removed
+  !!ce = !this.splDrg
+  SPOOLING REMOVE $!splDrgMem
+
+  -- handle error so EDG does not complain
+  handle any
+    !!alert.error(!!error.text)
+  endhandle
+
+endmethod
+-- End of method definition for .splDrgRemove(DBREF, STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      !rollbackEdg()
+--
+-- Description: update form following EDG rollback on graphics form
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .rollbackEdg()
+
+  -- display navigate as pick mode
+  !this.pickMode = 'NAVIGATE'
+  !this.mainForm.includeFields.active = false
+
+  -- unset edg packet
+  !this.edgPacket = object EDGPACKET()
+
+endmethod
+-- End of method definition for .rollbackEdg()
+
+------------------------------------------------------------------------
+--
+-- Method:      !removeEdg()
+--
+-- Description: remove EDG packet
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .removeEdg()
+
+  -- remove edg packet (which will cause !this.rollbackEdg to be called)
+  if (!this.edgPacket.type.set()) then
+    !!edgCntrl.remove(!this.edgPacket)
+  endif
+
+endmethod
+-- End of method definition for .removeEdg()
+
+------------------------------------------------------------------------
+--
+-- Method:      !extractClaims()
+--
+-- Description: Switch on/off extract claim marker callback method
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [1] [R] [MENU] [menu gadget]
+--   [2] [R] [STRING] [select state]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .extractClaims(!menu is MENU, !dummyState is STRING)
+
+  !!showMemExtracts = !menu.selected(|Show Extract Claims|)
+  -- set command text to be used when form reloaded (horrible but necessary!)
+  if( !!showMemExtracts ) then
+    !!splExtractFlag = | EXCLTO '*' ' ' ' '|
+  else
+    !!splExtractFlag = ||
+  endif
+
+  -- Must tidy up any splmembers EDG modes
+  !!splMembers.close()
+  kill !!splMembers
+  show !!splMembers free at xr 0 yr 0.1
+
+endmethod
+-- End of method definition for .extractClaims(MENU, STRING)

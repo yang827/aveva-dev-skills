@@ -1,0 +1,602 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:  Mdsrepeatanc.pmlfnc
+--   Type:  Function Definition
+--   Group:  Multi Discipline Supports Application
+--     Keyword:  MDS
+--   Module:  design
+--   Replaces:
+--
+-- Author:  Karel Pleschner
+-- Created:  25th Jul 2006
+--
+--
+-- Description:
+-- Function to repeat single ancillary
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsRepeatAnc()
+
+  -- set default distance for positioning
+  !distance = 300mm
+
+
+  !prompt = 'Identify MDS Ancillary to Repeat'
+  do
+    prompt off
+    prompt load escape '$!prompt'
+    !srcAtta = ref of ID ATTA@
+    handle ANY
+      prompt on
+      return
+    endhandle
+
+    !prompt = 'Not a Single MDS Ancillary! Identify Another Ancillary to Repeat'
+
+    if !srcAtta.name.substring(-1,-5).eq('/SREF') then
+      !srcAtta = object DBREF(!srcAtta.name.before('/SREF') + '/DATUM')
+      handle ANY
+        skip
+      endhandle
+    endif
+
+    skip if !srcAtta.isname.not()
+    skip if !srcAtta.spow.neq(/MDS )
+    skip if !srcAtta.styp.eq('RACK-REST').or(!srcAtta.styp.eq('HVAC-REST')).or(!srcAtta.styp.eq('FLANGE-REST'))
+    break
+
+  enddo
+
+  -- store current element
+  !storeCE = !!ce
+
+  -- rebuild form !!mdsModifyName as BLOCKING and activate permissible gadgets
+  !!kloadftype('Mdsmodifyname','BLOCKING')
+  !!kresetactive(!!mdsModifyName,false)
+  !!mdsModifyName.cancel.active   = true
+  !!mdsModifyName.newname.active  = true
+  !!mdsModifyName.ok.active       = true
+  !!mdsModifyName.autoname.active = true
+
+  -- initialize variable used within the loop below
+  !styp = !srcAtta.styp
+  !projStd = !srcAtta.prop.rnam
+  handle ANY
+    !projStd = !srcAtta.prop.desc
+  endhandle
+  !ancil = ARRAY()
+
+  -- Select tube
+  -- get default tube type
+  !tubeType = !!mdsOptions.pipes
+  if !styp inset('AT53A','AT53B','LT10','LT11','LT12') then
+    !pipeType = 'Support Atta'
+    !iDType = 'pipe'
+    !purp = 'PIPE'
+  else
+    if (!tubeType eq 'FTUB')then
+      !pipeType = 'lined section'
+    else
+      !pipeType = 'tube'
+    endif
+    !iDType = 'pipe'
+    !purp = 'PIPE'
+  endif
+
+  -- set prompt
+  !prompt = 'Identify $!pipeType of $!iDType to Add Ancillary'
+
+  -- store mode and set it temporarily to forward
+  var !mode mode
+  forwards
+
+  -- Find current units and set the distance unit to metric
+  !currentunits = !!kGetSetUnits()
+
+  -- start of the main LOOP to create new supports
+  do
+    -- issue refresh command to make sure GUI is greyed out
+    refresh
+
+    if (!!mdsIdTube(!tubeType, '$!prompt',!purp).not())then
+      break
+    endif
+    !where = ''
+    !to = ''
+    !trunClamp = FALSE
+
+
+    -- Identified elbo must have it's pa or pl pointing u if types AT10A or AT11A
+    -- or if AT10A or AT10B leg must be horizontal
+
+    if (!styp inset('LT01A','LT01B','LT01C','LT02','LT03A','LT03B','LT03C','LT03D','LT04','AT27','LT06','AT61','AT116','AT117','AT118','AT119','AT120','AT121','AT122','AT123','AT124','AT125')) then
+      if (!!ce.type eq 'BRAN') then
+        pin 9 copy ph
+        var !p9dir pin 9 dir wrt /*
+        if ('$!p9dir' neq |U|) and ('$!p9dir' neq |D|) then
+          !!alert.error('Identified tube must be vertical')
+          skip
+        endif
+        !!mdsResetPins(9,9)
+      else
+        !pltest = pl dir wrt /*
+        if ('$!pltest' eq |U WRT /*|) or ('$!pltest' eq |D WRT /*|) then
+        else
+          !!alert.error('Identified tube must be vertical')
+          skip
+        endif
+      endif
+    elseif !styp inset('AT53A','AT53B') then
+      if match('AT55A AT55B AT55C AT56 AT06 AT03 AT16 AC45 AC29 AC44 AC53',!!ce.stype) eq 0 then
+        !!alert.error('You must identify a clamp ')
+        skip
+      endif
+      !identifiedStype = !!ce.styp
+      if match('AC45 AC29 AC44 AC53',!!ce.stype) gt 0 then
+        !trunClamp = TRUE
+        !trunClampName = !!ce
+      endif
+    elseif !styp inset('LT10') then
+      if (!!ce.type neq 'ATTA') then
+        !!alert.error('You must identify a clamp')
+        skip
+      endif
+      !where = ''
+      !to = ''
+      if match('AC53 AC54 AT93 AT94',!!ce.stype) eq 0 then
+        !!alert.error('You must identify a clamp of the correct type')
+        skip
+      endif
+      --Only create on vertical pipes
+      !pltest = p41 dir wrt /*
+      if ('$!pltest' eq |U WRT /*|) or ('$!pltest' eq |D WRT /*|) then
+      else
+        !!alert.error('Identified clamp must be vertical')
+        skip
+      endif
+      --Get Pos of Clamp
+      !p41dir = p41 dir wrt /*
+      if ('$!p41dir' eq |U WRT /*|) then
+        !where = 'Before'
+        !to = 'To next'
+        !posLug = P41 pos wrt /*
+      else
+        !where = ''
+        !to = ''
+        !posLug = P40 pos wrt /*
+      endif
+    elseif !styp inset('LT11','LT12') then
+      if (!!ce.type neq 'ATTA') then
+        !!alert.error('You must identify a clamp')
+        skip
+      endif
+      !where = ''
+      !to = ''
+      if match('AC53 AC54 AT72 AT73 AT87 AT93 AT94',!!ce.stype) eq 0 then
+        !!alert.error('You must identify a clamp of the correct type')
+        skip
+      endif
+      --Only create on horizontal pipes
+      !pltest = pl dir of href of owne wrt /*
+      handle(2,257)
+        !pltest = pl dir
+      endhandle
+      if ('$!pltest' eq |U WRT /*|) or ('$!pltest' eq |D WRT /*|) then
+        !!alert.error('Identified clamp must be horizontal')
+        skip
+      endif
+      !posLug = Pos wrt worl
+      !length = Prop Clen
+
+    else
+      if !!ce.type.eq('BRAN') then
+        !dir = !!ce.hdir.wrt(world)
+      else
+        !dir = !!ce.ldir.wrt(worl)
+      endif
+      -- check if pipe is not vertical and within maximum slope allowed for horizontal pipes
+      if !dir.neq(U).and(!dir.neq(D)) then
+        if !!mdsGradient(ce) then
+          !!alert.error('The pipe identified is not within the maximum slope for horizontal pipes as defined in the application defaults ($!!mdsOptions.slope.val)')
+          skip
+        endif
+      endif
+    endif
+
+    -- store current bore and direction
+    !!kRestoreUnits(!currentunits)
+    if !!ce.type.eq('BRAN') then
+      !bore = !!ce.hbor.string(!!boreFMT)
+      !hdir = !!ce.hdir.wrt(worl)
+      !prev = 'PH'
+    else
+      !bore = !!ce.lbor.string(!!boreFMT)
+      !hdir = !!ce.ldir.wrt(worl)
+      !prev = 'PL of PREV'
+    endif
+    units mm bore mm distance
+
+
+    --Navigate to Href of owne for all support types apart from these
+    if !styp inset('LT10','LT11','LT12') then
+      if match('AT72 AT73 AT87 AT93 AT94',!!ce.stype) eq 0 then
+        goto href of owne
+      endif
+    endif
+
+    -- create atta and set spref and lstub
+    !!mdsDacControl(true)
+    new atta
+    spkbrk TRUE
+    !spref = SELECT SPEC /MDS WITH STYP '$!styp'
+    handle ANY
+      !!alert.error('Unable to select ancillary $!projStd at this bore ($!bore)')
+      !!mdsDacControl(false)
+      delete atta
+      skip
+    endhandle
+
+    -- set spref and lstub
+    !!ce.spref = !spref[1]
+    !!mdsSelLstu(!!ce)
+
+
+    -- set default desparams - skip if not specified
+    if !!mdssetdespars(ce).not() then
+      !!alert.error('Unable to select ancillary $!projStd at this bore ($!bore)')
+      !!mdsDacControl(false)
+      delete atta
+      skip
+    endif
+
+
+    -- copy desparams from source atta if same size
+    if !!ce.spref.eq(!srcAtta.spref) then
+      !!ce.desp = !srcAtta.desp
+      handle ANY
+        -- handle situation if there is no despara
+      endhandle
+    endif
+
+    -- check various DATA values for the current ancillary
+    !mdsattaobj = object MDSREADPARSDATA()
+    if !styp.match('-REST').eq(0) then
+      if !mdsattaobj.mdsdefsdata(!styp, !!ce.lbor.real().value() ).not() then
+        !!alert.error('Aborting the creation of this MDS ANCILLARY')
+        !!mdsDacControl(false)
+        delete atta
+        skip
+      endif
+    endif
+
+    -- set up the object for checking and variables associated with the object calls below
+    !check = object MDSCHECKSTD(!mdsattaobj )
+    !min = STRING()
+    !max = STRING()
+    !matError = STRING()
+
+    --check the PIPE MATERIAL
+    if !check.material(!matError).not() then
+      !!alert.error(!matError)
+      !!mdsDacControl(false)
+      delete atta
+      skip
+    endif
+
+    -- Check PIPE INSULATION THICKNESS is within the limits of the Selected ancillary Standard
+    -- If the MNIN (Minimum Insulation) data property does not exist in the ancillary's dataset
+    -- the OBJECT 'Mdscheckstd.insu()' will return 'TRUE' and skip the code shown below
+    if (!check.insu(!styp,!min,!max).not()) then
+      !!mdsInsulationError(!currentunits, !min, !max, !projStd)
+      !!mdsDacControl(false)
+      delete atta
+      skip
+    endif
+
+    -- Check BRANCH TEMPERATURE is within the limits of the Selected ancillary Standard
+    -- If the MINT (Minimum Temperature) data property does not exist in the ancillary's dataset
+    -- the OBJECT 'Mdscheckstd.temp()' will return 'TRUE' and skip the code shown below
+    !tMin = STRING()
+    !tMax = STRING()
+    if (!check.temp(!styp,!tMin,!tMax).not()) then
+      var !temp temp of branch
+      !!alert.error('The TEMPERATURE of the identified pipe ($!temp) is not within the MINIMUM/MAXIMUM temperatures ($!tMin / $!tMax)')
+      !!mdsDacControl(false)
+      delete atta
+      skip
+    endif
+
+    -- Test if the ANCILLARY is available at this ELEVATION
+    if !styp.match('-REST').eq(0) then
+      if !check.elevation(!styp).not() then
+        !position = !!ce.position.wrt(/* )
+        !selectedElevation = !position.up
+        !minimumElevation = !mdsattaobj.elevation
+        !!alert.error('The elevation selected is unsuitable for this ancillary. Selected elevation $!selectedElevation , Minimum elevation $!minimumElevation')
+        !!mdsDacControl(false)
+        delete atta
+        skip
+      endif
+    endif
+
+    -- <sk> 06/07/2012 Test custom criteria
+    !criteria = !check.criteria()
+    if (!criteria.empty().not()) then
+      !!alert.error (!criteria)
+      !!mdsDacControl(FALSE)
+      delete atta
+      skip
+    endif
+    -- </sk> 06/07/2012
+
+    -- Special for AT21/AT22 is the requirement of setting the BLEN dkey to the width
+    -- of the beam it is sitting on
+    if !styp.eq('AT21') or !styp.eq('AT22') then
+      -- Identify beam to bolt strap to
+      prompt off
+      prompt load escape 'Identify section to bolt guide to'
+      !guideSctn = ref of ID SCTN @
+      handle (61,528)
+        prompt on
+        delete atta
+        skip
+      endhandle
+      prompt on
+      !flanThk = !guideSctn.prop.fLG
+      handle NONE
+        var !prop coll all data with dkey eq 'SSTH' for dtre
+        var !num1 eval num for all from !prop
+        despar n$!num1[1]  $!flanThk
+      elsehandle ANY
+      endhandle
+    endif
+
+    -- Set the material
+    !!mdssetmatref(!!ce)
+
+    -- set ISPE/TSPE
+    !!mdsSetIspe()
+
+    -- set :MdsSuppType
+    !!ce.:MdsSuppType = styp
+
+    -- If type is a AT98 then we need to add the tube material to the iso
+    if !styp.eq('AT98') then
+      !!ce.mtoref[1] = !!ce.lstu
+    endif
+
+    !move = TRUE
+    if (!styp inset('LT01A','LT01B','LT01C')) then
+      !move = false
+      fconn to prev
+      handle (7,35)
+        pos at prev
+        ori
+      elsehandle any
+        fconn
+      endhandle
+      -- Lugs must be above clamp therefore p5 must always be U
+      if (!styp inset('LT01B','LT01C')) then
+        !testori = p5 dir wrt /*
+        if ('$!testori' neq |U WRT /*|) then
+          flip ori
+        endif
+      endif
+    elseif (!styp inset('LT13A','LT13B')) then
+      pos at prev
+      handle any
+        pos at ph
+      endhandle
+      ori
+      !testori = p5 dir wrt /*
+      if ('$!testori' neq |D WRT /*|) then
+        flip ori
+      endif
+    elseif (!styp inset('AT53A','AT53B')) then
+      !move = false
+      -- Get the length from the identified elements if the property exists
+      prev
+      if !identifiedStype.eq('AC45') then
+        var !mem coll all dtse mem with (PURP eq 'DESP' and DKEY eq 'BRWB') for dtref of $!trunClampName
+        var !numbers eval num for all from !mem
+        !length = desp[$!numbers[1]] of $!trunClampName
+      elseif !identifiedStype.eq('AC29') then
+        var !mem coll all dtse mem with (PURP eq 'DESP' and DKEY eq 'BROD') for dtref of $!trunClampName
+        var !numbers eval num for all from !mem
+        !length = desp[$!numbers[1]] of $!trunClampName
+        !length = !length / 2
+        var !mem coll all dtse mem with (PURP eq 'DESP' and DKEY eq 'ODED') for dtref of $!trunClampName
+        var !numbers eval num for all from !mem
+        !lengthP = desp[$!numbers[1]] of $!trunClampName
+        !length = !length + !lengthP
+        var !mem coll all dtse mem with (PURP eq 'DESP' and DKEY eq 'CWID') for dtref of $!trunClampName
+        var !numbers eval num for all from !mem
+        !lengthP = desp[$!numbers[1]] of $!trunClampName
+        !length = !length + !lengthP
+        !length = !length * 2
+      elseif !identifiedStype.eq('AC44') then
+        var !mem coll all dtse mem with (PURP eq 'DESP' and DKEY eq 'BRWH') for dtref of $!trunClampName
+        var !numbers eval num for all from !mem
+        !length = desp[$!numbers[1]] of $!trunClampName
+      elseif !identifiedStype.eq('AC53') then
+        var !mem coll all dtse mem with (PURP eq 'DESP' and DKEY eq 'CLEN') for dtref of $!trunClampName
+        var !numbers eval num for all from !mem
+        !length = desp[$!numbers[1]] of $!trunClampName
+      else
+        var !mem coll all dtse mem with (PURP eq 'DESP' and DKEY eq 'LEN') for dtref
+        var !numbers eval num for all from !mem
+        !length = desp[$!numbers[1]]
+      endif
+      next
+      desp n5 $!length
+      fconn
+    elseif (!styp inset('LT10')) then
+      !move = false
+      conn $!to
+      --Ppoint 1 must always point up
+      if !!ce.pdir[1].string().match('U WRT').neq(1) and !!ce.pdir[1].string().match('Z WRT').neq(1) then
+        flip ori conn
+      endif
+      Pos $!posLug
+    elseif (!styp inset('LT11','LT12')) then
+      !move = false
+      conn $!to
+      Desp Num 3 $!length
+      Pos $!posLug
+    else
+      fconn
+      if !styp inset('AT27') then
+        -- Ppoint 10 must always point up
+        if !!ce.pdir[10].string().match('U WRT').neq(1) and !!ce.pdir[10].string().match('Z WRT').neq(1) then
+          flip ori
+        endif
+      endif
+    endif
+
+    -- Need to set the insu thickness for AT26 and GT13
+    if !styp.eq('AT26') or !styp.eq('GT13') or !styp.match('AT25').gt(0) then
+      var !insu insu
+      var !dinsu coll all data with dkey eq 'INSU' for dtre
+      var !num1 eval num for all from !dinsu
+      despar n$!num1[1]  $!insu
+    endif
+
+    if !styp.match('LT03').gt(0) or !styp.match('LT04').gt(0) then
+      -- P1 of this atta always has to be up if not flip ori it and set the :MDSPad uda for the type
+      if !!ce.pdir[1].wrt(/* ).string().eq('D WRT /*') or !!ce.pdir[1].wrt(/* ).string().eq('-Z WRT /*') then
+        flip ori
+      endif
+      !type = !!ce.styp.substring(5,5)
+      :MdsPad '$!type'
+    elseif !styp.match('LT06').gt(0)then
+      -- P1 of this atta always has to be up if not flip ori it and set the :MDSPad uda for the type
+      if !!ce.pdir[1].wrt(/* ).string().eq('U WRT /*') or !!ce.pdir[1].wrt(/* ).string().eq('Z WRT /*') then
+        flip ori
+      endif
+      !type = !!ce.styp.substring(5,5)
+      :MdsPad '$!type'
+    elseif (!styp inset('AT61','AT116','AT117','AT118','AT119')) then
+      -- P1 of this atta always has to be DOWN if not flip ori it and set the :MDSPad uda for the type
+      if !!ce.pdir[1].wrt(/* ).string().eq('U WRT /*') or !!ce.pdir[1].wrt(/* ).string().eq('Z WRT /*') then
+        flip ori
+      endif
+    elseif (!styp inset('AT120','AT121','AT122','AT123','AT124','AT125')) then
+      -- P1 of this atta always has to be UP if not flip ori it and set the :MDSPad uda for the type
+      if !!ce.pdir[1].wrt(/* ).string().eq('D WRT /*') or !!ce.pdir[1].wrt(/* ).string().eq('-Z WRT /*') then
+        flip ori
+      endif
+      !type = !!ce.styp.substring(5,5)
+      :MdsPad '$!type'
+      -- Set the MTOREF attribute of the DATUM Atta to the LSTU value
+      !!ce.mtoref[1] = !!ce.lstu
+    elseif !styp.matchwild('LT14*') then
+      -- P1 of this atta always has to be DOWN if not flip ori it
+      if !!ce.pdir[1].wrt(/* ).string().eq('U WRT /*') or !!ce.pdir[1].wrt(/* ).string().eq('Z WRT /*') then
+        flip ori
+      endif
+    endif
+
+
+    --move by default distance
+    if !move then
+      dist $!distance from $!prev
+    endif
+
+    -- reproduce rotation if source and target DATUM atta are both either vertical or horizontal
+    !srcVertical = !srcAtta.ldir.wrt(worl).eq(U).or(!srcAtta.ldir.wrt(worl).eq(D))
+    !trgVertical = !hdir.eq(U).or(!hdir.eq(D))
+    if !srcVertical.and(!trgVertical) then
+      ori and p9 is p9 of $!srcAtta
+    elseif !srcVertical.not().and(!trgVertical.not()) then
+      !plane = object PLANE(!srcAtta.pos, Z is $!srcAtta.ldir and Y is D )
+      !rotAngle = !srcAtta.pdir[9].angle(!plane.orientation.ydir())
+      if !plane.xyoffset(!srcAtta.ppos[9]).x.gt(0) then
+        !rotAngle = !rotAngle * -1
+      endif
+      rotate about PL by $!rotAngle
+    endif
+
+    -- temporarily store current ancilary
+    !currentAncil = !!ce
+
+    if !styp.eq('AT99') then
+      desp N16 ( PL OD )
+      handle ANY
+      endhandle
+    endif
+
+    -- give temporary name to ancillary
+    do !index from 1
+      !tmpName = '/ProvisionalName' & !index
+      !!ce.name = !tmpName
+      handle ANY
+        skip
+      elsehandle NONE
+        break
+      endhandle
+    enddo
+
+    -- rename copied ancillary
+    -- initialize form !!mdsModifyName
+    !!mdsModifyName.name.val    = !!ce.namn
+    !!mdsModifyName.newname.val = 'unset'
+
+    -- set form callback
+    !!mdsModifyName.applyform.clear()
+    !!mdsModifyName.applyform[1] = '!!mdsModifyName(1,1,''NAMEONLY'')'
+    !!mdsModifyName.applyform[2] = '!!mdsModifyName.name.val = !!ce.namn'
+    !!mdsModifyName.applyform[3] = '!!mdsModifyName.newname.val = ''unset'''
+
+    -- Set focus of form
+    !!mdsModifyName.newname.setfocus()
+
+    -- Show !!mdsModifyName Form
+    waiton !!mdsModifyName
+
+    -- set ancillary as CE
+    !!ce = !currentAncil
+
+    -- Standards ST19, ST21, ST22 and ST23 require the automatic generation of LUGS
+    !!mdsCreateLugs()
+
+    -- set ancillary as CE
+    !!ce = !currentAncil
+
+    -- set STEX if not renamed
+    if !currentAncil.name.eq(!tmpName) then
+      !!mdsTransport(!!ce,!!ce.name.string())
+    endif
+
+    !ancil.append(ce)
+    !!mdsDacControl(false)
+
+    -- end of the main LOOP to create new supports
+  enddo
+
+  if !ancil.unset() then
+    -- navigate to where we were before
+    !!ce = !storeCE
+    !!alert.message('No new ancillary has been created')
+  else
+    -- nvigate to last created support
+    !!ce = !ancil.last()
+  endif
+
+  !!kRestoreUnits(!currentunits)
+  $!mode
+
+endfunction

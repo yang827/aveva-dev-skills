@@ -1,0 +1,517 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:  Mdscreateft50.pmlfnc
+--   Type:    Function Definition
+--   Group:   Multi Discipline Supports Application
+--     Keyword:   MDS
+--   Module:    design
+--   Replaces:          MVS101
+--
+-- Author:    Tony Martin
+-- Created:   10/05/2004 13:13
+--
+--
+-- Description:
+-- function to create support frame type 'FT50'
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         STRING       Method of creating support
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdscreateFT50(!method is STRING)
+
+  -- Save current db position
+
+  !ce = !!ce
+
+  -- Find current units and set the distance unit to metric
+  !currentUnits = !!kgetsetunits()
+
+  -- Initialise variables
+  call !!mdsresetpins(1,10)
+  !form      = !!mdsft50
+  --!idtype    = 'PYRA'
+  !support   = !!mdsft50.support
+  !selection = !!mdsSetSteel.size.selection('Rtext')
+  !datum     = !support.datum
+  !stru      = !support.stru
+  !name      = !stru.name
+  !p9dir     = !support.p9dir
+  !p10dir    = !support.p10dir
+  !p11dir    = !support.p11dir
+  --!pldir     = !support.pldir
+  --!padir     = !support.padir
+  !alias     = !support.alias
+  !datumName = !name & '/' & 'DATUM'
+  !srefName  = !name & '/' & 'SREF'
+  --!sref = !srefName.dbref()
+  --handle ANY
+  --endhandle
+  !unlocked  = ARRAY()
+  !resetLock = FALSE
+
+  var !pjoiColl coll all pjoi with gtyp eq 'APAD' for $!stru
+  if !pjoiColl.size().neq(0) then
+    !padsExist = TRUE
+  else
+    !padsExist = FALSE
+  endif
+
+  -- Does the support have attached/Associated supports
+  if !!mdsgetconnectedsupp(!stru) then
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+  --------------------------------------------------------------------------------
+  -- Check that Datum atta has been created
+  if (!datum.set().not())then
+    !!alert.message('Datum support atta has not been created')
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+  -- Can we write to the spref attribute of the SREF atta and the stru
+  if !support.datum.badref().not() then
+    !srefName = !support.datum.name.before('/DATUM') + '/SREF'
+    if !!mdsComClaimDac(!support.stru,'DACMOD','POS').not() or !!mdsComClaimDac(!srefName.dbref(),'DACMOD','SPREF').not() then
+      !despars = !srefName.dbref().despar
+      !!mdsResetDims(!form,!despars)
+      !!kRestoreUnits(!currentUnits)
+      !!alert.error('Unable to change the support as write access to the SREF atta is not available')
+      return
+    endif
+  endif
+
+  !bore      = !!mdsft50.support.atta[1].abore
+  -- Store section name and matref for each member
+  -- for resetting later
+  -- check to see if the selected type is correct for the bore
+
+  -- check to see if the selected type is correct for the bore
+  !supseq = !!mdsgettempnumber(/MDS/FRAMES/$!alias , !bore)
+  if !supseq neq !!mdsSetSteel.size.val then
+    if !supseq neq (0) then
+      !!mdsSetSteel.size.val = !supseq
+    else
+      !!alert.error('Standard not available at this bore ($!bore)')
+      return
+    endif
+  endif
+
+  !haveJoints = FALSE
+
+  if(!form.support.joints.unset().not()) then
+    !joints     = !support.joints
+    !attributes = ARRAY()
+    !haveJoints = !!kRestoreJoints(!joints,!attributes,'SAVE','')
+    handle ANY
+      !haveJoints = FALSE
+      !support.joints.clear()
+      -- in case they have been deleted and cancel is used
+    endhandle
+  endif
+
+  !storeMat = ARRAY()
+  !storeMat = !!mdsStoreMat(!name)
+
+  --<wd>jun2007<mds12>
+  -- Initialise the MDS Associations Data Creation Object MDSASSOC
+  !mdsassoc = object MDSASSOC()
+  if (!method.eq('PICK')) then
+    !createmode = 'CURSOR'
+  endif
+  !mdsassoc.mode = !createmode
+  --<wd>jun2007<mds12>
+
+  -----------------------------------------------------------
+  -- Build by CURSOR
+  if !method eq 'PICK' then
+    -- Identify wall or section
+
+    !!mdsDacControl(TRUE)
+
+    -------------------------------------------------
+    --<wd>dec2004
+    if !!mdsft50.sbfi.type eq 'SCTN' then
+      !sctn = !!mdsft50.sbfi
+      -- ************************ Connexions ***********************
+      !support.connections[1] = !sctn
+    else
+      !sctn = !!mdsft50.sbfi
+    endif
+    --<wd>dec2004
+    -------------------------------------------------
+
+    --<wd>jun2007<mds12>
+    -- Save !pick and for Associations
+    !mdsassoc.pick1 = !sctn
+    --<wd>jun2007<mds12>
+
+    -------------------------------------------------
+    --<wd>dec2004 -- CODE below commented out to always ENSURE that ---> !mode = 'SURFACE'
+$(
+
+    -- depending on the type of element identified, calculate the required dimension
+    if !!mdsft50.sbfi.type eq 'SCTN' then
+      !sctn = !!mdsft50.sbfi
+      if abs(!sctn.poss.wrt(/* ).up - !sctn.pose.wrt(/* ).up) lt 20 then
+        !mode = 'HBEAM'
+        -- ************************ Connexions ***********************
+        !support.connections[1] = !sctn
+
+        label /Element1
+        prompt off
+        prompt load escape |Identify pline to connect to|
+        var !pl pick pline
+        handle (61,528)
+          prompt on
+          !!kRestoreUnits(!currentUnits)
+          return
+        endhandle
+        prompt dismiss
+        prompt on
+        -- pline format is 'PPline NALO OF =16388/32752'
+        !pline = !pl[1].split()[2]
+        !sctn = !pl[1].split()[4].dbref()
+        !pldir = !sctn.plor.$!<pline>.zdir().wrt(/* )
+
+        -- find the direction of the section and then the horizontal direction perpendicular to it
+        -- First construct a vertical line along the axis of the pipe
+        !vert = object LINE()
+        !vert.startposition = !support.datum.position.wrt(/* )
+        !vert.endposition   = !support.datum.position.wrt(/* )
+        !vert.startposition.up = !vert.startposition.up + 1000
+        !vert.endposition.up = !vert.endposition.up - 1000
+        -- construct a horizontal line along the beam
+        if !pldir.eq(u) or !pldir.eq(d) then
+          !hori = object LINE()
+          !hori.startposition = !sctn.poss.wrt(/* )
+          !hori.endposition   = !sctn.pose.wrt(/* )
+        else
+          !hori = object LINE()
+          !hori.startposition = !sctn.plst.$!<pline>.wrt(/* )
+          !hori.endposition   = !sctn.plen.$!<pline>.wrt(/* )
+        endif
+
+        -- find the intersection point of both lines to construct a line between them
+        !possection = !hori.intersection(!vert)
+        !posatta    = !vert.intersection(!hori)
+        !p9line     = object LINE()
+        !p9line.startposition = !posatta
+        !p9line.endposition = !possection
+        !p9dir = !p9line.direction().wrt(/* )
+        !plinedir = !p9dir.opposite()
+        !support.p9dir = !p9dir
+        -- q var !p9dir
+
+        -- Set the dimensions
+        -- WHEN the PLINE picked is a NAL or NAR then the beam is cutback to the edge
+        -- HOWEVER if the pline points DOWN or UP, the beam is extended 80mm beyond the POSS
+        if !pldir.eq(u) or !pldir.eq(d) then
+          !!mdsft50.dim1.val = !p9line.length() + 80
+        else
+          -- q const dist ppline NA to ppline NAR
+          !!mdsft50.dim1.val = !p9line.length()
+          if !plinedir.angle(!pldir).gt(15) then
+            !!alert.error('Picked pline is unsuitable - Please try again')
+            golabel /Element1
+          endif
+        endif
+      else
+        !mode = 'SURFACE'
+        --  the section is not horizontal so you can only connect to a parallel face
+      endif
+    else   $* we have identified a box or wall
+      !mode = 'SURFACE'
+    endif $* end of the if its a section or panel bit
+
+$)
+    --<wd>dec2004
+    -------------------------------------------------
+
+  else $* the method is dimension in modify mode
+    -- Build by DIMENSIONS
+    -- The rest of the code simply resets the section length
+    !pv = object POINTVECTOR()
+    !pv.position = !support.datum.position.wrt(/* )
+    !pv.direction = !support.datum.pdir[9].wrt(/* ).opposite()
+    !pv.offset(!!mdsft50.dim1.val)
+    !!mdsft50.plane = !pv.plane()
+  endif
+  -----------------------------------------------------------
+
+
+  --<wd>dec2004 -- Always ensure that --> !mode = 'SURFACE'
+  !mode = 'SURFACE'
+  --<wd>dec2004
+
+
+  if !mode eq 'SURFACE' then
+    -- get the plane and sort out support direction and distance
+    !plane = !!mdsft50.plane
+    !p9dir = !plane.direction().opposite()
+    !support.p9dir = !p9dir
+    !!mdsft50.dim1.val = !datum.position.wrt(/* ).distance(!plane.near(!datum.position.wrt(/* )))
+  endif
+
+  -- Orientate the DATUM and SREF Attas
+  !!ce = $!datumName
+  ori and p9 is $!support.p9dir
+  !cutdia = ((!!ce.desp[9] + !!ce.desp[10]) * 2)
+  !!ce = $!srefName
+  ori and p9 is $!support.p9dir
+
+  -- Navigate to Stru
+  !!ce = !stru
+  --<RM> 30/06/11 P-38756 add function call to remove pnod and pjoi rules that are causing errors when delete stru mem is run - start
+  !!mdsRemoveAutoPadRules(!stru)
+  --<RM> 30/06/11 P-38756 add function call to remove pnod and pjoi rules that are causing errors when delete stru mem is run - end
+  -- q name
+  -- Pins now in position create Framework
+  delete stru mem
+  handle (41,66) (2,113) (2,113)
+  endhandle
+
+  !mdstemp = /MDS/$!alias/$!selection
+  :mdscheck $!mdstemp.:mdscheck
+  :mdsframirror $!mdstemp.:mdsframirror
+
+  -- Temporarily Position Structure at Datum Atta
+  at $!datum
+  new frmw $!name/MAIN
+  !frmwsupport = !!ce
+
+  -- Copy required template/s
+  !!ce         = /MDS/$!alias/$!selection
+  !frmw        = !!kCollectAllFor('FRMW', '', !!ce)
+  !subs        = !!kCollectAllFor('SUBS', '', !!ce)
+  !frameFormat = before(!frmw[1].name, '-FRMW')
+
+  --------------------------------------------------------------------------------------
+  -- Navigate back to support and create template elements
+  !!ce = !frmwsupport
+  copy $!frmw[1] rename $!frameFormat $!name
+
+  -- Set stru description for template recognition
+  !desc = desc of /MDS/$!alias/$!selection
+  !mdsBars = :mdsbars of /MDS/$!alias/$!selection
+
+  -- Position and Orientate Structure
+  !!ce = !stru
+  desc '$!desc'
+  :mdsbars $!mdsBars
+
+  -- Navigate back to support and create template elements
+  do !i indices !subs
+    NEW SUBS $!name/SUBS$!i COPY ATTRIB OF $!subs[$!i]
+    COPY MEM OF $!subs[$!i] RENAME $!frameFormat $!name
+  enddo
+
+  -- save spref of joint and unset temporarily to stop desp warning messages
+  SJOI 1 of SNOD 1 of $!<name>-BAR-1
+  var !saveSPREF SPREF
+  SPREF unset
+  -- Navigate to STRUCTURE
+  stru
+
+  -------------------------------------------------
+  --<wd>dec2004
+  -- Get the ORTHGONAL DIRECTIONS of the DATUM ATTA
+  !directions = !!mdsremovegrad(!datum)
+  !support.datumorthdirs = !directions
+
+  -- Orientate the Structure
+  --ori -x is $!p9dir
+  ori -x is $!directions[3] and z is $!directions[1]
+  --<wd>dec2004
+  -------------------------------------------------
+
+  -- now set the POSS and POSE for bar 1
+  $!<name>-BAR-1
+  :MDSAttaRef $!<name>/DATUM
+
+  extend end dist $!!mdsft50.dim1.val from poss
+  --!up = !!ce.ppos.tos.up.wrt(/* )
+  !tOSup = !!ce.plst.tos.wrt(/* ).up
+
+  if (!haveJoints) then
+    do !index indices !joints
+      if (!joints[!index].badref().not() and !attributes[!index][8].dbref().:MDSConn.eq(!joints[!index].owner.owner)) then
+        !mainStl = !attributes[!index][8].dbref().:MDSConn
+        !support.joints[!index] =  !!mdsCreateJoint(!mainStl, !attributes[!index][8].dbref(),!joints[!index],!attributes[!index])
+      else
+        !dummy = object DBREF()
+        !dummyA = ARRAY()
+        !mainStl = !support.connections[!index]
+        !support.joints[!index] =  !!mdsCreateJoint(!mainStl, !attributes[!index][8].dbref(),!dummy,!dummyA)
+      endif
+    enddo
+  endif
+
+  ------------------****** connexions *******----------------------
+  if(!support.connections.unset()) then
+    -- dimensions are being used first
+    :MDSConn default
+  else
+    !connected = !!mdsGetBeamConn(!support,$!<name>-BAR-1 )
+    :MDSConn $!connected
+  endif
+
+  -- Reset distance gadget to new position
+  !!ce = !datum
+  call !!mdsDistance(!!mdsft50)
+
+  -- Set dimensions into srefs despars
+  !!ce = !datum
+  !!mdsDacControl(FALSE)
+
+  -- Select correct spref for sref
+  !!ce = $!<name>/SREF
+  !!mdsDacControl(TRUE)
+  sel spref with styp '$!alias-$!selection' spec /MDF
+
+  -- set desp to cut back end of section joining clip with -ve cyl
+  SJOI 1 of SNOD 1 of $!<name>-BAR-1
+  SPREF $!saveSPREF
+  DESP $!cutdia
+
+  -- Position the SNOD at the DATUM ATTA to get the Correct Cut-Out Shape for the SJOI
+  SNOD 1 of $!<name>-BAR-1
+  -- zdist -$!possoffs
+  zdist thro $!datum
+  !!ce = $!<name>/SREF
+  !!mdsSetIspe()
+  !!mdsSelLstu(!!ce)
+
+  -- Set position flag
+  !support.position = TRUE
+
+  -- Store design parameters
+  !!mdsDacControl(TRUE)
+  despar $!!mdsft50.dim1  $!tOSup
+  !!mdsDacControl(FALSE)
+
+  -- Reset materials of sections
+  !!mdsResetMat(!storeMat)
+
+  -- Reset datum tag
+  !!ce = !datum
+  VAR !pOS POS WRT WORLD
+  $M/%PDMSUI%/DES/CLIB/GAIDTEXT 210 Datum $<$!pOS$>
+
+  -- Navigate to Structure
+  !!ce = !stru
+
+  -- Enhance elements using colour set for highlight
+  !colourlist = ARRAY()
+  !colourlist.append(!!ce)
+  !colourlist.appendarray(!support.atta)
+
+  -- Colour Support
+  call !!kenhancelist(!colourlist)
+
+  -- Update support data held in form
+  !!mdsft50.support = !support
+
+  -- Show dimensions on graphics if required
+  if !!mdsft50.graphicalDim then
+    !!mdsshowdim(!!mdsft50)
+  endif
+
+  -- Reset all pins associated with this support
+  !!mdsresetpins(1,10)
+
+  -- Lock any items that have been locked
+  !!mdsDacControl(TRUE)
+  if !resetLock then
+    do !lock values !unlocked
+      !!ce = !lock
+      lock all
+    enddo
+  endif
+
+  -- We need to add the associated branches to the ADP drawlist so they draw on the ADP drawing
+  -- plus the equipment
+
+  !!mdsDacControl(TRUE)
+
+  !!ce = !stru
+
+  -- reset :mdsancref attributes if set
+  !support.plateconns.restoreconns()
+
+
+  -- clear any dimension errors from previous support build
+  !!mdsft50.dimerrors.clear()
+
+  --------------------------------------------------------------------------------------
+  -- Remove Wait.. Prompt from Screen
+  !!mdscreatemess(FALSE)
+
+  !!mdsDacControl(FALSE)
+
+  ---------------------------------------------------------------------------------------------------
+  ---------------------------------------------------------------------------------------------------
+  --<wd>jun2007<mds12>
+  -- Create the Cross Reference ASSOCIATIONS between the MDS SUPPORT SCTN members $!name-V1
+  -- and the Main Structure supporting elements for:
+  -- <a> CURSOR mode !sctn
+  --
+  -- Store the Original Current Element
+  !xce = !!ce
+
+  -- Store the Array of MDS Support Members in the MDSASSOC Object
+  !mdsassoc.mdsmember[1] = $!name-BAR-1
+
+  -- Initialising the MDSASSOWL object always DELETES ALL of the EXISTING Cross Reference Associations
+  -- (ASSOC) elements for the Current MDS Support, irrespective of the Creation MODE (!method)
+  !mdsassowl = object MDSASSOWL(!form)
+  !mdsassowl.mdsform  = !form
+  !mdsassowl.mdsassoc = !mdsassoc
+
+  -- Create the Association (ASSOCs) for the Current Support
+  !mdsassowl.mdsassoc(!mdsassoc)
+
+  -- Update the FORM SUPPORT object to reference the current MDSASSOWL Associations object
+  !form.support.associations[1] = !mdsassowl
+  !support = !form.support
+
+  -- Navigate back to the Original Current Element
+  !!ce = !xce
+
+  --<wd>jun2007<mds12>
+  ---------------------------------------------------------------------------------------------------
+  ---------------------------------------------------------------------------------------------------
+
+  -- Add pads if automatic pads option is on
+  if !!mdsOptions.autopads.selection().eq('ON') then
+    !whichVerticals = 'ALL'
+    if !method.eq('CURSOR') or !method.eq('CLEARANCE') then
+      if !pick.hardType.eq('PANE') or !pick.hardType.eq('HPLATE') then
+        !!mdsaddpad(!support,!whichVerticals)
+      endif
+    elseif !method.eq('DIMENSION') and !padsExist then
+      !!mdsaddpad(!support,!whichVerticals)
+    endif
+  endif
+
+  -- Reset Units
+  !!kRestoreUnits(!currentUnits)
+  --------------------------------------------------------------------------------------
+
+  !!ce = !ce
+
+endfunction

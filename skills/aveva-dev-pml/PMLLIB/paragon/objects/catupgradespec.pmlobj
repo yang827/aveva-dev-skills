@@ -1,0 +1,572 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            catupgradespec.pmlobj
+--    Type:          Object Definition
+--    Group:         Undefined
+--      Keyword:     Undefined
+--    Module:        Paragon
+--  Author:          Dave Kettle
+--  Created:         Tue Apr 10 11:45:00 2007
+
+--
+--  Description:
+--  Upgrade 11.6 specification to 12.0 specification or selection table
+--  (depends on discipline) with gparts
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  catupgradespec(DBREF)            -                   Constructor
+--  constructGpartName(DBREF)        STRING              Construct name for new gpart
+--  copySpec(DBREF,DBREF)            DBREF               Copy piping specification
+--  createGparts(DBREF,DBREF)        -                   Create gparts for each spco in source spec
+--  createSelTab(DBREF)              DBREF               Create selection table containing new gparts
+--  sortSpcoResults(ARRAY,ARRAY,DBREF) -                   Create gparts for each spco in source spec
+--  upgrade(DBREF,DBREF)             DBREF               Upgrade specification
+--
+------------------------------------------------------------------------
+define object CATUPGRADESPEC
+
+  -- Specification hierarchy
+  member .sourceSpec            is DBREF
+  member .disciplineID          is STRING
+  member .disciplineDtext       is STRING
+  member .subDisciplineDtext    is STRING
+  member .dataBase              is DB
+  member .sourceProject         is PROJECT
+
+  -- Spcos/Gparts
+  member .gparts                is ARRAY
+  member .gpartFamily           is ARRAY
+  member .seleParent            is ARRAY
+  member .specComps             is ARRAY
+
+  -- Naming
+  member .gpartPrefix           is STRING
+  member .specPrefix            is STRING
+  member .selTabPrefix          is STRING
+  member .selCTabPrefix         is STRING
+
+endobject
+-- End object definition catupgradespec
+
+------------------------------------------------------------------------
+--
+-- Method:      catupgradespec
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       DBRef of specification to upgrade
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .catupgradespec(!specification is DBREF)
+
+  -- Check for correct position in hierarchy
+  if (!specification.type ne |SPEC|) then
+    return error 1 |Wrong element type, SPEC expected in object CATUPGRADESPEC()|
+  endif
+
+  -- Get specification
+  !this.sourceSpec = !specification
+
+  -- Database
+  !this.dataBase = !this.sourceSpec.dbname.db()
+
+  -- Originating project (includes foreign projects)
+  !this.sourceProject      = object PROJECT()
+  !this.sourceProject.evar = !this.sourceSpec.dbfile.after('/%').substring(1,6)
+
+  -- Get discipline
+  !disciplines             = !!catGetSpecDiscipline(!this.sourceSpec)
+  !this.disciplineID       = !disciplines[1]
+  !this.disciplineDtext    = !disciplines[2]
+  !this.subDisciplineDtext = !disciplines[3]
+
+  -- Set name prefixes
+  !this.gpartPrefix   = '/P'
+  !this.specPrefix    = '/SP'
+  !this.selTabPrefix  = '/ST'
+  !this.selCTabPrefix = '/CT'
+
+endmethod
+-- End method definition catupgradespec()
+
+------------------------------------------------------------------------
+--
+-- Method:      upgrade
+--
+-- Description: Upgrade specification
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Part world for new parts
+--    2   R      DBREF       Spec world for new spec or selection table
+--
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       New specification or selection table
+--
+------------------------------------------------------------------------
+define method .upgrade(!destPartWorld is DBREF, !destSpecWorld is DBREF) is DBREF
+
+  -- For piping specification
+  if (!this.disciplineID eq |PIPING|) then
+    -- Create new spec
+      !newSpec = !this.copySpec(!this.sourceSpec, !destSpecWorld)
+
+    -- Create gparts from spec components
+      !this.createGparts(!newSpec, !destPartWorld)
+
+    -- Set gpart refs on spec components
+    do !ind indices !this.specComps
+      !this.specComps[!ind].prtref = !this.gparts[!ind]
+    enddo
+
+    return !newSpec
+
+  -- For selection table
+  else
+    !this.createGparts(!this.sourceSpec, !destPartWorld)
+    !newSelTab        = !this.createSelTab(!destSpecWorld)
+    !newSelTab.sptype = !this.disciplineID
+    handle (2,793) $* Illegal characters in disciplineId - eg *Limbospec
+      !newSelTab.sptype = ''
+    endhandle
+    return !newSelTab
+
+  endif
+
+endmethod
+-- End method definition upgrade()
+
+------------------------------------------------------------------------
+--
+-- Method:      sortSpcoResults
+--
+-- Description: Create gparts for each spco in source spec
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       Source Spco Elements
+--    2   R      DBREF       Source Specification
+--
+-- Return:
+--   [Data Type] [Description]
+--     ARRAY     Resulting array of elements into family of SELE hierarchy.
+--
+------------------------------------------------------------------------
+define method .sortSpcoResults(!gparts is ARRAY, !spcos is ARRAY, !specification is DBREF)
+!save = !!ce
+    -- Supply the specification and the list of spcos we have from the specification.
+    !this.gpartFamily.clear()
+    !this.seleParent.clear()
+    !seles = !specification.mem
+
+    -- cycle round all the spco elements
+    do !spco index !spcos
+       !!ce = !spcos[!spco]
+      do from 1 to !spcos[!spco].ahlist.find('SELE').size()
+         end
+      enddo
+
+       -- Find which sele this item is, and set up a new or add element to this index.
+       !pos = !seles.findfirst(!!ce)
+
+       -- Define the next index if required, before adding element to the new or existing list.
+       if (undefined(!this.gpartFamily[!pos])) then
+         !this.gpartFamily[!pos] = ARRAY()
+         !this.seleParent[!pos] = !!ce
+       endif
+
+       -- add the current spco to the current array index.
+         !this.gpartFamily[!pos].append(!gparts[!spco])
+    enddo
+
+    -- Compress array and invert to match the GPART structure.
+    !this.gpartFamily.compress().invert()
+    !this.seleParent.compress().invert()
+
+!!ce = !save
+endmethod
+
+-- End method definition sortSpcoResults()
+------------------------------------------------------------------------
+--
+-- Method:      createGparts
+--
+-- Description: Create gparts for each spco in source spec
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Source specification
+--    2   R      DBREF       Destination part world for new gparts
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createGparts(!specification is DBREF, !gpartWorld is DBREF)
+
+  -- Set flag here to check for existing gparts.
+  !existingGparts   = FALSE
+  !existingGpartRef = STRING()
+
+  -- Check for correct position in hierarchy
+  if (!gpartWorld.type ne |PRTWLD|) then
+    return error 1 |Wrong element type, PRTWLD expected in method catupgradespec.createGparts()|
+  endif
+
+  -- Remember current element
+  !dpPos = !!ce
+
+  -- Create local copy of CE variable
+  !destPartWld = !gpartWorld
+
+  -- Initialise spco/gpart pairs
+  !this.specComps.clear()
+  !this.gparts.clear()
+
+  -- Get all spco's for this spec
+  !colSpco = object COLLECTION()
+  !colSpco.scope(!specification)
+  !colSpco.type('SPCO')
+  !spcoRefs = !colSpco.results()
+
+  -- Process each spco
+  do !spcoVal values !spcoRefs
+
+    -- Check for part already existing (based on matching name for now)
+    !newGpartName = !this.constructGpartName(!spcoVal)
+
+    if (!newGpartName.empty().not()) then
+      !!ce = $!newGpartName
+      handle none
+        -- Gpart name ($!newGpartName) already exists (assumption based on name!)
+        !this.specComps.append(!spcoVal)
+        !this.gparts.append(!!ce)
+        !existingGparts   = TRUE
+        !existingGpartRef = !!ce.owner.name
+        skip
+      elsehandle(2,109)
+        -- Name does not exist so create it below
+      endhandle
+    endif
+
+    -- Get gtype & description from catref or tmpref
+        !gtype = STRING()
+        !gpartDesc = ''
+    if (!spcoVal.catref.badref().not()) then
+          !gtype = !spcoVal.catref.gtype
+      if (!this.disciplineID eq |PIPING|) then
+        if (!spcoVal.detref.badref()) then
+            !gpartDesc = ''
+        else
+            !gpartDesc = !spcoVal.detref.rtext
+        endif
+      else
+        !gpartDesc = !spcoVal.catref.owner.description
+      endif
+
+    elseif (!spcoVal.tmpref.badref().not()) then
+          !gtype = !spcoVal.tmpref.gtype
+          !gpartDesc = !spcoVal.tmpref.description
+      if (!gtype.unset() or !gtype.empty()) then
+          !gtype = !spcoVal.tmpref.purpose
+      endif
+    endif
+
+    if (!gtype.unset() or !gtype.empty()) then
+      !gtype = 'NONE'
+    endif
+
+    -- Get family name from catref or tmpref
+        !familyName = STRING()
+    if (!spcoVal.catref.badref().not()) then
+        !familyName = !spcoVal.catref.owner.namn
+    elseif (!spcoVal.tmpref.badref().not()) then
+        !familyName = !spcoVal.tmpref.owner.namn
+    endif
+
+    if (!familyName.unset() or !familyName.empty()) then
+        !familyName = 'NONE'
+    endif
+
+    -- Get destination gpart family section
+    -- Name based on PRTWLD name & gtype
+    !gpartFamilySection = object DBREF()
+    do !memVal values !destPartWld.members
+      if (!memVal.purpose eq !gtype) then
+        !!ce = !memVal
+        !gpartFamilySection = !memVal
+        break
+      endif
+    enddo
+    -- If its not already there then create it
+    if (!gpartFamilySection.badref()) then
+      !!ce = !destPartWld
+      NEW PRTELE
+      -- Maximum name length is 50 characters, don't name it if longer
+      !fsName = !destPartWld.name & '/' & !gtype
+      if (!fsName.length() le 50) then
+        !!ce.name = !fsName
+      endif
+         !!ce.purpose        = !gtype
+         !gpartFamilySection = !!ce
+    endif
+
+    -- Get destination gpart family
+    -- Name based on PRTWLD name & gtype & family name
+    !gpartFamily = object DBREF()
+    do !memVal values !gpartFamilySection.members
+      if (!memVal.description eq !familyName) then
+        !!ce = !memVal
+        !gpartFamily = !memVal
+        break
+      endif
+    enddo
+    -- If its not already there then create it
+    if (!gpartFamily.badref()) then
+      !!ce = !gpartFamilySection
+      NEW PRTELE
+      -- Maximum name length is 50 characters, don't name it if longer
+      !fName = !destPartWld.name & '/' & !gtype & '/' & !familyName
+      if (!fName.length() le 50) then
+        !!ce.name = !fName
+      endif
+      !!ce.description = !familyName
+      !gpartFamily = !!ce
+    endif
+
+    -- Create new part
+    NEW GPART
+    COPY LIKE $!spcoVal
+    handle(41,52)
+      write |$!!error.text|
+      -- Illegal references on spco so can't copy them
+    endhandle
+
+    if (!newGpartName.empty().not()) then
+      !!ce.name = !newGpartName
+    endif
+
+    !!ce.pritype = !gtype
+    !!ce.attribute('description') = !gpartDesc
+
+    -- Add spco/gpart pair to list
+    !this.specComps.append(!spcoVal)
+    !this.gparts.append(!!ce)
+
+  enddo
+
+  -- Restore current element
+     !!ce = !dpPos
+
+  -- If parts already exist, then say here
+     if (!existingGparts) then
+        write ||
+        write |Gparts already exist ($!existingGpartRef)|
+     endif
+
+  -- Now sort spcos into sub sele structure.
+     !this.sortSpcoResults(!this.gparts, !this.specComps, !specification)
+
+endmethod
+-- End of method definition createGparts()
+
+------------------------------------------------------------------------
+--
+-- Method:      createSelTab
+--
+-- Description: Create selection table containing new gparts
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Table group for new selection table
+--
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       New selection table
+--
+------------------------------------------------------------------------
+define method .createSelTab(!specWorld is DBREF) is DBREF
+
+  -- Check for correct position in hierarchy
+  if (!specWorld.type ne |SPWL|) then
+    return error 1 |Wrong element type, SPWL expected in method catupgradespec.createSelTab()|
+  endif
+
+  -- Remember current element
+  !dpPos = !!ce
+
+  -- Collect all the SELE's at this level
+
+  -- Navigate to table group
+  !!ce = !specWorld
+
+  -- Create new selection table
+  !selTabName = !this.selTabPrefix & !this.sourceSpec.name
+  !selTab     = object SELECTIONTABLE()
+  !selTab.createTable(!selTabName)
+
+  -- Collection all members
+  !seles = !this.sourceSpec.mem
+
+  do !sele index !this.seleParent
+
+  -- Create New Tab Group
+    !tanswer = !this.seleParent[!sele].tanswer
+
+    -- Check for name clash
+    do !i
+      !string = !this.selCTabPrefix & '/' & !this.sourceSpec.namn & '/' & !tanswer
+      !unusedTest = !string.dbref()
+      handle (2,109) (2,813)
+        break
+      elsehandle none
+        !tanswer = !this.seleParent[!sele].tanswer & '(' & !i & ')'
+      endhandle
+    enddo
+
+     -- Create new CTABLE element.
+     !selTab.newType(!this.selCTabPrefix, !this.sourceSpec.namn, !tanswer)
+     handle (41,12)
+       write |$!!error.text|
+     endhandle
+
+  -- Add new items to selection table
+     !selTab.newItems(!this.gpartFamily[!sele])
+
+  enddo
+
+  -- Restore current element
+  !!ce = !dpPos
+
+  return !selTab.selTable
+
+endmethod
+-- End of method definition createSelTab()
+
+------------------------------------------------------------------------
+--
+-- Method:      copySpec
+--
+-- Description: Copy piping specification
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Source specification to copy
+--    2   R      DBREF       Destination spec world for new specification
+--
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       New specification
+--
+------------------------------------------------------------------------
+define method .copySpec(!specification is DBREF, !specWorld is DBREF) is DBREF
+
+  -- Check for correct position in hierarchy
+  if (!specWorld.type ne |SPWL|) then
+    return error 1 |Wrong element type, SPWL expected in method catupgradespec.copySpec()|
+  endif
+
+  -- Remember current element
+  !dpPos = !!ce
+
+  -- Copy specification and rename with partPrefix
+      speconmode
+      handle (47,15)
+        -- We must be already in speconmode, do nothing.
+      endhandle
+
+         !!ce          = !specWorld
+         !partSpecName = !this.specPrefix & !specification.name
+         new spec $!partSpecName COPY $!specification.name RENAME $!specification.name $!partSpecName
+         handle (17,19)
+             !!alert.error(!!error.text)
+             exit
+                handle (47,15)
+                  -- We must be already be out of speconmode, do nothing.
+                endhandle
+         !partSpec = !!ce
+         endhandle
+
+         !partSpec = !!ce
+
+     -- Exit from speconmode.
+     exit
+      handle (47,15)
+        -- We must be already be out of speconmode, do nothing.
+      endhandle
+
+  -- Restore current element
+  !!ce = !dpPos
+
+  return !partSpec
+
+endmethod
+-- End of method definition copySpec()
+
+------------------------------------------------------------------------
+--
+-- Method:      constructGpartName
+--
+-- Description: Construct name for new gpart
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       DBref of gpart's associated spec component
+--
+-- Return:
+--   [Data Type] [Description]
+--    STRING      Name for new gpart
+--
+------------------------------------------------------------------------
+define method .constructGpartName(!spcoRef is DBREF) is STRING
+
+  -- Get material code from matxt ref (only useful for piping specs?)
+  if (!spcoRef.matxt.badref()) then
+    !matlCode = ''
+  else
+    !matlCode = !spcoRef.matxt.name
+
+    -- Check here and see if the matlCode is already in the spcoRef name, and set matlCode to null to stop duplication.
+    if (!spcoRef.name.match(!spcoRef.matxt.namn) ne 0) then
+      !matlCode = ''
+    endif
+  endif
+
+  -- Construct name
+  !tmpName = !spcoRef.name.after(!this.sourceSpec.name)
+  if (!tmpName.unset() or !tmpName.empty()) then
+    !name = !this.gpartPrefix & !matlCode & !spcoRef.name
+  else
+    !name = !this.gpartPrefix & !matlCode & !tmpName
+  endif
+
+  -- Maximum name length is 50 characters
+  if (!name.length() gt 50) then
+    write |Name greater than 50 Characters - $!name from $!spcoRef|
+    !name = ''
+  endif
+
+  return !name
+
+endmethod
+-- End of method definition constructNewGpartName()

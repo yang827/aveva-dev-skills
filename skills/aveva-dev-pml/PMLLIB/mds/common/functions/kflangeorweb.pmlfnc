@@ -1,0 +1,217 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:    kflangeorweb.pmlfnc
+--   Type:    Function Definition
+--   Group:   Common Application
+--     Keyword:   COM
+--   Module:    DESIGN
+--   Replaces:
+--
+-- Author:    I.osborne
+-- Created:   Wed Jul 30
+--
+--
+-- Description:
+-- function to get position of intersection on a beam or column. The intersection
+-- is derived from a 3D position and direction towards the section.
+-- If the section GTYPE is not BEAM then an intersection point closest to the
+-- 3D position is returned.
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R        DBREF         Reference of a SCTN
+--     2     R        POSITION      Datum position from which to calculate nearest
+--                                  point on section.
+--     3     R        DIRECTION     Direction from datum position towards section
+--
+-- Return:
+--    [Data Type]   [Description]
+--     POSITION      Nearest position of intersection with passed section, either on
+--                   flange or web
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!kFlangeOrWeb(!section is DBREF, !pos is POSITION, !dir is DIRECTION) is POSITION
+
+  --<wd>may2007<mds12>
+  -- Check that passed dbref is a SCTN etc...
+  --  if (!section.type neq 'SCTN' and !section.type neq 'STWALL' and !section.type neq 'GENSEC')then
+  if (!section.type neq 'SCTN' and !section.type neq 'STWALL' and !section.type neq 'GENSEC' and !section.type neq 'HSTIFF')then
+    !!alert.error('Passed reference is not a Section or an HSTIFF')
+    --<wd>may2007<mds12>
+
+    return
+  endif
+
+  -- Initialise variables
+  !oppDir = !dir
+  !oppDir.up    = !dir.up * -1
+  !oppDir.east  = !dir.east * -1
+  !oppDir.north = !dir.north * -1
+
+  -- Navigate to section
+  !!ce = !section
+
+  -- Get top of steel orientation of picked section
+  if (!section.type.eq('GENSEC')) then
+    !tosDir = !section.members[1].ydir
+  else
+    !ori    = deri ori
+    !tosDir = !ori.ydir()
+  endif
+
+
+  -- See what type of section we are dealing with
+  !gtype = !!ce.gtype
+  --<RM> 22/10/09 added a new test here to make sure that the gtype of the beam is set
+  --if not then try and set it using the catref value
+  if !gtype.unset() or !gtype.eq('') then
+    var !newgType gtyp of catref of $!!ce
+    handle ANY
+      !gtype = ''
+    elsehandle NONE
+      !!ce.gtype = !newgType
+      !gtype = !!ce.gtype
+      if !gtype.unset() or !gtype.eq('') then
+        -- if we get here then we have not found a gtype for the steelwork. we need to put up a message telling the user why this is happening
+        -- and then return without the required return type which will have the effect of stopping the execution of whatever method called it.
+        -- this is not ideal code because we should just return an unset position and handle it in the calling method. at time of writing there
+        -- are approximately 100 files with calls to this function so the exercise is too large to undertake at present. the user is however
+        -- being told exactly how to fix the problem quickly without help from Aveva by setting the gtype of the steelwork.
+        !!alert.error('could not identify a valid Gtype for the connecting steelwork. please ensure that this attribute is set correctly and try again')
+        return
+      endif
+    endhandle
+  endif
+  --<RM> 22/10/09 --end of fix
+
+  --<wd>jul2007<mds12>
+  handle ANY
+    !gtype = ''
+  endhandle
+  --<wd>jul2007<mds12>
+
+  if (!gtype.eq('BEAM'))then
+    -- See if we are connecting to the web or flange of the section
+    !direction = object KEQUALDIR()
+    !direction.directionA = !dir
+    !direction.directionB = !tosDir
+
+    --    !direction.tolerance  = 0.05
+    --<tm>05/07/2005 13:45
+    -- changed the direction tolerance so that we can accommodate up to 40 degrees offset for sloping connections
+    -- this should not affect the basic function as the aim is to decide if we are in line with tos or bos to find
+    -- the flange otherwise we have found the web
+    !direction.tolerance  = 40
+
+    if !direction.directionA.string().eq('U WRT /*') or !direction.directionA.string().eq('D WRT /*') or !direction.directionA.string().eq('Z WRT /*') or !direction.directionA.string().eq('-Z WRT /*') then
+      !direction.directionB.east = 0
+      !direction.directionB.north = 0
+    endif
+
+    if (!!kDirEqualDir(!direction)) then
+      !connection = 'FLANGE'
+    else
+      !direction = object KEQUALDIR()
+      !direction.directionA = !oppDir
+      !direction.directionB = !tosDir
+      --      !direction.tolerance  = 0.05
+      !direction.tolerance  = 40
+
+      if !direction.directionA.string().eq('U WRT /*') or !direction.directionA.string().eq('D WRT /*') or !direction.directionA.string().eq('Z WRT /*') or !direction.directionA.string().eq('-Z WRT /*') then
+        !direction.directionB.east = 0
+        !direction.directionB.north = 0
+      endif
+
+
+      if (!!kDirEqualDir(!direction)) then
+        !connection = 'FLANGE'
+      else
+        !connection = 'WEB'
+        --        !connection = 'FLANGE'
+      endif
+    endif
+
+    if (!connection eq 'FLANGE')then
+
+      -- Get closest point on section picked
+      !varArray = !!kClosestPline(!section, !pos, !dir)
+      !inter = !varArray[2]
+
+    else
+      VAR !datumLine CONS LINE $!dir THRO $!pos
+      !start = posstart of $!section wrt world
+      !end   = posend of $!section wrt world
+      VAR !sectionLine CONS LINE JOIN $!start TO $!end
+      VAR !lineInter CONS POS int $!datumLine $!sectionLine
+      !sectionPos = !lineInter.position()
+
+      !varArray = !!kOrderPlinePos(!section, !sectionPos, !oppDir)
+
+      do !i from 2 to !varArray.size() by 2
+
+        !inter = !varArray[!i]
+        VAR !tempDist CONS DIST $!sectionPos TO $!inter
+        !tempDistReal = !tempDist.real()
+        handle ANY
+          !tempDistReal = 0mm
+        endhandle
+        skip if (!tempDistReal.eq(0))
+
+        VAR !testDir CONS DIR $!inter to $!sectionPos
+        if !testDir.eq('') then
+          skip
+        endif
+
+        -- Test to see if constructed direction equals the direction from the datum
+        -- to the column.
+        -- If they are equal then Intersection point is on the nearest side of the web
+
+        -- Set object definition
+        !direction = object KEQUALDIR()
+        !direction.directionA = !testDir.direction()
+        !direction.directionB = !dir
+        !direction.tolerance  = 0.05
+
+        if (!!kDirEqualDir(!direction)) then
+          break
+        endif
+      enddo
+    endif
+  else
+
+    -- Get nearest intersection point on section
+    !varArray = !!kClosestPline(!section, !pos, !dir)
+    --<DW>Aug2007 Option for other profiles added
+    --Inter = !varArray[2] commented out
+
+    !direction = object KEQUALDIR()
+    !dirOpp    = !dir.opposite()
+    !direction.directionB = !dirOpp
+    !direction.tolerance  = 0.05
+    do !i from 1 to !varArray.size() by 2
+      !result  = !varArray[$!i].pkey
+      var !testDir ppline $!result dir wrt /*
+      !direction.directionA = !testDir.direction()
+      -- Check $!result $!testDir
+      if (!!kDirEqualDir(!direction)) then
+        -- Note required pline is $!result
+        !j = (!i + 1)
+        !inter = !varArray[$!j]
+        break
+      endif
+    enddo
+
+    --<DW>End of other profile addition
+  endif
+
+  return !inter
+
+endfunction

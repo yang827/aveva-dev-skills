@@ -1,0 +1,477 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- AVEVA Ltd Copyright March 2005
+--
+-- File:  MdsInterfaceReposTail.pmlfnc
+--   Type:  Function Definition
+--   Group:  Multi Discipline Supports Application
+--   Keyword:  MDS
+--   Module:  design
+--   Replaces:
+--
+-- Author:  Neale Morris
+-- Created:  09/03/2005 09:43
+--
+--
+-- Description:
+-- Function to adjust the tail position on a sloping line
+-----------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsInterfaceReposTail(!atta is DBREF,!defaulttpos is POSITION)
+
+  !offsetSet = FALSE
+  !dynhozriser = FALSE
+
+
+  !!mdsDacControl(TRUE)
+
+  do !loopThroHangs from 1 to 10
+
+    !!ce = !atta
+    --!attaldir = !!ce.ldir
+    !supportName = !!ce.name
+
+    $!supportName/H$!loopThroHangs
+    handle ANY
+      break
+    endhandle
+    var !taildir pt dir
+    --!tdir = !taildir.direction().string().before(' WRT')
+    !tpos = !!ce.tposition.wrt(/* )
+
+    !configNumber = :MdsHConfig of $!supportName
+    if !configNumber.upcase().eq('UNSET') or !configNumber.eq('') then
+      !configNumber = !!mdsInterfaceHanger.configNumber.string()
+    endif
+
+    -- Remove any alpha chars H and V from configNumber
+    !configNumber = !configNumber.replace('V','').replace('H','')
+    !dynOffset = :MdsDynOffset of $!supportName/H1
+
+    !formName = '!!mdsHangerType' + !configNumber
+    !form = $!formName
+
+    if !configNumber.real().eq(7) or !configNumber.real().eq(20) or !configNumber.real().eq(25) or !configNumber.real().eq(21)then
+      -- Type 7 dynamic to steel , Type 20 dynamic to civils
+      -- Type 25 Angulating to civils, Type 21 Angulating to steel
+      if !dynOffset.eq(0) then
+        !offsetSet = FALSE
+      else
+        !offsetSet = TRUE
+      endif
+
+      !tdir = tdir of $!supportName/H1
+      !hhdir = !tdir.opposite()
+
+      -- get the leave dir of the pipe
+      !attaremgrad = !!mdsremovegrad(!atta)
+
+      -- get the tdir of the hanger
+      var !taildir pt dir
+
+      -- get the angle between the two directions
+      !angle = !attaremgrad[1].angle(!taildir.direction())
+
+      -- if we have approx 0 or 180 then we are dynhozriser true
+      if !angle.abs().between(179.9,180.1) or !angle.abs().leq(0.1) then
+        !dynhozriser = TRUE
+      else
+        !dynhozriser = FALSE
+      endif
+
+    endif
+
+    --dun1218 add virtual fitting code to deal with situations where the support steelwork is in a readonly db
+    if !form.virtualFitting.set() then
+      !virtualFitting = TRUE
+    else
+      !virtualFitting = FALSE
+    endif
+
+    if !virtualFitting and !form.virtualFitting.objectType().eq('MDSINTERFACEVIRTUALFITTING') then
+      !position = !form.virtualFitting.getPosition()
+      move pt thro $!position
+
+      if !dynhozriser.eq(TRUE) then
+        move pt $!hhdir clear 0 inf $!defaulttpos
+        handle ANY
+        endhandle
+      endif
+
+      if !configNumber.real().eq(20) or !configNumber.real().eq(25) then
+        if !!ce.tpos.neq(!defaulttpos)  then
+          !linea = object LINE(!!ce.tpos.wrt( /* ) , !defaulttpos.wrt( /* ) )
+          !lineb = object LINE(!!ce.hpos.wrt( /* ) , !!ce.tpos.wrt( /* ) )
+          !inter = !linea.intersection(!lineb)
+          handle ANY
+            pin 9 copy pt
+            !owner = !form.virtualFitting.owner
+            pin 9 plane pin 9 clear 0 beh $!owner
+          elsehandle NONE
+            pin 9 copy pt
+            pin 9 plane pin 9 thro $!inter
+          endhandle
+        else
+          pin 9 copy pt
+        endif
+      else
+        pin 9 copy pt
+        -- dtf >>> 20.06.06 mod
+        pin 8 copy hh
+        --pin 9 plane pin 9 clear 0 beh owner of $!supportName/FITT/H1
+        --var !pin9dir pin 9 dir
+        var !pin9dir construct dir pin 9 to pin 8
+        if !pin9dir.direction().angle(U).lt(.1) and !pin9dir.direction().angle(U).gt(-.1) then
+          !pin9dir = 'U'
+        elseif !pin9dir.direction().angle(D).lt(.1) and !pin9dir.direction().angle(D).gt(-.1) then
+          !pin9dir = 'D'
+        endif
+        --$p this should be done with planes and intersect
+        -- with vector or line because steel may not be in EW NS UD direction
+        --dun1218 use the orientation of the posline in the virtual fitting -start
+        --!fitt = $!supportName/FITT/H1
+        --!fittori = !fitt.orientation
+        !posl = !form.virtualFitting.posline
+        if !posl.unset() then
+          !posl = 'NA'
+        endif
+        !owner = !form.virtualFitting.owner
+        !fittori = plori $!posl of $!owner
+        --dun1218 use the orientation of the posline in the virtual fitting -end
+
+        !line = object POINTVECTOR(!!ce.hposition.wrt( /* ), !pin9dir.direction())
+        !plane = object PLANE(!!ce.tposition.wrt( /* ), !fittori )
+        !intline = !plane.intersection(!line)
+        pin 9 at $!intline
+
+        !hangerStart = !!ce.hposition.wrt( /* )
+        !hangerEnd   = !intline
+        aid clear line 2999
+        handle ANY
+        endhandle
+        aid line number 2999 $!hangerStart to $!hangerEnd linestyle dotted
+
+        -- dtf <<< end of mod
+      endif
+      pos pt at pin 9
+      pin 9 off
+
+    else
+      move pt thro $!supportName/FITT/H1
+      handle ANY
+        --dun1218 handle the read only situation where we don't have write access to the support steel
+        if !virtualFitting and !form.virtualFitting.objectType().eq('MDSINTERFACEVIRTUALCMPF') then
+          !virtCMPFpos = !form.virtualFitting.getPosition()
+          !dirN = object DIRECTION('N wrt /*')
+          !dirE = object DIRECTION('E wrt /*')
+          !dirU = object DIRECTION('U wrt /*')
+          !hanger1 = $!supportName/H1
+          !hanger1TailPos = !hanger1.tpos
+          !virtCMPFpointvector = object POINTVECTOR(!virtCMPFpos, !dirN)
+          !virtCMPFpointvector = !virtCMPFpointvector.through(!hanger1TailPos)
+          !virtCMPFpointvector.direction = !dirE
+          !virtCMPFpointvector = !virtCMPFpointvector.through(!hanger1TailPos)
+          !virtCMPFpointvector.direction = !dirU
+          !virtCMPFpointvector = !virtCMPFpointvector.through(!hanger1TailPos)
+          !form.virtualFitting.setPosition(!virtCMPFpointvector.position)
+          pin 1 at $!virtCMPFpointvector.position
+          $!supportName/H1
+          pin 2 at pt of ce
+
+          -- Move the cmpf will set the delp of the sbfi members reset them to 0
+          do !reset from 1 to !form.virtualFitting.sbfi.size()
+            !form.virtualFitting.sbfi[$!reset].setDelpos(N0)
+          enddo
+
+          $!supportName/H1
+          do !from from 1 to 5
+            $!supportName/H$!from
+            handle NONE
+              !virtCMPFpos = !form.virtualFitting.getPosition()
+              move pt thro $!virtCMPFpos
+              pin 9 copy pt
+              pin 8 copy pt
+              pin 8 direction from pin 8 to ph
+              pin 8 plane pin 8 thro href
+              var !hangerDirection const direction pin 8 to pin 9
+              !owner = !form.virtualFitting.owner
+              if !hangerDirection.direction().eq(D) then
+                move pt d clear 0 inf ploo 1 of $!owner
+                handle ANY
+                endhandle
+              elseif !hangerDirection.direction().eq(U) then
+                move pt u clear 0 inf ploo 1 of $!owner
+                handle ANY
+                endhandle
+              elseif !dynhozriser.eq(TRUE) then
+                -- <RM> 21/02/07 -- introduced the code below to make sure the hanger tail is POSITIONed on the
+                -- correct side of the support surface
+                move pt $!hhdir clear 0 inf $!defaulttpos
+                var !ptpoint1 pos pt wrt /*
+                move pt $!hhdir clear 0 beh $!defaulttpos
+                var !ptpoint2 pos pt wrt /*
+
+                var !checkdist1 const dist pl of $!supportName to $!ptpoint1
+                var !checkdist2 const dist pl of $!supportName to $!ptpoint2
+                if !checkdist1.real().lt(!checkdist2.real()) then
+                  pos pt at $!ptpoint1 wrt /*
+                else
+                  pos pt at $!ptpoint2 wrt /*
+                endif
+                -- <RM> 21/02/07 -- end of fix
+              else
+                pin 9 at $!virtCMPFpos
+                pin 9 dir e
+                pin 9 plane e thro ph of $!supportName/H1
+                pin 9 dir n
+                pin 9 plane n thro ph of $!supportName/H1
+                pin 9 dir u
+                pin 9 plane u thro ph of $!supportName/H1
+                !tdir.delete()
+                handle ANY
+                endhandle
+                !tdir = tdir of $!supportName/H1
+                pin 9 dir $!tdir
+                pin 9 plane $!tdir thro $!virtCMPFpos
+                pin 9 dir from ce to ph of $!supportName/H1
+                pin 8 copy pin 9
+                $!supportName/H$!from
+                pin 8 direction from pin 9 to ph
+                handle ANY
+                  pin 9 plane pin 9 thro $!virtCMPFpos
+                  pin 8 direction from pin 9 to ph
+                endhandle
+                pin 8 plane pin 8 thro href
+                var !hangerDirection const direction pin 8 to pin 9
+                if !tdir.string()neq('D') or !tdir.neq('U') or !tdir.neq('Z') or !tdir.neq('-Z') and !dynhozriser.eq(FALSE) then
+                  -- horizontal dynamic hangers
+                  move pt $!hangerDirection clear 0 inf $!defaulttpos
+                else
+                  move pt $!hangerDirection clear 0 inf ploo 1 of $!owner
+                endif
+              endif
+              tconn lose
+            elsehandle ANY
+              break
+            endhandle
+          enddo
+          !!mdsResetPins(1,2)
+          !!mdsResetPins(8,9)
+        else
+          -- Hanger to civil
+          $!supportName/CMPF
+          handle NONE
+            move n thro pt of $!supportName/H1
+            handle ANY
+            endhandle
+            move e thro pt of $!supportName/H1
+            handle ANY
+            endhandle
+            move u thro pt of $!supportName/H1
+            handle ANY
+            endhandle
+            pin 1 at ce
+            $!supportName/H1
+            pin 2 at pt of ce
+            --var !dist const dist pin 1 to pin 2
+            $!supportName/CMPF
+            -- Move the cmpf will set the delp of the sbfi members reset them to 0
+            do !reset from 1 to !!ce.mcount()
+              $!reset
+              delp n0
+              end
+            enddo
+            $!supportName/H1
+            do !from from 1 to 5
+              $!supportName/H$!from
+              handle NONE
+                move pt thro $!supportName/CMPF
+                pin 9 copy pt
+                pin 8 copy pt
+                pin 8 direction from pin 8 to ph
+                pin 8 plane pin 8 thro href
+                var !hangerDirection const direction pin 8 to pin 9
+                if !hangerDirection.direction().eq(D) then
+                  move pt d clear 0 inf ploo 1 of owner of $!supportName/CMPF
+                  handle ANY
+                  endhandle
+                elseif !hangerDirection.direction().eq(U) then
+                  move pt u clear 0 inf ploo 1 of owner of $!supportName/CMPF
+                  handle ANY
+                  endhandle
+                elseif !dynhozriser.eq(TRUE) then
+
+                  -- <RM> 21/02/07 -- introduced the code below to make sure the hanger tail is POSITIONed on the
+                  -- correct side of the support surface
+                  move pt $!hhdir clear 0 inf $!defaulttpos
+                  var !ptpoint1 pos pt wrt /*
+                  move pt $!hhdir clear 0 beh $!defaulttpos
+                  var !ptpoint2 pos pt wrt /*
+
+                  var !checkdist1 const dist pl of $!supportName to $!ptpoint1
+                  var !checkdist2 const dist pl of $!supportName to $!ptpoint2
+                  if !checkdist1.real().lt(!checkdist2.real()) then
+                    pos pt at $!ptpoint1 wrt /*
+                  else
+                    pos pt at $!ptpoint2 wrt /*
+                  endif
+                  -- <RM> 21/02/07 -- end of fix
+
+                else
+                  $!supportName/CMPF
+                  pin 9 at ce
+                  pin 9 dir e
+                  pin 9 plane e thro ph of $!supportName/H1
+                  pin 9 dir n
+                  pin 9 plane n thro ph of $!supportName/H1
+                  pin 9 dir u
+                  pin 9 plane u thro ph of $!supportName/H1
+                  !tdir.delete()
+                  handle ANY
+                  endhandle
+                  !tdir = tdir of $!supportName/H1
+                  pin 9 dir $!tdir
+                  pin 9 plane $!tdir thro $!supportName/CMPF
+                  pin 9 dir from ce to ph of $!supportName/H1
+                  pin 8 copy pin 9
+                  $!supportName/H$!from
+                  pin 8 direction from pin 9 to ph
+                  handle ANY
+                    pin 9 plane pin 9 thro $!supportName/CMPF
+                    pin 8 direction from pin 9 to ph
+                  endhandle
+                  pin 8 plane pin 8 thro href
+                  var !hangerDirection const direction pin 8 to pin 9
+                  if !tdir.string()neq('D') or !tdir.neq('U') or !tdir.neq('Z') or !tdir.neq('-Z') and !dynhozriser.eq(FALSE) then
+                    -- horizontal dynamic hangers
+                    move pt $!hangerDirection clear 0 inf $!defaulttpos
+                  else
+                    move pt $!hangerDirection clear 0 inf ploo 1 of owner of $!supportName/CMPF
+                  endif
+                endif
+                tconn lose
+              elsehandle ANY
+                break
+              endhandle
+            enddo
+            !!mdsResetPins(1,2)
+            !!mdsResetPins(8,9)
+          elsehandle ANY
+          endhandle
+        endif
+      elsehandle NONE
+        if !dynhozriser.eq(TRUE) then
+          move pt $!hhdir clear 0 inf $!defaulttpos
+          handle ANY
+          endhandle
+        endif
+        if !configNumber.real().eq(20) or !configNumber.real().eq(25) then
+          if !!ce.tpos.neq(!defaulttpos)  then
+            --q var !!ce.hpos.wrt( /* )
+            --q var !!ce.tpos.wrt( /* )
+            --q var !defaulttpos
+            !linea = object LINE(!!ce.tpos.wrt( /* ) , !defaulttpos.wrt( /* ) )
+            !lineb = object LINE(!!ce.hpos.wrt( /* ) , !!ce.tpos.wrt( /* ) )
+            !inter = !linea.intersection(!lineb)
+            handle ANY
+              pin 9 copy pt
+              pin 9 plane pin 9 clear 0 beh owner of $!supportName/FITT/H1
+            elsehandle NONE
+              pin 9 copy pt
+              pin 9 plane pin 9 thro $!inter
+            endhandle
+          else
+            pin 9 copy pt
+          endif
+        else
+          pin 9 copy pt
+          -- dtf >>> 20.06.06 mod
+          pin 8 copy hh
+          --pin 9 plane pin 9 clear 0 beh owner of $!supportName/FITT/H1
+          --var !pin9dir pin 9 dir
+          var !pin9dir construct dir pin 9 to pin 8
+          if !pin9dir.direction().angle(U).lt(.1) and !pin9dir.direction().angle(U).gt(-.1) then
+            !pin9dir = 'U'
+          elseif !pin9dir.direction().angle(D).lt(.1) and !pin9dir.direction().angle(D).gt(-.1) then
+            !pin9dir = 'D'
+          endif
+          --$p this should be done with planes and intersect
+          -- with vector or line because steel may not be in EW NS UD direction
+          !fitt = $!supportName/FITT/H1
+          !fittori = !fitt.orientation
+          --!fittdir = !fittori.zdir()
+          !line = object POINTVECTOR(!!ce.hposition.wrt( /* ), !pin9dir.direction())
+          !plane = object PLANE(!!ce.tposition.wrt( /* ), !fittori )
+          !intline = !plane.intersection(!line)
+          pin 9 at $!intline
+
+          !hangerStart = !!ce.hposition.wrt( /* )
+          !hangerEnd   = !intline
+          aid clear line 2999
+          handle ANY
+          endhandle
+          aid line number 2999 $!hangerStart to $!hangerEnd linestyle dotted
+
+          -- dtf <<< end of mod
+        endif
+        pos pt at pin 9
+        --       xxxxxxxx
+        pin 9 off
+      endhandle
+    endif
+
+    -- CMPF does not exist in create mode so we will have to work it out
+    --endif
+
+    -- If the hanger has a :MdsAncRef make sure the tail is adjusted acordingly
+
+    !!ce = !atta
+    handle NONE
+      goto cref
+      !connected = !!ce.:MdsAncRef
+      if !connected.size().neq(0) then
+        if !connected[1].badref().not() then
+          move pt clear 0 beh $!connected[1]
+        endif
+      endif
+    elsehandle ANY
+    endhandle
+
+    -- tconn needs setting for civils supports not U dir or D dir for Dynamic type 20
+    if !configNumber.real().eq(20) then
+      tconn LOSE
+    endif
+
+  enddo
+
+  !!ce = !atta
+  --$p Configno $!configNumber
+  if !!mdsInterfaceHanger.configNumber.string().eq('32H') then
+    --if !configNumber.real().eq(32) then
+    !tpos = !!ce.cref.tposition
+    plane $!!ce.ldir thro $!tpos
+  elseif !configNumber.real().eq(32) then
+    !tpos = !!ce.cref.tposition
+  endif
+  !gradient = !!ce.ldir
+  if !gradient.up.eq(0) then
+    -- Horizontal line
+  elseif !gradient.up.abs().eq(1) then
+    -- Vertical line
+  else
+    !tailDirection = !!ce.cref.tdir.up.nint()
+    if !tailDirection.eq(-1) or !tailDirection.eq(1) then
+      -- Move the atta under ht if sloping line if modifying, otherwise incorrect elevations
+      -- sent to vendor software in modify mode
+      --  !!mdsInterfaceModAttaPos(!!ce)
+    endif
+  endif
+
+  !!mdsDacControl(FALSE)
+
+endfunction

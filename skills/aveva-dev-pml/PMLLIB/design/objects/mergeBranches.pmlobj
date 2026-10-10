@@ -1,0 +1,259 @@
+--------------------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------------
+--
+--   File:      mergeBranches.pmlobj
+--   Type:      Object Definition
+--   Group:     Piping Application
+--   Keyword:   Piping
+--   Module:    design
+--   Replaces:
+--
+-- Author:  K.Martin-Chambers
+-- Created: 27/02/2009 09:31
+--
+--
+-- Description:
+-- mergeBranches object
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  addIdBranches(DBREF)             -                   Adds selected pipes from graphical view into the branches array.
+--  checkBranchConnections()         -
+--  mergeBranches()                  -
+--  mergeSelectedBranches()          -
+--
+--------------------------------------------------------------------------------------
+
+--Define Object
+define object MERGEBRANCHES
+
+  --Array of branches to be merged.
+  member .branches is ARRAY
+
+  --Undoable Object.
+  member .undoObject            is UNDOABLE
+
+endobject
+
+--------------------------------------------------------------------------------------
+--
+-- Method: .mergeBranches()
+--
+-- Description:
+--     The constructor method for the object. Defines an edgpacket
+--  allowing the picking of branches.
+--
+-- Return: N/A
+--
+--------------------------------------------------------------------------------------
+
+define method .mergeBranches()
+
+  !packet = object EDGPACKET()
+
+  --This is an object, so have to put !this in a global variable for edgpacket to call.
+  !!mergeBranchesObject = !this
+
+  --Define the EDGPACKET
+  !packet.description = 'Pick Piping Branch'
+  !packet.key      = 'pickPcom'
+  !packet.priority = 3
+  !packet.elementPick('Pick Piping Branches to merge. <esc> to finish selecting')
+  !packet.action = '!!mergeBranchesObject.addIdBranches(!this.return[1].item)'
+  !packet.close = '!!mergeBranchesObject.checkBranchConnections()'
+  !packet.pickPacket.picks[1].pick.input[3]   = 'TYPE eq |BRAN| or TYPE of OWNER eq |BRAN|'
+  !packet.pickPacket.picks[1].pick.input[5]   = 'TYPE eq |BRAN| or TYPE of OWNER eq |BRAN|'
+
+  !!edgCntrl.add(!packet)
+
+endmethod
+
+--------------------------------------------------------------------------------------
+--
+-- Method: .checkBranchConnections()
+--
+-- Description:
+--     Checks that the branches selected are connected together, then reorders the
+--  branches in an array so they go from head to tail.
+--
+-- Return: N/A
+--
+--------------------------------------------------------------------------------------
+
+define method .checkBranchConnections()
+
+  !hrefArray = object ARRAY()
+  !trefArray = object ARRAY()
+  --Check that all the branches are connected and append hrefs and trefs to arrays.
+
+  do !a values !this.branches
+    if !this.branches.findFirst(!a.href).unset() then
+      if !this.branches.findFirst(!a.tref).unset() then
+        --Branches are not connected return error.
+        !!alert.error('The branches selected are not connected to each other or are connected via a tee! To merge them make sure that the head and tail references for each branch are correct.')
+        unenhance all
+        return
+      else
+        --If href unset or not one of selected branches then append unset dbref to hrefArray.
+        !hrefArray.append(object DBREF())
+        !trefArray.append(!a.tref)
+      endif
+    else
+      --If href set just append unset ref for tref, these will all branches but first from head to tail.
+      !hrefArray.append(!a.href)
+      !trefArray.append(object DBREF())
+    endif
+  enddo
+
+  --Reorder the array of branches to an Array that has branch references from head to tail.
+  !orderedBranches = object ARRAY()
+  !orderedBranches[1] = !this.branches[!hrefArray.findFirst(object DBREF())]
+  do !x index !hrefArray
+    if !x.neq(!hrefArray.size()) then
+      !orderedBranches[!x + 1] = !this.branches[!hrefArray.findFirst(!orderedBranches[!x])]
+      handle any
+        --If a href is not set we can get it from the trefArray
+        !orderedBranches[!x + 1] = !orderedBranches[!x].tref
+        handle any
+          !!alert.error('There was a problem with the head and tail references of a selected branch.')
+        endhandle
+      endhandle
+    endif
+  enddo
+  !this.branches = !orderedBranches
+
+  --Now we call the function to do the merge.
+  !this.mergeSelectedBranches()
+
+endmethod
+
+--------------------------------------------------------------------------------------
+--
+-- Method: .mergeSelectedBranches()
+--
+-- Description:
+--     Merges the selected branches. First includes all the comps from a branch into
+--  the first branch and then copies that branches tail data. This is looped until
+--  it has been done for all branches in the array. Then the empty branches are
+--  deleted.
+--
+-- Return: N/A
+--
+--------------------------------------------------------------------------------------
+
+define method .mergeSelectedBranches()
+
+  !this.undoObject.add()
+  !currentElement = !!ce
+  !!ce = !this.branches[1]
+  do !x index !this.branches
+    if !x.neq(!this.branches.size()) then
+      do !comp value !this.branches[!x + 1].mem
+        include $!comp after last mem
+      enddo
+
+      --Copy the tail references from the branch that comps have been copied.
+      !this.branches[1].tref = !this.branches[!x + 1].tref
+      handle any
+        tref unset
+      endhandle
+      !this.branches[1].tpos = !this.branches[!x + 1].tpos
+      !this.branches[1].tbore = !this.branches[!x + 1].tbore
+      !this.branches[1].tconn = !this.branches[!x + 1].tconn
+      !this.branches[1].tdir = !this.branches[!x + 1].tdir
+
+      --Need to set the href of any connected branch to be the new branch in
+      --which everything is being merged to.
+      if !this.branches[1].tref.set() and !this.branches[1].tref.type.eq('BRAN') then
+        !this.branches[1].tref.href = !this.branches[1]
+      endif
+    else
+      --Delete the now empty branches
+      do !delIndex from 1 to !this.branches.size()
+        if !delIndex.neq(!this.branches.size()) then
+          !comp = !!ce
+          !!ce = !this.branches[!delIndex + 1]
+          if !this.branches[!delIndex + 1].owner.mcount().eq(1) then
+            --Delete the pipe if there is only one branch left in the pipe
+            --and we are going to delete that.
+            !!ce = !!ce.owner
+            delete PIPE
+          else
+            delete BRAN
+          endif
+          !!ce = !comp
+        endif
+      enddo
+    endif
+  enddo
+  !!ce = !currentElement
+  handle any
+  endhandle
+  unenhance all
+  !this.undoObject.endUndoable()
+
+endmethod
+
+--------------------------------------------------------------------------------------
+--
+-- Method: .addIdBranches()
+--
+-- Description:
+--     Adds selected pipes from graphical view into the branches array.
+--
+-- Return: N/A
+--
+--------------------------------------------------------------------------------------
+
+define method .addIdBranches(!element is DBREF)
+
+  if !element.type.eq('BRAN') then
+    !selectedBranch = !element
+  elseif !element.owner.type.eq('BRAN') then
+    !selectedBranch = !element.owner
+  else
+    return
+  endif
+
+  if !this.branches.find(!selectedBranch).size().gt(0) then
+    !answer = !!alert.confirm('Do you want to remove the branch from the merge operation?')
+    if !answer.eq('YES') then
+      !this.branches.remove(!this.branches.find(!selectedBranch)[1])
+      unenhance $!selectedBranch members
+      handle any
+      endhandle
+      unenhance il tube of $!selectedBranch
+      handle any
+      endhandle
+      do !a values !selectedBranch.members
+        unenhance il tube of $!a
+        handle any
+        endhandle
+      enddo
+    endif
+  else
+    !this.branches.append(!selectedBranch)
+    enhance $!selectedBranch members COLOUR RED
+    handle any
+    endhandle
+    enhance il tube of $!selectedBranch COLOUR RED
+    handle any
+    endhandle
+    do !a values !selectedBranch.members
+      enhance il tube of $!a COLOUR RED
+      handle any
+      endhandle
+    enddo
+  endif
+
+endmethod
+
+--------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------

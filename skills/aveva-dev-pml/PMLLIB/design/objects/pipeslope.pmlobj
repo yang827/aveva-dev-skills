@@ -1,0 +1,1157 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            pipeSlope.pmlobj
+--   Type:          Object Definition
+--   Group:         piping
+--   Keyword:       PIPE
+--   Module:        design
+--   Replaces:
+--
+-- Author:          Simon Bailey
+-- Created:         17/06/2010 16:11:29
+--
+-- Description:     Object for applying a slope type an existing pipe
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  adjustConnectedBranches(ARRAY,PIPESLOPEBRANCH) -                   After initial adjustment of a branch's leg positions, adjusts
+--  adjustLegPositions()             -                   After the initial calculation of branch leg positions, checks for fixed head and tail
+--  alignComponentPositions()        -                   Adjust tee positions to align them
+--  applySlopes()                    -                   Applies the pre-calculated slope to the whole pipe
+--  calculateLegPositions()          -                   Perform an initial calculation of branch leg positions
+--  calculateTeeRotationOffset(PIPESLOPECOMPONENT,PIPESLOPEBRANCH) REAL                For a tee with p3 vertical, calculate how much the arrive or leave
+--  checkPipe()                      -                   Generates warning messages to notify the user of conditions
+--  findBranches()                   -                   Find all the branches and branch legs for a pipe
+--  findConnectedComponents(DBREF,ARRAY,ARRAY) -                   Finds which components in a branch are connected
+--  getBranchIndex(DBREF)            REAL                Given a branch, returns its index in the branches array
+--  getBranchLeg(REAL)               PIPESLOPEBRANCHLEG  Return a copy of a single branch leg
+--  getBranchLegIndex(DBREF,DBREF)   REAL                Given an element in a branch, returns the appropriate branch leg index
+--  getBranchLegs()                  ARRAY               Returns all the branch legs in all branches of the pipe
+--  getBranchRefs()                  ARRAY               Returns an array of DbRefs for all the branches in the current pipe
+--  getBranches()                    ARRAY               Returns an array containing all the pipe slope branches for the pipe
+--  getDefaultAngle()                REAL                Find the default angle
+--  getNumberOfBranchLegs()          REAL                Returns the total number of branch legs
+--  pipeSlope(DBREF,REAL,BOOLEAN,BOOLEAN) -                   Constructor method
+--  reconnectAll()                   -                   Reconnect branches and components
+--  setBranchLegAnchorComponent(PIPESLOPEBRANCHLEG,REAL,REAL) -                   Anchor a specified component on the branch leg
+--  setBranchLegAnchorDistance(PIPESLOPEBRANCHLEG,REAL,REAL) -                   Anchor a specified distance along the branch leg
+--  setBranchLegAnchorFromElement(PIPESLOPEBRANCHLEG,REAL,DBREF) -                   Anchors relative to a specified element
+--  setBranchLegAnchorFromMethod(PIPESLOPEBRANCHLEG,REAL,STRING) -                   Anchor relative to the specified part of the anchor element
+--  setBranchLegAnchorOffset(PIPESLOPEBRANCHLEG,REAL,REAL) -                   Set the distance between the anchor and any specified element
+--  setBranchLegAnchorPoint(PIPESLOPEBRANCHLEG,REAL,STRING) -                   Anchor the specified part of the anchor component
+--  setBranchLegAnchorType(PIPESLOPEBRANCHLEG,REAL,REAL,STRING) -                   Set the type of anchoring
+--  setBranchLegAngle(PIPESLOPEBRANCHLEG,REAL) -                   Set the angle for the branch slope
+--  setBranchLegFixedHorizontal(PIPESLOPEBRANCHLEG,BOOLEAN) -                   Force a branch leg to be horizontal
+--  setForwardsMode(BOOLEAN)         -                   Sets the calculation/update direction to forwards
+--  updateBranches(PIPESLOPEBRANCHLEG,REAL) -                   After a branch leg is modified, update the rest of the pipe
+--  updateConnectedBranches(ARRAY,PIPESLOPEBRANCH) -                   After a branch is modified, update connected branches
+--
+------------------------------------------------------------------------
+
+
+define object PIPESLOPE
+
+  member .pipe is DBREF
+  member .angle is REAL
+  member .branchRefs is ARRAY            $* Array containing the branch references in order
+  member .branches is ARRAY              $* Array of PIPESLOPEBRANCHES
+  member .branchIndices is ARRAY         $* Maps leg number to branch number
+  member .legIndices is ARRAY            $* Map leg number to leg index within branch
+  member .calculateForwards is BOOLEAN
+
+endobject
+
+------------------------------------------------------------------------
+--
+-- Method:      .pipeSlope
+--
+-- Description: Constructor method
+--
+-- Method Type: Procedure
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--  1   R      DBREF       Pipe to apply slope to
+--  2   RW     REAL        Angle
+--  3   R      BOOLEAN     Calculate from head to tail or vice versa
+--  4   R      BOOLEAN     If set, attempt to read the default angle from the catalogue
+--
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pipeSlope(!pipe is DBREF, !angle is REAL, !calculateForwards is BOOLEAN, !useDefaultAngle is BOOLEAN)
+
+  -- Ensure global variables are loaded
+   if (undefined(!!pipeSlopeUtilities)) then
+     !!pipeSlopeUtilities = object PIPESLOPEUTILITIES()
+     !!pipeSlopeMessages = object PIPESLOPEMESSAGES()
+   endif
+
+  !this.calculateForwards = !calculateForwards
+  !this.pipe = !pipe
+
+  !this.findBranches()
+
+  if (!useDefaultAngle) then
+    !defaultAngle = !this.getDefaultAngle()
+    if (!defaultAngle.set()) then
+      !angle = !defaultAngle
+    endif
+  endif
+
+  !this.angle = !angle
+
+  !this.calculateLegPositions()
+  !this.adjustLegPositions()
+  !this.checkPipe()
+
+endmethod
+-- End of method .pipeSlope
+
+------------------------------------------------------------------------
+--
+-- Method:      .getDefaultAngle
+--
+-- Description: constructor method
+--
+-- Method Type: Procedure
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+-- [Data Type] [Description]
+--  REAL       The default angle
+--
+------------------------------------------------------------------------
+define method .getDefaultAngle() is REAL
+
+  -- Create an array containing the pipe and branches
+  !elements[1] = !this.pipe
+  !elements.appendArray(!this.branchRefs)
+
+  -- Check the array for the first element that has a valid default slope or whose
+  -- specification has a valid default slope
+  do !element values !elements
+    -- Check the pipe/branch for a slope reference and default slope
+    !slopeRef = !element.sloRef
+    if (!slopeRef.set()) then
+      return !slopeRef.defSlope
+    endif
+
+    -- Check the pipe/branch specification for a slope reference and default slope
+    !spec = !element.pspec
+    if (!spec.set()) then
+      !slopeRef = !spec.sloRef
+      if (!slopeRef.set()) then
+        return !slopeRef.defSlope
+      endif
+    endif
+  enddo
+
+  return REAL()
+
+endmethod
+-- End of method .getDefaultAngle
+
+------------------------------------------------------------------------
+--
+-- Method:      .findBranches
+--
+-- Description: Find all the branches and branch legs for a pipe
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .findBranches()
+
+  !this.branchRefs = !!collectAllFor('BRAN', '', !this.pipe)
+
+  !this.branches = ARRAY()
+  !this.legIndices = ARRAY()
+
+  !legNumber = 1
+  do !branchRef values !this.branchRefs
+    !this.branches.append(object PIPESLOPEBRANCH(!branchRef, !legNumber))
+  enddo
+
+  -- Build an array to map from a leg index within the total number of legs to a leg
+  -- index within a branch.
+  !branchIndex = 1
+  do !branch values !this.branches
+    do !legIndex from 1 to !branch.getNumberOfLegs()
+      !this.legIndices.append(!legIndex)
+      !this.branchIndices.append(!branchIndex)
+    enddo
+    !branchIndex = !branchIndex + 1
+  enddo
+
+endmethod
+-- End of method .findBranches
+
+------------------------------------------------------------------------
+--
+-- Method:      .calculateLegPositions
+--
+-- Description: Perform an initial calculation of branch leg positions
+--              without attempting to constrain the head/tail position.
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .calculateLegPositions()
+
+  do !branch value !this.branches
+    !offset = 0
+    !branch.calculateLegPositions(!this.angle, !offset, !this.calculateForwards)
+   enddo
+
+endmethod
+-- End of method calculateLegPositions
+
+------------------------------------------------------------------------
+--
+-- Method:      .adjustLegPositions
+--
+-- Description: After the initial calculation of branch leg positions, checks for fixed head and tail
+--              positions and attempts to reposition legs appropriately.
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .adjustLegPositions()
+
+  -- First create a list of branches that haven't been updated yet
+  !branchList = !this.branchRefs
+
+  !branchIndex = 1
+  do !branch value !this.branches
+
+    if (!branchList[!branchIndex].set()) then
+
+      -- Remove branch from list
+      !branchList[!branchIndex] = object DBREF()
+
+      -- Adjust leg and component positions for this branch
+      !branch.adjustLegPositions(!this.calculateForwards)
+      !this.adjustConnectedBranches(!branchList, !branch)
+      !branchIndex = !branchIndex + 1
+    endif
+  enddo
+
+endmethod
+-- End of method adjustLegPositions
+
+------------------------------------------------------------------------
+--
+-- Method:      .adjustConnectedBranches
+--
+-- Description: After initial adjustment of a branch's leg positions, adjusts
+--              any connected branches
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type]       [Description]
+--  1   RW     ARRAY             List of branches that have not yet been adjusted
+--  2   R      PIPESLOPEBRANCH   Branch whose connected branches need adjusting
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .adjustConnectedBranches(!branchList is ARRAY, !sourceBranch is PIPESLOPEBRANCH)
+
+  !componentsConnectedFrom = ARRAY()
+  !componentsConnectedTo = ARRAY()
+
+  !this.findConnectedComponents(!sourceBranch.getBranch(), !componentsConnectedFrom, !componentsConnectedTo)
+
+  !componentIndex = 0
+  do !connectedTo value !componentsConnectedTo
+    !componentIndex = !componentIndex + 1
+    !connectedBranch = !connectedTo.getBranch()
+    !connectedBranchIndex = !this.branchRefs.findFirst(!connectedBranch)
+    !notHandled = !branchList.findFirst(!connectedBranch).set()
+
+    -- If the branch has not been handled yet, adjust it to deal with any fixed points
+    if (!notHandled) then
+      !branchList[!connectedBranchIndex] = object DBREF()
+      -- Adjust branch legs for connected branch to deal with any fixed points
+      !this.branches[!connectedBranchIndex].adjustLegPositions(!this.calculateForwards)
+    endif
+
+    -- If the branch has fixed ends or has already been offset it must be shifted from the connection point, otherwise the
+    -- complete branch can be offset.
+    !offsetBranch = false
+    if (!notHandled) then
+      !offsetBranch = !this.branches[!connectedBranchIndex].isStartFixed().not()
+      !offsetBranch = !offsetBranch and !this.branches[!connectedBranchIndex].isFinishFixed().not()
+    endif
+
+    !connectedFrom = !componentsConnectedFrom[!componentIndex]
+    !offset = !sourceBranch.getComponentOffset(!connectedFrom, !this.calculateForwards)
+    !offset = !offset + !this.calculateTeeRotationOffset(!connectedFrom, !sourceBranch)
+
+    if (!offsetBranch) then
+      -- Find the offset and set the connected branch to match
+      !this.branches[!connectedBranchIndex].setComponentOffset(!connectedTo, !offset, !this.calculateForwards)
+    else $* Shift branch
+      !this.branches[!connectedBranchIndex].repositionBranch(!connectedTo, !offset, !this.calculateForwards)
+    endif
+
+  enddo
+endmethod
+-- End of method .adjustedConnectedBranches
+
+------------------------------------------------------------------------
+--
+-- Method:      .findConnectedComponents
+--
+-- Description: Finds which components in a branch are connected to components in
+--              other branches on the same pipe
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type]       [Description]
+--  1   R      PIPESLOPEBRANCH   Branch to find connections for
+--  2   RW     ARRAY             Returns the connected components in the source branch
+--  3   RW     ARRAY             Returns the connected components in other branches
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .findConnectedComponents(!sourceBranch is DBREF, !componentsConnectedFrom is ARRAY, !componentsConnectedTo is ARRAY)
+
+  -- Find connections between this branch and other branches (on this pipe only)
+  !connectionsFrom = ARRAY()
+  !connectionsTo = ARRAY()
+
+  -- Find components with CREF set to a component on this pipe
+  !components = !!collectAllFor('', 'CREF ne NULREF and PIPE of CREF eq $!this.pipe', !sourceBranch)
+  do !component value !components
+    !connectionsFrom.append(object PIPESLOPECOMPONENT(!component, false))
+    !connectionsTo.append(!component.cref)
+  enddo
+
+  -- Check head and tail
+  if (!sourceBranch.href.set()) then
+    !connectionsFrom.insert(1, object PIPESLOPECOMPONENT(!sourceBranch, true))
+    !connectionsTo.insert(1, !sourceBranch.href)
+  endif
+  if (!sourceBranch.tref.set()) then
+    !connectionsFrom.insert(1, object PIPESLOPECOMPONENT(!sourceBranch, false))
+    !connectionsTo.insert(1, !sourceBranch.tref)
+  endif
+
+  -- Create arrays of connected components
+  !findBranch = object EXPRESSION('BRANCH')
+  do !connectionIndex indices !connectionsTo
+    -- Find owning branch
+    !connectedTo = !connectionsTo[!connectionIndex]
+    !toBranchRef = !findBranch.evaluate(!connectedTo)
+
+    -- Ignore connections that don't belong to the current pipe
+     skip if (!toBranchRef.unset() or !toBranchRef.owner ne !this.pipe)
+
+    !end = STRING()
+    if (!connectedTo.type eq 'BRAN') then
+      -- Find whether connection is to the head or tail of this branch
+      !connectedFrom = !connectionsFrom[!connectionIndex]
+      if (!connectedFrom.isBranch()) then
+        if (!connectedFrom.isHead()) then
+          !end = !connectedFrom.dbRef().hend
+        else
+          !end = !connectedFrom.dbRef().tend
+        endif
+      else
+        !end = !connectedFrom.dbRef.cend
+      endif
+    endif
+    !componentsConnectedFrom.append(!connectionsFrom[!connectionIndex])
+    !componentsConnectedTo.append(object PIPESLOPECOMPONENT(!connectedTo, !end eq 'HEAD'))
+  enddo
+
+endmethod
+-- End of method .findConnectedComponents
+
+------------------------------------------------------------------------
+--
+-- Method:      .checkPipe
+--
+-- Description: Generates warning messages to notify the user of conditions
+--              likely to cause problems when applying the slope
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .checkPipe()
+
+  -- Look for a valid slope reference on all branches. Start by checking the owning pipe
+  !slopeRef = object DBREF()
+  if (!this.pipe.sloRef.badRef()) then
+    !spec = !this.pipe.pspec
+    if (not (!spec.badRef())) then
+      !slopeRef = !spec.sloRef
+    endif
+
+    if (!slopeRef.badRef()) then
+      -- Check all branches
+      do !branchRef value !this.branchRefs
+        if (!branchRef.sloRef.badRef() and (!branchRef.pspec.badRef() or !branchRef.pspec.sloRef.badRef())) then
+          !message = 'There is no valid slope reference for branch ' + !branchRef.flnm + '.'
+          !!pipeSlopeMessages.addWarning(!message)
+        endif
+      enddo
+    endif
+  endif
+
+  -- Check for bends/elbows that are not 90 degrees
+  if (!!collectAllFor('BEND ELBO', 'ANGLE NE 90', !this.pipe).size() gt 0) then
+    !!pipeSlopeMessages.addWarning('The pipe contains elbows or bends that are not at 90 degrees')
+  endif
+
+  -- Check legs
+  do !branch value !this.branches
+    !branch.checkBranchLegs()
+  enddo
+
+endmethod
+-- End of method .checkPipe
+
+------------------------------------------------------------------------
+--
+-- Method:      .getBranches
+--
+-- Description: Returns an array containing all the pipe slope branches for the
+--              current pipe
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .getBranches() is ARRAY
+
+  return !this.branches
+
+endmethod
+-- End of method .getBranches
+
+------------------------------------------------------------------------
+--
+-- Method:      .getBranchRefs
+--
+-- Description: Returns an array DbRefs for all the branches in the current pipe
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .getBranchRefs() is ARRAY
+
+  return !this.branchRefs
+
+endmethod
+-- End of method .getBranchRefs
+
+------------------------------------------------------------------------
+--
+-- Method:      .getBranchIndex
+--
+-- Description: Given a branch, returns its index in the branches array
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--  1   r     DBREF        Branch reference
+-- Return:
+-- [Data Type] [Description]
+--  REAL        Index to branch
+--
+------------------------------------------------------------------------
+
+define method .getBranchIndex(!branch is DBREF) is REAL
+
+  !index = !this.branchRefs.findFirst(!branch)
+  if (!index.unset()) then
+    !index = 0
+  endif
+  return !index
+
+endmethod
+-- End of method .getBranchIndex
+
+------------------------------------------------------------------------
+--
+-- Method:      .getBranchLegIndex
+--
+-- Description: Given an element in a branch, returns the appropriate branch leg index
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--  1   R     DBREF        Branch reference
+--  2   R     DBREF        Element to locate
+-- Return:
+-- [Data Type] [Description]
+--  REAL        Index to branch or zero if not found
+--
+------------------------------------------------------------------------
+
+define method .getBranchLegIndex(!branchRef is DBREF, !element is DBREF) is REAL
+
+  !legIndex = 0
+  do !branch values !this.branches
+    if (!branch.getBranch() eq !branchRef) then
+      !legIndex = !legIndex + !branch.getBranchLegIndex(!element)
+      return !legIndex
+    else
+      !legIndex = !legIndex + !branch.getNumberOfLegs()
+    endif
+  enddo
+
+  return 0
+
+endmethod
+-- End of method getBranchLegIndex
+
+------------------------------------------------------------------------
+--
+-- Method:      .getNumberOfBranchLegs
+--
+-- Description: Returns the total number of branch legs
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--  REAL        Index to branch
+--
+------------------------------------------------------------------------
+
+define method .getNumberOfBranchLegs() is REAL
+
+  return !this.branchIndices.size()
+
+endmethod
+-- End of method .getNumberOfBranchLegs
+
+------------------------------------------------------------------------
+--
+-- Method:      getBranchLegs
+--
+-- Description: Returns all the branch legs in all branches of the pipe
+--
+-- Method Type: Procedure
+--
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+-- ARRAY       Array of branch legs
+------------------------------------------------------------------------
+define method .getBranchLegs() is ARRAY
+
+  !branchLegs = ARRAY()
+  do !branch value !this.branches
+    !branchLegs.appendArray(!branch.getBranchLegs())
+  enddo
+  return !branchLegs
+endmethod
+-- End of method .getBranchLegs
+
+------------------------------------------------------------------------
+--
+-- Method:      .getBranchLeg
+--
+-- Description: Return a copy of a single branch leg
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--  1   R      REAL        Leg index
+-- Return:
+-- [Data Type] [Description]
+-- PIPESLOPEBRANCHLEG    Branch leg
+--
+------------------------------------------------------------------------
+
+define method .getBranchLeg(!legIndex is REAL) is PIPESLOPEBRANCHLEG
+
+  if (!legIndex gt 0 and !legIndex le !this.branchIndices.size()) then
+    !branchIndex = !this.branchIndices[!legIndex]
+    !branchLegIndex = !this.legIndices[!legIndex]
+    return !this.branches[!branchIndex].getBranchLeg(!branchLegIndex)
+  else
+    return object PIPESLOPEBRANCHLEG()
+  endif
+endmethod
+-- End of method .getBranchLeg
+
+------------------------------------------------------------------------
+--
+-- Method:      .setForwardsMode
+--
+-- Description: Sets the calculation/update direction to forwards
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .setForwardsMode(!forwards is BOOLEAN)
+
+  !this.calculateForwards = !forwards
+
+endmethod
+-- End of method .setForwardsMode
+
+------------------------------------------------------------------------
+--
+-- Method:      .applySlopes
+--
+-- Description: Applies the pre-calculated slope to the whole pipe
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .applySlopes()
+
+  -- Move components
+  do !branch values !this.branches
+    do !branchLeg values !branch.branchLegs
+      !branchLeg.applyslope()
+    enddo
+  enddo
+
+  -- Rotate components
+  do !branch values !this.branches
+    do !branchLeg values !branch.branchLegs
+      !branchLeg.rotateComponents()
+    enddo
+  enddo
+
+  !this.alignComponentPositions()
+  !this.reconnectAll()
+
+  -- Reset all branches
+  do !branch values !this.branches
+    do !branchLeg values !branch.branchLegs
+      !branchLeg.reset()
+    enddo
+  enddo
+
+ !this.checkPipe()
+
+endmethod
+-- End of method .applySlopes
+
+
+------------------------------------------------------------------------
+--
+-- Method:      .alignComponentPositions
+--
+-- Description: Adjust tee positions to align them
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .alignComponentPositions()
+
+   var !initialMode mode
+  !initialCE = !!ce
+  forward
+
+  !componentRefs = !!collectAllFor('TEE', '', !this.pipe)
+
+  do !componentRef values !componentRefs
+
+    -- Find whether p3 is vertical
+    skip if (!!pipeSlopeUtilities.isDirectionVertical(!componentRef.pDirection[3]).not())
+
+    -- Find the position of the point to move with respect to and the direction to move in
+    !!ce = !componentRef
+    if (!componentRef.arrive eq 3) then
+      -- Find position of next component or the branch head
+      if (!componentRef.sequ eq 1) then
+        !pos = !componentRef.owner.hpos
+        !pos = !pos.wrt( /* )
+        !dir = !componentRef.owner.hdir
+      else
+        !pos = lpos of prev wrt /*
+        !dir = !componentRef.ldir
+      endif
+    elseif (!componentRef.leave eq 3) then
+
+      -- Find position of next component or the branch tail
+      if (!componentRef.sequ ge !componentRef.owner.mcount) then
+        !pos = !componentRef.owner.tpos
+        !pos = !pos.wrt( /* )
+        !dir = !componentRef.owner.tdir
+      else
+        !pos = apos of next wrt /*
+        !dir = !componentRef.adir
+      endif
+    else
+      skip if (!componentRef.cref.badref())
+      if (!componentRef.cend eq 'HEAD') then
+        !pos = !componentRef.cref.hpos
+        !pos = !pos.wrt( /* )
+        !dir = !componentRef.ldir
+      else
+        !pos = !componentRef.cref.tpos
+        !pos = !pos.wrt( /* )
+        !dir = !componentRef.ldir
+      endif
+    endif
+
+    -- Calculate how far to move the component (if necessary)
+    !p3pos = !componentRef.ppos[3].wrt( /* )
+    !pos.up = !p3pos.up
+
+    if (!pos ne !p3pos) then
+      !adir = !componentRef.adir.wrt( /* )
+      !horzDir = !p3pos.direction(!pos)
+      !angle = !horzDir.angle(!adir)
+      !distance = !p3pos.distance(!pos)
+      !distance = !distance / cos(!angle)
+      move $!<adir> dist $!<distance>
+    endif
+
+  enddo
+
+  !!ce = !initialCE
+  $!<initialMode>
+
+endmethod
+-- End of method .alignComponentPositions
+
+------------------------------------------------------------------------
+--
+-- Method:      .reconnectAll
+--
+-- Description: Reconnect branches and components
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .reconnectAll()
+
+  !initialCE = !!ce
+  var !initialMode mode
+  forwards
+
+  -- Reconnect all branches but only within this pipe
+  !findPipe = object EXPRESSION('PIPE')
+  do !branch value !this.branches
+    !branchRef = !branch.getBranch()
+
+    -- Connect the head
+    !headRef = !branchRef.href
+    if (!headRef.set()) then
+      if (!findPipe.evaluate(!headRef) eq !this.pipe) then
+        !!ce = !branchRef
+          connect ph to $!headRef
+      endif
+    endif
+
+    -- Connect the tail
+    !tailRef = !branchRef.tref
+    if (!tailRef.set()) then
+      if (!findPipe.evaluate(!tailRef) eq !this.pipe) then
+        !!ce = !branchRef
+        connect pt to $!tailRef.name
+      endif
+    endif
+
+    !branch.reconnectComponents()
+  enddo
+
+  !!ce = !initialCE
+  $!<initialMode>
+
+endmethod
+-- End of method .reconnectAll
+
+------------------------------------------------------------------------
+--
+-- Method:      .setBranchLegFixedHorizontal
+--
+-- Description: Force a branch leg to be horizontal
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .setBranchLegFixedHorizontal(!branchLeg is PIPESLOPEBRANCHLEG, !fixedHorizontal is BOOLEAN)
+
+  !branchLeg.setFixedHorizontal(!fixedHorizontal, !this.calculateForwards)
+
+endmethod
+-- End of method .setBranchLegFixedHorizontal
+
+------------------------------------------------------------------------
+--
+-- Method:      .setBranchLegAnchorType
+--
+-- Description: Set the type of anchoring
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .setBranchLegAnchorType(!branchLeg is PIPESLOPEBRANCHLEG, !legIndex is REAL, !anchorNumber is REAL, !anchorType is STRING)
+
+  !branchIndex = !this.branchIndices[!legIndex]
+  !branchLegIndex = !this.legIndices[!legIndex]
+  !this.branches[!branchIndex].setBranchLegAnchorType(!branchLeg, !branchLegIndex, !anchorNumber, !anchorType)
+
+endmethod
+-- End of method .setBranchLegAnchorType
+
+------------------------------------------------------------------------
+--
+-- Method:      .setBranchLegAnchorFromElement
+--
+-- Description: Anchors relative to a specified element
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--  1   R      PIPESLOPEBRANCHLEG   The branch leg to act upon
+--  2   R      REAL                 Index to the anchor number
+--  3   R      REAL                 Element to anchor with respect to
+--
+-- Return:
+-- [Data Type] [Description]
+------------------------------------------------------------------------
+define method .setBranchLegAnchorFromElement(!branchLeg is PIPESLOPEBRANCHLEG, !anchorNumber is REAL, !element is DBREF)
+
+  !branchLeg.setAnchorFromElement(!anchorNumber, !element)
+
+endmethod
+-- End of method setBranchLegAnchorFromElement
+
+------------------------------------------------------------------------
+--
+-- Method:      .setBranchLegAnchorOffset
+--
+-- Description: Set the distance between the anchor and any specified element
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--  1   R      PIPESLOPEBRANCHLEG   The branch leg to act upon
+--  2   R      REAL                 Anchor method
+--  3   R      REAL                 Offset distance
+--
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setBranchLegAnchorOffset(!branchLeg is PIPESLOPEBRANCHLEG, !anchorNumber is REAL, !offset is REAL)
+
+  !branchLeg.setAnchorOffset(!anchorNumber, !offset)
+
+endmethod
+-- End of method .setBranchLegAnchorOffset
+
+------------------------------------------------------------------------
+--
+-- Method:      .setBranchLegAnchorComponent
+--
+-- Description: Anchor a specified component on the branch leg
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--  1   R      PIPESLOPEBRANCHLEG   The branch leg to act upon
+--  2   R      REAL                 Index to the anchor number
+--  3   R      REAL                 Index within branch of component to anchor
+--
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setBranchLegAnchorComponent(!branchLeg is PIPESLOPEBRANCHLEG, !anchorNumber is REAL, !componentIndex is REAL)
+
+  !branchLeg.setAnchorComponent(!anchorNumber, !componentIndex)
+
+endmethod
+-- End of method .setBranchLegAnchorComponent
+
+------------------------------------------------------------------------
+--
+-- Method:      .setBranchLegAnchorDistance
+--
+-- Description: Anchor a specified distance along the branch leg
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--  1   R      PIPESLOPEBRANCHLEG   The branch leg to act upon
+--  2   R      REAL                 Index to the anchor number
+--  3   R      REAL                 Distance along leg
+--
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setBranchLegAnchorDistance(!branchLeg is PIPESLOPEBRANCHLEG, !anchorNumber is REAL, !distance is REAL)
+
+  !branchLeg.setAnchorDistance(!anchorNumber, !distance)
+
+endmethod
+-- End of method .setBranchLegAnchorDistance
+
+------------------------------------------------------------------------
+--
+-- Method:      .setBranchLegAnchorPoint
+--
+-- Description:  Anchor the specified part of the anchor component
+--
+-- Method Type: Procedure
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--  1   R      PIPESLOPEBRANCHLEG   The branch leg to act upon
+--  2   R      REAL                 Index to the anchor number
+--  3   R      STRING                 Anchor point
+--
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setBranchLegAnchorPoint(!branchLeg is PIPESLOPEBRANCHLEG, !anchorNumber is REAL, !method is STRING)
+
+  !branchLeg.setAnchorPoint(!anchorNumber, !method)
+
+endmethod
+-- End of method .setBranchLegAnchorPoint
+
+------------------------------------------------------------------------
+--
+-- Method:      .setBranchLegAnchorFromMethod
+--
+-- Description: Anchor relative to the specified part of the anchor element
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--  1   R      PIPESLOPEBRANCHLEG   The branch leg to act upon
+--  2   R      REAL                 Index to the anchor number
+--  3   R      STRING               Anchor method
+--
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setBranchLegAnchorFromMethod(!branchLeg is PIPESLOPEBRANCHLEG, !anchorNumber is REAL, !method is STRING)
+
+  !branchLeg.setAnchorFromMethod(!anchorNumber, !method)
+
+endmethod
+-- End of method .setBranchLegAnchorFromMethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .updateBranches
+--
+-- Description: After a branch leg is modified, update the rest of the
+--              pipe to match
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+--  1   R      PIPESLOPEBRANCHLEG   The branch leg that has changed
+--  2   R      REAL        Index to the branch leg
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .updateBranches(!branchLeg is PIPESLOPEBRANCHLEG, !legIndex is REAL)
+  -- Update the current branch
+  !branchIndex = !this.branchIndices[!legIndex]
+  !branchLegIndex = !this.legIndices[!legIndex]
+  !this.branches[!branchIndex].updateBranchLegs(!branchLeg, !branchLegIndex)
+
+  -- Update connected branches, ensuring each branch is only altered once.
+  -- First create a list of branches that haven't been updated yet
+  !branchList = ARRAY()
+  do !branch values !this.branches
+    !branchList.append(!branch.getBranch())
+  enddo
+
+  -- Remove the current branch from the list and then update connected branches
+  !branchList[!branchIndex] = object DBREF()
+  !this.updateConnectedBranches(!branchList, !this.branches[!branchIndex])
+
+endmethod
+-- End of method .updateBranches
+
+------------------------------------------------------------------------
+--
+-- Method:      .updateConnectedBranches
+--
+-- Description: After a branch is modified, update the rest of the
+--              pipe to match
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type]       [Description]
+--  1   R      ARRAY            List of branches available for modification
+--  2   R      PIPESLOPEBRANCH
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .updateConnectedBranches(!branchList is ARRAY, !modifiedBranch is PIPESLOPEBRANCH)
+
+  -- Loop through the branches on the list, looking for those connected to
+  -- the modified branch. An unset entry in the list indicates that branch has
+  -- already been updated.
+
+  !modifiedBranchRef = !modifiedBranch.getBranch()
+
+  -- Find connections between this branch and other branches (on this pipe only)
+  !connectionsFrom = ARRAY()
+  !connectionsTo = ARRAY()
+  !components = !!collectAllFor('', 'CREF ne NULREF and PIPE of CREF eq $!this.pipe', !modifiedBranchRef)
+  do !component value !components
+    !connectionsFrom.append(object PIPESLOPECOMPONENT(!component, false))
+    !connectionsTo.append(!component.cref)
+  enddo
+
+  if (!modifiedBranchRef.href.set()) then
+    !connectionsFrom.insert(1, object PIPESLOPECOMPONENT(!modifiedBranchRef, true))
+    !connectionsTo.insert(1, !modifiedBranchRef.href)
+  endif
+  if (!modifiedBranchRef.tref.set()) then
+
+    !connectionsFrom.insert(1, object PIPESLOPECOMPONENT(!modifiedBranchRef, false))
+    !connectionsTo.insert(1, !modifiedBranchRef.tref)
+  endif
+
+  if (!this.calculateForwards.not()) then
+    !connectionsFrom.invert()
+    !connectionsTo.invert()
+  endif
+
+  do !connectionIndex indices !connectionsTo
+
+    -- Find owning branch
+    !toBranchRef = object DBREF()
+    !connectedTo = !connectionsTo[!connectionIndex]
+    if (!connectedTo.type eq 'BRAN') then
+      !toBranchRef = !connectedTo
+    elseif (!connectedTo.owner.type eq 'BRAN') then
+      !toBranchRef = !connectedTo.owner
+    endif
+
+    -- Update the owning branch only if it is in the branch list
+    skip if (!toBranchRef.unset())
+    !toBranchIndex = !branchList.findFirst(!toBranchRef)
+    if (!toBranchIndex.set()) then
+
+      -- Find !componentOffset
+
+      !componentOffset = !modifiedBranch.getComponentOffset(!connectionsFrom[!connectionIndex], !this.calculateForwards)
+
+      !end = STRING()
+      if (!connectedTo.type eq 'BRAN') then
+        -- Find whether connection is to the head or tail of this branch
+        !connectedFrom = !connectionsFrom[!connectionIndex]
+        if (!connectedFrom.isBranch()) then
+          if (!connectedFrom.isHead()) then
+            !end = !connectedFrom.dbRef().hend
+          else
+            !end = !connectedFrom.dbRef().tend
+          endif
+        else
+          !end = !connectedFrom.dbRef.cend
+        endif
+      endif
+
+      !branchComponent = object PIPESLOPECOMPONENT(!connectedTo, !end eq 'HEAD')
+      !this.branches[!toBranchIndex].repositionBranch(!branchComponent, !componentOffset, !this.calculateForwards)
+
+      !branchList[!toBranchIndex] = object DBREF()
+      !this.updateConnectedBranches(!branchList, !this.branches[!toBranchIndex])
+    endif
+
+  enddo
+
+endmethod
+-- End of method .updateConnectedBranches
+
+------------------------------------------------------------------------
+--
+-- Method:      .setBranchLegAngle
+--
+-- Description: Set the angle for the branch slope
+--
+-- Method Type: Procedure
+--
+-- [#] [R/RW] [Data Type] [Description]
+--  1   R      PIPESLOPEBRANCHLEG   The branch leg
+--  2   R      REAL                 The angle
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .setBranchLegAngle(!branchLeg is PIPESLOPEBRANCHLEG, !angle is REAL)
+
+  --  First just store the angle on the leg
+  !branchLeg.setAngle(!angle)
+
+  --  Recalculate the leg offset and drop
+  !branchLeg.setAngle(!angle, !this.calculateForwards)
+
+endmethod
+-- End of method .setBranchLegAngle
+------------------------------------------------------------------------
+--
+-- Method:      .calculateTeeRotationOffset
+--
+-- Description: For a tee with p3 vertical, calculate how much the arrive or leave
+--              points move when the tee is rotated.
+--
+-- Method Type: Procedure
+--
+-- [#] [R/RW] [Data Type] [Description]
+--  1   R      PIPESLOPEBRANCHLEG   The branch leg
+--  2   R      REAL                 The angle
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .calculateTeeRotationOffset(!component is PIPESLOPECOMPONENT, !branch is PIPESLOPEBRANCH) is REAL
+
+  -- Adjustment is only necessary for tees where p3 is vertical and is the arrive or leave
+  !componentRef = !component.dbRef()
+
+  if (!componentRef.type ne 'TEE' or (!componentRef.arrive ne 3 and !componentRef.leave ne 3)) then
+    return 0
+  endif
+
+  if (not !!pipeSlopeUtilities.isDirectionVertical(!componentRef.pDirection[3])) then
+    return 0
+  endif
+
+  -- Find which ppoint the branch is connected to
+  !connection = 6 - !componentRef.arrive - !componentRef.leave
+
+  -- Find distance between p0 and connection point
+  !position = !componentRef.pos.wrt( /* )
+  !connectedPos = !componentRef.ppos[!connection].wrt( /* )
+
+  -- Find the current angle and distance
+  !currentAngle = !!pipeSlopeUtilities.angleToHorizontal(!position, !connectedPos)
+  !dist = !position.distance(!connectedPos)
+
+  !branchLeg = !branch.findHorizontalLeg(!componentRef)
+  !newAngle = !branchLeg.getAdjustedAngle()
+
+  -- Find the offset (using the sine rule)
+  !angleChange  = !newAngle - !currentAngle
+  !offset = !dist * !angleChange.sine() / !newAngle.cosine()
+
+  return !offset
+
+endmethod
+-- End of method .calculateTeeRotationOffset

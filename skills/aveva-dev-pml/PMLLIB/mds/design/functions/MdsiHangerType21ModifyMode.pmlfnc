@@ -1,0 +1,531 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+----------------------------------------------------------------------
+-- File:    MdsiHangerType21ModifyMode.pmlfnc
+--   Type:    Function Definition
+--   Group:   Multi Discipline Supports Application
+--     Keyword:   mds
+--   Module:    design
+--   Replaces:
+--
+-- Author:    A.bOUDJNAH
+-- Created:   Tue Mar 20 2002
+--
+--
+-- Description:
+-- Initialisation for form FH01
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         STRING      'Modify' is passed if the support already exists
+--     2     R         STRING      Name of support as a string
+--     3     R         STRING      Alias name
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsiHangerType21ModifyMode(!name is STRING, !attaName is STRING, !textName is STRING, !styp is STRING, !initForm is STRING, !callingForm is FORM) is MDSINTERFACESUPPORT
+
+  --dun1218 set the hanger type 21 support object and populate the support.rest.beamRefArray member as this is needed in the form.setgadget() method - start
+  !!mdsHangerType21.support = object MDSINTERFACESUPPORT(!attaName.dbref())
+  !!mdsHangerType21.support.rest.beamRefArray = !!mdsHangerType21.beamarray
+  --dun1218 set the hanger type 21 support object and populate the support.rest.beamRefArray member as this is needed in the form.setgadget() method - end
+
+  --psl type riser clamp configurations were not working because the mdsVendorHangerTypexx.type member was not being populated
+  --during modification, this has been set now for PSL only - start
+  if !!mdsHangIf.eq('PSL') then
+    !hangerType = !attaName.dbref().:MDSHConfig
+    if !hangerType.match('V').gt(0) then
+      !type = 'V'
+    elseif !hangerType.match('H').gt(0) then
+      !type = 'H'
+    else
+      !plDir = pl dir of $!attaName wrt /*
+      handle ANY
+        !plDir = ph dir of $!attaName wrt /*
+      endhandle
+      if (!plDir.up eq 1 or !plDir.up eq -1 ) then
+        !type = 'V'
+      else
+        !type = 'H'
+      endif
+    endif
+    !!mdsVendorHangerType21.type = !type
+  endif
+  --psl type riser clamp configurations were not working because the mdsVendorHangerTypexx.type member was not being populated
+  --during modification, this has been set now for PSL only - end
+
+  !connectionType = !attaName.dbref().cref.tref.owner.type
+  handle (2,754)
+    -- Tref of hanger not set, try to find it
+    !iAmHere = !!ce
+    !!ce = !attaName.dbref().cref
+    handle NONE
+    elsehandle ANY
+      !!alert.error('Unable to find the connecting reference for the hanger, aborting modification')
+      !!mdsModifySupp.cancel.active = TRUE
+      return error 2
+    endhandle
+    !!ce = !iAmHere
+    !connectionType = !attaName.dbref().cref.tref.owner.type
+    handle ANY
+      !connectionType = 'unset'
+    endhandle
+  endhandle
+
+  --dun1218 look for whether we need to use the new :MDSCIVREF UDA - start
+  --if the hanger tref is set then we need to check 1) do we have the same element as the one in the UDA? 2) do we have write access to that element
+  --if not use a virtual fitting and populate it using the udas
+
+  --if the tref is set then we still need to check the write access and UDA comparison to check write access
+
+  if !attaName.dbref().cref.tref.set() then
+    --dun1218 check the write access status of the owning steelwork, if we don't have write access then we need to create a virtual fitting object
+    --that can be used throughout the code base to locate any fitting changes
+    if !attaName.dbref().cref.:MDSCIVREF.set() then
+      if !attaName.dbref().cref.:MDSCIVREF[1].eq(!attaName.dbref().cref.tref.owner) then
+        !owningSteel = !attaName.dbref().cref.tref.owner
+      else
+        !owningSteel = !attaName.dbref().cref.:MDSCIVREF[1]
+      endif
+    else
+      !owningSteel = !attaName.dbref().cref.tref.owner
+    endif
+
+    if !owningSteel.dbwrite.not() then
+      --we have a virtual fitting situation, create a virtual fitting object that we can use to make any changes
+      !!mdsHangerType21.virtualFitting = object MDSINTERFACEVIRTUALFITTING(!attaName.dbref().cref, 'dummy string')
+    else
+      !!mdsHangerType21.virtualFitting = object MDSINTERFACEVIRTUALFITTING()
+    endif
+  else
+
+    !owningSteel = !attaName.dbref().cref.:MDSCIVREF[1]
+    handle ANY
+      !owningSteel = object DBREF()
+    endhandle
+
+    if !owningSteel.set() then
+      --dun1218 check the write access status of the owning steelwork, if we don't have write access then we need to create a virtual fitting object
+      --that can be used throughout the code base to locate any fitting changes
+      if !owningSteel.dbwrite.not() then
+        --we have a virtual fitting situation, create a virtual fitting object that we can use to make any changes
+        !!mdsHangerType21.virtualFitting = object MDSINTERFACEVIRTUALFITTING(!attaName.dbref().cref, 'dummy string')
+      else
+        !!mdsHangerType21.virtualFitting = object MDSINTERFACEVIRTUALFITTING()
+      endif
+    else
+      !!alert.error('Unable to find the connecting reference for the hanger, aborting modification')
+      !!mdsModifySupp.cancel.active = TRUE
+      return error 2
+    endif
+  endif
+  --dun1218 look for whether we need to use the new :MDSCIVREF UDA - start
+
+  -- check the integrity of built hangers (i.e. make sure that the connecting fitting connects to the correct posline
+  if !!mdsHangIf.eq('LISEGA') then
+    !attaName = '/' & !textName
+    !!ce = $!attaName
+    !config = !!ce.cref.owner.:USTHCFGKey
+    handle ANY
+      !licadConfig = 'UNSET'
+    elsehandle NONE
+      !split = !config.split('.')
+      !licadConfig = !split[1] & !split[2]
+      handle ANY
+        !licadConfig = 'UNSET'
+      endhandle
+    endhandle
+    if !licadConfig inset('LD08') then
+      !!mdsCheckLd08(!!ce)
+    endif
+    if !licadConfig inset('LD09') then
+      !!mdsCheckLd09(!!ce)
+    endif
+  endif
+
+  if !!mdsHangIf.eq('CPL') then
+    --><wd>21jul2009 - DFN P-21516 (SI-12441) - CPL Only
+    -- Determine if any CONSTANT Spring(s) (GTYPE = VSPR) exists in an EXISTING RESTRAINT and STORE the
+    -- FULLNAME and the P10 Direction WRT /* of the CONSTANT Spring(s) on initialising the FORM !!mdsHangerType21
+    !existCE = !!ce
+    -- Collect all existing CONSTANT SPRINGS in the EXISTING RESTRAINT
+    !restraint = !attaName & '/REST'
+    var !constant collect all VSPR where (:MDSType of owner of catref eq 'CONS') for $!restraint
+    if (!constant.empty()) then
+      -- Store DEFAULT Settings
+      !!mdsHangerType21.constantNameOne = ||
+      !!mdsHangerType21.constantNameTwo = ||
+    else
+      -- At least ONE Constant Spring (VSPR) Exists. Therefore Store the FullName and P10 Direction WRT /* of each CONSTANT
+      do !spring indices !constant
+        -- There could be ONE or TWO CONSTANT SPRING (VSPR) type elements in the EXISTING RESTRAINT.
+        -- This depends on the type of EXISTING Witch Hanger Configuration originally selected
+        if (!spring.eq(1)) then
+          !fullNameOne  = !constant[!spring].dbref().fullname
+          !directionOne = !constant[!spring].dbref().pdir[10].wrt(/* )
+          !!mdsHangerType21.constantNameOne      = !fullNameOne
+          !!mdsHangerType21.constantDirectionOne = !directionOne
+        elseif (!spring.eq(2)) then
+          !fullNameTwo  = !constant[!spring].dbref().fullname
+          !directionTwo = !constant[!spring].dbref().pdir[10].wrt(/* )
+          !!mdsHangerType21.constantNameTwo      = !fullNameTwo
+          !!mdsHangerType21.constantDirectionTwo = !directionTwo
+        endif
+      enddo
+    endif
+    !!ce = !existCE
+  endif
+
+  -----------------------------
+  -- Modify an EXISTING  HANGER
+  -----------------------------
+  if(not !!mdsHangerType21.support.rest.set()) then
+    !!mdsHangerType21.support.rest
+  endif
+  -- Updating the callingForm hangers list
+  !callingFormShown = !callingForm.shown()
+  !callingForm.hide()
+  -- update the list of available hanger types for the current alias ('VH' or 'FH')
+  -- The following command will show the form and therefore call the init function as well
+  -- This will populate the form with the correct types of hangers.
+  $!initForm
+  -- if the form was shown, leave it shown, otherwise hide it.
+  if(not !callingFormShown) then
+    !callingForm.hide()
+  endif
+
+  !attaName = !name
+  !attaRef = !attaName.dbref()
+
+  !reconnected = FALSE
+
+  !suppObject = FALSE
+
+  if !!mdsHangerType21.support.datum.badref().not() then
+    if(!!mdsHangerType21.support.set() and !!mdsHangerType21.support.datum.set() and !!mdsHangerType21.support.datum.name.set() and !!mdsHangerType21.support.datum.name eq !attaName) then
+      handle ANY
+        !suppObject = FALSE
+      elsehandle NONE
+        -- The current form support object is of the current support
+        -- no need to create a new support object
+        !support  = !!mdsHangerType21.support
+        !support.alias = !styp
+        -- save the restraint reconnect flag
+        !reconnected = !support .rest.reconnected
+        !suppObject = TRUE
+      endhandle
+    endif
+  else
+    !suppObject = FALSE
+  endif
+
+  if !suppObject.not() then
+    -- The current form support object is of the another support
+    -- create new support. otherwise we might get the support of a previous hanger
+    !support  = object MDSINTERFACESUPPORT()
+    !support .position  = TRUE
+    !support .mirror    = FALSE
+    !support .rotateCur = FALSE
+    !support .handedCur = FALSE
+    !support .rotated   = 0
+    !support .bPNum     = 1
+    !support .modify = TRUE
+    -- Store Data in support object
+    !support .type     = ( :mdsSuppType of $!attaRef)
+    -- Store Atta reference's in object
+    !support .atta.append(!attaRef)
+    !support.atta.unique()
+    -- goto atta
+    !support.datum  = !attaRef
+    !!ce = !attaRef
+    !support.paDir  = Pa Dir wrt world
+    !support.plDir  = Pl Dir wrt world
+    !support.p9Dir  = P9 Dir wrt world
+    !support.alias     = !styp
+    -- Form members
+    !!mdsHangerType21.graphicaldim = FALSE
+  endif
+
+  !restName = !attaName + '/REST'
+
+  if(!!mdsHangerType21.support.rest.ref.set() and (not !!mdsHangerType21.support.rest.ref.badref()) and !!mdsHangerType21.support.rest.ref.name.eq(!restName)) then
+    -- current MDSINTERFACEREST object belongs to the current rest
+    -- keep the same MDSINTERFACEREST object
+  else
+    -- current MDSINTERFACEREST object belongs to the another rest or is unset
+    -- create a new MDSINTERFACEREST object
+    !support.rest = object MDSINTERFACEREST(!restName.dbref(),FALSE)
+  endif
+
+  -- set the connection object for using :MDSANCREF
+  !support.plateconns = object MDSINTERFACEBPLATECONN(!support)
+
+  -- Set callback on cancel button and set mode member of support object
+  !!mdsHangerType21.cancel.callback = |!this.restoreHanger(TRUE, TRUE)|
+  !!mdsHangerType21.datum.active = FALSE
+  !!mdsHangerType21.name.val = !support.datum.name
+  -- Store support object in form
+  !!mdsHangerType21.support = !support
+  !!kShowForm(!!mdsHangerType21)
+
+  -- Put the tail direction/position in the support object
+  !!mdsHangerType21.support.tdir = tdir of $!attaName/H1 wrt /*
+  !!mdsHangerType21.support.tposition = tposition of $!attaName/H1 wrt /*
+  var !hhToHTDir constr dir hh of $!attaName/H1 to ht of $!attaName/H1
+  !!mdsHangerType21.support.headToTaildir = !hhToHTDir.direction()
+
+
+  -- >>> DTF mod to set tdir D if with tolerance
+  !temptDir = tdir of $!attaName/H1 wrt /*
+  if !temptDir.angle(D).lt(1.5) and !temptDir.angle(D).gt(-1.5) then
+    !!mdsHangerType21.support.tdir = D wrt /*
+    !hangNA = !attaName & '/H1'
+    !hangDBREF = !hangNA.dbref()
+    !hangDBREF.tdir = D
+  endif
+  -- <<< end of mod
+
+  !attaDirs = !!mdsRemoveGrad(!attaName.dbref())
+  !dir = !attaName.dbref().cref.tdir.wrt( /* )
+
+  if ( !dir.angle(!attaDirs[1]).lt(.1) and !dir.angle(!attaDirs[1]).gt(-.1) ) or ( !dir.angle(!attaDirs[1]).gt(179.9) and !dir.angle(!attaDirs[1]).lt(180.1)) then
+    -- Pipe and support direction parallel dynamic
+  else
+    -- Generate the two offset directions
+    !!mdsInterfaceSetOffsetDir(!attaName.dbref(), !!mdsHangerType21)
+  endif
+
+  -- if sloping pipe
+  !!ce = !attaName.dbref()
+  !gradient = !attaName.dbref().ldir
+  if ( !dir.angle(!attaDirs[1]).lt(.1) and !dir.angle(!attaDirs[1]).gt(-.1) ) or ( !dir.angle(!attaDirs[1]).gt(179.9) and !dir.angle(!attaDirs[1]).lt(180.1)) then
+    -- Pipe and support direction parallel dynamic
+  else
+    if !gradient.up.eq(0) then
+
+      -- Horizontal line
+      -- Test to see if pipe parallel to wall / floor etc
+      !parallelTest = !!mdsInterfacegetmovedir(!!ce,'MODIFY',!!mdsHangerType21)
+      if !parallelTest[1].not() and !parallelTest[3].nint().neq(90) then
+        -- if not parallel we may need to move clamp along pipe
+        --if !attaName.dbref().cref.:MDSDynOffY.eq(0) then
+        !!mdsInterfaceModAttaPos(!!ce,'MODIFY',!!mdsHangerType21)
+        --endif
+      endif
+    elseif !gradient.up.abs().gt(0.9) then
+      -- Vertical line
+
+      -- <RM> 22 November 2006 -- if we have a vertical line with an LD01 run !!modAttaPos
+      -- regardless of orientation as it should work for all cases
+      if !!mdsHangIf.eq('LISEGA') then
+        !currentElem = !!ce
+        !!ce = $!attaRef
+        !config = !!ce.cref.owner.:USTHCFGKey
+        handle ANY
+          !licadConfig = 'UNSET'
+        elsehandle NONE
+          !split = !config.split('.')
+          !licadConfig = !split[1] & !split[2]
+          handle ANY
+            !licadConfig = 'UNSET'
+          endhandle
+        endhandle
+        if !licadConfig inset('LD01') or !licadConfig inset('LD09') then
+          !!mdsInterfaceModAttaPos(!!ce,'MODIFY',!!mdsHangerType21)
+        endif
+        $!currentElem
+      endif
+      -- <RM> 22 november -- end of fix
+    else
+
+      -- sloping line
+      -- get the atta ref
+      !comp = !!ce
+      if !owningSteel.type.eq('SCTN') then
+        -- <RM> 29 November 2006 -- if we have a sloping line with an LD01 or LD09 run !!modAttaPos
+        -- regardless of orientation as it should work for all cases
+        if !!mdsHangIf.eq('LISEGA') then
+          !currentElem = !!ce
+          !!ce = $!attaRef
+          !config = !!ce.cref.owner.:USTHCFGKey
+          handle ANY
+            !licadConfig = 'UNSET'
+          elsehandle NONE
+            !split = !config.split('.')
+            !licadConfig = !split[1] & !split[2]
+            handle ANY
+              !licadConfig = 'UNSET'
+            endhandle
+          endhandle
+        else
+          !licadConfig = 'UNSET'
+        endif
+
+        if !licadConfig inset('LD01') or !licadConfig inset('LD09') then
+          !!mdsInterfaceModAttaPos(!!ce,'MODIFY',!!mdsHangerType21)
+          $!currentElem
+        else
+          var !posLine posl of tref of cref
+          var !dir1 dir from ppli na of $!owningSteel to ppli $!posLine of $!owningSteel
+          var !p9dir dir p9 of $!comp
+
+          !p9dirObj = !p9dir.direction()
+          !dirDot = !p9dirObj.dot(!dir1.direction())
+
+          if !dir1.neq('D') and !dir1.neq('U') and !dir1.neq('Z') and !dir1.neq('-Z') then
+            -- if we have a near parallel sctn orientation set the tdir as if it is parallel
+            if !dirDot.between(0.999,1.0) then
+              !!ce.cref.tdir = !p9dir.direction().wrt( /* )
+            else
+              !p9dirOpposite = !p9dir.direction().opposite().string()
+              !!ce.cref.tdir = !p9dirOpposite.direction().wrt( /* )
+            endif
+          endif
+
+          --<RM 31/03/09> added this check because the parallel tests were not sensitive enough to deal
+          -- with a normal condition sctn supporting a slightly sloping pipe
+          if !dir1.neq('D') and !dir1.neq('U') and !dir1.neq('Z') and !dir1.neq('-Z') then
+            -- we do not want to run !!modAttaPos if we are parallel
+            if !dirDot.abs().lt(0.999) then
+              -- then the sctn orientation is not parallel to the pipe slope
+              -- we assume the sctn orientation is near horizontal
+              -- in which case we set the tdir to either up or down according
+              -- to which is closest to the current tdir
+              -- R Martin 13/07/06
+              !dirUp = u wrt /*
+              var !posLine posl of tref of cref
+              var !dir1 dir from ppli na of $!owningSteel to ppli $!posLine of $!owningSteel
+
+              !dirDot = !dirUp.dot(!dir1.direction())
+
+              -- set the tdir to the correct value either up or down
+              if !dirDot.geq(0.999) then
+                !!ce.cref.tdir = U wrt /*
+              elseif !dirDot.leq(-0.999) then
+                !!ce.cref.tdir = D wrt /*
+              endif
+
+              !!mdsInterfaceModAttaPos(!!ce,'MODIFY',!!mdsHangerType21)
+
+            endif
+          else
+            !!mdsInterfaceModAttaPos(!!ce,'MODIFY',!!mdsHangerType21)
+          endif
+          --<RM 31/03/09> end of fix
+        endif
+      else
+        -- Type not a SCTN
+        -- following test added to see if we have to modify the atta position, Richard Martin 07/08/06
+        -- get the angle between the plate and the pipe
+        !parallelTest = !!mdsInterfacegetmovedir(!!ce,'MODIFY',!!mdsHangerType21)
+        -- <RM> 27/02/08 -- tightened up this test so that only true parallel surfaces are exempt from !!modAttaPos
+        -- this is in response to hangers being moved down the line by small increments for this case which was unacceptable
+        --if !parallelTest[3].real().abs().leq(1) or !parallelTest[3].real().abs().between(179.85,180.15) then
+        if !parallelTest[3].real().abs().leq(0.01) or !parallelTest[3].real().abs().eq(180) then
+          -- plate and pipe parallel, do nothing
+        else
+          -- not parallel so we move the atta position
+          --if !attaName.dbref().cref.:MDSDynOffY.eq(0) then
+          !!mdsInterfaceModAttaPos(!!ce,'MODIFY',!!mdsHangerType21)
+          --endif
+        endif
+        -- <RM> 27/02/08 -- end of fix
+      endif
+    endif
+  endif
+
+  -- initialise the dynamic offset form to default the values
+  if !attaName.dbref().cref.:MDSDynOffset.neq(0) or !attaName.dbref().cref.:MDSDynOffY.neq(0) then
+    !!mdsInterfaceDynOffset.init(!!mdsHangerType21)
+    hide !!mdsInterfaceDynOffset
+  endif
+
+  -- need to be extracted to a separate function file
+  !support  = !!mdsHangerType21.setRestObject()
+  --><wd>17aug2009 -- DFN P-22111 (SI-13209) - Set the !!mdsVendorHangerType21.steelMem FORM member etc...
+  if (!support.datum.:MDSHConfig.unset() or !support.datum.:MDSHConfig.trim().eq('')) then
+    !exist = !!ce
+    !!ce = !support.datum
+    !!ce.:MDSHConfig = !!mdsVendorHangerType21.hangerSelType.val
+    !!ce = !exist
+  endif
+  !!mdsVendorHangerType21.steelMem = !support.rest.beamRefArray
+  !!mdsHangerType21.support.rest.beamRefArray = !support.rest.beamRefArray
+
+  -- restore the rest reconnected flag
+  !support.rest.reconnected = !reconnected
+  !support.rest.mode = 'MODIFY'
+
+  -- Set Form Gadgets
+  !!mdsHangerType21.name.val = !attaName.after('/')
+  !!mdsHangerType21.p.val    = ''
+  !!mdsAddAll('$!textName')
+
+  -- Activates /Deactivates the !!mdsHangerType21 form gadgets
+  !!ce = !attaRef
+  !!mdsHangerType21.setGadgets()
+  -- Set distance gadget
+  !!mdsInterfaceDistance(!!mdsHangerType21)
+
+  if ( defined(!!manIf.exe)) then
+    if (!!manIf.exe.exists()) then
+      if (!!mdsHangIf.upcase().eq('LISEGA')) then
+        --DTF feb 05
+        !!mdsHangerType21.reconnect.active = FALSE
+        -- open distance for all types item 189
+        !!mdsHangerType21.bthro.active = TRUE
+        !!mdsHangerType21.select.active = TRUE
+        !!mdsHangerType21.bdist.active = TRUE
+        !!mdsHangerType21.dist.active = TRUE
+      endif
+    endif
+  endif
+
+  ------------------------------------------------------------------------
+  -- Add marker text markers
+  !!mdsAidText(!!mdsHangerType21)
+  !hangerStart = !!mdsHangerType21.support.datum.position
+  !hangerEnd   = !!mdsHangerType21.support.tposition
+  aid clear line 2999
+  handle ANY
+  endhandle
+  aid line number 2999 $!hangerStart to $!hangerEnd linestyle dotted
+
+  -- Put members into repre member of form
+  !colourList = ARRAY()
+
+  do !addRepre values !!mdsHangerType21.support.atta
+    !!ce = !addRepre
+    skip if (match(Name,'SREF') gt 0)
+    !colour = !!kFindDrawColour(!!ce)
+    !branName = !!ce.owner.string()
+    !!mdsHangerType21.repre.append('!!mdsRemAdd(|$!branName|,$!colour)')
+    -- Add to model at level set by !!mdsOptions.levChange value
+    Call !!kRepreLevel(!!ce, 'PIPE',!!mdsOptions.levChange, $!colour)
+    !colourList.append(!!ce.name.dbref())
+  enddo
+
+  call !!kEnhanceList(!colourList)
+  !!ce = !support .datum
+  -- Saving hanger state to be able to restore it later
+  !!mdsSaveHangerState(!!mdsHangerType21)
+
+-- <RM> 11/08/08 save the hanger state now so that we can reinitialise it if there are problems in LICAD
+if (!!mdsHangIf.eq('LISEGA')) then
+pml load FORM !!mdsundolicad
+!!mdsundolicad.support = !!mdsHangerType21.support
+!!mdsSaveHangerState(!!mdsundolicad)
+endif
+-- <RM> 11/08/08 end of fix
+
+  return !support
+
+endfunction

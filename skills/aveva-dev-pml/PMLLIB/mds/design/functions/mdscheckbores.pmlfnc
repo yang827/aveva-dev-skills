@@ -1,0 +1,411 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:    mdscheckbores.pmlfnc
+--   Type:    Form
+--   Group:   Multi Discipline Supports Application
+--     Keyword:   MDS
+--   Module:    Design
+--   Replaces:
+--
+-- Author:    Neale Morris
+-- Created:   Monday 18th March 2002
+--
+--
+-- Description:
+--  Function to Check if the Selected Support is Currently being Created or
+--  Modified by the MDS Application.
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1      R        FORM       Form Object where the MDS Support is being Selected from.
+--     2      R        STRING     Steelwork Template Size Selection Number; eg. '1'
+--     3      R        DBREF      ATTA
+--     4      R        STRING     Current Project Units
+--
+-- Return:
+--    [Data Type]   [Description]
+--      BOOLEAN      Returns TRUE if Any of the ATTAS on the MDS Support, EXCEED the Allowable
+--                   Nominal Pipe Size (NPS) on the Selected MDS Steelwork Template
+--
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+--
+--Define Function
+define function !!mdscheckbores(!form is ANY, !selection is STRING, !error is STRING,!currentunits is COMUNITS) is BOOLEAN
+
+  if (!form.objecttype().eq('FORM')) then
+    !mode = 'FORM'
+  elseif (!form.objecttype().eq('MDSHEALTHCHKDATA')) then
+    !mode = 'HEALTH'
+  endif
+
+  -- Initialise Variables
+  !attas       = !form.support.atta
+  !alias       = !form.support.alias.upcase()
+  !mdstemplate = '/MDS/$!alias/$!selection'
+  --    !altmdstemplate = '/MDS/$!alias$nH/$!selection'
+
+  -- Navigate to the MDS Template Structure
+  !!ce         = !mdstemplate.dbref()
+  handle ANY
+    ----------------------------------------------------------------------------------------------
+    -- mjb >>> 26.06.06
+    -- template not found
+    -- This section to choose horizontal (H) or vertical template (V)
+    -- Choice of H or V determined in same way as in eg mdscreateft04
+    -- Config number taken from UDA :mdscp1 where needed
+    if (!alias.eq('FT03') OR !alias.eq('FT04') OR !alias.eq('FT18') OR !alias.eq('FT19')) then
+
+      !configpresplit = !attas[1].:mdscp1
+      --!configpresplit = !datumdbref.:mdscp1
+      !config = !configpresplit.split(';')[1]
+
+      --!datum = !support & '/DATUM'
+
+      !datumdbref = !attas[1]
+
+      !oldce = !!ce
+      !!ce = !datumdbref
+      !pADir  = Pa Dir wrt world
+      !pLDir  = Pl Dir wrt world
+      !!ce = !oldce
+
+      if (!pADir eq U or !pLDir eq U)then
+        if (!config.eq('2'))then
+          !mdstemp = '/MDS/$!alias$nV/$!selection'
+        else
+          !mdstemp = '/MDS/$!alias$nH/$!selection'
+        endif
+      else
+        !mdstemp = '/MDS/$!alias$nH/$!selection'
+      endif
+
+    elseif (!alias.eq('FT14') OR !alias.eq('FT15') OR !alias.eq('VT20') OR !alias.eq('VT21')) then
+      if (!alias.eq('FT14') OR !alias.eq('FT15')) then
+
+        !datumdbref = !attas[1]
+
+        !oldce = !!ce
+        !!ce = !datumdbref
+        !pADir  = Pa Dir wrt world
+        !pLDir  = Pl Dir wrt world
+        !udir = U wrt world
+        !!ce = !oldce
+
+        if (!pADir eq !udir or !pLDir eq !udir) then
+          !mdstemp = '/MDS/$!alias$nV/$!selection'
+        else
+          !mdstemp = '/MDS/$!alias$nH/$!selection'
+        endif
+      elseif (!alias.eq('VT20') OR !alias.eq('VT21')) then
+
+        !datumdbref = !attas[1]
+
+        !oldce = !!ce
+        !!ce = !datumdbref
+        if (!!ce.type eq 'BRAN') then
+          !hdir = hdir wrt /*
+        else
+          !hdir = pl dir wrt /*
+        endif
+        !!ce = !oldce
+
+        if (!hdir neq U and !hdir neq D ) then
+          !mdstemp = '/MDS/$!alias$nH/$!selection'
+        else
+          !mdstemp = '/MDS/$!alias$nV/$!selection'
+        endif
+
+      endif
+    elseif (!alias.eq('FT25')) then
+      !datumAtta = !attas[1]
+      !srefName = !datumAtta.name.replace('DATUM','SREF')
+      !sref = !srefName.dbref()
+      !srefSpref = !sref.spref.name
+      if (!srefSpref.match('FT25-A').gt(0)) then
+        !mdstemp = '/MDS/$!alias$nA/$!selection'
+      else
+        !mdstemp = '/MDS/$!alias$nB/$!selection'
+      endif
+    endif
+
+    !!ce = !mdstemp.dbref()
+    --!!ce         = !altmdstemplate.dbref()
+    -- mjb <<< 26.06.06 end of mod
+    ----------------------------------------------------------------------------------------------
+
+  endhandle
+
+  !maxbore     = !!ce.:mdsmaxbore
+  !minbore     = !!ce.:mdsminbore
+  !range       = !!ce.:mdsrange
+  !stru        = !form.support.stru
+
+  ----------------------------------------------------------------------------
+  -- Do we need to use the :MDSRANGE or the :MINBORE and :MAXBORE uda settings
+  ----------------------------------------------------------------------------
+  if (!range.neq('unset')) then
+
+    ---------------------------------------------------------------------------------------------------------
+    -- Check Support Atta Bore Sizes and/or STRUCTURAL Template MIN/MAX - Dimensions using the UDA :MSDSRANGE
+    ---------------------------------------------------------------------------------------------------------
+    -- START Checking the :MDSRANGE values of the Selected MDS Template
+    -- Format should be "dimension number,from value,to value,max bore" and EACH Range delimited by a backslash
+    -- i.e. :MDSRANGE = 1,0,1830,80\1,0,610,250\(3/4),0,900,250
+
+    -- Find largest bore on support
+    !lBore = ARRAY()
+    do !indx indices !attas
+      !lBore.append(!attas[!indx].abor.real())
+      handle any
+        skip
+      endhandle
+    enddo
+    !lBore.unique()
+    !lBore.sort()
+    !lBore.invert()
+    !largestBore = !lBore[1]
+    !ranges = !range.split('\')
+    !sizeExceeded = false
+
+    --<wd>nov2003 - NOT Required
+    --!ranges.invert()
+
+    -- Get the Bores from the :MDSRANGE
+    !bores = ARRAY()
+    do !a values !ranges
+      !bores.append(!a.split(',')[4].real())
+    enddo
+
+    -- Organise the !ranges array so that the <DIMENSION>a nd <BORE> values are in Ascending Order
+    !index = !bores.sortedindices()
+    !ranges.reindex(!index)
+
+    -- Sort !bores array so that the LARGEST size is the LAST index in the array
+    -- Get the Maximum Pipe Bore Size allowed on the Selected MDS template from the LAST iteration of the array !bores
+    !bores.sort()
+    !templatemaxb = !bores.last()
+
+    --<wd>nov2003>>>
+    ----------------------------------------------------------------------------------
+    -- FIRST Check that the MAXIMUM Bore is NOT EXCEEDED for the Selected MDS Template
+    ----------------------------------------------------------------------------------
+    if (!largestBore.gt(!templatemaxb)) then
+      !metmaxbor = !templatemaxb.bore()
+      !largebor  = !largestBore.bore()
+
+      if (!currentunits.isImperialSavedBore()) then
+        --INCH BORE
+        !currentunits.restoresavedboredist()
+        !impactbor  = !largebor
+        !impmaxbor  = !metmaxbor
+        -- Need to Convert the MM distance variable !dimToCheck into INCHES before applying the 'DISTANCE' function
+        !error =|The Maximum allowable Pipe Bore Size ($!impmaxbor) for the selected MDS template has been EXCEEDED ($!impactbor).
+        All Existing members will be deleted from the STRUCTURE $!stru.name|
+        -- Return Bore Units to MM
+        MM BORE MM DIST
+      else
+        !error =|The Maximum allowable Pipe Bore Size ($!metmaxbor) for the selected MDS template has been EXCEEDED ($!largebor),
+        All Existing members will be deleted from the STRUCTURE $!stru.name|
+
+      endif
+      !!ce = !stru
+      return true
+    endif
+
+    -----------------------------------------------------------------------------------------------------------
+    -- START of TEMPLATE DIMENSION SIZE CHECKS against MAXIMUM Pipe Bore Sizes PERMITTED
+    -- on the SELECTED MDS Template
+    -----------------------------------------------------------------------------------------------------------
+
+    --DETERMINE which RANGES to CHECK AGAINST for the LARGEST BORE PIPE on the MDS Support
+    -- Store in the ARRAY '!rangecheck' if the Range needs to be CHECKED, otherwise discard the range
+    !rangecheck = ARRAY()
+    !dimnum = 0
+
+    do !indx indices !ranges
+      !wrange = !ranges[!indx].split(',')
+      -- Array !dimarr contains the Dimension Nos. to Check
+      -- eg. Single or Multiple Dimension Nos. for any Range
+      -- !dimarr will always be a MINIMUM size of[1] and a MAXIMUM of [4] i.e. Dim Gadgets on a MDS STRU Form
+      !dimarr = !wrange[1].replace('(','').replace(')','').split('/')
+      do !x indices !dimarr
+        if (!dimnum.neq(!dimarr[!x].real())) then
+          if (!largestBore.leq(!wrange[4].real())) then
+            !dimnum = !dimarr[!x].real()
+            !rangecheck.append(!ranges[!indx])
+          else
+            skip
+          endif
+        else
+          skip
+        endif
+      enddo
+    enddo
+    --<wd>nov2003<<<
+
+    -----------------------------------------------------------------------------------------------------------
+    -- Check the Dimensions Required by the Support design with the MDS template configurations
+    -- found in the STRU uda :MDSRANGE
+    -------------------------------------------------------------------------------------------
+    do !loopThroughRanges values !rangecheck
+      !sRanges = !loopThroughRanges.split(',')
+
+      -- The Dim Nos. to Check can be a SINGLE value or a COMBINATION of Several Dim Nos.
+      -- e.g.--> :MDSRANGE value = '1,0,1830,80\1,0,610,250\(3/4),0,900,250'
+      !addup = !sRanges[1].replace('(','').replace(')','').split('/')
+      !dimToCheck = 0
+      do !add values !addup
+        --mjb 21.06.06
+        if (!mode.eq('FORM')) then
+          !dimToCheck = !form.dim$!add$n.val.real()
+        else
+          !dimToCheck = !form.dim$!add
+        endif
+        --mjb end of mod
+        --<tm>02/09/2004 addition to stop error on dim4 for ft38
+        handle ANY
+          return FALSE
+        endhandle
+        --<tm>02/09/2004
+        --<wd>nov2003
+        -- This ENDDO moved to line 198 approx. below BECAUSE EACH DIMENSION needs to be CHECKED in SEQUENCE for ERRORS
+        --enddo
+        --<wd>nov2003
+
+        -----------------------------------------------------------------------------------------------------------
+        -- REJECT at the FIRST Dimensional ERROR found on the  Support if the Dimensions in the SELECTED MDS Template
+        -- uda :MDSRANGE are Exceeded for the Maximum Pipe Bore Size Permitted on the Support
+        -----------------------------------------------------------------------------------------------------------
+        if (!dimToCheck.int().between(!sRanges[2].real(),!sRanges[3].real()).not() ) then
+          !sizeExceeded = true
+          !ssrange      = !sRanges
+          -- Set the !ssrange[1] value to show the EXACT Dimension No. if more than ONE is set in the :MDSRANGE
+          -- i.e. Dim 3 or Dim 4 in the range (3/4),0,900,250
+          !ssrange[1]   = !add
+          break
+        endif
+
+        --<wd>nov2003
+      enddo
+      -- Always BREAK and REPORT when the FIRST Dimension ERROR is found in the MDS Template uda :MDSRANGE
+      break if (!sizeExceeded)
+      --<wd>nov2003
+
+    enddo
+
+    --------------------------------------------------------------------------
+    -- Issue ERROR message if DIMENSION exceeded for the Selected MDS Template
+    --------------------------------------------------------------------------
+    if (!sizeExceeded) then
+      !metmaxbor = !ssrange[4].bore()
+      !largebor  = !largestBore.bore()
+
+      --<wd>nov2003>>>
+      if (!currentunits.isImperialSavedDist()) then
+        !currentunits.restoresavedboredist()
+        --INCH BORE FINC DIST
+        !impactbor  = !largebor
+        !impmaxbor  = !metmaxbor
+        -- Need to Convert the MM distance variable !dimToCheck into INCHES before applying the 'DISTANCE' function
+        !impactdist = !dimToCheck
+        --!inchdist   = ( !dimToCheck / 25.4 )
+        --!impactdist = !inchdist.distance(true,false,true,16,false).string().trim()
+
+        --!impminreal = (!ssrange[2].real() / 25.4 )
+        --!impmindist = !impminreal.distance(true,false,true,16,false).string().trim()
+        !impmindist = !ssrange[2].real()
+        if (!impmindist.eq('')) then
+          !impmindist = '0'
+        endif
+
+        --!impmaxreal = (!ssrange[3].real() / 25.4 )
+        --!impmaxdist = !impmaxreal.distance(true,false,true,16,false).string().trim()
+        !impmaxdist = !ssrange[3].real()
+        !error =|Dim $!<ssrange[1]> ($!<impactdist>) is NOT within the Min/Max limits of ($!<impmindist>/$!<impmaxdist>) for the selected MDS Template when the Maximum Pipe Bore Size permitted is $!<impmaxbor>.
+        All Existing members will be deleted from the STRUCTURE $!stru.name|
+        MM BORE MM DIST
+
+      else
+        !metactdist = !dimToCheck.distance(false,false,false,0,false).string().trim()
+        !error =|Dim $!<ssrange[1]> ($!<metactdist>) is NOT within the Min/Max limits of ($!<ssrange[2]>/$!<ssrange[3]>) for the selected MDS Template when the Maximum Pipe Bore Size permitted is $!<metmaxbor>.
+        All Existing members will be deleted from the STRUCTURE $!stru.name|
+
+        --<wd>nov2003<<<
+      endif
+
+      !!ce = !stru
+      return true
+    endif
+    !!ce = !stru
+    return false
+
+    -- END of Checking the :mdsrange values of the Selected MDS template
+
+  else
+
+    -------------------------------------------------------------------------------
+    -- START of Checking the :MAXBORE and/or :MINBORE for the Selected MDS template
+    -------------------------------------------------------------------------------
+
+    -- Check All the Support Atta Bores Against those ALLOWED on the Selected Steelwork Template
+    do !indx indices !attas
+      !bore = !attas[!indx].abor.real()
+      handle any
+        skip
+      endhandle
+      -- Skip if ATTA bore is Less Than Maximum Bore
+      skip if (!bore.leq(!maxbore)) and (!bore.geq(!minbore))
+      if (!bore.lt(!minbore)) then
+        --Temporarily Use the Current Bore Units
+        if (!currentunits.isImperialSavedBore()) then
+          --INCH BORE
+          !currentunits.restoresavedboredist()
+          !minbore = (nombore(false,!minbore))
+          !xbore = !attas[!indx].abor
+          !error ='The Minimum allowable Pipe Bore Size ($!minbore) for the selected MDS Template has been EXCEEDED ($!xbore).
+          All EXISTING Structural Members will be DELETED from the MDS STRUCTURE $!stru.name '
+          MM BORE MM DIST
+        else
+          !xbore = !attas[!indx].abor
+          !error = 'The Minimum allowable Pipe Bore Size ($!minbore) for the selected MDS Template has been EXCEEDED ($!xbore).
+          All EXISTING Structural Members will be DELETED from the MDS STRUCTURE $!stru.name '
+        endif
+        !!ce = !stru
+        return true
+        break
+      else
+        --Temporarily Use the Current Bore Units
+        if (!currentunits.isImperialSavedBore()) then
+          !currentunits.restoresavedboredist()
+          --INCH BORE INCH DIST
+          !maxbore = (nombore(false,!maxbore))
+          !xbore = !attas[!indx].abor
+          !error ='The Maximum allowable Pipe Bore Size ($!maxbore) for the selected MDS Template has been EXCEEDED ($!xbore).
+          All EXISTING Structural Members will be DELETED from the MDS STRUCTURE $!stru.name '
+          MM BORE MM DIST
+        else
+          !xbore = !attas[!indx].abor
+          !error = 'The Maximum allowable Pipe Bore Size ($!maxbore) for the selected MDS Template has been EXCEEDED ($!xbore).
+          All EXISTING Structural Members will be DELETED from the MDS STRUCTURE $!stru.name '
+
+        endif
+        !!ce = !stru
+        return true
+        break
+
+      endif
+    enddo
+    !!ce = !stru
+    return false
+    -- END of Checking the :MAXBORE and/or :MINBORE for the Selected MDS template
+  endif
+
+endfunction
+-- End of Function Definition for mdscheckbores.pmlfnc

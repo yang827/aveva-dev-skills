@@ -1,0 +1,837 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            stlbentpanelcreate.pmlfrm
+--   Type:          Form Definition
+--   Group:         Common to all Structural Applications
+--     Keyword:     STL
+--   Module:        design
+--  Created:         Wed Apr  7 17:15:43 2010
+--  Author:          M.Barlow
+--
+-- Description:
+-- GUI to create bent panel from planar panels and other planar objects
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  apply()                          -                   Apply form
+--  clearInteraction()               -                   Clear graphical aids and EDG
+--  close()                          -                   Close form
+--  confirmDeletePanel()             -                   Confirm deletion of original planar panels
+--  edgPickFirstPanel()              -                   Setup EDG mode to pick first panel
+--  edgPickNextPanel()               -                   Setup EDG mode to pick subsequent panels and planes
+--  finish()                         -                   finished picking panels
+--  initialise()                     -                   Initialise the form
+--  pickFirstPanel(EDGPICKDATA)      -                   pick event for first panel
+--  pickNextPanel(EDGPICKDATA)       -                   pick event for panels and planes
+--  removeLast()                     -                   Remove last vertex point
+--  setBendRadius()                  -                   Set bend radius
+--  stlBentPanelCreate()             -                   Constructor
+--  updateForm()                     -                   Update form information
+--  updateTargetType()               -                   Update form according to selected target type.
+--  validateItemList()               BOOLEAN             Merge picked items into a bent panel object and validate
+--
+------------------------------------------------------------------------
+
+setup form !!stlBentPanelCreate
+
+  -- Name Option
+  option .autoName      at x0.5 y0.5       width 7
+
+  -- Element Name
+  text   .name ' '      at xmax ymin       width 34 is STRING
+
+  -- Description
+  path down
+  halign right
+  text   .description   'Description'      width 34 is STRING
+
+  -- Target panel type
+  para   .pTargetType   at xmin ymax+0.2   width 10
+  option .targetType    at xmin+12 ymin    width 6
+  para   .pJusLine      at xmin+11 ymin    width 7
+  option .jusLine       at xmin+7 ymin     width 6
+
+  -- Pick message
+  para   .pPickFirst    at x0.5 ymax+0.2   width 38
+  -- Thickness
+  para   .pThickness    at xmin ymin       width 38
+
+  frame  .fBend         'Define Bends'     at xmin   ymax+0.2 width 38
+    text   .rBendRadius 'Bend Radius'      at x0.5   ymax     width 14  is REAL format !!distanceFmt
+    button .bRemove     'Remove Last Edge' at xmin   ymax+0.2
+    para   .pPickNext                      at xmax+1 ymin     width 28
+  exit
+
+  -- Bottom Line
+  button .dismiss        'Cancel'          at xmax form-size ymax+0.2
+  button .apply          '  OK  '          at xmin form+0    ymin
+
+  -- Form members
+  -- Current Active bent panel object
+  member .bentPanel       is STLBENTPANEL
+  -- Bend Radius
+  member .bendRadius      is REAL
+  -- Extrusion plane
+  member .plane           is PLANE
+
+  -- EDG
+  member .edgDescription  is STRING
+
+  -- element to create (handles soft types of panel)
+  member .elementType     is STRING
+
+  -- Store picked elements in an array
+  member .pickedItems     is ARRAY
+
+  -- Undo event handlers
+  member .undoCreate      is UNDOABLE
+
+  -- Debug flag
+  member .debug           is BOOLEAN
+
+exit
+-- End of form definition
+
+------------------------------------------------------------------------
+--
+-- Method:      stlBentPanelCreate
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .stlBentPanelCreate()
+
+  !this.formTitle     = 'Create Bent Panel'
+  !this.iconTitle     = 'Bent Panel'
+  !this.callback      = '!this.initialise()'
+
+  -- callbacks
+  !this.name.callback          = '!this.name.val = !!checkName(!this.name.val, |NEW|)'
+  !this.rBendRadius.callback   = '!this.setBendRadius()'
+  !this.bRemove.callback       = '!this.removeLast()'
+  !this.cancelCall             = '!this.close()'
+  !this.dismiss.callback       = '!this.close()'
+  !this.apply.callback         = '!this.apply()'
+
+  !this.pPickFirst.val         = 'Pick first planar panel (must be a rectangular panel)'
+  !this.pPickNext.val          = 'Pick plane for next bend'
+  !this.rBendRadius.val        = 0mm
+  !this.bendRadius             = 0mm
+
+  !this.pTargetType.val        = 'Bent plate type'
+  !this.targetType.callback    = '!this.updateTargetType()'
+  !this.pJusLine.val           = 'Mouldline'
+
+  -- Naming method
+  !dText    = ARRAY()
+  !rText    = ARRAY()
+  !dText.append('Name')
+  !rText.append('false')
+  !dText.append('Autoname')
+  !rText.append('true')
+  !this.autoName.dText      = !dText
+  !this.autoName.rText      = !rText
+
+  -- Bent plate target type
+  !dTargetType = ARRAY()
+  !rTargetType = ARRAY()
+  !dTargetType.append('BPANEL')
+  !rTargetType.append('BPANEL')
+  !dTargetType.append('PANE')
+  !rTargetType.append('PANE')
+  !this.targetType.dText = !dTargetType
+  !this.targetType.rText = !rTargetType
+
+  -- BPANEL justification line
+  !dJusLine = ARRAY()
+  !rJusLine = ARRAY()
+  !dJusLine.append('CENTER')
+  !rJusLine.append('CENT')
+  !dJusLine.append('LEFT')
+  !rJusLine.append('LEFT')
+  !dJusLine.append('RIGHT')
+  !rJusLine.append('RIGH')
+  !this.jusLine.dText = !dJusLine
+  !this.jusLine.rText = !rJusLine
+
+  -- EDG
+  !this.edgDescription    = 'Pick Next Panel'
+
+  -- Initialise UNDO
+  !this.undoCreate.description('Create bent panel')
+  !this.apply.setUndoable(!this.undoCreate)
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      initialise
+--
+-- Description: Initialise the form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .initialise()
+
+  -- Debug
+  !this.debug = false
+
+  -- initialise form gadgets for first pick
+  !this.pPickFirst.visible  = true
+  !this.pTargetType.visible = true
+  !this.pJusLine.visible    = true
+  !this.pPickNext.visible   = false
+  !this.pThickness.visible  = false
+  !this.bRemove.active      = false
+  !this.rBendRadius.active  = false
+  !this.apply.active        = false
+  !this.pickedItems.clear()
+
+  -- Clear aid tags
+  !this.name.val            = STRING()
+  !this.description.val     = STRING()
+  !this.bentPanel           = object STLBENTPANEL()
+  !this.plane               = object PLANE()
+  !this.updateForm()
+
+  -- initialise EDG pick
+  !this.edgPickFirstPanel()
+
+endmethod
+-- End of method definition for .initialise()
+
+------------------------------------------------------------------------
+--
+-- Method:      apply
+--
+-- Description: Apply form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .apply()
+
+  if( !this.debug)then
+    write |+Enter stlbentpanelcreate.apply()|
+  endif
+
+  !profile = !this.bentPanel.calculateExtrusion()
+  if( !profile.unset() ) then
+    !!alert.error('Unable to generate a valid shape from the selected items')
+    return
+  endif
+
+  if( !this.bentPanel.isBPanelType(!this.targetType.selection()).not()) then
+    if( !profile.isValidClosed().not() ) then
+      !!alert.error('Unable to generate a valid shape from the selected items')
+      return
+    endif
+  endif
+
+  -- Check we can create a curved section at this point
+  !store = !!getStorageArea('PANDP', 'PANEL')
+
+  -- If store is unset, can we create the panel at the current DB location
+  if(!store.unset()) then
+    !store = !!dtbOwnerOfType(!!ce, !this.targetType.selection())
+    if(!store.unset()) then
+      !!alert.warning('Unable to create bent panel in this hierarchy. Set a storage area or move to an element that can own a PANEL')
+      return
+    endif
+  endif
+
+  if( !this.debug)then
+    write '  Storage area $!store'
+  endif
+
+  -- create bent panel element
+  !!ce       = !store
+  !bentPanel = !this.bentPanel.writePanel(!this.targetType.selection(),!this.jusLine.selection())
+  handle any
+    !!alert.error(!!error.text)
+    return
+  endhandle
+  if( !bentPanel.unset() ) then
+    !!alert.error('Unable to generate a bent panel from the selected items')
+    return
+  endif
+  -- Apply data to panel
+  if( !this.description.val.set() ) then
+    !bentPanel.description = !this.description.val
+  endif
+
+  -- Autoname
+  if(!this.autoName.selection().boolean()) then
+    !name = !!namOpt.nameString(!bentPanel, '', false, false)
+  -- Use specified
+  else
+    !name = !this.name.val
+  endif
+
+  -- Name
+  if(!name.set()) then
+    NAME $!<name>
+    handle ANY
+      NAME /$!<name>
+      handle ANY
+      endhandle
+    endhandle
+  endif
+
+  -- ask user if they want to remove the selected planar panels
+  !this.confirmDeletePanel()
+
+  -- Close
+  !this.close()
+
+  if( !this.debug)then
+    write |-Leave stlbentpanelcreate.apply()|
+  endif
+endmethod
+-- End of method definition for .apply()
+
+------------------------------------------------------------------------
+--
+-- Method:      clearInteraction
+--
+-- Description: Clear graphical aids and EDG
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .clearInteraction()
+
+  -- Remove EDG
+  !!edgCntrl.remove(!this.edgDescription)
+
+  -- clear any graphical feedback
+  !this.bentPanel.tidy()
+  !colour = !!gphColOpt.highlight.code
+  if( !this.pickedItems.empty().not() ) then
+    !firstPanel = !this.pickedItems[1]
+    UNENHANCE $!firstPanel
+    handle any
+    endhandle
+  endif
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      close
+--
+-- Description: Close form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .close()
+
+  -- clear aids and EDG
+  !this.clearInteraction()
+
+  -- Hide form
+  !this.hide()
+
+endmethod
+-- End of method definition for .close()
+
+------------------------------------------------------------------------
+--
+-- Method:      validateItemList
+--
+-- Description: Merge picked items into a bent panel object and validate
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if bent panel object definition OK
+--
+------------------------------------------------------------------------
+
+define method .validateItemList() is BOOLEAN
+
+  if( !this.debug)then
+    write '+Enter stlbentpanelcreate.validateItemList()'
+  endif
+
+  !success = !this.bentPanel.mergeElement(!this.pickedItems,!this.bendRadius)
+  if( !success ) then
+    !success = !this.bentPanel.validate()
+  endif
+
+  if( !this.debug)then
+    write '-Leave stlbentpanelcreate.validateItemList() - $!success'
+  endif
+
+  return !success
+
+endmethod
+-- End of method definition for .validateItemList()
+
+------------------------------------------------------------------------
+--
+-- Method:      updateForm
+--
+-- Description: Update form information
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .updateForm()
+
+  !bendNumber           = !this.pickedItems.size()
+  !this.pPickNext.val   = 'Pick plane for next bend [ ' + !bendNumber.string() + ' ]'
+  !this.bRemove.active  = !bendNumber gt 0
+  !this.apply.active    = !bendNumber gt 1
+  !this.bentPanel.tidy()
+
+  !colour = !!gphColOpt.highlight.code
+  if( !bendNumber gt 1 ) then
+    !firstPanel = !this.pickedItems[1]
+    UNENHANCE $!firstPanel
+    handle any
+    endhandle
+    !this.bentPanel.display()
+  elseif( !bendNumber eq 1 ) then
+    !firstPanel = !this.pickedItems[1]
+    ENHANCE $!firstPanel COLOUR $!colour
+    handle any
+    endhandle
+  endif
+
+  !this.updateTargetType()
+
+endmethod
+-- End of method definition for .updateForm()
+
+-----------------------------------------------------------------------
+--
+-- Method:      pickFirstPanel
+--
+-- Description: pick event for first panel
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA Pick data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .pickFirstPanel(!pickData is EDGPICKDATA)
+
+  !pickedPanel = !pickData.item
+  -- Append if the item is picked for the first time
+  !this.pickedItems.append(!pickedPanel)
+
+  !this.pPickFirst.visible = false
+  -- get thickness
+  !this.pThickness.val     = |Panel thickness  | + !pickedPanel.lohe.string(!!distanceFmt)
+  !this.pThickness.visible = true
+
+  -- prepare for first bend
+  !this.pPickNext.val      = 'Pick plane for next bend [1]'
+  !this.pPickNext.visible  = true
+  !this.rBendRadius.active = true
+
+  -- invoke subsequent picks
+  !this.edgPickNextPanel()
+
+  !this.updateForm()
+
+endmethod
+-- End of method definition for .pickFirstPanel()
+
+-----------------------------------------------------------------------
+--
+-- Method:      pickNextPanel
+--
+-- Description: pick event for panels and planes
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA Pick data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .pickNextPanel(!pickData is EDGPICKDATA)
+
+  if( !this.debug)then
+    write '+Enter stlbentpanelcreate.pickNextPanel'
+  endif
+
+  !pickedElement      = !pickData.item
+
+  -- analyse pick data to get preferred plane from the pick
+  !positionData       = !pickData.positionData()
+  !rawPlane           = !positionData.plane
+  -- force EDG to find plane for the pick object type
+  !positionData.type  = !pickData.type
+  !positionData.plane = object PLANE()
+  !evaluatedPlane     = !positionData.getplane()
+
+  if( !evaluatedPlane.unset() ) then
+    !plane = !rawPlane
+  else
+    !plane = !evaluatedPlane
+  endif
+
+  if( !plane.unset() ) then
+    !!alert.warning( 'Cannot find a plane on the picked item. Please pick another item')
+    return
+  endif
+
+  if( !pickedElement.set() and !pickData.type neq 'DESIGNAID' ) then
+    if( !pickedElement.type eq 'PANE' ) then
+      if( !pickedElement.purpose eq 'BPLT' ) then
+        -- use picked face for bent panel
+        !this.pickedItems.append(!rawPlane)
+      else
+        !this.pickedItems.append(!pickedElement)
+      endif
+    else
+      -- test for element that delivers a profile
+      !profile = object PROFILE(!pickedElement)
+      handle any
+        !profile = object PROFILE()
+      endhandle
+      if( !profile.set() ) then
+        -- profile can be derived so bent panel can be calculated from the element
+        !this.pickedItems.append(!pickedElement)
+      else
+        -- use the plane
+        !this.pickedItems.append(!plane)
+      endif
+    endif
+  else
+    -- not an element - use the plane
+    !this.pickedItems.append(!plane)
+  endif
+
+  if( !this.validateItemList().not() ) then
+    !this.removeLast()
+  endif
+
+  -- hide prompt for first pick
+  !this.pPickFirst.visible = false
+
+  -- prepare for next bend
+  !this.updateForm()
+
+  -- invoke subsequent picks
+  !this.edgPickNextPanel()
+
+  if( !this.debug)then
+    write '-Leave stlbentpanelcreate.pickNextPanel'
+  endif
+
+endmethod
+-- End of method definition for .pickNextPanel()
+
+------------------------------------------------------------------------
+--
+-- Method:      setBendRadius
+--
+-- Description: Set bend radius
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .setBendRadius()
+
+  !saveBendRadius  = !this.bendRadius
+  !this.bendRadius = !this.rBendRadius.val
+
+  -- evaluate the curve with the new radius
+  if( !this.validateItemList().not() and !this.pickedItems.size() gt 1 ) then
+    !!alert.error('Cannot create a valid bent panel with bend radius ' + !this.bendRadius.string(!!distanceFmt))
+    -- reinstate old bend radius
+    !this.bendRadius      = !saveBendRadius
+    !this.rBendRadius.val = !saveBendRadius
+    -- validate again to reset aid graphics
+    !this.validateItemList()
+  endif
+
+  !this.bentPanel.display()
+
+endmethod
+-- End of method definition for .setBendRadius()
+
+------------------------------------------------------------------------
+--
+-- Method:      finish
+--
+-- Description: finished picking panels
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .finish()
+
+  -- Remove applications events from system
+  !!edgCntrl.remove(!this.edgDescription)
+
+  -- build bent panel object
+  !this.updateForm()
+
+endmethod
+-- End of method definition for .finish()
+
+------------------------------------------------------------------------
+--
+-- Method:      removeLast
+--
+-- Description: Remove last vertex point
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .removeLast()
+
+  if( !this.pickedItems.size() lt 2 ) then
+    -- restart from first panel
+    !this.clearInteraction()
+    !this.initialise()
+  else
+    -- remove last leg
+    !this.pickedItems.removeLast()
+    !this.validateItemList()
+    !this.updateForm()
+  endif
+
+endmethod
+-- End of method definition for .removeLast()
+
+------------------------------------------------------------------------
+--
+-- Method:      edgPickFirstPanel
+--
+-- Description: Setup EDG mode to pick first panel
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .edgPickFirstPanel()
+
+  -- Clean the object members
+  !this.pickedItems.clear()
+
+  -- Define edg packet for picking elements to be split
+  !packet              =   object EDGPACKET()
+  !packet.elementPick('Pick Panel')
+  !this.edgDescription    = 'Bent panel: First Panel'
+  !packet.description  =   !this.edgDescription
+
+   -- Add filter for Pick
+  !packet.pickPacket.picks[1].pick.input[3]   = |( HARDTYPE eq 'PANE' and PURP NEQ 'BPLT' ) OR HARDTYPE eq 'EXTR'|
+  !packet.pickPacket.picks[1].pick.modifiable = FALSE
+  !packet.action          =   '!!stlBentPanelCreate.pickFirstPanel(!this.return[1])'
+
+  !packet.priority        =   1
+  !packet.remove          =   false
+
+  !!edgCntrl.add(!packet)
+
+endmethod
+-- End of method definition for .edgPickFirstPanel()
+
+------------------------------------------------------------------------
+--
+-- Method:      edgPickNextPanel
+--
+-- Description: Setup EDG mode to pick subsequent panels and planes
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .edgPickNextPanel()
+
+  -- Define the graphics pick to derive as much geometric information as possible
+  !packet = object EDGPACKET()
+  !packet.pickPacket.stdGraphic('Pick Next Panel or plane')
+  !this.edgDescription    = 'Bent panel: Next plane'
+  !packet.pickPacket.picks[1].pick.modifiable = false
+  !packet.description     = !this.edgDescription
+  !packet.action          = '!!stlBentPanelCreate.pickNextPanel(!this.return[1])'
+  !packet.escape          = '!!stlBentPanelCreate.finish()'
+  !packet.priority        = 1
+  !packet.remove          = false
+
+  !!edgCntrl.add(!packet)
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      confirmDeletePanel
+--
+-- Description: Confirm deletion of original planar panels
+--              Other items in delete list are ignored
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .confirmDeletePanel()
+
+  !deleteList          = ARRAY()
+  !deleteReturnMessage = ''
+  !pickedItems         = !this.bentPanel.getGeneratorObjects()
+  -- check for last picked item being used as a trim plane
+  -- If it is a trim plane, do not delete
+  if( !pickedItems.empty().not() ) then
+    if( !pickedItems.last().hardType eq 'PANE' ) then
+      if( !this.bentPanel.isTrimmed() ) then
+        -- last panel should not be deleted
+        !pickedItems.removeLast()
+      endif
+    endif
+  endif
+
+  -- Test all items used as part of the curve to see if they can be deleted
+  do !index indices !pickedItems
+    skip if( !pickedItems[!index].objectType() neq 'DBREF' )
+    skip if( !pickedItems[!index].hardType     neq 'PANE' )
+    !okDelete   = !pickedItems[!index].moddel.attribute('NAME')
+    handle any
+      !okDelete = false
+    endhandle
+    skip if( !okDelete.not() )
+    skip if( !!dbrefDelete(!pickedItems[!index], !deleteReturnMessage ).not() )
+    !deleteList.append(!pickedItems[!index])
+  enddo
+
+  if( !deleteList.empty() ) then
+    -- nothing that can be deleted
+    return
+  endif
+
+  !notDelete = !pickedItems.size() - !deleteList.size()
+  if (!pickedItems.size() eq !deleteList.size()) then
+    !result = !!alert.confirm('Do you want to delete the original panels?')
+  else
+    !result = !!alert.confirm('Do you want to delete the original panels?   Note! ' & !notDelete.string() & ' cannot be deleted')
+  endif
+  if( !result eq 'YES' ) then
+    !saveCe = !!ce
+    do !element value !deleteList
+      !!ce = !element
+      handle any
+        -- in case same panel used twice to define the bent panel
+        skip
+      endhandle
+      DELETE PANE
+      handle any
+        skip
+      endhandle
+    enddo
+    !!ce = !saveCe
+    handle any
+    endhandle
+  endif
+
+endmethod
+-- End of method definition for .confirmDeletePanel()
+
+------------------------------------------------------------------------
+--
+-- Method:      updateTargetType
+--
+-- Description: Update form according to selected target type.
+--
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .updateTargetType()
+  if(!this.targetType.selection().eq('PANE'))then
+  	!this.pJusLine.visible = false
+  	!this.jusLine.visible  = false
+  else
+  	!this.pJusLine.visible = true
+  	!this.jusLine.visible  = true
+  endif
+endmethod
+-- End of method definition for .updateTargetType()

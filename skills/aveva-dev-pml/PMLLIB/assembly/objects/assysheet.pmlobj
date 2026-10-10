@@ -1,0 +1,369 @@
+-----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            assysheet.pmlobj
+--   Type:          Object Definition
+--   Group:         Assembly
+--     Keyword:     Drawing
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         Tue 03 Aug 2006
+--
+--
+-- Description:
+-- Holds the data for a sheet element
+--
+-- ASSUMPTIONS
+-- The current element is DRWG
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  assySheet(DBREF,DBREF,STRING)    -                   Construct
+--  create(DBREF,REAL,REAL,ASSYNAMERULE) REAL                Create a sheet from a template
+--  runTasks()                       -                   Run all tasks
+--  update(DBREF,REAL,REAL)          REAL                Update the passed sheet
+--
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+define object ASSYSHEET
+
+  -- Assembly data
+  member .asmblyRefe  is DBREF
+
+  -- Sheet data
+  member .reference   is DBREF
+  member .sheetNumber is REAL
+  member .rootName    is STRING
+  member .tasks       is ARRAY
+  member .sumUp       is BOOLEAN
+
+  -- View data
+  member .idliRefe    is DBREF
+  member .views       is ARRAY
+
+  -- Module
+  member .module          is ASSYMODULE
+
+endobject
+-- End of object definition for SHEET
+
+------------------------------------------------------------------------
+--
+-- Method:        .assySheet(DBREF,DBREF,STRING)
+--
+-- Description:   Construct
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       The reference of the assembly being detailed
+--    2   R      DBREF       The reference of the idlist
+--    3   R      STRING      The naming root name
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .assySheet(!asmblyRefe is DBREF, !idliRefe is DBREF, !rootName is STRING)
+
+   !this.asmblyRefe = !asmblyRefe
+   !this.idliRefe   = !idliRefe
+   !this.rootName   = !rootName
+
+endmethod
+-- End of method definition for .assySheet()
+
+------------------------------------------------------------------------
+--
+-- Method:      .create(DBREF,REAL,REAL,ASSYNAMERULE)
+--
+-- Description: Create a sheet from a template
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]   [Description]
+--    1   R      DBREF         SHTMPL reference
+--    2   R      REAL          Sheet number
+--    3   R      REAL          Part List Starting Index
+--    4   R      ASSYNAMERULE  Naming rules
+--
+-- Return:
+--   [Data Type] [Description]
+--    REAL       The starting index of any parts list table created via a TASK
+--
+-- NOTE: The initial current element is the owning DRWG
+--
+------------------------------------------------------------------------
+-- Define method
+define method .create(!shtmplRefe is DBREF, !shtNum is REAL, !partStartIndex is REAL, !nameRules is ASSYNAMERULE) is REAL
+
+  -- Initialise variables
+  !bsrf     = !shtmplRefe.bsrf
+  !idliRefe = !this.idliRefe
+
+  -- Get device
+  VAR !device DEVICE
+
+  -- Get next number for the drawing
+  !this.sheetNumber = !shtNum
+
+  -- Build sheet naming
+  !sheeName = !this.rootName & '/' & !nameRules.sheeNameRule & !shtNum
+
+  -- Create sheet
+  NEW SHEE $!sheeName
+    handle (41,52)
+      -- Trying to put a reference of illegal type.
+      -- In case of bad IDLX
+    elsehandle (41,12)
+      -- Name already used.
+      -- Delete useless sheet
+      DELETE SHEE
+
+      !!ce = !sheeName.dbref()
+      DELETE SHEE MEM
+    endhandle
+
+  !this.reference = !!ce
+
+  -- Unset the backing sheet in case of cascading
+  BSRF UNSET
+
+  -- Copy the sheet template
+  COPY LIKE $!shtmplRefe BSRF UNSET
+  LINKREF $!shtmplRefe
+
+  -- Set sheet purpose for the search tool
+  SPPURP ASYADP
+
+  -- Set the marine drawing type to assembly
+  !this.module.marPtype()
+
+  -- Set drawlist
+  IDLN $!idliRefe
+
+  WARNINGS OFF
+
+  -- Set the positions format to allow the backing sheet hash codes to operate on numbers
+  POSFORMAT NUMBER
+
+  -- Set the backing sheet now, as the sheet table tasks rely on being able to retrieve the backing sheet
+  -- If this does not work, then we could use the bsrf set at DRWG
+  BSRF $!bsrf
+    handle any
+    endhandle
+
+  -- Set sheet function attribute to hold the part list starting (and ending indices which we don't know yet, set 0)
+  !funcString = !partStartIndex & ':' & '0'
+  FUNC '$!funcString'
+
+  -- Copy the sheet tasks
+  VAR !allTasks COLL ALL TASK WI SPPURPOSE EQ 'STASK' OR SPPURPOSE EQ 'STASKX' FOR $!shtmplRefe
+  do !index ind !allTasks
+
+    -- Initialise variables
+    !taskRefe = !allTasks[!index].dbref()
+    !taskName = !sheeName & '/STask' & !index
+
+    -- Copy task
+    NEW TASK COPY $!taskRefe NAME $!taskName
+
+    -- Build task object
+    !this.tasks.append(object ASSYTASK(!!ce))
+
+  enddo
+
+  -- Return to the sheet
+  !!ce = !this.reference
+
+  -- Send message
+  !!assyPrompt('Executing Sheet Tasks',2)
+
+  -- Run sheet tasks now, as the view tagging task relies upon the result of the parts list creation task
+  !this.runTasks()
+
+  -- Create Views
+  VAR !allViews COLL ALL VIEW FOR $!shtmplRefe
+  do !index ind !allViews
+
+    -- Initialise variables
+    !viewTemplateRefe = !allViews[!index].dbref()
+
+    -- Build view object
+    !this.views.append(object ASSYVIEW(!this.asmblyRefe, !idliRefe, !sheeName))
+    !this.views[!index].create(!viewTemplateRefe, !index, !nameRules.viewNameRule)
+
+  enddo
+
+  SHEE
+
+  -- Send message
+  !!assyPrompt('Updating Design Graphics',2)
+
+  -- Update the design
+  UPDATE DESI
+    handle any
+    endhandle
+
+  -- Send progress, update design constituted 50% of progress
+  if (!device.upcase().eq('GRAPHICS')) then
+    !percentComplete = !!assyProgress.percentComplete + !!assyProgress.percentage
+    !!assyProgress.setMeter(!percentComplete)
+    !!fmsys.setProgress(!percentComplete)
+  endif
+
+  -- Read the sheet attribute function for the starting index
+  !nextStartIndex = !this.reference.func.split(':')[2].real()
+    handle (2,441)
+      -- Unable to convert string to a number
+      !partStartIndex = 0
+    endhandle
+  if (!nextStartIndex gt 0) then
+     !nextStartIndex = !nextStartIndex + 1
+  endif
+
+  !funcStrings = !this.reference.func.split(':')
+  !this.sumUp = false
+  if (!funcStrings.size() gt 2) then
+     !this.sumUp = !funcStrings[3].eq('TRUE')
+  endif
+
+  return !nextStartIndex
+
+endmethod
+-- End of method definition for .create(DBREF,REAL,REAL,ASSYNAMERULE)
+
+-----------------------------------------------------------------------
+--
+-- Method:      .runTasks()
+--
+-- Description: Run all tasks
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .runTasks()
+
+  -- Execute each task function
+  do !task val !this.tasks
+    !!assyLog.add('   Executing Sheet Task: ' & !task.description)
+    !task.execute()
+  enddo
+
+endmethod
+-- End of method definition for .runTasks()
+
+------------------------------------------------------------------------
+--
+-- Method:      .update(DBREF,REAL)
+--
+-- Description: Update the passed sheet
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       SHEE reference
+--    2   R      REAL        Sheet number
+--    3   R      REAL        Part List Starting Index
+--
+-- Return:
+--   [Data Type] [Description]
+--    REAL       The starting index of any parts list table created via a TASK
+--
+-- NOTE: The initial current element is the owning DRWG
+--
+------------------------------------------------------------------------
+-- Define method
+define method .update(!sheeRefe is DBREF, !shtNum is REAL, !partStartIndex is REAL) is REAL
+
+  -- Get device
+  VAR !device DEVICE
+
+  -- Access the sheet
+  !!ce            = !sheeRefe
+  !this.reference = !!ce
+
+  WARNINGS OFF
+
+  -- Send message
+  !!assyPrompt('Executing Sheet Tasks',2)
+
+  -- Get the sheet tasks
+  VAR !allTasks COLL ALL TASK WI SPPURPOSE EQ 'STASK' FOR $!sheeRefe
+  do !task val !allTasks
+    !this.tasks.append(object ASSYTASK(!task.dbref()))
+  enddo
+
+  -- Run tasks
+  !this.runTasks()
+
+  -- Update the Views
+  VAR !allViews COLL ALL VIEW WI SPPURPOSE EQ 'PASSMB' OR SPPURPOSE EQ 'HULSYM' FOR $!sheeRefe
+  do !index ind !allViews
+    !this.views.append(object ASSYVIEW(!this.asmblyRefe, !this.idliRefe, !allViews[!index].dbref().owne.name))
+    !this.views[!index].update(!allViews[!index].dbref())
+  enddo
+
+  -- Load the marine api
+  import 'marapi'
+    handle( 1000, 0 )
+      -- Already imported, ignore
+    endhandle
+
+  -- Save the drawing
+  using namespace 'AVEVA.Marine.Drafting'
+  !mDrafting  = object MARDRAFTING()
+  if(!mDrafting.dwgCurrent()) then
+
+    -- Update the backing sheet
+    !mDrafting.dwgReloadBackingSheet()
+      handle any
+      endhandle
+
+    -- Redraw the sheet
+    !mDrafting.dwgRepaint()
+
+    -- Save the drawing
+    !mDrafting.dwgSave()
+
+  endif
+
+  SHEE
+
+  -- Send progress, update design constituted 50% of progress
+  if (!device.upcase().eq('GRAPHICS')) then
+    !percentComplete = !!assyProgress.percentComplete + !!assyProgress.percentage
+    !!assyProgress.setMeter(!percentComplete)
+    !!fmsys.setProgress(!percentComplete)
+  endif
+
+  -- Read the sheet attribute function for the starting index
+  !nextStartIndex = !this.reference.func.split(':')[2].real()
+    handle (2,441)
+      -- Unable to convert string to a number
+      !partStartIndex = 0
+    endhandle
+  if (!nextStartIndex gt 0) then
+     !nextStartIndex = !nextStartIndex + 1
+  endif
+
+  !funcStrings = !this.reference.func.split(':')
+  !this.sumUp = false
+  if (!funcStrings.size() gt 2) then
+     !this.sumUp = !funcStrings[3].eq('TRUE')
+  endif
+
+  return !nextStartIndex
+
+endmethod
+-- End of method definition for .update(DBREF,REAL)

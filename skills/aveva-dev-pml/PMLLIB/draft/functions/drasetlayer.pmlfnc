@@ -1,0 +1,342 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            drasetlayer.pmlfnc
+--   Type:          Function Definition
+--   Group:         common
+--     Keyword:     ICONS
+--   Module:        DRAFT
+--   Replaces:
+--
+-- Author:          andy.kirkland
+-- Created:         Wed Sep 10 14:00 GMT 2003
+--
+--
+-- Description:
+-- Function to find if the current layer is not the correct type (say dimension),
+-- select the first that is and display the passed form
+--
+------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--   [1] [R]    [STRING]    [Form to show]
+--   [2] [R]    [STRING]    [Application the layer belongs to]
+-- Return:
+--   BOOLEAN    True, if everything was OK, False on an error
+--
+------------------------------------------------------------------------
+-- Define function
+define function !!draSetLayer(!formName is STRING, !layerType is STRING) is BOOLEAN
+
+  -- Initialise variables
+  if(!layerType.eq('DIM')) then
+    !application  = 'dimensions.'
+  elseif(!layerType.eq('DRA')) then
+    !application  = '2D Drafting elements.'
+  elseif(!layerType.eq('LAB')) then
+    !application  = 'labels.'
+  else
+    !application  = 'elements.'
+  endif
+
+  !applicationForm = '!!' + !!cdApplic.substring(2)
+  !form            = $!applicationForm
+  !sheetName       = !form.sheet.selection('DTEXT')
+
+  -- Get an array of valid purposes for this layer type from the system defaults
+  !validPurps = !!cdrPrpDflts.attribute(!layerType).val.split()
+
+  -- Check to see if the sheet has been selected
+  if(!sheetName.eq('')) then
+     !!alert.error('You must have a sheet selected in order to use the applications')
+     return false
+  endif
+
+  -- switch to PADD if need to
+  !!draSwitchToPadd()
+
+  -- Test the Layer Toolbar first as this should be the overriding factor if displayed
+  if (!form.layerToolbar.visible) then
+
+    !currentLayer = !form.layeNam.selection('RTEXT')
+    if (!currentLayer.neq('')) then
+      !currentLayerRef = !currentLayer.dbRef()
+    endif
+
+  -- Check the current element
+  else
+
+   	-- For primitives a NOTE or VNOTE
+   	if( !layerType.eq('DRA') ) then 	
+      !addOn      = 'or symbol template '
+
+      -- Find a suitable element to either use or from where to start searching for one
+      !currentLayerRef = !!dtbGetOwnerType(!!ce, 'NOTE VNOT LAYE VIEW SHEE BACK OVER SHTMPL SYTM ISOTM')
+
+    -- For anything else
+    else
+      !addOn = ''
+
+      -- P-40690 (et al) fix sticky view bug RAB 21-09-11 (part 1)
+      !currentLayerRef = !!dtbGetOwnerType(!!ce, 'LAYE VIEW SHEE')
+
+   endif
+
+    -- For nothing suitable
+    if (!currentLayerRef.unset()) then
+      !!alert.error('You must be at an appropriate layer ' & !addOn & 'to create the required ' & !application)
+      return false
+    endif
+
+  endif
+
+  -- check to see if selected layer(currentLayer) is the correct type (say dimension) of layer
+  --!purpTest = !!cdrPrpDflts.attribute(!layerType).val.match(!currentLayerRef.purp.substring(1,3)).neq(0)
+  -- P-41288 Simplify test so it works reliably. 2nd part only works if currlayref is layer, hence 1st part.
+  --!purpTest = !currentLayerRef.type.eq('LAYE') and !layerType.eq(!currentLayerRef.purp.substring(1,3))
+  if (!currentLayerRef.type.upcase().eq('NOTE') or !currentLayerRef.type.upcase().eq('VNOT')) then
+  	
+    if(!layerType.eq('DRA') ) then
+  	  !purpTest = true
+  	else
+  	  !purpTest = false
+  	endif
+  	
+  else
+
+    -- Check that the element has a purpose attribute
+    if (!currentLayerRef.attlist.findfirst('PURP').set()) then
+    	
+    	-- Test the layer purpose against the valid purposes as defined by the system defaults
+      !purpTest = !validPurps.findfirst(!currentLayerRef.purp.substring(1,3)).set()
+
+    else
+  	  !purpTest = false
+  	
+  	endif
+
+  endif
+
+  -- The layer is not suitable for the action so the purpose test has failed
+  if(!purpTest.not()) then
+  	
+      -- find one that is
+      !validEle = 'VIEW BACK SHEE OVER SHTMPL SYTM ISOTM'
+      --!viewRef  = !!dtbGetOwnerType(!currentLayer.dbRef(), !validEle)$* P-40690 (et al) fix sticky view bug RAB 21-09-11 Part 2
+      !viewRef  = !!dtbGetOwnerType(!!ce, !validEle)
+
+      if( !viewRef.unset() ) then
+
+        if( !layerType.neq('DRA') ) then
+          !!alert.error('Unable to find a correct layer type for the current sheet.')
+        else
+          !!alert.error('Unable to find a Note Layer for the current sheet.')
+        endif
+
+        return false
+
+      endif
+
+     !viewName = !viewRef.name
+
+     -- For types other than 2D Draughting
+     if (!layerType.neq('DRA')) then
+
+       VAR !allLayers COLL ALL LAYER FOR $!viewName
+       VAR !evaluatePurp EVAL (SUBSTRING(PURP,1,3)) FOR ALL FROM !allLayers
+
+       -- Find the first layer that has the correct purpose for the passed action
+       -- This means testing against all valid purposes as defined in the system defaults
+       do !index ind !allLayers
+
+         !layerPurp = !evaluatePurp[!index]
+
+         do !validPurp val !validPurps
+
+           if (!layerPurp.eq(!validPurp)) then
+           	 !findLayer = !index
+             break
+           endif
+
+         enddo
+
+         break if (defined(!findLayer))
+
+       enddo
+
+       -- Access the found layer
+       if (defined(!findLayer) and !findLayer.set()) then
+         !!ce = !allLayers[!findLayer].dbRef()
+
+       else
+
+         !response = !!alert.confirm('Unable to find a suitable layer type for the current ' & !viewRef.type.lowcase() & '. Do you want the system to create one for you?')
+
+         -- Create a suitable layer
+         if (!response.eq('YES')) then
+
+           -- Format layer name
+           -- For an unnamed view leave the layer unnamed
+           if (!viewName.substring(1,1).neq('/')) then
+             !layerName = ''
+
+           -- Use the view name
+           else
+
+             !firstPart = !viewName & '/LAYE'
+
+             do !count from 1 to 9999
+
+               !layerName = !firstPart & !count
+
+               VAR !exists EXISTS $!layerName
+
+               break if (!exists.eq('FALSEA'))
+
+             enddo
+
+           endif
+
+           -- Create the laye
+           !!ce = !viewRef
+           NEW LAYE
+
+           -- Set the purpose
+           call !!runMacro(|%PDMSUI%/DRA/GEN/USETLAYPRP|, !layerType)
+
+           -- Set the name
+           if (!layerName.neq('')) then
+             !!ce.name = !layerName
+           endif
+
+         -- Nothing to do so stop here
+         else
+           return false
+         endif
+
+       endif
+
+     -- For type 2D Draughting
+     else
+
+         VAR !allNotes COLL ALL NOTE FOR $!viewName
+         VAR !allNotes APPEND COLL ALL VNOT FOR $!viewName
+
+         -- Use the first available note
+         if(!allNotes.size().neq(0)) then
+
+           !!ce = !allNotes[1].dbRef()
+
+           -- Populate the layer toolbar
+           !!cdrGenApp.layerControl.selectElement(!!ce)
+
+         -- Create a suitable note if required
+         else
+
+           -- Not for an SYTM or ISOTM
+           if (!viewRef.type.upcase().neq('SYTM') and !viewRef.type.upcase().neq('ISOTM')) then
+           	
+             !!alert.error('Unable to find a Note Layer for the current sheet.')
+             !response = !!alert.confirm('Unable to find a suitable Note layer for the current ' & !viewRef.type.lowcase() & '. Do you want the system to create one for you?')
+
+             -- Create a suitable layer
+             if (!response.eq('YES')) then
+
+               -- Format note name
+               -- For an unnamed view leave the layer unnamed
+               if (!viewName.substring(1,1).neq('/')) then
+                 !elementName = ''
+
+               -- Use the view name
+               else
+
+                 !firstPart = !viewName & '/'
+
+                 -- For a VNOTE
+                 if (!viewRef.type.eq('VIEW')) then
+                   !secondPart = 'LAYE'
+
+                 -- For a NOTE
+                 else
+                   !secondPart = !!cdrDfltsName.note.val
+
+                 endif
+
+                 -- Test for a valid name
+                 do !count from 1 to 9999
+
+                   !elementName = !firstPart & !secondPart & !count
+
+                   VAR !exists EXISTS $!elementName
+
+                   break if (!exists.eq('FALSEA'))
+
+                 enddo
+
+               endif
+               !!ce = !viewRef
+               -- Create the layer
+               if (!viewRef.type.eq('VIEW')) then
+
+                 NEW LAYE
+
+                 -- Set the purpose
+                 call !!runMacro(|%PDMSUI%/DRA/GEN/USETLAYPRP|, !!cdrPrpDflts.dra.val.split()[1])
+
+               -- Create the note layer
+               else
+
+                 NEW NOTE
+
+               endif
+
+               -- Set the name
+               if (!elementName.neq('')) then
+                 !!ce.name = !elementName
+               endif
+
+             -- Nothing to do so stop here
+             else
+               return false
+
+             endif
+
+           endif
+
+        endif
+
+     endif
+     !ref = !!ce
+
+   else
+     --   P-25614, purpTest is TRUE, ensure Layer really is CE
+     --!!ce = !currentLayer.dbref()
+     !!ce = !currentLayerRef
+
+   endif
+
+   -- P-40900: no longer need to do this
+   ---- Refresh the layer toolbar as the form called below may read it before draTrackMain does it
+   --!!cdrGenApp.layerControlselectElement(!!ce)
+   -- highlight the selected layer
+   if(defined(!ref)) then
+      call !!draHighLightView(!ref)
+   endif
+  if(!formName.neq('')) then
+   call !!draShowForm(!formName)
+  endif
+
+  -- Populate the layer toolbar
+  if (!form.layerToolbar.visible) then
+    !form.layerControl.selectElement(!!ce)
+      handle any
+      endhandle
+  endif
+
+  return true
+
+endfunction
+-- End of function definition for draSetLayer(STRING, STRING)

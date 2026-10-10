@@ -48,7 +48,7 @@ Recognizing that modern **.NET / C# managed add-in development** and traditional
 * **DABACON Query Pipeline**: `DBREF` reference semantics, `COLLECTION` query engine, expression filters, and transactional checkpoints (`MARK`/`UNDO`).
 * **GUI & Graphics Systems**: Form lifecycle events, comprehensive gadget positioning, asynchronous Event Driven Graphics (EDG) picking callbacks.
 * **Marine Drafting Automation**: `MarDrafting` single-document interface (SDI) lifecycle, coordinate transformations, automated dimensions and annotations.
-* **Supporting Resources**: [Glossary (glossary.md)](skills/aveva-dev-pml/glossary.md) · [8 Production Patterns (patterns.md)](skills/aveva-dev-pml/patterns.md) · [Decision Cheatsheet (cheatsheet.md)](skills/aveva-dev-pml/cheatsheet.md).
+* **Supporting Resources**: [Glossary (glossary.md)](skills/aveva-dev-pml/glossary.md) · [8 Production Patterns (patterns.md)](skills/aveva-dev-pml/patterns.md) · [Decision Cheatsheet (cheatsheet.md)](skills/aveva-dev-pml/cheatsheet.md) · [Verified PMLLIB Idioms (references/)](skills/aveva-dev-pml/references/pmllib-idioms.md).
 
 ---
 
@@ -145,7 +145,10 @@ aveva-dev-skills/
         ├── cheatsheet.md           # Diagnostic smells & decision rules
         ├── glossary.md             # System objects dictionary
         ├── patterns.md             # 8 Production PML design patterns
-        └── chapters/               # 20 Systematic language chapters (ch01 - ch20)
+        ├── chapters/               # 20 Systematic language chapters (ch01 - ch20)
+        ├── references/             # Delivered PMLLIB index & verified idioms
+        ├── tools/                  # Automation scripts (index regenerator)
+        └── PMLLIB/                 # Bundled official PML source snapshot (~6,075 files)
 ```
 
 ---

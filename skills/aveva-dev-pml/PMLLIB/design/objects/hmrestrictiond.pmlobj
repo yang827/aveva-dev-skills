@@ -1,0 +1,399 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            hmrestrictiond.pmlobj
+--   Type:          Object Definition
+--   Group:
+--     Keyword:     Hole Management
+--   Module:        All
+-- Author:          Martin Ward
+--  Created:        June 2007
+--
+-- Description:
+--   Object used to verify an association in the Hole Management system
+--    1.  Get profile of Virtual Hole
+--    2.  Loop through all members of VirtualHole
+--    2.1.  Create list of all FIXINGs owned by the Virtual Hole
+--    3.  Loop through all ASSMBRs
+--    3.1.  Create list of all real holes. May be more than one if penetration across plate boundaries
+--    4.  Loop through concatenation of the 2 previously created lists
+--    4.1.  Union all profiles of all elements in the list with the profile of the Virtual Hole
+--    5.  Test areas of Virtual Hole profile and new union profile are about the same
+
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  checkFixisAreInOwningFixi()      BOOLEAN             check the fixings lie within the owning fixings
+--  gatherData()                     -
+--  hmRestrictionD()                 -                   Constructor method
+--  testEv()                         BOOLEAN
+--  unionProfiles(PROFILE,PROFILE)   PROFILE             project profile b onto plane of profile a and union
+--
+------------------------------------------------------------------------
+
+define object HMRESTRICTIOND
+
+ -- MEMBER names are compulsory to tie in with ASSOCIATIONS
+ -- COMPONENT = RESTRICTION element
+   member .association   is DBREF
+   member .component     is DBREF
+
+   member .allAssMbr     is ARRAY
+
+   -- Additional members required to simplify processing
+   member .hmHole       is HMHOLE
+
+
+   member .debug         is BOOLEAN
+endobject
+-- End of object definition
+
+
+------------------------------------------------------------------------
+--
+-- Method:      hmRestrictionD
+--
+-- Description: Constructor method
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .hmRestrictionD()
+
+  !this.debug = FALSE
+  if (defined(!!debug) ) then
+    !this.debug = TRUE
+  endif
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      testEv
+--
+-- Description: make sure that the fixings and atta elements are coincident
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .testEv() is BOOLEAN
+-- Manually trigger the CONSTRUCTOR - does not get run automatically at the moment
+  !this.hmRestrictionD()
+
+  !this.gatherData()
+
+-- If key data not located then fail
+  if (!this.allAssMbr.unset() ) then
+    if (!this.debug ) then
+      write 'Assmbr list unset in hmRestrictionD.testEv()'
+    endif
+    return FALSE
+  endif
+
+  -- Defect in profile union when in imperial. So if in imperial temporarily change to metric
+  !savedUnits = object COMUNITS(true)
+  MM DIST
+
+-- Check on profile of Hole Owner
+  !result = !this.checkFixisAreInOwningFixi()
+  handle any
+    !result = false
+  endhandle
+
+  !savedUnits.restoreSavedUnitsByPtype('DIST')
+
+  return !result
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      gatherData
+--
+-- Description: Collect all key information for member variables
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .gatherData()
+
+
+-- Gather all hole data for this association
+  !this.hmHole = object HMHOLE(!this.association)
+
+  !this.allAssMbr = object ARRAY()
+
+  !find = object COLLECTION()
+  !find.type('ASSMBR')
+  !find.scope(!this.hmHole.element)
+  !this.allAssMbr = !find.results()
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      checkFixisAreInOwningFixi
+--
+-- Description: check the fixings lie within the owning fixings
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .checkFixisAreInOwningFixi() is BOOLEAN
+--    1.  Get profile of Virtual Hole
+  -- The owning profile could be a catalogue item or a template
+  !virtualHole = !this.hmHole.virtualHole
+  if (badref(!virtualHole)) then
+    !!setRestrictionError(!this.association, !this.component, |Bad reference to virtual hole|)
+    return FALSE
+  endif
+
+  !profileFixis = ARRAY()
+
+  !failed = false
+  if (!virtualHole.spre.set()) then
+    !owningProfile = !!hmFindHoleProfile(!this.hmHole.virtualHole)
+    handle ANY
+      !failed = true
+    endhandle
+  else
+    -- find the profile from the template
+    !loop = object COLLECTION()
+    !loop.scope(!virtualHole)
+    !loop.type('loop')
+    !result = !loop.results()
+    !owningProfile = object PROFILE(!result[1])
+    handle ANY
+      !failed = true
+    endhandle
+  endif
+
+  if( !failed ) then
+    !!setRestrictionError(!this.association, !this.component, |Unable to get profile of virtual hole|)
+    return FALSE
+  endif
+
+  --compile a list of all fixings that need to be enclosed by the virtual hole
+  !virtualOwningProfile = !owningProfile
+  !subFixings = !this.hmHole.virtualHole.members
+----    2.  Loop through all members of VirtualHole
+  do !i values !subFixings
+    if (!i.type eq 'FIXING') then
+----    2.1.  Create list of all FIXINGs owned by the Virtual Hole
+      !profileFixis.append(!!hmFindHoleProfile(!i).mergePoints().mergeLines().close())
+      handle ANY
+        !!setRestrictionError(!this.association, !this.component, |Unable to create array of profile fixings|)
+        return FALSE
+      endhandle
+    endif
+  enddo
+
+  --   Go through the list of association members and create a list of real holes
+  --   There may be more than one if the penetration occurs across plate boundaries
+  !status = !this.hmHole.getFullStatus()
+  !secondaryHoles = ARRAY()
+----    3.  Loop through all ASSMBRs
+  do !i values !this.allAssMbr
+    !assMemberRef = !i.amemrf
+    if (badref(!assMemberRef)) then
+      !!setRestrictionError(!this.association, !this.component, |One or more of the association members has a bad reference|)
+      return FALSE
+    endif
+    if (!status eq 'APPROVED') then
+      !holeProfile = !this.hmHole.getHoleProfile(!assMemberRef)
+      if( !holeProfile.unset() ) then
+        -- no hole found. Deal with special cases
+        if (!assMemberRef.type eq 'HHOLE') then
+           !errStr = |Unable to create profile from | + !assMemberRef.type + | association member|
+          !!setRestrictionError(!this.association, !this.component, !errStr)
+          return FALSE
+        endif
+      else
+        -- hole profile found
+        !secondaryHoles.append(!holeProfile)
+      endif
+    endif
+
+  enddo
+
+  -- Check the items have been found
+  if (undefined(!owningProfile) or undefined(!profileFixis)) then
+    !!setRestrictionError(!this.association, !this.component, |Either the owning profile or the array of profile fixings is undefined|)
+    return FALSE
+  endif
+
+  -- make sure the owning profile is on the penetration plane
+  !virtualPlane = object PLANE(!virtualHole.position, !owningProfile.orientation)
+  -- project profile position onto plane
+  !newPosition  = !virtualPlane.near(!owningProfile.position)
+  !owningProfile.position = !newPosition
+
+  -- Add the list of profiles of any real holes to the list of fixings. All must now be within the OwningProfile
+ -- !profileFixis.appendArray(!secondaryHoles)
+----    4.  Loop through concatenation of the 2 previously created lists
+  do !i index !profileFixis
+
+    if (!i eq 1 ) then
+      if (!profileFixis[!i].isValidClosed().not()) then
+        !errStr = |Profile | + !i.string() + | is not valid|
+        !!setRestrictionError(!this.association, !this.component, !errStr)
+        return false
+      endif
+----    4.1.  Union all profiles of all elements in the list with the profile of the Virtual Hole
+
+      -- if this is a hull hole in a knuckle plate the orientation is wrong.
+      -- set the profile back to the virtual hole until the profile is returned correctly
+      !overallProfile = !this.unionProfiles(!owningProfile, !profileFixis[!i])
+      handle (2,830)
+        !owningProfile = !virtualOwningProfile
+        !overallProfile = !this.unionProfiles(!owningProfile, !profileFixis[!i])
+        handle (2,830)
+          !!setRestrictionError(!this.association, !this.component, |Unable to union profiles with different orientations|)
+          return false
+        endhandle
+      elsehandle any
+        !!setRestrictionError(!this.association, !this.component, |Unable to union fixing profile with the virtual hole profile|)
+        return false
+      endhandle
+
+    else
+      !overallProfile = !this.unionProfiles(!overallProfile, !profileFixis[!i])
+      handle (2,830)
+        !!setRestrictionError(!this.association, !this.component, |Unable to union profiles with different orientations (#profile fixings > 1)|)
+        return false
+      endhandle
+    endif
+    -- If for any reason the fixings do not intersect there will be more than one overall profile
+    -- in which case it is a failure
+    if (!overallProfile.unset() ) then
+      !!setRestrictionError(!this.association, !this.component, |Fixings do not intersect|)
+      return FALSE
+    endif
+
+  enddo
+
+----   5.  Test areas of Virtual Hole profile and new union profile are about the same
+
+  --ensure that the overall profile area defined by the holes and fixings and the virtual hole profile
+  --are the same (to within a normalised tolerance)
+  !overallProfileArea = !overallProfile.area()
+  !difference = ((!overallProfileArea - !owningProfile.area()) / !overallProfileArea)
+  !testResult = ( !difference.abs() lt 0.001 )
+  -- test actual approved hole matches required hole
+  if( !testResult and !secondaryHoles.empty().not() ) then
+
+    -- Add the list of profiles of any real holes to the list of fixings. The virtual hole should be within the real holes
+    !realHoleCheckProfile = !overallProfile
+
+    do !i index !secondaryHoles
+      !realHoleCheckProfile = !this.unionProfiles(!realHoleCheckProfile, !secondaryHoles[!i])
+      handle (2,830)
+        !!setRestrictionError(!this.association, !this.component, |Unable to union profiles with different orientations (#profile fixings > 1)|)
+        return false
+      endhandle
+
+      -- If for any reason the fixings do not intersect there will be more than one overall profile
+      -- in which case it is a failure
+      if (!realHoleCheckProfile.unset() ) then
+        !!setRestrictionError(!this.association, !this.component, |Approved hole and requested hole do not intersect|)
+        return false
+      endif
+    enddo
+    -- test validity of the first hole - assuming that all holes (across boundaries) are the same geometry
+    !realHoleCheckProfileArea = !realHoleCheckProfile.area()
+    handle any
+      !errStr = |Approved Hole Profile is not valid|
+      !!setRestrictionError(!this.association, !this.component, !errStr)
+      return false
+    endhandle
+    !difference = ((!realHoleCheckProfileArea - !overallProfile.area()) / !realHoleCheckProfileArea)
+    !testResult = ( !difference.abs() lt 0.005 )
+  endif
+
+    !errStr = |No Error|
+    if (!testResult.not()) then
+      !errStr = |Hole and fixing profiles do not match|
+    endif
+    !!setRestrictionError(!this.association, !this.component, !errStr)
+
+  return !testResult
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      unionProfiles
+--
+-- Description: project profile b onto plane of profile a and union
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .unionProfiles(!holeProfile is PROFILE, !fixingProfile is PROFILE) is PROFILE
+
+  if( !holeProfile.orientation.zDir().isParallel(!fixingProfile.orientation.zDir())) then
+    -- profiles are in parallel planes
+    !return               = !holeProfile.union(!fixingProfile)
+  else
+    -- profile b and profile a are not in parallel planes. Project b onto plane of a
+    !chordalApproximation = !fixingProfile.mergePoints().mergeLines().polyLine()
+    !pvStart              = !fixingProfile.plane().pointVector()
+    !pvEnd                = !pvStart
+    !profilePlane         = !holeProfile.plane()
+    !edgeArray            = ARRAY()
+    do !edge values !chordalApproximation.edges()
+      !pvStart.position   = !edge.startPosition
+      !pvEnd.position     = !edge.endPosition
+      !line               = object LINE(!profilePlane.intersection(!pvStart), !profilePlane.intersection(!pvEnd))
+      !edgeArray.append(!line)
+    enddo
+    !projectedProfile = object PROFILE(!profilePlane.position,!profilePlane.orientation,!edgeArray)
+    !projectedProfile.close()
+    !return           = !holeProfile.union(!projectedProfile)
+  endif
+
+  if( !return.size() neq 1 ) then
+    -- probably profiles do not overlap
+    return object PROFILE()
+  endif
+
+  return !return[1]
+
+endmethod
+-- End of method

@@ -1,0 +1,798 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            stlmirror.pmlfrm
+--    Type:          Form Definition
+--    Group:         SCTL
+--      Keyword:     Steel Mirror
+--    Module:        design
+--  Author:          Daniel(Jaehun.Choi)
+--  Created:
+--
+--  Description:     Structure Mirror
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  derivePosition()                 -                   set position object with positions, wrt world
+--  getLocation()                    -                   get position for mirroring
+--  getPosFromCntrl(ARRAY)           POSITION            Converts array from position control to position
+--  getStructuralMembers(DBREF)      ARRAY               get structural elements from STRU, FRWM and SBFR
+--  initPosControl()                 -                   initialize position control
+--  initialise()                     -                   initialise position for mirroring
+--  mirrorElement()                  -                   mirror current element
+--  mirrorMultipleElement(ARRAY)     -                   mirror multiple element(s)
+--  mirrorMultipleValidatedElements(ARRAY) -                   mirror validated list of elements
+--  mirrorOwner()                    -                   mirror owner element
+--  mirrorUndoRedo()                 -                   Handle undo or redo event
+--  pickStart(STRING)                -                   setup EDG pick event for mirroring
+--  pickTarget()                     -                   pick direction / origin / position
+--  processPickData(STRING,EDGPOSITIONDATA) -                   process picking element for mirroring
+--  selectedMirrorElement()          -                   mirror selected element(s)
+--  setCurrentElement()              -                   set current element
+--  setMirrorDir()                   -                   set direction for mirroring
+--  showMirrorPlane(STRING)          -                   show mirror plane
+--  stlMirror()                      -
+--  tidy()                           -                   tidy aid graphics
+--
+
+------------------------------------------------------------------------
+
+-- Import DLL for positioning
+import 'PositionControl'
+handle ANY
+endhandle
+
+-- Define form
+setup form !!stlMirror dialog size 30 7
+
+  button .btnCE  linkLabel         'Set Origin To CE'                       at x0     ymin      width 10   callback |!this.setCurrentElement()|
+  para   .paraCE                                                   at xmax1       ymin      text ''   width 29
+
+  frame .frmPickType ''                                            at x0        ymax  width 30 height 1
+    rtoggle .rtglDir   'direction'  tagwidth 9                     at xmin1     ymin0.8
+    rtoggle .rtglOri   'position'   tagwidth 9                     at xmax      ymin
+    rtoggle .rtglPos   'plane'      tagwidth 8                     at xmax      ymin
+
+    button  .btnPicking   'Pick'                                   at xmax1    ymin      callback |!this.pickTarget()|
+  exit
+
+  frame .positionControl 'Plane Origin'  at x0 ymax0.5 width 41 height 5
+    container .netPositionFrame PMLNetCONTROL 'NET' dock fill
+  exit
+
+  text   .txtMirrorDir              'Mirror Direction' tagwidth 12    at x0       ymax0.5   callback |!this.setMirrorDir()| width 18 is STRING
+
+  button .btnMirrorCE                                                 at xmax1    ymin     tooltip 'Mirror Current Element'    pixmap width 18 height 18 call |!this.mirrorElement()|
+  button .btnMirrorSel                                                at xmax     ymin      tooltip 'Mirror Selected Elements'  pixmap width 18 height 18 call |!this.selectedMirrorElement()|
+  button .btnMirrorOwn                                                at xmax     ymin      tooltip 'Mirror Owner Structure'    pixmap width 18 height 18 call |!this.mirrorOwner()|
+
+  toggle .tglCopyElement  'Copy Element'               tagwidth 12    at x0       ymax0.25
+  button .btnDismiss      'Dismiss'                                   at xmax19  ymin callback '!this.tidy()' width 7  ok
+
+  member .shipGrid       is SHIPGRID
+  member .position       is POSITION
+  member .orientation    is ORIENTATION
+
+  member .mirrorStruct   is STLMIRROR
+
+  member .mirrorDir      is STRING
+  member .mirrorPlane    is GPHPLANE
+
+  member .aidPlaneNumber is REAL
+
+  -- volume for mirror plane
+  member .mirrorVolume   is ARRAY
+
+  -- Form Members
+  using namespace 'Aveva.Pdms.Presentation'
+
+  -- PMLNet Position control
+  member .posControl      is POSITIONCONTROL
+  member .targetElement   is DBREF
+
+  -- Undo event handler
+  member .undoMirror      is UNDOABLE
+
+exit
+-- End of form definition for !!stlMirror
+
+------------------------------------------------------------------------
+--
+-- Method:      stlMirror
+--
+-- Description: constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .stlMirror()
+  !this.formTitle      = 'Structure Copy / Mirror'
+  !this.aidPlaneNumber = !!aidNumbers.add('stlMirror')
+
+  --!this.pgPickPos.addPixmap(!!pml.getPathName('accept.png'))
+  --!this.pgPickPla.addPixmap(!!pml.getPathName('workingplaneoff16.png'))
+  !this.btnMirrorCE.addPixmap(!!pml.getPathName('mirror16.png'))
+  !this.btnMirrorSel.addPixmap(!!pml.getPathName('createelement16.png'))
+  !this.btnMirrorOwn.addPixmap(!!pml.getPathName('aslbuild16.png'))
+
+  !this.initcall   = |!this.initialise()|
+  !this.cancelCall = |!this.tidy()|
+  !this.quitcall   = |!this.tidy()|
+
+    -- Initialise mirror undo
+  !this.undoMirror.description('Mirror Steel Elements')
+  !this.undoMirror.undoAction('!!stlMirror.mirrorUndoRedo()')
+  !this.undoMirror.redoAction('!!stlMirror.mirrorUndoRedo()')
+
+  !this.rtglDir.val = true
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      initialise
+--
+-- Description: initialise position for mirroring
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .initialise()
+  !this.targetElement = !!ce
+  !this.paraCE.val    = !this.targetElement.fullname
+
+  !this.getLocation()
+  !this.initPosControl()
+  !this.showMirrorPlane('')
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      setCurrentElement
+--
+-- Description: set current element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setCurrentElement()
+  !this.initialise()
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      pickTarget
+--
+-- Description: pick direction / origin / position
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pickTarget()
+  if (!this.frmPickType.val eq 1) then
+    !this.pickStart('DIR')
+  elseif (!this.frmPickType.val eq 2) then
+    !this.pickStart('POS')
+  elseif (!this.frmPickType.val eq 3) then
+    !this.pickStart('PLANE')
+  endif
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      setMirrorDir
+--
+-- Description: set direction for mirroring
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setMirrorDir()
+  !mirrorDir = object DIRECTION(!this.txtMirrorDir.val)
+  handle any
+    !this.txtMirrorDir.setFocus()
+    return error 1 |Mirror direction is wrong. Would you check the direction?|
+  endhandle
+
+  !this.showMirrorPlane(!this.txtMirrorDir.val)
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      getLocation
+--
+-- Description: get position for mirroring
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getLocation()
+  var !entryList coll all for $!this.targetElement
+
+  do !i indices !entryList
+    !entry            = !entryList[!i].dbref()
+    !this.position    = !entry.position.wrt( /* )
+    handle any
+      skip
+    endhandle
+
+    !this.orientation = !entry.orientation.wrt( /* )
+    handle any
+      skip
+    elsehandle none
+      !this.mirrorVolume = !entry.wvol
+      break
+    endhandle
+  enddo
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      initPosControl
+--
+-- Description: initialize position control
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .initPosControl()
+  -- declare namespace where position control exists
+  using namespace 'Aveva.Pdms.Presentation'
+
+  -- create new instance of position control
+  !this.posControl        = object POSITIONCONTROL()
+
+  -- Load ship grid data
+  !grid                   = object SHIPGRID()
+
+  -- Only populate the grid data if a ship reference grid is available
+  if(!grid.xID.set()) then
+
+    do !i indices !grid.xID
+      !xGridData[!i][1]     = !grid.xID[!i]
+      !xGridData[!i][2]     = !grid.xOffset[!i]
+    enddo
+
+    do !i indices !grid.yID
+      !yGridData[!i][1]     = !grid.yID[!i]
+      !yGridData[!i][2]     = !grid.yOffset[!i]
+    enddo
+
+    do !i indices !grid.zID
+      !zGridData[!i][1]     = !grid.zID[!i]
+      !zGridData[!i][2]     = !grid.zOffset[!i]
+    enddo
+
+    -- Set grid data
+    !this.posControl.gridData(!xGridData,!yGridData,!zGridData)
+
+    -- Set position column heading
+    !this.posControl.heading('World Position')
+  else
+    !this.posControl.gridvisible(FALSE)
+  endif
+
+  -- Initialise Control
+  !this.posControl.forceXYZ(!this.position.east, !this.position.north, !this.position.up)
+  !this.posControl.changeAction('!!stlMirror.derivePosition()')
+
+  var !coordinate coordinate
+
+  if(!grid.xID.set() and (!coordinate.eq('XYZ'))) then
+--   -- Initialise as grid control and Specify tags
+--   !this.posControl.gridFormat(!grid.xTag, !grid.yTag, !grid.zTag)
+   !this.posControl.gridFormat()
+
+  elseif(!coordinate.eq('XYZ')) then
+   !this.posControl.xyzFormat()
+
+  else
+   !this.posControl.enuformat()
+  endif
+
+  -- Add PMLNet control to PML frame
+  !this.netPositionFrame.control  = !this.posControl.handle()
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      showMirrorPlane
+--
+-- Description: show mirror plane
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .showMirrorPlane(!mirrorDir is STRING)
+
+  !plane  = object PLANE(!this.position, !this.orientation)
+  handle any
+    !!alert.error(!!error.text)
+    return
+  endhandle
+
+
+  !this.mirrorPlane = object GPHPLANE(!plane)
+  !this.mirrorPlane.filled(TRUE)
+  !this.mirrorPlane.x = 1000mm
+  !this.mirrorPlane.y = 1000mm
+
+  !planeDir = ''
+  if (!mirrorDir eq '') then
+    !planeDir = !this.txtMirrorDir.val
+
+    if (!this.txtMirrorDir.val neq '' and !this.txtMirrorDir.val.set()) then
+      !direction       = object DIRECTION(!this.txtMirrorDir.val)
+    else
+      !direction       = !this.mirrorPlane.plane.direction().opposite()
+    endif
+  else
+    !direction       = object DIRECTION(!mirrorDir)
+    !planeDir        = !mirrorDir
+  endif
+
+  if (!planeDir eq '') then
+    !this.mirrorPlane.plane.orientation = !this.orientation
+  else
+    !this.mirrorPlane.plane.orientation = object ORIENTATION('Z is $!planeDir')
+  endif
+
+  !this.tidy()
+  !this.mirrorPlane.draw(!this.aidPlaneNumber)
+--  AID ARROW NUMBER $!<this.aidPlaneNumber> AT $!this.position DIRECTION $!direction HEIGHT 500mm
+
+  !this.txtMirrorDir.val = !direction.string().before('WRT').trim()
+  !this.mirrorDir = !this.txtMirrorDir.val
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      derivePosition
+--
+-- Description: set position object with positions, wrt world
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .derivePosition()
+  !posArray  = !this.posControl.xyz()
+  !east      = !posArray[0].string()
+  !north     = !posArray[1].string()
+  !up        = !posArray[2].string()
+
+  !this.position  = object POSITION('E $!east N $!north U $!up wrt /* ')
+  !this.showMirrorPlane('')
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      pickStart
+--
+-- Description: setup EDG pick event for mirroring
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pickStart(!action is STRING)
+  -- Initialise variables
+  !prompt               = 'Pick Element'
+  !packet               = object EDGPACKET()
+  !packet.pickpacket.stdPosition(!prompt)
+  !packet.remove        = true
+
+  if(!action.eq('DIR')) then
+    !packet.action        = '!!' & !this.name() & '.processPickData(|DIR|, !this.return[1])'
+  elseif(!action.eq('POS')) then
+    !packet.action        = '!!' & !this.name() & '.processPickData(|POS|, !this.return[1])'
+  elseif(!action.eq('PLANE')) then
+    !packet.action        = '!!' & !this.name() & '.processPickData(|PLANE|, !this.return[1])'
+  endif
+
+  -- Add event to system
+  !!edgCntrl.add(!packet)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      processPickData
+--
+-- Description: process picking element for mirroring
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .processPickData(!action is STRING, !data is EDGPOSITIONDATA)
+  if (!data.type.eq('DESIGNAID')) then
+    !!alert.error(|Please pick a db element!|)
+    return
+  elseif(!data.item.badref()) then
+    !!alert.error(|You picked a wrong element!|)
+    return
+  endif
+
+  if (!action eq 'DIR') then
+    -- Direction returned by pick
+    !pickedDir = !data.item.orientation.zdir().wrt( /* ).string().before('WRT').trim()
+    !this.showMirrorPlane(!pickedDir)
+
+  elseif (!action eq 'POS') then
+    -- Position returned by pick
+    !this.position = !data.position.wrt( /* )
+    !this.posControl.xyz(!this.position.east, !this.position.north, !this.position.up)
+    !this.position = !this.getPosFromCntrl(!this.posControl.xyz())
+
+    !this.showMirrorPlane('')
+
+  elseif (!action eq 'PLANE') then
+    -- Direction & Position returned by pick
+    !this.position = !data.position.wrt( /* )
+    !this.posControl.xyz(!this.position.east, !this.position.north, !this.position.up)
+    !this.position = !this.getPosFromCntrl(!this.posControl.xyz())
+
+    !pickedDir = !data.item.orientation.zdir().wrt( /* ).string().before('WRT').trim()
+
+
+    !this.position = !this.getPosFromCntrl(!this.posControl.xyz())
+    !this.showMirrorPlane(!pickedDir)
+  endif
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method: getPosFromCntrl
+--
+-- Description: Converts array from position control to position
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getPosFromCntrl(!pos is ARRAY) is POSITION
+
+   !position           = object POSITION('E0 N0 U0')
+   !east  = !pos[0].string()
+   !north = !pos[1].string()
+   !up    = !pos[2].string()
+   !position = object POSITION('E $!east N $!north U $!up')
+
+   return !position
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      mirrorElement
+--
+-- Description: mirror current element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .mirrorElement()
+
+  !this.mirrorStruct.mirrorPosition  = !this.position
+  !this.mirrorStruct.mirrorDirection = !this.mirrorDir
+
+  !element = !!ce
+  if (!element.hardtype inset ('STRU', 'FRMW', 'SBFR')) then
+    !members    = ARRAY()
+    !members.appendArray(!this.getStructuralMembers(!element))
+  else
+    !members[1] = !element
+  endif
+
+  !this.mirrorMultipleElement(!members)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      getStructuralMembers
+--
+-- Description: get structural elements from STRU, FRWM and SBFR
+--              NOTE this method is called recursively
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       STRU, FRMW, or SBFR element
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Array of structural elements
+--
+------------------------------------------------------------------------
+define method .getStructuralMembers(!element is DBREF) is ARRAY
+
+  if (not !element.hardtype inset ('STRU', 'FRMW', 'SBFR')) then
+    return ARRAY()
+  endif
+
+  !members = ARRAY()
+
+  do !ref values !element.members
+    if( !ref.hardtype inset('SCTN','PANE','GENSEC','BPANEL','FIXING') ) then
+      !members.append(!ref)
+    elseif( !ref.hardtype inset('STRU', 'FRMW', 'SBFR') ) then
+      -- NOTE recursive call
+      !members.appendArray(!this.getStructuralMembers(!ref))
+    endif
+  enddo
+
+  return !members
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      selectedMirrorElement
+--
+-- Description: mirror selected element(s)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .selectedMirrorElement()
+  !selection = object SELECTION()
+  !selection.getCurrent()
+
+  !members = !selection.getSelection()
+
+  !this.mirrorMultipleElement(!members)
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      mirrorMultipleElement
+--
+-- Description: mirror multiple element(s)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .mirrorMultipleElement(!targetList is ARRAY)
+  if (!targetList.unset()) then
+    return error 1 |There is no element(s) for mirroring|
+  endif
+
+  -- validate the list of elements
+  if (!this.tglCopyElement.val) then
+    do !entry values !targetList
+      if (!entry.owner.type eq 'SITE') then
+        return error 1 |This function does not work at zone / site level|
+        skip
+      endif
+    enddo
+  endif
+
+  -- mirror elements with each mirror operation undoable
+  !saveCE = !!ce
+  !this.undoMirror.add()
+  !this.mirrorMultipleValidatedElements(!targetList)
+  handle any
+    !!alert.error(!!error.text)
+  endhandle
+  !!ce = !saveCE
+  !this.undoMirror.endUndoable()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      mirrorMultipleValidatedElements
+--
+-- Description: mirror validated list of elements
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .mirrorMultipleValidatedElements(!targetList is ARRAY)
+
+  !this.mirrorStruct.mirrorPosition  = !this.position
+  !this.mirrorStruct.mirrorDirection = !this.mirrorDir
+
+  !mem = !!ce
+
+  if (!this.tglCopyElement.val) then
+    if (!mem.type inset ('FRMW', 'SBFR')) then
+      !type = !mem.type
+      new $!type
+    elseif (!mem.type eq 'STRU') then
+      new STRU copy $!mem
+      delete STRU mem
+      New FRMW
+    endif
+  endif
+  !copyTo = !!ce
+
+
+  do !i indices !targetList
+    !entry   = !targetList[!i]
+
+    if (!this.tglCopyElement.val) then
+      !type = !entry.type
+      if (!copyTo.hardtype INSET('STRU', 'FRMW', 'SBFR')) then
+        !!ce     = !copyTo
+        !members = !copyTo.members
+        if( !copyTo.mcount gt 0 ) then
+          -- append to member list
+          !lastMem = !members.last()
+          NEW $!type AFTER $!lastMem COPY $!entry
+        else
+          -- add first member to list
+          NEW $!type COPY $!entry
+        endif
+      else
+        -- must use AFTER syntax on copy to avoid problems when copying FIXING (which can own FIXING)
+        !!ce     = !entry.owner
+        !lastMem = !entry
+        NEW $!type AFTER $!lastMem COPY $!entry
+      endif
+      !targetElement = !!ce
+    else
+      -- no copy
+      !targetElement = !entry
+    endif
+
+    !this.mirrorStruct.elementMirror(!targetElement)
+    !!fmSys.setProgress((!i / !targetList.size() ) * 100)
+  enddo
+
+  !!fmSys.setProgress(0)
+  !!ce = !mem
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      mirrorOwner
+--
+-- Description: mirror owner element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .mirrorOwner()
+  !mem = !!ce
+  !!ce = !mem.owner
+  !this.mirrorElement()
+
+  !!ce = !mem
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      tidy
+--
+-- Description: tidy aid graphics
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .tidy()
+
+  !!aidNumbers.hide(!this.aidPlaneNumber)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      mirrorUndoRedo
+--
+-- Description: Handle undo or redo event
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .mirrorUndoRedo()
+
+  if( !this.shown().not() ) then
+    return
+  endif
+  !this.initialise()
+
+endmethod
+-- End of method definition

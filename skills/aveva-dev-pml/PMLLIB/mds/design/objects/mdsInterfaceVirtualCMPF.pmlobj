@@ -1,0 +1,1031 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- AVEVA Solutions Ltd copyright January 2004
+--
+-- File: mdsInterfaceVirtualCMPF.pmlobj
+-- Type:    Object Definition
+-- Group:   Multi Discipline Supports Application
+-- Keyword:   MDS
+-- Module:
+-- Replaces:
+--
+-- Author:    R.martin
+-- Created:   Wednesday - 31/03/10
+--
+--
+-----------------------------------------------------------------------------------------------------------
+--
+-- Define Object
+define object MDSINTERFACEVIRTUALCMPF
+
+  --mimic the members of a steelwork fitting object
+  --standard members
+  member .name is STRING
+  member .type is STRING
+  member .lock is BOOLEAN
+  member .owner is DBREF
+  member .description is STRING
+  member .function is STRING
+  member .purpose is STRING
+  member .gtype is STRING
+  member .number is REAL
+  member .position is POSITION
+  member .desparam is ARRAY
+  member .built is BOOLEAN
+  member .shop is BOOLEAN
+  member .sJustification is DBREF
+  member .grade is REAL
+  member .ispec is DBREF
+  member .firesistance is REAL
+  member .inref is DBREF
+  member .spref is DBREF
+  member .cfArray is ARRAY
+  member .matref is DBREF
+
+  --world data
+  member .owningStru is DBREF
+
+  --store a list of virtual SBFI objects
+  member .sbfi is ARRAY
+
+endobject
+
+define method .mdsInterfaceVirtualCMPF(!steel is DBREF)
+
+  --populate the object using the current steelwork member to get initial position etc
+  !this.position = !steel.position.wrt( /* )
+  !this.owner = !steel
+
+  --get the owning stru
+  !owner = !steel
+  do
+    !owner = !owner.owner
+    handle ANY
+      break
+    endhandle
+
+    if !owner.type.eq('STRU') then
+      !this.owningStru = !owner
+      break
+    endif
+  enddo
+
+endmethod
+
+$(
+--we need dummystring here because  both versions of the constructor use dbrefs
+define method .mdsInterfaceVirtualCMPF(!cmpf is DBREF, !dummyString is STRING)
+
+  --populate the object using an existing fitting (for example in modify mode)
+  !listOfAttributes = !cmpf.attributes()
+
+  do !i from 1 to !listOfAttributes.size()
+    if !listOfAttributes[$!i].substring(1,1).eq(':') then
+      --we have a uda so we need to strip the : from it
+      !udaName = !listOfAttributes[$!i].substring(2)
+      !this.$!udaName = !cmpf.$!listOfAttributes[$!i]
+      handle ANY
+      endhandle
+    else
+      !this.$!listOfAttributes[$!i] = !cmpf.$!listOfAttributes[$!i]
+      handle ANY
+      endhandle
+    endif
+  enddo
+
+  --now create the SBFI objects
+  !sbfiMem = !cmpf.members
+  do !i from 1 to !sbfiMem.size()
+    !this.addSBFI(!cmpf, !sbfiMem[!i])
+  enddo
+
+endmethod
+$)
+
+--this constructor deals with the UDA hanger connection condition in which all of our
+--fitting data is derived from the UDA's held on the hangers
+define method .mdsInterfaceVirtualCMPF(!hang is DBREF, !dummyString is STRING)
+
+  !hangerTailPos = !hang.tpos.wrt( /* )
+  !this.position = !hangerTailPos
+
+  if !hang.:MDSCIVREF.set() then
+    !existingConnection = !hang.tref.owner.owner
+    handle ANY
+      !existingConnection = object DBREF()
+    endhandle
+    if !hang.:MDSCIVREF[1].eq(!existingConnection) then
+      !owningSteel = !hang.tref.owner.owner
+    else
+      !owningSteel = !hang.:MDSCIVREF[1]
+    endif
+  else
+    !owningSteel = !hang.tref.owner.owner
+  endif
+
+  !steel = !owningSteel
+  if !hang.:MDSTREF.set() and !hang.:MDSTREF.neq('') then
+    !sbfiName = !hang.:MDSTREF
+  else
+    !sbfiName = !hang.tref.name
+  endif
+
+  !this.name = !sbfiName.before('SBFI/') + 'CMPF'
+
+  --populate the object using the current steelwork member to get initial position etc
+  !this.owner = !steel
+
+  --get the owning stru
+  !owner = !steel
+  do
+    !owner = !owner.owner
+    handle ANY
+      break
+    endhandle
+
+    if !owner.type.eq('STRU') then
+      !this.owningStru = !owner
+      break
+    endif
+  enddo
+
+  --get the number of hangers so that we can add subfittings for them
+  !rest = !sbfiName.before('SBFI/') + 'REST'
+
+  var !hangers collect all hang for $!rest
+
+  --now create the SBFI objects
+  do !i from 1 to !hangers.size()
+    !name = !sbfiName.before('SBFI/') + 'SBFI/H' + !i.string()
+    !this.addSBFI(!this, !name)
+  enddo
+
+endmethod
+
+define method .getPosition() is POSITION
+
+  return !this.position
+
+endmethod
+
+define method .setPosition(!pos is POSITION)
+
+  !this.position = !pos
+
+endmethod
+
+--add a new virtual subfitting object that is owned by the current virtual CMPF
+define method .addSBFI(!cmpfName is MDSINTERFACEVIRTUALCMPF, !sbfiName is STRING)
+
+  !virtualSBFI = object MDSINTERFACEVIRTUALSBFI(!cmpfName, !sbfiName)
+  !this.sbfi.append(!virtualSBFI)
+
+endmethod
+
+--add a new virtual subfitting object that is owned by the current virtual CMPF
+define method .addSBFI(!cmpfName is DBREF, !sbfiName is DBREF)
+
+  !virtualSBFI = object MDSINTERFACEVIRTUALSBFI(!cmpfName, !sbfiName)
+  !virtualSBFI.owner = !this
+  !this.sbfi.append(!virtualSBFI)
+
+endmethod
+
+--dun1218 added this method to write out a connection macro which will add a fitting to a previously read only
+--piece of steelwork
+define method .connectionMacroOneFitting() is BOOLEAN
+
+  --get the first sbfi object from the sbfi array and write it out as a connection macro
+  !virtualSBFI = !this.sbfi[1]
+
+  !fittingName = !this.name
+  !fittingName.dbref()
+  handle ANY
+    -- fitting does not exist so create a new one
+    !newFitting = TRUE
+  elsehandle NONE
+    --the fitting already exists so don't create a new one
+    !newFitting = FALSE
+  endhandle
+
+  !attaName = !fittingName.before('/CMPF')
+  if !attaName.substring(1,1).eq('/').not() then
+    !attaName = '/' + !attaName
+  endif
+
+  --build up an array of strings for the macro
+  !lines = object ARRAY()
+
+  --add a line that will act as a flag to enable us to tell whether or not a file needs to be run in
+  !lines.append('!macrostatus = |PENDING|')
+
+  --add a type line so that we can tell what the macro is supposed to be doing
+  !lines.append('!macrotype = |CONNECTION UPDATE|')
+
+  --add an atta line so that we can tell which atta is being updated
+  !lines.append('!attaName = |$!attaName|')
+  !lines.append('handle any')
+  !lines.append('endhandle')
+
+  --add a date time line that can be read into a date time object in the macro management form
+  !dateTime = object DATETIME()
+  !year = !dateTime.year().string()
+  !month = !dateTime.month().string()
+  !date = !dateTime.date().string()
+  !hour = !dateTime.hour().string()
+  !minute = !dateTime.minute().string()
+  !second = !dateTime.second().string()
+  !dateTimeString = !year + ',' + !month + ',' + !date + ',' + !hour + ',' + !minute + ',' + !second
+  !lines.append('!dateTime = ' + '|$!dateTimeString|')
+
+  --navigate to the existing fitting so that we can update its attributes
+  !lines.append('!!ce = ' + !virtualSBFI.name)
+
+  --we need to add a handle block here because the fittings may not exist yet.
+  !lines.append('handle any')
+  !lines.append('--owning steelwork')
+  !lines.append('!!ce = ' + !this.owner.fullname)
+  handle ANY
+    !lines.append('!!ce = ' + !this.owner.string())
+  endhandle
+  !lines.append('new cmpf ' + !this.name)
+  !lines.append('new sbfi ' + !virtualSBFI.name)
+  !lines.append('endhandle')
+
+  ---------------------------------------------------------------------------------------------------
+  --add the CMPF attributes--------------------------------------------------------------------------
+  ---------------------------------------------------------------------------------------------------
+  !lines.append('!!ce = ' + !this.name)
+
+  if !this.description.set() then
+    if !this.description.trim().neq('') then
+      !lines.append('description ' + |'$!this.description'|)
+    endif
+  endif
+
+  if !this.function.set() then
+    if !this.function.trim().neq('') then
+      !lines.append('function ' + |'$!this.function'|)
+    endif
+  endif
+
+  if !this.purpose.set() then
+    if !this.purpose.trim().neq('') then
+      !lines.append('purpose ' + |'$!this.purpose'|)
+    endif
+  endif
+
+  if !this.gtype.set() then
+    if !this.gtype.trim().neq('') then
+      !lines.append('gtype ' + |'$!this.gtype'|)
+    endif
+  endif
+
+  if !this.number.set() then
+    !lines.append('number ' + '$!this.number')
+  endif
+
+  if !this.built.set() then
+    !lines.append('built ' + '$!this.built')
+  endif
+
+  if !this.shop.set() then
+    !lines.append('shop ' + '$!this.shop')
+  endif
+
+  if !this.position.set() then
+    !lines.append('position ' + '$!this.position')
+  endif
+
+  if !this.grade.set() then
+    !lines.append('grade ' + '$!this.grade')
+  endif
+
+  if !this.ispec.set() then
+    !lines.append('ispec ' + '$!this.ispec')
+  endif
+
+  if !this.firesistance.set() then
+    !lines.append('firesistance ' + '$!this.firesistance')
+  endif
+
+  if !this.inref.set() then
+    !lines.append('inref ' + '$!this.inref')
+  endif
+
+  if !this.spref.set() then
+    !lines.append('spref ' + '$!this.spref')
+  endif
+
+  if !this.matref.set() then
+    !lines.append('matref ' + '$!this.matref')
+  endif
+
+  --now do the arrays
+  !cfArray     = !this.cfArray
+  if !cfArray.size().gt(0) then
+    !lines.append('!cfArr = object ARRAY()')
+    do !i from 1 to !cfArray.size()
+      !lines.append('!cfArr.append($!cfArray[$!i])')
+    enddo
+    !lines.append('cfArray = $$!cfArr')
+  endif
+
+  ---------------------------------------------------------------------------------------------------
+  --now add the SBFI attributes
+  ---------------------------------------------------------------------------------------------------
+  !lines.append('!!ce = ' + !virtualSBFI.name)
+
+  if !virtualSBFI.description.set() then
+    if !virtualSBFI.description.trim().neq('') then
+      !lines.append('description ' + |'$!virtualSBFI.description'|)
+    endif
+  endif
+
+  if !virtualSBFI.function.set() then
+    if !virtualSBFI.function.trim().neq('') then
+      !lines.append('function ' + |'$!virtualSBFI.function'|)
+    endif
+  endif
+
+  if !virtualSBFI.purpose.set() then
+    if !virtualSBFI.purpose.trim().neq('') then
+      !lines.append('purpose ' + |'$!virtualSBFI.purpose'|)
+    endif
+  endif
+
+  if !virtualSBFI.gtype.set() then
+    if !virtualSBFI.gtype.trim().neq('') then
+      !lines.append('gtype ' + |'$!virtualSBFI.gtype'|)
+    endif
+  endif
+
+  if !virtualSBFI.number.set() then
+    !lines.append('number ' + '$!virtualSBFI.number')
+  endif
+
+  if !virtualSBFI.built.set() then
+    !lines.append('built ' + '$!virtualSBFI.built')
+  endif
+
+  if !virtualSBFI.shop.set() then
+    !lines.append('shop ' + '$!virtualSBFI.shop')
+  endif
+
+  if !virtualSBFI.delPosition.set() then
+    !delpos = !virtualSBFI.delPosition.string().upcase().before('WRT')
+    !lines.append('delPosition ' + '$!delpos')
+  endif
+
+  if !virtualSBFI.zDirection.set() then
+    !lines.append('zdirection ' + '$!virtualSBFI.zDirection')
+  endif
+
+  if !virtualSBFI.bangle.set() then
+    !lines.append('bangle ' + '$!virtualSBFI.bangle')
+  endif
+
+  if !virtualSBFI.cref.set() then
+    --use the 'tail' keyword to force the cref to connect to the tail reference of the hanger
+    !lines.append('cref ' + '$!virtualSBFI.cref' + ' tail')
+    !lines.append('handle any')
+    !lines.append('endhandle')
+  else
+    --build the cref
+    !hangerName = !virtualSBFI.name.before('/SBFI') + '/H1'
+
+    --use the 'tail' keyword to force the cref to connect to the tail reference of the hanger
+    !lines.append('cref ' + '$!hangerName' + ' tail')
+    !lines.append('handle any')
+    !lines.append('endhandle')
+  endif
+
+  if !virtualSBFI.grade.set() then
+    !lines.append('grade ' + '$!virtualSBFI.grade')
+  endif
+
+  if !virtualSBFI.ispec.set() then
+    !lines.append('ispec ' + '$!virtualSBFI.ispec')
+  endif
+
+  if !virtualSBFI.firesistance.set() then
+    !lines.append('firesistance ' + '$!virtualSBFI.firesistance')
+  endif
+
+  if !virtualSBFI.inref.set() then
+    !lines.append('inref ' + '$!virtualSBFI.inref')
+  endif
+
+  if !virtualSBFI.spref.set() then
+    !lines.append('spref ' + '$!virtualSBFI.spref')
+  endif
+
+  if !virtualSBFI.matref.set() then
+    !lines.append('matref ' + '$!virtualSBFI.matref')
+  endif
+
+  --now do the arrays
+  !mdsAncRef      = !virtualSBFI.mdsAncRef
+  if !mdsAncRef.size().gt(0) then
+    !lines.append('!ancref = object ARRAY()')
+    do !i from 1 to !mdsAncRef.size()
+      !lines.append('!ancref.append($!mdsAncRef[$!i])')
+    enddo
+    !lines.append(':mdsancref = $$!ancref')
+  endif
+
+  !mdsPConn      = !virtualSBFI.mdsPConn
+  if !mdsPConn.size().gt(0) then
+    !lines.append('!pconn = object ARRAY()')
+    do !i from 1 to !mdsPConn.size()
+      !lines.append('!pconn.append($!mdsPConn[$!i])')
+    enddo
+    !lines.append(':mdsPConn = $$!pconn')
+  endif
+
+  --now write out the connection macro to the project MAC directory
+  var !projCode proj code
+  !evar = !projCode + 'MAC'
+
+  var !macPath evar $!evar
+
+  --make sure that the MAC directory exists
+  !macFile = object FILE(!macPath)
+  if !macFile.exists().not() then
+    !!alert.error('the current project does not have a $!evar directory which is required to store inter db macros. Hanger creation has not completed correctly')
+    return FALSE
+  endif
+
+  --now look for the hanger macro directory within the mac directory
+  var !hangMacDir evar mdsHangerMacros
+
+  --make sure that the hanger macro directory exists
+  !hangMacFile = object FILE(!hangMacDir)
+  if !hangMacFile.exists().not() then
+    !!alert.error('the current project does not have a $!hangMacDir directory which is required to store hanger macros. Hanger creation has not completed correctly')
+    return FALSE
+  endif
+
+  !fileName = !hangMacDir + |\| + !virtualSBFI.name.after('/').before('/') + '-connection.mac'
+  !file = object FILE(!fileName)
+
+  --if the filename already exists then we have to create a new name, doesn't matter what the increment is on the file name
+  --because the macro management tool will only order the files in date time order as it is stored in the file
+  if !file.exists() then
+    do !i
+      !fileName = !hangMacDir + |\| + !virtualSBFI.name.after('/').before('/') + '-$!i' + '-connection.mac'
+      !file = object FILE(!fileName)
+      if !file.exists() then
+        skip
+      else
+        break
+      endif
+    enddo
+  endif
+
+  !file.writefile('OVERWRITE', !lines)
+
+  return TRUE
+
+endmethod
+
+--dun1218 added this method to write out a connection macro which will add a fitting to a previously read only
+--piece of steelwork
+define method .connectionMacroTwoFittings() is BOOLEAN
+
+  !attaName = !this.name.before('/CMPF')
+  if !attaName.substring(1,1).eq('/').not() then
+    !attaName = '/' + !attaName
+  endif
+
+  --get the first sbfi object from the sbfi array and write it out as a connection macro
+  !virtualSBFI1 = !this.sbfi[1]
+  !virtualSBFI2 = !this.sbfi[2]
+
+  !fittingName = !this.name
+  !fittingName.dbref()
+  handle ANY
+    -- fitting does not exist so create a new one
+    !newFitting = TRUE
+  elsehandle NONE
+    --the fitting already exists so don't create a new one
+    !newFitting = FALSE
+  endhandle
+
+  ------------------------------------------------------------------------
+  --start of macro write--------------------------------------------------
+  ------------------------------------------------------------------------
+
+  --build up an array of strings for the macro
+  !lines = object ARRAY()
+
+  --add a line that will act as a flag to enable us to tell whether or not a file needs to be run in
+  !lines.append('!macrostatus = |PENDING|')
+
+  --add a type line so that we can tell what the macro is supposed to be doing
+  !lines.append('!macrotype = |CONNECTION UPDATE|')
+
+  --add an atta line so that we can tell which atta is being updated
+  !lines.append('!attaName = |$!attaName|')
+  !lines.append('handle any')
+  !lines.append('endhandle')
+
+  --add a date time line that can be read into a date time object in the macro management form
+  !dateTime = object DATETIME()
+  !year = !dateTime.year().string()
+  !month = !dateTime.month().string()
+  !date = !dateTime.date().string()
+  !hour = !dateTime.hour().string()
+  !minute = !dateTime.minute().string()
+  !second = !dateTime.second().string()
+  !dateTimeString = !year + ',' + !month + ',' + !date + ',' + !hour + ',' + !minute + ',' + !second
+  !lines.append('!dateTime = ' + '|$!dateTimeString|')
+
+  --navigate to the existing fitting so that we can update its attributes
+  !lines.append('!!ce = ' + !virtualSBFI1.name)
+
+  --we need to add a handle block here because the fittings may not exist yet.
+  !lines.append('handle any')
+  !lines.append('--owning steelwork')
+  !lines.append('!!ce = ' + !this.owner.fullname)
+  handle ANY
+    !lines.append('!!ce = ' + !this.owner.string())
+  endhandle
+  !lines.append('new cmpf ' + !this.name)
+  !lines.append('new sbfi ' + !virtualSBFI1.name)
+  !lines.append('endhandle')
+
+  --navigate to the existing fitting so that we can update its attributes
+  !lines.append('!!ce = ' + !virtualSBFI2.name)
+
+  --we need to add a handle block here because the fittings may not exist yet.
+  !lines.append('handle any')
+  !lines.append('--owning steelwork')
+  !lines.append('!!ce = ' + !this.owner.fullname)
+  handle ANY
+    !lines.append('!!ce = ' + !this.owner.string())
+  endhandle
+  --we already have a cmpf here so navigate to it and create the sbfi
+  !lines.append('!!ce = ' + !this.name)
+  !lines.append('new sbfi ' + !virtualSBFI2.name)
+  !lines.append('endhandle')
+
+  ---------------------------------------------------------------------------------------------------
+  --add the CMPF attributes--------------------------------------------------------------------------
+  ---------------------------------------------------------------------------------------------------
+  !lines.append('!!ce = ' + !this.name)
+
+  if !this.description.set() then
+    if !this.description.trim().neq('') then
+      !lines.append('description ' + |'$!this.description'|)
+    endif
+  endif
+
+  if !this.function.set() then
+    if !this.function.trim().neq('') then
+      !lines.append('function ' + |'$!this.function'|)
+    endif
+  endif
+
+  if !this.purpose.set() then
+    if !this.purpose.trim().neq('') then
+      !lines.append('purpose ' + |'$!this.purpose'|)
+    endif
+  endif
+
+  if !this.gtype.set() then
+    if !this.gtype.trim().neq('') then
+      !lines.append('gtype ' + |'$!this.gtype'|)
+    endif
+  endif
+
+  if !this.number.set() then
+    !lines.append('number ' + '$!this.number')
+  endif
+
+  if !this.built.set() then
+    !lines.append('built ' + '$!this.built')
+  endif
+
+  if !this.shop.set() then
+    !lines.append('shop ' + '$!this.shop')
+  endif
+
+  if !this.position.set() then
+    !lines.append('position ' + '$!this.position')
+  endif
+
+  if !this.grade.set() then
+    !lines.append('grade ' + '$!this.grade')
+  endif
+
+  if !this.ispec.set() then
+    !lines.append('ispec ' + '$!this.ispec')
+  endif
+
+  if !this.firesistance.set() then
+    !lines.append('firesistance ' + '$!this.firesistance')
+  endif
+
+  if !this.inref.set() then
+    !lines.append('inref ' + '$!this.inref')
+  endif
+
+  if !this.spref.set() then
+    !lines.append('spref ' + '$!this.spref')
+  endif
+
+  if !this.matref.set() then
+    !lines.append('matref ' + '$!this.matref')
+  endif
+
+  --now do the arrays
+  !cfArray     = !this.cfArray
+  if !cfArray.size().gt(0) then
+    !lines.append('!cfArr = object ARRAY()')
+    do !i from 1 to !cfArray.size()
+      !lines.append('!cfArr.append($!cfArray[$!i])')
+    enddo
+    !lines.append('cfArray = $$!cfArr')
+  endif
+
+  ---------------------------------------------------------------------------------------------------
+  --now add the SBFI attributes
+  ---------------------------------------------------------------------------------------------------
+  do !i from 1 to 2
+    !virtualSBFI = !this.sbfi[!i]
+    !lines.append('!!ce = ' + !virtualSBFI.name)
+
+    if !virtualSBFI.description.set() then
+      if !virtualSBFI.description.trim().neq('') then
+        !lines.append('description ' + |'$!virtualSBFI.description'|)
+      endif
+    endif
+
+    if !virtualSBFI.function.set() then
+      if !virtualSBFI.function.trim().neq('') then
+        !lines.append('function ' + |'$!virtualSBFI.function'|)
+      endif
+    endif
+
+    if !virtualSBFI.purpose.set() then
+      if !virtualSBFI.purpose.trim().neq('') then
+        !lines.append('purpose ' + |'$!virtualSBFI.purpose'|)
+      endif
+    endif
+
+    if !virtualSBFI.gtype.set() then
+      if !virtualSBFI.gtype.trim().neq('') then
+        !lines.append('gtype ' + |'$!virtualSBFI.gtype'|)
+      endif
+    endif
+
+    if !virtualSBFI.number.set() then
+      !lines.append('number ' + '$!virtualSBFI.number')
+    endif
+
+    if !virtualSBFI.built.set() then
+      !lines.append('built ' + '$!virtualSBFI.built')
+    endif
+
+    if !virtualSBFI.shop.set() then
+      !lines.append('shop ' + '$!virtualSBFI.shop')
+    endif
+
+    if !virtualSBFI.delPosition.set() then
+      !delpos = !virtualSBFI.delPosition.string().upcase().before('WRT')
+      !lines.append('delPosition ' + '$!delpos')
+    endif
+
+    if !virtualSBFI.zDirection.set() then
+      !lines.append('zdirection ' + '$!virtualSBFI.zDirection')
+    endif
+
+    if !virtualSBFI.bangle.set() then
+      !lines.append('bangle ' + '$!virtualSBFI.bangle')
+    endif
+
+    --if !virtualSBFI.cref.set() then
+    --use the 'tail' keyword to force the cref to connect to the tail reference of the hanger
+    --  !lines.append('cref ' + '$!virtualSBFI.cref' + ' tail')
+    --else
+    --build the cref
+    !hangerName = !virtualSBFI.name.before('/SBFI') + '/H' + !i.string()
+
+    --use the 'tail' keyword to force the cref to connect to the tail reference of the hanger
+    !lines.append('cref ' + '$!hangerName' + ' tail')
+    !lines.append('handle any')
+    !lines.append('endhandle')
+    --endif
+
+    if !virtualSBFI.grade.set() then
+      !lines.append('grade ' + '$!virtualSBFI.grade')
+    endif
+
+    if !virtualSBFI.ispec.set() then
+      !lines.append('ispec ' + '$!virtualSBFI.ispec')
+    endif
+
+    if !virtualSBFI.firesistance.set() then
+      !lines.append('firesistance ' + '$!virtualSBFI.firesistance')
+    endif
+
+    if !virtualSBFI.inref.set() then
+      !lines.append('inref ' + '$!virtualSBFI.inref')
+    endif
+
+    if !virtualSBFI.spref.set() then
+      !lines.append('spref ' + '$!virtualSBFI.spref')
+    endif
+
+    if !virtualSBFI.matref.set() then
+      !lines.append('matref ' + '$!virtualSBFI.matref')
+    endif
+
+    --now do the arrays
+    !mdsAncRef      = !virtualSBFI.mdsAncRef
+    if !mdsAncRef.size().gt(0) then
+      !lines.append('!ancref = object ARRAY()')
+      do !j from 1 to !mdsAncRef.size()
+        !lines.append('!ancref.append($!mdsAncRef[$!j])')
+      enddo
+      !lines.append(':mdsancref = $$!ancref')
+    endif
+
+    !mdsPConn      = !virtualSBFI.mdsPConn
+    if !mdsPConn.size().gt(0) then
+      !lines.append('!pconn = object ARRAY()')
+      do !j from 1 to !mdsPConn.size()
+        !lines.append('!pconn.append($!mdsPConn[$!j])')
+      enddo
+      !lines.append(':mdsPConn = $$!pconn')
+    endif
+
+  enddo
+  ------------------------------------------------------------------------
+  --end of macro write----------------------------------------------------
+  ------------------------------------------------------------------------
+
+  --now write out the connection macro to the project MAC directory
+  var !projCode proj code
+  !evar = !projCode + 'MAC'
+
+  var !macPath evar $!evar
+
+  --make sure that the MAC directory exists
+  !macFile = object FILE(!macPath)
+  if !macFile.exists().not() then
+    !!alert.error('the current project does not have a $!evar directory which is required to store inter db macros. Hanger creation has not completed correctly')
+    return FALSE
+  endif
+
+  --now look for the hanger macro directory within the mac directory
+  var !hangMacDir evar mdsHangerMacros
+
+  --make sure that the hanger macro directory exists
+  !hangMacFile = object FILE(!hangMacDir)
+  if !hangMacFile.exists().not() then
+    !!alert.error('the current project does not have a $!hangMacDir directory which is required to store hanger macros. Hanger creation has not completed correctly')
+    return FALSE
+  endif
+
+  !fileName = !hangMacDir + |\| + !virtualSBFI.name.after('/').before('/') + '-connection.mac'
+  !file = object FILE(!fileName)
+
+  --if the filename already exists then we have to create a new name, doesn't matter what the increment is on the file name
+  --because the macro management tool will only order the files in date time order as it is stored in the file
+  if !file.exists() then
+    do !i
+      !fileName = !hangMacDir + |\| + !virtualSBFI.name.after('/').before('/') + '-$!i' + '-connection.mac'
+      !file = object FILE(!fileName)
+      if !file.exists() then
+        skip
+      else
+        break
+      endif
+    enddo
+  endif
+
+  !file.writefile('OVERWRITE', !lines)
+
+  return TRUE
+
+endmethod
+
+define method .deleteMacro(!attaName is STRING) is BOOLEAN
+
+  if !attaName.substring(1,1).neq('/') then
+    !atta = '/' + !attaName
+  else
+    !atta = !attaName
+  endif
+
+  --construct the fitting names
+  !fittName = !atta + '/CMPF'
+
+  --get the owning steel reference
+  !hang1 = !atta + '/H1'
+  !hang1.dbref()
+  handle ANY
+    !owningSteel = 'owner of ' + !fittName
+  elsehandle NONE
+    !owningSteel = !hang1.dbref().:mdscivref[1].fullname
+    handle ANY
+    endhandle
+
+    --ensure that !owningSteel is written in one form or another
+    if !owningSteel.eq('') then
+      !owningSteel = 'owner of ' + !fittName
+    endif
+
+  endhandle
+
+  --create an array of macro lines for the delete operation
+  !lines = object ARRAY()
+
+  --add a line that will act as a flag to enable us to tell whether or not a file needs to be run in
+  !lines.append('!macrostatus = |PENDING|')
+
+  --add a type line so that we can tell what the macro is supposed to be doing
+  !lines.append('!macrotype = |DELETE|')
+
+  --add an atta line so that we can tell which atta is being updated
+  !lines.append('!attaName = |$!attaName|')
+  !lines.append('handle any')
+  !lines.append('endhandle')
+
+  --add a date time line that can be read into a date time object in the macro management form
+  !dateTime = object DATETIME()
+  !year = !dateTime.year().string()
+  !month = !dateTime.month().string()
+  !date = !dateTime.date().string()
+  !hour = !dateTime.hour().string()
+  !minute = !dateTime.minute().string()
+  !second = !dateTime.second().string()
+  !dateTimeString = !year + ',' + !month + ',' + !date + ',' + !hour + ',' + !minute + ',' + !second
+  !lines.append('!dateTime = ' + '|$!dateTimeString|')
+
+  --navigate to the support steelwork and add its reference into the macro
+  --note that we will check for whether or not this reference exists in the macromanagement app
+  !lines.append('--owning steelwork 1')
+  !lines.append(!owningSteel)
+  --now add lines to navigate to and delete fitting 1 if it exists
+  !lines.append('--navigate to fitting and delete')
+  !lines.append('!!ce = $!fittName')
+  !lines.append('handle (2,109)')
+  !lines.append('elsehandle NONE')
+  !lines.append('delete cmpf')
+  !lines.append('endhandle')
+
+  --now look for the hanger macro directory within the mac directory
+  var !hangMacDir evar mdsHangerMacros
+
+  --make sure that the hanger macro directory exists
+  !hangMacFile = object FILE(!hangMacDir)
+  if !hangMacFile.exists().not() then
+    !!alert.error('the current project does not have a $!hangMacDir directory which is required to store hanger macros. Hanger creation has not completed correctly')
+    return FALSE
+  endif
+
+  !fileName = !hangMacDir + |\| + !attaName + '-delete.mac'
+  !file = object FILE(!fileName)
+  !file.writefile('OVERWRITE', !lines)
+
+  return TRUE
+
+endmethod
+
+define method .renameMacro(!attaName is STRING, !newName is STRING) is BOOLEAN
+
+  if !attaName.substring(1,1).neq('/') then
+    !atta = '/' + !attaName
+  else
+    !atta = !attaName
+  endif
+
+  if !newName.substring(1,1).neq('/') then
+    !new = '/' + !newName
+  else
+    !new = !newName
+  endif
+
+  --construct the fitting names
+  !fittName = !atta + '/CMPF'
+  !fitt1Name = !atta + '/SBFI/H1'
+  !fitt2Name = !atta + '/SBFI/H2'
+
+  --construct the new fitting names
+  !newFittName = !new + '/CMPF'
+  !newFittName1 = !new + '/SBFI/H1'
+  !newFittName2 = !new + '/SBFI/H2'
+
+  --get the owning steel reference (by now the software has modified the old attaname to the new one
+  --so we need the !new name in building up the reference otherwise we get an unset reference
+  !hang1 = !new + '/H1'
+  !hang1.dbref()
+  handle ANY
+    !owningSteel = 'owner of ' + !fittName
+  elsehandle NONE
+    !owningSteel = !hang1.dbref().:mdscivref[1].fullname
+    handle ANY
+    endhandle
+
+    --ensure that !owningSteel is written in one form or another
+    if !owningSteel.eq('') then
+      !owningSteel = 'owner of ' + !fittName
+    endif
+
+    --need to update the mdsTREF UDA with the new fitting name
+    !hang1.dbref().:MDSTREF = !newFittName1
+
+  endhandle
+
+
+
+  --create an array of macro lines for the delete operation
+  !lines = object ARRAY()
+
+  --add a line that will act as a flag to enable us to tell whether or not a file needs to be run in
+  !lines.append('!macrostatus = |PENDING|')
+
+  --add a type line so that we can tell what the macro is supposed to be doing
+  !lines.append('!macrotype = |RENAME|')
+
+  --add an atta line so that we can tell which atta is being updated
+  !lines.append('!attaName = |$!attaName|')
+  !lines.append('handle any')
+  !lines.append('endhandle')
+
+  --add an atta line so that we can tell which atta is being updated
+  !lines.append('!newAttaName = |$!new|')
+  !lines.append('handle any')
+  !lines.append('endhandle')
+
+  --add a date time line that can be read into a date time object in the macro management form
+  !dateTime = object DATETIME()
+  !year = !dateTime.year().string()
+  !month = !dateTime.month().string()
+  !date = !dateTime.date().string()
+  !hour = !dateTime.hour().string()
+  !minute = !dateTime.minute().string()
+  !second = !dateTime.second().string()
+  !dateTimeString = !year + ',' + !month + ',' + !date + ',' + !hour + ',' + !minute + ',' + !second
+  !lines.append('!dateTime = ' + '|$!dateTimeString|')
+
+  --navigate to the support steelwork and add its reference into the macro
+  --note that we will check for whether or not this reference exists in the macromanagement app
+  --do the cmpf first
+  !lines.append('--owning steelwork 1')
+  !lines.append(!owningSteel)
+  --now add lines to navigate to and rename fitting 1 if it exists
+  !lines.append('!!ce = $!fittName')
+  !lines.append('handle (2,109)')
+  !lines.append('elsehandle NONE')
+  !lines.append('name $!newFittName')
+  !lines.append('endhandle')
+
+  --now do subfitting1
+  !lines.append('!!ce = $!fitt1Name')
+  !lines.append('handle (2,109)')
+  !lines.append('elsehandle NONE')
+  !lines.append('name $!newFittName1')
+  --now set the cref
+  !cref = 'cref ' + !new + '/H1' + ' tail'
+  !lines.append(!cref)
+  !lines.append('handle any')
+  !lines.append('endhandle')
+  !lines.append('endhandle')
+
+  --now do subfitting2
+  !lines.append('!!ce = $!fitt2Name')
+  !lines.append('handle (2,109)')
+  !lines.append('elsehandle NONE')
+  !lines.append('name $!newFittName2')
+  --now set the cref
+  !cref = 'cref ' + !new + '/H2' + ' tail'
+  !lines.append(!cref)
+  !lines.append('handle any')
+  !lines.append('endhandle')
+  !lines.append('endhandle')
+
+  --now look for the hanger macro directory within the mac directory
+  var !hangMacDir evar mdsHangerMacros
+
+  --make sure that the hanger macro directory exists
+  !hangMacFile = object FILE(!hangMacDir)
+  if !hangMacFile.exists().not() then
+    !!alert.error('the current project does not have a $!hangMacDir directory which is required to store hanger macros. Hanger creation has not completed correctly')
+    return FALSE
+  endif
+
+  !fileName = !hangMacDir + |\| + !attaName + '-rename-to-' + !newName + '.mac'
+  !file = object FILE(!fileName)
+  !file.writefile('OVERWRITE', !lines)
+
+  return TRUE
+
+endmethod

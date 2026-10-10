@@ -1,0 +1,650 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            splsfbreak.pmlobj
+--   Type:          Object Definition
+--   Group:         General Application
+--     Keyword:     GEN
+--   Module:        spooler
+--   Replaces:
+--
+-- Author:          M.Lewis
+-- Created:         Mon Apr 27 13:27:57 BST 1998
+--
+--
+-- Description:
+-- Create/delete a spool/field break at a ppoint
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  add()                            -                   add sfbreak
+--  addPA()                          -                   create Spool Break at arrive tube of component
+--  addPL()                          -                   create Spool Break at leave tube of component
+--  addPO()                          -                   create Spool Break at offleg of component
+--  firstPick(STRING,DBREF,STRING)   -                   first pick for create/delete spool break
+--  globalInstance()                 -                   create a global instance of the object
+--  remove()                         -                   remove sfbreak
+--  removeEdg()                      -                   remove EDG packet for first pick
+--  removePA()                       -                   remove Spool Break at arrive tube of component
+--  removePL()                       -                   remove Spool Break at leave tube of component
+--  removePO()                       -                   remove Spool Break at offleg of component
+--  removeTwoEdg()                   -                   remove EDG packet for second pick
+--  rollbackEdg()                    -                   update object following EDG rollback on graphics form
+--  rollbackTwoEdg()                 -                   update object following EDG rollback on graphics form
+--  secondPick(STRING,DBREF,STRING)  -                   first pick for create/delete spool break
+--  start(STRING)                    -                   start add/remove sfbreak
+--
+------------------------------------------------------------------------
+
+define object SPLSFBREAK
+
+  -- first pick EDG packet
+  member .edgPacket is EDGPACKET
+
+  -- second pick EDG packet
+  member .edgTwoPacket is EDGPACKET
+
+  -- store items picked
+  member .firstElement is DBREF
+  member .firstTube is BOOLEAN
+  member .firstBranch is BOOLEAN
+  member .secondElement is DBREF
+  member .secondTube is BOOLEAN
+  member .secondBranch is BOOLEAN
+
+endobject
+-- End of object definition for SPLSFBREAK
+
+------------------------------------------------------------------------
+--
+-- Method:      !globalInstance()
+--
+-- Description: create a global instance of the object
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .globalInstance()
+
+  -- if the global instance already exists then delete it
+  if (defined(!!splSfBreak)) then
+    !!splSfBreak.delete()
+  endif
+
+  -- create the global instance of this object
+  !!splSfBreak = object SPLSFBREAK()
+
+endmethod
+-- End of method definition for .globalInstance()
+
+------------------------------------------------------------------------
+--
+-- Method:      !add()
+--
+-- Description: add sfbreak
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .add()
+
+  !this.start('add')
+
+endmethod
+-- End of method definition for .add()
+
+------------------------------------------------------------------------
+--
+-- Method:      !remove()
+--
+-- Description: remove sfbreak
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .remove()
+
+  !this.start('remove')
+
+endmethod
+-- End of method definition for .remove()
+
+------------------------------------------------------------------------
+--
+-- Method:      !start()
+--
+-- Description: start add/remove sfbreak
+--
+-- Method Type: Procedure
+-- Arguments:
+--  [1] [R] [STRING] [add/remove]
+--
+------------------------------------------------------------------------
+
+define method .start(!mode is STRING)
+
+  -- remove EDG packets if not completed
+  !this.removeTwoEdg()
+  !this.removeEdg()
+
+  -- define an edg packet for the pick
+  !packet = object EDGPACKET()
+  !packet.key         = 'splsfBreak'
+  !packet.description = !mode & ' spool break first pick'
+  !packet.type        = 'Spooler'
+  !packet.priority    = 0
+  !packet.action      = '!!splSfBreak.firstPick(|' & !mode & '|, !this.return[1].item, !this.return[1].type)'
+  !packet.remove      = false
+  !packet.close       = '!!splSfBreak.rollbackEdg()'
+  !packet.pickPacket.stdElement('Pick first element to ' & !mode & ' Spool Break ')
+  -- component check criteria
+  if (!mode eq 'add') then
+    !packet.pickPacket.picks[1].pick.input[3]   = '((type of owner) eq |BRAN|)'
+  else
+    !packet.pickPacket.picks[1].pick.input[3]   = '((type of owner) eq |BRAN|)'
+  endif
+  -- no type criterion on tube check so works for head and leave tubes
+  if (!mode eq 'add') then
+    !packet.pickPacket.picks[1].pick.input[5]   = ''
+  else
+    !packet.pickPacket.picks[1].pick.input[5]   = ''
+  endif
+  !packet.pickPacket.picks[1].pick.modifiable = false
+
+  -- store and activate the packet
+  !this.edgPacket = !packet
+  if (!!edgCntrl.add(!packet).not()) then
+    !this.rollbackEdg()
+  endif
+
+endmethod
+-- End of method definition for .start(STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      !firstPick()
+--
+-- Description: first pick for create/delete spool break
+--
+-- Method Type: Procedure
+-- Arguments:
+--  [1] [R] [STRING] [add/remove]
+--  [2] [R] [DBREF]  [picked element]
+--  [3] [R] [STRING] [element or tubing indicator]
+--
+------------------------------------------------------------------------
+
+define method .firstPick(!mode is STRING, !element is DBREF, !type is STRING)
+
+  -- store picked element and tube flag
+  !this.firstElement = !element
+  !this.firstTube = (!type eq 'TUBING')
+  var !comptype type of $!element
+  !this.firstBranch = (!comptype eq 'BRAN')
+
+  -- not allowed for mitred bend
+  if (!comptype eq 'BEND') then
+    var !actncuts actncuts of $!element
+    if (!actncuts.real().gt(0)) then
+      !!alert.message('Cannot set a spool limit at a mitre bend!')
+      return
+    endif
+  endif
+
+  -- define an edg packet for the second pick
+  !packet = object EDGPACKET()
+  !packet.key         = 'splsfBreak'
+  !packet.description = !mode & ' spool break second pick'
+  !packet.type        = 'Spooler'
+  -- must have a different priority to the first packet
+  !packet.priority    = 1
+  !packet.action      = '!!splSfBreak.secondPick(|' & !mode & '|, !this.return[1].item, !this.return[1].type)'
+  !packet.remove      = false
+  !packet.close       = '!!splSfBreak.rollbackTwoEdg()'
+  !packet.pickPacket.stdElement('Pick second element to ' & !mode & ' Spool Break ')
+  -- component check criteria
+  if (!mode eq 'add') then
+    !packet.pickPacket.picks[1].pick.input[3]   = '((type of owner) eq |BRAN|)'
+  else
+    !packet.pickPacket.picks[1].pick.input[3]   = '((type of owner) eq |BRAN|)'
+  endif
+  -- no type criterion on tube check so works for head and leave tubes
+  if (!mode eq 'add') then
+    !packet.pickPacket.picks[1].pick.input[5]   = ''
+  else
+    !packet.pickPacket.picks[1].pick.input[5]   = ''
+  endif
+  !packet.pickPacket.picks[1].pick.modifiable = false
+
+  -- store and activate the packet
+  !this.edgTwoPacket = !packet
+  if (!!edgCntrl.add(!packet).not()) then
+    !this.rollbackTwoEdg()
+  endif
+
+endmethod
+-- End of method definition for .firstPick(STRING, DBREF, STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      !secondPick()
+--
+-- Description: first pick for create/delete spool break
+--
+-- Method Type: Procedure
+-- Arguments:
+--  [1] [R] [STRING] [add/remove]
+--  [2] [R] [DBREF]  [picked element]
+--  [3] [R] [STRING] [element or tubing indicator]
+--
+------------------------------------------------------------------------
+
+define method .secondPick(!mode is STRING, !element is DBREF, !type is STRING)
+
+  -- store picked element and tube flag
+  !this.secondElement = !element
+  !this.secondTube = (!type eq 'TUBING')
+  var !comptype type of $!element
+  !this.secondBranch = (!comptype eq 'BRAN')
+
+  -- not allowed for mitred bend
+  if (!comptype eq 'BEND') then
+    var !actncuts actncuts of $!element
+    if (!actncuts.real().gt(0)) then
+      !!alert.message('Cannot set a spool limit at a mitre bend!')
+      return
+    endif
+  endif
+
+  !firstElementName = !this.firstElement.flnn
+  if (!this.firstTube) then
+    !firstElementName = 'ILeave tube of ' + !this.firstElement.flnn
+  endif
+
+  -- set the sfbreak attributes
+  write ''
+  if (!mode eq 'add') then
+    write 'Spool Breaks applied to :-'
+    !setting = true
+  else
+    write 'Spool Breaks removed from :-'
+    !setting = false
+  endif
+
+  !!ce = !this.firstElement
+  var !branch1 branch
+  var !seq1    seq
+  if (!this.firstTube) then
+    var !ncuts '0'
+    TSFBREAK $!setting
+  else
+    var !ncuts ncuts
+    handle any
+      !ncuts = '0'
+    endhandle
+    if (!ncuts.real() gt 0) then
+      TSFBREAK $!setting
+      !firstElementName = 'ILeave tube of ' + !firstElementName
+    else
+      CSFBREAK $!setting
+    endif
+  endif
+  write '$!firstElementName'
+
+  !!ce = !this.secondElement
+  var !branch2 branch
+  var !seq2    seq
+  if (!branch2 ne !branch1) then
+    !seq2 = !seq1
+  endif
+  if (!seq2.real() lt !seq1.real()) then
+    !!ce = !this.firstElement
+    prev
+    var !secondElementName flnn
+    if (!this.firstTube or !ncuts.real() gt 0) then
+      CSFBREAK $!setting
+    else
+      var !ltlength ltlength
+      if (!ltlength.real() gt 0) then
+        TSFBREAK $!setting
+        !secondElementName = 'ILeave tube of ' + !secondElementName
+      else
+        CSFBREAK $!setting
+      endif
+    endif
+  elseif (!seq2.real() gt !seq1.real()) then
+    !!ce = !this.firstElement
+    next
+    var !secondElementName flnn
+    if (!this.firstTube or !ncuts.real() gt 0) then
+      CSFBREAK $!setting
+    else
+      var !atlength atlength
+      if (!atlength.real() gt 0) then
+        prev
+        TSFBREAK $!setting
+        !secondElementName = 'ILeave tube of ' + !firstElementName
+      else
+        CSFBREAK $!setting
+      endif
+    endif
+  else
+    -- different branches
+    !!ce = !this.firstElement
+    if (!this.firstBranch) then
+      TSFBREAK $!setting
+    else
+      CSFBREAK $!setting
+    endif
+    !!ce = !this.secondElement
+    var !secondElementName flnn
+    if (!this.secondBranch) then
+      TSFBREAK $!setting
+      !secondElementName = 'ILeave tube of ' + !secondElementName
+    else
+      if (!this.firstBranch) then
+        CSFBREAK $!setting
+      else
+        TSFBREAK $!setting
+        !secondElementName = 'ILeave tube of ' + !secondElementName
+      endif
+    endif
+  endif
+  write '$!secondElementName'
+
+  -- remove EDG packet for second pick
+  !this.removeTwoEdg()
+
+  -- remove first edg packet
+  !this.removeEdg()
+
+endmethod
+-- End of method definition for .secondPick(STRING, DBREF, STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      !rollbackEdg()
+--
+-- Description: update object following EDG rollback on graphics form
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .rollbackEdg()
+
+  -- unset edg packet
+  !this.edgPacket = object EDGPACKET()
+
+endmethod
+-- End of method definition for .rollbackEdg()
+
+------------------------------------------------------------------------
+--
+-- Method:      !removeEdg()
+--
+-- Description: remove EDG packet for first pick
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .removeEdg()
+
+  -- remove edg packet (which will cause !this.rollbackEdg to be called)
+  if (!this.edgPacket.type.set()) then
+    !!edgCntrl.remove(!this.edgPacket)
+  endif
+
+endmethod
+-- End of method definition for .removeEdg()
+
+------------------------------------------------------------------------
+--
+-- Method:      !rollbackTwoEdg()
+--
+-- Description: update object following EDG rollback on graphics form
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .rollbackTwoEdg()
+
+  -- unset edg packet
+  !this.edgTwoPacket = object EDGPACKET()
+
+endmethod
+-- End of method definition for .rollbackTwoEdg()
+
+------------------------------------------------------------------------
+--
+-- Method:      !removeTwoEdg()
+--
+-- Description: remove EDG packet for second pick
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .removeTwoEdg()
+
+  -- remove second edg packet (will cause !this.rollbackTwoEdg to be called)
+  if (!this.edgTwoPacket.type.set()) then
+    !!edgCntrl.remove(!this.edgTwoPacket)
+  endif
+
+endmethod
+-- End of method definition for .removeTwoEdg()
+
+------------------------------------------------------------------------
+--
+-- Method:      !addPA()
+--
+-- Description: create Spool Break at arrive tube of component
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .addPA()
+
+var !type type
+if (!type eq 'BEND') then
+  var !actncuts actncuts
+  if (!actncuts.real().gt(0)) then
+    !!alert.message('Cannot set a spool limit at a mitre bend!')
+    return
+  endif
+endif
+
+asfbreak true
+
+var !pcref pa pcref
+!prev = !pcref.after(' of ')
+if (!prev ne '') then
+  var !ce ce
+  $!prev
+  var !type type
+  if (!type ne 'TUBI') then
+    lsfbreak true
+  endif
+  $!ce
+endif
+
+endmethod
+-- End of method definition for .addPA()
+
+------------------------------------------------------------------------
+--
+-- Method:      !addPL()
+--
+-- Description: create Spool Break at leave tube of component
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .addPL()
+
+var !type type
+if (!type eq 'BEND') then
+  var !actncuts actncuts
+  if (!actncuts.real().gt(0)) then
+    !!alert.message('Cannot set a spool limit at a mitre bend!')
+    return
+  endif
+endif
+
+lsfbreak true
+
+var !pcref pl pcref
+!next = !pcref.after(' of ')
+if (!next ne '') then
+  var !ce ce
+  $!next
+  var !type type
+  if (!type ne 'TUBI') then
+    asfbreak true
+  endif
+  $!ce
+endif
+
+endmethod
+-- End of method definition for .addPL()
+
+
+------------------------------------------------------------------------
+--
+-- Method:      !addPO()
+--
+-- Description: create Spool Break at offleg of component
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .addPO()
+
+var !ce ce
+goto cref
+handle any
+  !!alert.message('No Offleg connection')
+elsehandle none
+  tsfbreak true
+  $!ce
+  csfbreak true
+endhandle
+
+endmethod
+-- End of method definition for .addPO()
+
+------------------------------------------------------------------------
+--
+-- Method:      !removePA()
+--
+-- Description: remove Spool Break at arrive tube of component
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .removePA()
+
+var !type type
+if (!type eq 'BEND') then
+  var !actncuts actncuts
+  if (!actncuts.real().gt(0)) then
+    !!alert.message('Cannot set a spool limit at a mitre bend!')
+    return
+  endif
+endif
+
+asfbreak false
+
+var !pcref pa pcref
+!prev = !pcref.after(' of ')
+if (!prev ne '') then
+  var !ce ce
+  $!prev
+  var !type type
+  if (!type ne 'TUBI') then
+    lsfbreak false
+  endif
+  $!ce
+endif
+
+endmethod
+-- End of method definition for .removePA()
+
+------------------------------------------------------------------------
+--
+-- Method:      !removePL()
+--
+-- Description: remove Spool Break at leave tube of component
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .removePL()
+
+var !type type
+if (!type eq 'BEND') then
+  var !actncuts actncuts
+  if (!actncuts.real().gt(0)) then
+    !!alert.message('Cannot set a spool limit at a mitre bend!')
+    return
+  endif
+endif
+
+lsfbreak false
+
+var !pcref pl pcref
+!next = !pcref.after(' of ')
+if (!next ne '') then
+  var !ce ce
+  $!next
+  var !type type
+  if (!type ne 'TUBI') then
+    asfbreak false
+  endif
+  $!ce
+endif
+
+endmethod
+-- End of method definition for .removePL()
+
+------------------------------------------------------------------------
+--
+-- Method:      !removePO()
+--
+-- Description: remove Spool Break at offleg of component
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .removePO()
+
+var !ce ce
+goto cref
+handle any
+  !!alert.message('No Offleg connection')
+elsehandle none
+  tsfbreak false
+  $!ce
+  csfbreak false
+endhandle
+
+endmethod
+-- End of method definition for .removePO()

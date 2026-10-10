@@ -1,0 +1,161 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:    Mdsidtube.pmlfnc
+--   Type:    Function Definition
+--   Group:   Multi Discipline Supports Application
+--     Keyword:   MDS
+--   Module:    design
+--   Replaces:          MIDTUBE
+--
+-- Author:    I.osborne
+-- Created:   Tue May 06
+--
+--
+-- Description:
+-- Identify tube
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         STRING       Type of tube to be identified
+--     2     R         STRING       Prompt to be displayed
+--
+-- Return:
+--    [Data Type]   [Description]
+--      BOOLEAN     TRUE if tube is identified
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsIdTube(!type is STRING, !prompt is STRING, !purp is STRING) is BOOLEAN
+
+  !ok = FALSE
+
+  do !count from 1
+    prompt off
+    prompt load escape '$!prompt'
+    if (defined (!!mdsAutoTubePicker) AND !!mdsAutoTubePicker.enabled()) then
+      -- return if limit of pick tries exceeded ( !!mdsIdTube can be called in label /again loop )
+      if (!!mdsAutoTubePicker.allowedPicks.eq(0)) then
+        prompt on
+        !!mdsAutoTubePicker.cancel()
+        return FALSE
+      endif
+      -- autopick
+      !picked = !!mdsAutoTubePicker.pick(!type, !purp)
+      if (unset(!picked) OR !count.gt(1)) then
+        !!alert.warning ('Cannot create chosen support from this preliminary support. $!type not found')
+        !!mdsAutoTubePicker.cancel()
+        prompt on
+        return !ok
+      endif
+
+    else
+
+      !picked = ref of ID @
+      handle (61,528)
+        prompt on
+        return !ok
+      endhandle
+
+    endif
+    prompt on
+    !ceType    = !picked.type
+    if (!purp eq 'HVAC') then
+      -- We are allowed to identify CADC HVAC element with the
+      -- property desc set to STRAi and type eq STRT, FTUB for HVAC
+      if (!ceType eq 'STRT') then
+        !prop = !picked.prop.desc
+        handle ANY
+          !prop = ''
+        endhandle
+        skip if (!prop neq 'STRA')
+      else
+        skip if (!ceType neq 'FTUB')
+      endif
+    else  $* purp is not hvac
+      if (!type neq 'TUBE' and !type neq 'FTUB' and !type neq 'PCOM') then
+        skip if (!picked.type neq !type)
+        --     elseif !type eq 'FTUB' then $* tm fix for making sure that the FR supports identify a tray
+        --       skip if (type neq !type)
+      elseif (!purp eq 'TRAY' and !type eq 'FTUB') or (!purp eq 'TRAY' and !type eq 'TUBE') then
+        -- let it through
+      endif
+    endif
+
+    !ownerType = !picked.owner.type
+    if !ceType.eq('CTRAY') then
+      !cePurp = 'TRAY'
+    else
+      !cePurp = purp of pspe of bran of $!picked
+      handle ANY
+        !cePurp = 'XXXX'
+      endhandle
+    endif
+
+
+    --Fix for HPD0029385 ge 13/06/05
+    if !!mdsBr03.support.alias eq 'BR03'and !type eq 'FLAN' then
+      break
+    endif
+    --end of fix.
+
+
+    -- Check for CLAIM and DACS
+    if (!ownerType eq 'BRAN' or !ceType eq 'BRAN' or !ownerType eq 'CTSTRA') and (!cePurp eq !purp or !cePurp eq 'TRUN') then
+      if !ceType.eq('CTRAY') then
+        !attaType = 'CTSUPP'
+      else
+        !attaType = 'ATTA'
+      endif
+      if (!!mdsComClaimDac(!picked,'DACCRE',!attaType)) then
+        break
+      else
+        !!alert.error(!!error.text)
+      endif
+    endif
+
+
+  enddo
+
+  -- If we create an atta, we may need to create lugs, check to see if the branch has been claimed by another user
+
+  if !ceType.eq('CTRAY').or(!ceType.eq('BRAN')) then
+    !bran = !picked
+  else
+    !bran = !picked.owner
+  endif
+
+  extract claim $!<bran> hier
+  handle ANY
+  endhandle
+  claim $!<bran> hier
+  handle ANY
+    !name = !bran.name
+    !claimName = !bran.userclaim
+    !claimId = !bran.clmId
+    -- Is the element claimed by the current user
+    !currentSession = current session
+    if !currentSession.uniqueid.eq(!claimId) then
+      !ok = TRUE
+    else
+      !!alert.error('Unable to claim $!name as element is already claimed by User $!claimName ($!claimId)')
+      !ok = FALSE
+    endif
+  elsehandle NONE
+    !ok = TRUE
+  endhandle
+
+  if !ok then
+    !!ce = !picked
+  endif
+
+  return !ok
+
+  -- End function
+endfunction

@@ -1,0 +1,218 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:		Mdsmirrorft51.pml
+--   Type:		Function Definition
+--   Group:		Multi Discipline Supports Application
+--     Keyword:		MDS
+--   Module:		design
+--   Replaces:          MMIRPS131
+--
+-- Author:		I.Osborne
+-- Created:		Wed Jul 02
+--
+--
+-- Description:
+-- function to reverse steelwork in support frame
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!MdsMirrorft51()
+
+  -- Initialise variables
+    !Support  = !!Mdsft51.Support
+    !Stru     = !Support.Stru
+    !Name     = !Stru.name
+    !Frame    = !Name & '/MAIN'
+    -- this function uses othdirs from mdsremovegrad, so we need to make sure they are set
+    if !support.datumorthdirs.unset() then
+       !support.datumorthdirs = !!mdsremovegrad( !support.datum )
+    endif
+    !Origin   = !!CE
+    !Bars     = !!KCollectAllFor('SCTN', '((match(name, |-BAR-|) gt 0) and type of owner eq |FRMW|)', !Support.Stru)
+    !Vertical = !!KCollectAllFor('SCTN', '((match(name, |-V|) gt 0) and type of owner eq |FRMW|)', !Support.Stru)
+    VAR !SupportFrame  EXISTS $!Frame
+
+  -- Check that support structure has been created
+    if (!SupportFrame eq 'FALSEA')then
+      !!Alert.message('Support structure has not been created')
+      return
+    endif
+
+
+    -- Check the template selected can be mirrored
+
+    if !Stru.:mdsFraMirror.not() then
+      !!Alert.message('The currently selected template cannot be mirrored')
+      return
+    endif
+
+-- Can only mirror framwork if we can write to the stru
+
+    if !!MdsComClaimDac(!Stru,'DACMOD','POS').not() then
+      !!Alert.Error('Unable to mirror support as write access to the support structure is not available')
+      return
+    endif
+
+  -- Cross-Bars
+  -- this bit works ok in new format
+    do !V values !Bars
+
+      !!CE = !V
+      !SctnDrne = drne wrt world
+      !SctnDrns = drns wrt world
+       -- pin 9 is positioned at p9 of the datum and pointed in the direction of p11 of the datum
+      PIN 9 AT STRU
+      PIN 9 DIR $!Support.P11DIR
+      -- this bit gets the midposition along the member
+      VAR !Midp DERI MIDP
+      -- position a pin at the mid point
+      PIN 8 AT $!Midp
+      -- move pin 9 in the direction of p11 until its through the midpoint
+      PIN 9 PLANE PIN 9 THRO PIN 8
+      -- rotate the sctn
+      -- ROTATE THRO PIN 9 ABOUT $!Support.P9DIR BY 180
+      ROTATE THRO PIN 9 ABOUT $!support.datumorthdirs[3] BY 180
+      Drne $!SctnDrns
+      Drns $!SctnDrne
+
+    enddo
+
+  -- Vertical members
+    do !V values !Vertical
+
+      !Joie = !V.joie
+      !Jois = !V.jois
+      -- temporarily remove joint ref
+      !!CE = !V
+--<K.Pleschner> June 2005
+-- handle pads of angle profiles
+      !!MdsMirrorPads(ce,'PREPROCESS')
+
+      !drns = !!ce.poss.wrt(/* ).direction(!!ce.pose.wrt(/* ))
+      !drne = !drns.opposite()
+      !cross = !drns.cross( !support.datumorthdirs[1] )
+      -- position pin 9 at the stru
+      PIN 9 AT STRU
+      -- set pin 9 direction to be in the direction of p11 of the support
+      PIN 9 DIR $!Support.P11DIR
+      -- get the mid point of the section
+      VAR !Midp DERI MIDP
+      -- position pin 8 at the midpoint of the section
+      PIN 8 AT $!Midp
+      -- move pin 9 through pin 8 in p11 direction
+      PIN 9 PLANE PIN 9 THRO PIN 8
+      -- set pin 9 direction  not neccessary
+      PIN 9 DIR $!cross
+      pin 8 dir $!support.datumorthdirs[1]
+      -- pin 8 dir $!support.pldir
+      pin 8 thro pin 9
+      pin 8 dir $!cross
+
+     !SctnDrne = drne
+     !SctnDrns = drns
+     ROTATE about PIN 8 thro pin 8 BY 180
+     JOIS $!JOIS
+     JOIE $!JOIE
+     Drne $!SctnDrns
+     Drns $!SctnDrne
+
+-- <K.Pleschner>  June2005  PADs of angle profiles
+    !!MdsMirrorPads(ce,'EXECUTE')
+
+    enddo
+
+    !!CE = !Support.Stru
+
+-------------------------------------------------------------
+-------------------------------------------------------------
+-- Mirror Packing Pieces if any Associated with the Framework
+    call !!Mdsmirrorft25(!!Mdsft51, 'FRAME')
+
+----------------------------- **** connexions **** -----------------------------
+
+      !HaveJoints = FALSE
+   if(!Support.Joints.unset().not()) then
+      !Joints     = !Support.Joints
+      !Attributes = array()
+      !HaveJoints = !!KRestoreJoints(!Joints,!Attributes,'SAVE','')
+       handle ANY
+        !HaveJoints = FALSE
+        !Support.Joints.Clear()
+        -- in case they have been deleted and cancel is used
+       endhandle
+   endif
+
+---------------------------------------------------------------------------------
+
+ if(!HaveJoints) then
+    do !Index indices !Joints
+     -- if support cursor picking is too unlike the existing then the connections will fail
+        if(!Joints[!Index].badref()) then
+           !!alert.Error('Reconnection is not possible, connections will be deleted.')
+           !!MdsSelectJoints(!Form,'DISCONNECT','')
+           !Support.Joints.clear()
+           break
+         endif
+
+         if(!Attributes[!Index][8].dbref().:MDSConn.eq(!Joints[!index].owner.owner)) then
+            !Mainstl = !Attributes[!Index][8].dbref().:MDSConn
+            !Support.Joints[!Index] =  !!MdsCreateJoint(!MainStl, !Attributes[!Index][8].dbref(),!Joints[!Index],!Attributes[!Index])
+         endif
+    enddo
+ endif
+
+  -- If the support is mirrored and contains joints because the joints remain on the same side then
+  -- the cross bars will require and extra flip
+
+   do !Flip values !Bars
+     !!CE = !Flip
+     if !!CE.jois.badref().not() or !!CE.joie.badref().not() then
+       flip
+-- <K.Pleschner>  June2005  PADs of angle profiles
+    !!MdsMirrorPads(ce,'EXECUTE')
+
+     endif
+   enddo
+
+
+  -- Reset pins
+    Call !!MdsResetPins(7,9)
+
+    !!CE = !Origin
+
+  -- Reset Form Gadget
+    if (!Support.Mirror)then
+      !Support.Mirror = false
+    else
+      !Support.Mirror = true
+    endif
+
+ -- If a joint is being used and it is handed then their will be a alternative spref of the
+ -- opposite hand joint and the bang to set seperated by a ,
+
+    !!MdsSwapIntJoi(!Support.Stru,!Support.Mirror,!Support.Alias)
+
+-- Modify weld positions if needed
+
+  !!MdsWeldPositions(!!Mdsft51,!Support.Stru,!Support.Mirror)
+
+  -- Update support data held in form
+    !!Mdsft51.Support = !Support
+
+-- End function
+endfunction
+
+-- End of file Mdsmirrorft51.pml

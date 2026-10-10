@@ -1,0 +1,258 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            pfIsoDrawingManager.pmlobj
+--    Type:          Object Definition
+--    Group:         PIPE
+--      Keyword:     PIPE
+--    Module:        DESIGN
+--  Author:          Daniel(Jaehun.Choi)
+--  Created:         23 July 2013
+--
+--  Description:     object for pipe isometrics drawing in pipe fabrication
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  createIsometrics(STRING,STRING,STRING,ARRAY,BOOLEAN) -                   create isometrics
+--  insertError(STRING,STRING,STRING) -                   insert error
+--
+------------------------------------------------------------------------
+-- Define object
+define object PFISODRAWINGMANAGER
+  member .errorList  is ARRAY
+  member .failedList is ARRAY
+  member .sourceType is STRING
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:      createIsometrics
+-- Description: create isometrics
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     STRING      iso option file path
+--    2    R     STRING      iso result file path
+--    3    R     ARRAY       source list
+--    4    R     BOOLEAN     is fabrication
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createIsometrics(!sourceEntryType is STRING, !isoOptionFilePath is STRING, !isoResultFilePath is STRING, !sourceList is ARRAY, !isFabrication is BOOLEAN)
+  ISODRAFTMODE
+  handle (47,15)
+    exit
+  endhandle
+
+  !!pfIsometricSourceType = !sourceEntryType
+
+  $M /$!isoOptionFilePath
+  handle (47,15)
+    exit
+    handle any
+    endhandle
+
+    if (defined(!!pfIsometricSourceType)) then
+      !!pfIsometricSourceType.delete()
+    endif
+
+    return error 1 |Syntax error in the iso option file $!isoOptionFilePath|
+  elsehandle any
+    exit
+    handle any
+    endhandle
+
+    if (defined(!!pfIsometricSourceType)) then
+      !!pfIsometricSourceType.delete()
+    endif
+
+    return error 1 |$!!error.text()|
+    --return error 1 |ISO option file is already used. Please check it.|
+  endhandle
+
+  !this.errorList.clear()
+  !this.failedList.clear()
+
+  !saveCe = !!ce
+
+  !totalCount = !sourceList.size()
+
+  !ppCtx = object PFCONTEXT()
+  !ppCtx.initialize()
+
+  !plotFileList = object ARRAY()
+  !sourceNames  = object ARRAY()
+
+  -- Store the units so that they are retained after processing
+  !savedUnits = object COMUNITS(true)
+
+  do !i index !sourceList
+    !elementName = !sourceList[!i][1]
+    !elementType = !sourceList[!i][2]
+    $M /$!isoOptionFilePath
+
+    if (defined(!!pfIsometricSourceType) and !elementType ne 'PSPOOL') then
+      !!pfIsometricSourceType.delete()
+    elseif (undefined(!!pfIsometricSourceType) and !elementType eq 'PSPOOL') then
+      !!pfIsometricSourceType = !elementType
+    endif
+
+    !entry       = !elementName.dbRef()
+    handle any
+      !this.insertError(!elementName,!elementType,'Invalid Reference')
+      !this.failedList.append(!elementName)
+      skip
+    endhandle
+
+    !!ce = !entry
+
+   if (!isFabrication) then
+    !prefix = '[FAB' & '_' & !elementType & ']'
+   else
+    !prefix = '[INST'  & '_' & !elementType & ']'
+   endif
+
+
+
+    !messageOutputPath = !isoResultFilePath & |\| & !prefix & 'mess'
+    MessageFile "$!messageOutputPath" OVERWRITE
+
+    if (!isFabrication and !sourceEntryType eq 'PSPOOL') then
+      if (!ppCtx.xyzBendingTable) then
+        !!pfmarkbendtableonisoview('XYZ')
+      else
+        !!pfmarkbendtableonisoview('FRB')
+      endif
+    endif
+
+    if (!sourceEntryType inset ('PIPE','BRAN')) then
+      MaterialList PartNumbers GENERATED
+    endif
+
+    !outputName = !isoResultFilePath & |\| & !prefix & !!generateFileName(!entry.name)
+    syscom |del $!outputName*|
+
+    !exportFileName = !outputName
+
+    var !outputOptions split output
+    !exportOption = ''
+    do !outputOption values !outputOptions
+      if (!outputOption.upcase() inset ('FILE','AND','DXF','PDF','IMAGE','EMF')) then
+        !exportOption = !exportOption & ' ' & !outputOption.upcase()
+      endif
+    enddo
+
+    if (!exportOption.empty()) then
+      !exportOption = 'FILE'
+    endif
+    !single = ' '
+    do !outputOption values !outputOptions
+      if (!outputOption.upcase() eq 'SINGLE' ) then
+        !single = 'SINGLE'
+        break
+      endif
+    enddo
+
+    !export = !exportOption + |"| + !exportFileName + |" | + !single
+    $!export
+
+    !materialName = !isoResultFilePath & |\| & !prefix & !!generateFileName(!entry.name) & |-matl|
+    MatlistFile "$!materialName" PERPLOTFILE OVERWRITE with 55 lines
+
+    detail $!entry
+    handle (33,157)
+      !this.insertError(!elementName,!elementType,'Errors occurred in isometric creation, Please refer to the Command Window.')
+      !this.failedList.append(!elementName)
+      skip
+    elsehandle any
+      !this.insertError(!elementName,!elementType,!!error.text)
+      !this.failedList.append(!elementName)
+      skip
+    endhandle
+
+    -- Check Isodraw status
+    var !status isodraw status
+    handle any
+      -- Isodraw has not run
+      !status = 'FAILED'
+      !this.insertError(!elementName,!elementType,'Failed to draw')
+      !this.failedList.append(!elementName)
+      skip
+    endhandle
+
+    var !isoCountTemp isodraw number
+    handle any
+      -- Isodraw has not run
+      !isoCountTemp = '0'
+    endhandle
+
+    !isoCount = !isoCountTemp.real()
+
+    !sourceNames.append(!elementName)
+
+    do !plot to !isoCount
+      var !plotFile isodraw plotfile $!plot filename
+
+      var !hyperplant hyperplant
+      if (!hyperplant.trim() eq 'ON') then
+        !plotFile = !plotFile & '.plt'
+      endif
+
+      !plotFileList.append(!plotFile)
+    enddo
+
+    !!fmSys.setProgress((!i / !totalCount ) * 100)
+  enddo
+
+  !!fmSys.setProgress(0)
+
+  if (defined(!!pfIsometricSourceType)) then
+    !!pfIsometricSourceType.delete()
+  endif
+
+  EXIT
+  handle any
+  endhandle
+
+  !!ce = !saveCe
+  handle any
+  endhandle
+
+  -- Reset units
+  !savedUnits.restoreSavedUnitsByPtype('DIST')
+  !savedUnits.restoreSavedUnitsByPtype('BORE')
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      insertError
+-- Description: insert error
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     STRING      element name
+--    2    R     STRING      element type
+--    3    R     STRING      description
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .insertError(!elementName is STRING, !elementType is STRING, !description is STRING)
+  !table = object ARRAY()
+  !table.append(!elementName)
+  !table.append(!elementType)
+  !table.append(!description)
+
+  !this.errorList.append(!table)
+endmethod
+-- End of method

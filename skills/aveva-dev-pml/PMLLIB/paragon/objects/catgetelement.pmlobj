@@ -1,0 +1,900 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            catgetelement.pmlobj
+--    Type:          Object Definition
+--    Group:         Undefined
+--      Keyword:     Undefined
+--    Module:        Undefined
+--  Author:          Martin Wright
+--  Created:         Thu Mar  1 11:21:26 2007
+
+--
+--  Description:     Undefined
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  addModel(FORM,DBREF)             -
+--  addToRecent(FORM,DBREF)          -
+--  addToTrack(FORM,ARRAY,REAL)      -
+--  catGetElement()                  -
+--  fitComponent(FORM,DBREF)         -
+--  getCate(FORM,DBREF,STRING,ARRAY) -                   Get attribute data for members
+--  getParams(GADGET,DBREF)          -                   Get param data for scom
+--  getRefs(DBREF,ARRAY)             -
+--  globalInstance()                 -                   Create global instance of object
+--  returnFromSearch(GADGET,STRING)  -
+--  setCe()                          DBREF
+--  setCe(DBREF)                     DBREF
+--  setList(FORM,STRING)             ARRAY
+--  setList(GADGET)                  -
+--  setRefs(DBREF,GADGET)            -
+--  track(FORM,DBREF)                -
+--
+----------------------------------------------------------------------
+define object CATGETELEMENT
+----------------------------------------------------------------------
+
+  -- List of graphical views
+  member .headings       is ARRAY
+  member .columns        is ARRAY
+  member .modelRtext     is ARRAY
+  member .rtext          is ARRAY
+  member .dtext          is ARRAY
+  member .category       is ARRAY
+  member .currentElement is ARRAY
+  member .viewBorder     is REAL
+  member .viewDirection  is ARRAY
+  member .trackElements  is ARRAY
+  member .setParameters  is BOOLEAN
+  member .highlighted    is DBREF
+  member .validElements  is ARRAY
+
+endobject
+-- End of object definition for catGetElement
+
+------------------------------------------------------------------------
+--
+-- Method:      globalInstance
+--
+-- Description: Create global instance of object
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Constructor method
+
+------------------------------------------------------------------------
+define method .catGetElement()
+------------------------------------------------------------------------
+
+  -- Set the action default.
+     !this.setParameters = TRUE
+     !this.validElements[1] = 'SCOM'
+     !this.validElements[2] = 'JOIN'
+     !this.validElements[3] = 'SPRF'
+     !this.validElements[4] = 'SFIT'
+
+endmethod
+
+------------------------------------------------------------------------
+define method .globalInstance()
+------------------------------------------------------------------------
+
+  -- Create Global Variable
+  !!catGetElement = !this
+
+endmethod
+
+----------------------------------------------------------------------------------------------------------------------
+define method .addToTrack(!form is FORM, !list is ARRAY, !position is REAL)
+----------------------------------------------------------------------------------------------------------------------
+
+-- Check for defined array
+if (undefined(!form.trackedElements[!position])) then
+   !form.trackedElements[!position] = ARRAY()
+endif
+
+-- Make sure that the list we are adding are dbref elements.
+do !i value !list
+
+   -- Avoid unset refs
+   skip if (!i eq '=0/0')
+     handle (2,779)
+       skip if (badref(!i))
+     endhandle
+
+     if (!i.objectType() eq 'STRING' and !i.substring(1,1) ne '/') then
+       !dbref = object DBREF('/' & !i)
+       handle any
+       elsehandle none
+         !form.trackedElements[!position].append(!dbref)
+         skip
+       endhandle
+     endif
+     !form.trackedElements[!position].append(!i.dbref())
+     handle (2,779)
+         !form.trackedElements[!position].append(!i)
+     elsehandle (2,813) (2,308)
+        -- Unset variable
+     elsehandle (2,109) (2, 113)
+            !element = '/' & !i
+            !form.trackedElements[!position].append(!element.dbref())
+        -- Element likely has no slash in name, or needs an extra one.
+     elsehandle (2,111) (46,59) (47, 50)
+        if (!i.substring(1,1) ne '/') then
+            !element = '/' & !i
+            !form.trackedElements[!position].append(!element.dbref())
+        endif
+     endhandle
+enddo
+
+-- Unique the array that we have just updated.
+!form.trackedElements[!position].unique()
+endmethod
+
+-------------------------------------------------------------------------------------------------
+define method .track(!form is FORM, !element is DBREF)
+-------------------------------------------------------------------------------------------------
+
+   -- avoid tracking for elements not in a CATA DB
+   if( !element.dbType neq 'CATA' ) then
+     return
+   endif
+   !ahlist = !element.ahlist
+   !formName = !form.name()
+
+   -- if the element passed is in a category then it may be drawn on a model view form
+   if (!ahlist.find('STCA').set() or !ahlist.find('CATE').set() or !ahlist.find('SECT').set()) then
+     do !drawlist index !!gphDrawlists.drawlists
+
+      if (!!gphDrawlists.drawlists[!drawlist].views()[1].owner().name() EQ !formName) then
+
+          -- Unset highlight first.
+          !!gphDrawlists.drawlists[!drawlist].unhighlight(!this.highlighted)
+
+          -- Highlight the current element.
+          !!gphDrawlists.drawlists[!drawlist].highlight(!element,292)
+          handle any
+            !!alert.error(!!error.text)
+          endhandle
+
+      endif
+      handle (2,752)
+         skip
+      endhandle
+
+     enddo
+   endif
+
+   -- Remember what we have just highlighted.
+   !this.highlighted = !element
+
+-- Check to see if track flag is set.
+   if (!form.trackCe.val.not()) then
+       return
+   endif
+
+   if (!form.ignoreNextTrack) then
+      !form.ignoreNextTrack = FALSE
+      return
+   endif
+
+-- In Tracking Method
+   !save             = !!ce
+   !form.trackCe.val = FALSE
+
+-- Track current element, check through the stored list to see if the element we are on is one of those
+-- listed in the form somewhere.
+
+   !ownList[1] = !!ce
+   !ownList.appendArray(!!ce.ownlst)
+   !currentRef = !!ce.string()
+   !ceType     = !!ce.type
+
+!listIndex = 0
+
+-- TrackElements is the array that holds the references of the component references
+-- !ownList is the list of elements that the current element is owned by, including itself.
+
+do !ele index !form.compattribList.rtext
+   do !rte value !ownList
+      if (!rte.eq(!this.trackElements[!ele])) then
+        -- Found it at position $!ele
+      	  !listIndex = !ele
+      	  break
+      endif
+      handle (2,752)
+       -- Array element doesn't exist. (Could be unset reference)
+       skip
+      endhandle
+   enddo
+enddo
+
+if (!listIndex EQ 0) then
+    -- Abort if the element we are on isn't part of the stored list.
+	  return
+endif
+
+    -- Select the appropriate field in the list.
+   !form.compattribList.val = !listIndex
+
+
+   -- =================================================================================
+   --                           Deal with Special Cases.
+   -- ========================                           ==============================
+
+-- Special check for parameter values.
+   if (!listIndex EQ 1) then
+     if (!this.validElements.findFirst(!ceType).unset()) then
+       if (!ceType EQ 'TEXT') then
+            -- Special check for parameter values.
+            !form.refData.setFrame('PARAM',!form)
+
+            -- Set the right place in the list by text selected.
+            !textIndex = !form.scom.texts.findFirst(!currentRef.dbref())
+            if (!textIndex.unset() OR !textIndex GT !form.params1.count ) then
+              !textIndex = 1
+            endif
+            !form.params1.val = !textIndex
+            !form.scom.setParam(!form.params1,!form.params1.val)
+       else
+         !form.refData.setFrame(!form.compattribList.rtext[!listIndex].dbref().type, !form)
+       endif
+      !form.trackCe.val = TRUE
+       return
+     endif
+   endif
+
+
+   -- Set the right frame at the bottom of the form.
+   !form.refData.setFrame(!form.compattribList.rtext[!listIndex].dbref().type, !form)
+
+   -- Set the contents of the list gadget for this element type.
+   !!catSetCateReferences(!form.compattribList, 'SELECT')
+
+    -- Deal with case where found string is number one, where this will be the category listing, make sure
+    -- we select the right scom or whatever in the list, to be consistent.
+
+    if (!listIndex eq 1) then
+
+         -- Find the name of the current element in the cateTable and select that row
+         !elementNames = !form.cateTable.getColumn(|Name|)
+         !rowIndex = !elementNames.findFirst(!ownList[1].namn)
+         !form.cateTable.selectRow(!rowIndex)
+
+         handle any
+         endhandle
+
+    endif
+
+  -- Now select the appropriate entry in the list gadget of the current element.
+   if (!form.currentGadget.rtext.findFirst(!currentRef).set()) then
+   	   !form.currentGadget.val = !form.currentGadget.rtext.findFirst(!currentRef)
+   	   !callback = !form.currentGadget.callback & '!!' & !form.name() & '.' & !form.currentGadget.name() & |,'SELECT')|
+   	   $!callback
+   endif
+     handle (61,615)
+     endhandle
+
+  -- Leaving the Track Method.
+  !!ce = !save
+  !form.trackCe.val = TRUE
+
+endmethod
+-- Define method
+
+--------------------------------------------------------------------------------
+define method .setCe() is DBREF
+--------------------------------------------------------------------------------
+
+  return !this.setCe(object DBREF())
+
+endmethod
+
+--------------------------------------------------------------------------------
+define method .setCe(!previousComponent is DBREF) is DBREF
+--------------------------------------------------------------------------------
+
+-- Find a component (JOIN, SPRF, SFIT, SCOM) starting at CE.
+-- If CE is a shared element (e.g. point set), then attach to the previous component
+-- if possible. Otherwise pick the first component found that references CE directly
+-- or indirectly
+
+  if( badref(!previousComponent) ) then
+    !previous = object DBREF()
+  else
+    !previous = !previousComponent
+  endif
+
+  !currentElement = !!ce
+
+  -- Check here to see if we are at a TABITE and then check PRTREF
+  if (!currentElement.type eq 'TABITE' and !currentElement.prtref.badref().not()) then
+    !currentElement = !currentElement.prtref
+  endif
+
+  -- Check to see if we are on a GPART and try to navigate to Catref
+  if (!currentElement.type inset ('SPCO','GPART') and !currentElement.catref.badref().not()) then
+    !currentElement = !currentElement.catref
+  endif
+
+  -- check for CE at a valid component
+  if ( !this.validElements.findFirst(!currentElement.type).set()) then
+    -- Already at one of the valid elements - return that
+    return !currentElement
+  endif
+
+  -- Check for TEXT element, and look in owner category
+  if( !currentElement.type eq 'TEXT' ) then
+    !currentElement = !currentElement.owner
+  endif
+
+  -- Now check to see if we have any valid component elements below this point
+  !componentCollection = object COLLECTION()
+  !componentCollection.scope(!currentElement)
+  !componentCollection.types(!this.validElements)
+  !componentArray = !componentCollection.results()
+  if(!componentArray.size() eq 0 ) then
+
+    -- Not found a component - try finding components that reference CE
+    -- Do loop is set for all geodep elements available from the picked element upwards
+    !geodep = !currentElement.geodep
+    handle (2,201)
+      !geodep = ARRAY()
+    endhandle
+    -- Now add owners geodep if available
+    do
+      !currentElement = !currentElement.owner
+      handle any
+        break
+      endhandle
+      !oGeodep = !currentElement.geodep
+      handle (2,201) (2, 754) $* Element does not have a geodep or element is unset
+        break
+      elsehandle none
+        !geodep.appendArray(!oGeodep)
+      endhandle
+    enddo
+
+    -- test !geodep to make sure that the system does not search the entire MDB
+    if( !geodep.empty() ) then
+      -- finally try to find a category owning the current element
+      !categoryTypes[1] = 'CATE'
+      !categoryTypes[2] = 'STCA'
+      !categoryTypes[3] = 'SECT'
+      !categoryTypes[4] = 'STSE'
+      !owningCategory   = !!dtbOwnerOfTypes(!currentElement,!categoryTypes)
+      if( !owningCategory.unset() ) then
+        return object DBREF()
+      else
+        -- scope is category
+        !componentCollection.scope(!owningCategory)
+      endif
+    else
+      -- scope is list of reference components
+      !componentCollection.scope(!geodep)
+    endif
+
+    -- now search the linked elements for components
+    !componentArray = !componentCollection.results()
+
+  endif
+
+  if(!componentArray.size() gt 0 ) then
+    -- Component element found
+    -- check for previous component in result set
+    !index = 1
+    if( !previous.set() ) then
+      !previousIndex = !componentArray.findFirst(!previous)
+      if( !previousIndex.set() ) then
+        !index = !previousIndex
+      endif
+    endif
+    !currentElement = !componentArray[!index]
+  else
+      -- return unset object if component not found
+      !currentElement = object DBREF()
+  endif
+
+  return !currentElement
+
+endmethod
+
+---------------------------------------------------------------------------------------------
+define method .setList(!form is FORM, !type is STRING) is ARRAY
+---------------------------------------------------------------------------------------------
+-- SetList Method with $!type
+-- If we can't find the element we are looking for, try looking at the owner and see if we find some.
+
+  -- Set the frames to something, rather than nothing.
+--     !form.refData.setFrame('CATEGORY', !form)
+
+if (unset(!this.validElements.findFirst(!type))) then
+    !elements = !!ce.prmown.list
+    !useType = ''
+    !!ce = !!ce.prmown
+    !coll = ARRAY()
+
+    if (!elements.findFirst('SCOM') NE 0) then
+        var !coll coll all SCOM for ce
+        !useType = 'SCOM'
+
+    elseif (!elements.findFirst('JOIN') NE 0) then
+        !useType = 'JOIN'
+        var !coll coll all JOIN for ce
+
+    elseif (!elements.findFirst('SPRF') NE 0) then
+        !useType = 'SPRF'
+        var !coll coll all SPRF for ce
+
+    elseif (!elements.findFirst('SFIT') NE 0) then
+        !useType = 'SFIT'
+        var !coll coll all SFIT for ce
+
+    endif
+
+    if (!coll.empty()) then
+        !useType = ''
+    else
+        !form.component = !coll[1].dbref()
+    endif
+
+else
+
+    !useType = !type
+
+endif
+
+if (!useType EQ 'SCOM') then
+
+ if (!!appCntrl.currentApp.eq('ELEC') and !!catModelViews.type eq 'CORE') then
+    -- Now get the references for the element we are at.
+    !list[1] = 'Description,Value'
+    !list[2] = 'Category,Component,Point Set ,Cable Core Set'
+    !list[3] = 'owner   ,ce       ,ptref       ,ccorref'
+ else
+    -- Now get the references for the element we are at.
+    !list[1] = 'Description,Value'
+    !list[2] = 'Category,Component,Point Set,Geometry ,Data Set,Bolt Set'
+    !list[3] = 'owner   ,ce       ,ptref      ,gmref     ,dtref   ,blrf'
+ endif
+
+elseif (!useType EQ 'JOIN')  then
+
+    -- Now get the references for the element we are at.
+    !list[1] = 'Description,Value'
+    !list[2] = 'Category,Component,Point Set,Pline Set,+ve Geometry,-ve Geometry,Data Set'
+    !list[3] = 'owner   ,ce       ,ptref     ,pstref    ,gmref        ,ngmref       ,dtref    '
+
+elseif (!useType EQ 'SPRF') then
+
+    -- Now get the references for the element we are at.
+    !list[1] = 'Description,Value'
+    !list[2] = 'Category,Component,Pline Set,Geometry,Data Set'
+    !list[3] = 'owner   ,ce       ,pstref   ,gstref   ,dtref    '
+
+elseif (!useType EQ 'SFIT') then
+
+    -- Now get the references for the element we are at.
+    !list[1] = 'Description,Value'
+    !list[2] = 'Category,Component,Point Set,+ve Geometry,-ve Geometry,Data Set'
+    !list[3] = 'owner   ,ce       ,ptref    ,gmref        ,ngmref       ,dtref    '
+
+else
+     !str = ''
+     do !x value !this.validElements
+        !str = ' ' + !x + !str
+     enddo
+     !str = !str.substring(2)
+     !!alert.error(|Can't find a ($!str$n) from here|)
+     !list[1] = 'None'
+     return !list
+endif
+
+     return !list
+
+endmethod
+
+-------------------------------------------------------------------------------------------------------
+define method .getRefs(!element is DBREF,!atts is ARRAY)
+-------------------------------------------------------------------------------------------------------
+-- From a given element return an array of results for the Attributes, settings and the
+-- rtext values for populating a list gadget.
+-- Arg 1 of Array are the headings required.
+-- Arg 2 of Array are the attributes required.
+
+      !this.headings.clear()
+      !this.columns.clear()
+      !this.rtext.clear()
+      !this.dtext.clear()
+      !this.trackElements.clear()
+
+      !!ce        = !element
+      !this.headings.appendArray(!atts[1].split(','))
+      !attributes = !atts[2].split(',')
+      !columns    = !atts[3].split(',')
+      !this.columns[1] = ARRAY()
+      !this.columns[2] = ARRAY()
+
+      do !x index !columns
+
+      -- Get the value of a given attribute.
+
+      var !answer $!columns[$!x]
+
+      -- Do this bit if the attribute is for bolting, as we need to check for an array of entries.
+      if (!columns[!x].eq('blrf') AND !answer.split().size() gt 1) then
+
+        do !y index !answer.split()
+          !this.columns[1].append(!attributes[!x] & ' (' & !y & ')')
+          !this.columns[2].append(!answer.split()[!y])
+          !this.trackElements.append(!answer.split()[!y].dbref())
+             handle (2,813)
+               -- Likely value unset.
+             endhandle
+
+          !this.rtext.append(!answer.split()[!y])
+          !this.dtext.append(!answer.split()[!y].dbref().string())
+             handle(2,813)
+               !this.dtext.append(!answer.split()[!y])
+             endhandle
+
+       enddo
+
+      -- This bit is for all the other attributes that don't have an array as their result.
+      else
+
+          !this.columns[1].append(!attributes[!x])
+          !this.columns[2].append(!answer)
+      !this.trackElements.append(!answer.dbref())
+      handle (2,813)
+        -- Likely value unset.
+      endhandle
+
+      !this.rtext.append(!answer)
+      !this.dtext.append(!answer.dbref().string())
+      handle(2,813)
+          !this.dtext.append(!answer)
+      endhandle
+
+      endif
+
+      enddo
+
+endmethod
+
+---------------------------------------------------------------------------------------------------------------
+define method .addToRecent(!form is FORM, !element is DBREF)
+---------------------------------------------------------------------------------------------------------------
+ -- Method to add to the recent option list at the top of the form, checks for duplications.
+
+ !current = !form.recent.dtext
+
+ !current.append(!element.name)
+ !form.recent.dtext = !current.unique().invert()
+ !form.recent.select('DTEXT', !element.name)
+
+endmethod
+-------------------------------------------------------------------------------------------------------
+
+-------------------------------------------------------------------------------------------------------
+--
+-- Method:      .getParams()
+--
+-- Description: Get param data for scom
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      GADGET      List to be populated
+--    2   R      DBREF       Scom element
+-- Return:
+--   [Data Type] [Description]
+-------------------------------------------------------------------------------------------------------
+define method .getParams(!gadget is GADGET, !scom is DBREF)
+-------------------------------------------------------------------------------------------------------
+  -- getParams Method catGetElement.pmlobj
+
+  -- Clear arrays ready for population.
+  !form = !gadget.owner()
+  !form.scom.rtext.clear()
+
+  if (unset(!scom)) then
+      return
+  endif
+
+  -- Get parameters for this component
+  !objParameter = object CATPARAMETERSET(!scom)
+  !nParameters  = !objParameter.numberOfParameters()
+
+  -- Get params (row will be value, description, number)
+  !rows  = ARRAY()
+  !texts = ARRAY()
+  do !rowIndex from 1 to !nParameters
+    !rows[!rowIndex]    = ARRAY()
+    !rows[!rowIndex][1] = !rowIndex.string()
+    !rows[!rowIndex][2] = !objParameter.getParameterValue(!rowIndex)
+    !rows[!rowIndex][3] = !objParameter.getParameterTitle(!rowIndex)
+    !texts[!rowIndex]   = !scom
+  enddo
+  -- set component reference for each parameter
+  !form.scom.rtext = !texts
+  !form.scom.texts = !texts
+
+-- Add rtext values to tracking array.
+   !form.getElement.addToTrack(!form, !form.scom.rtext, 2)
+
+-- Populate list
+  !headings    = ARRAY()
+  !headings[1] = |No|
+  !headings[2] = |Value|
+  !headings[3] = |Description|
+  !gadget.setHeadings(!headings)
+  !gadget.setRows(!rows)
+
+  !form.scom.headings = !headings
+  !form.scom.dtext    = !rows
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .getCate()
+--
+-- Description: Get attribute data for members
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      GADGET      List to be populated
+--    2   R      DBREF       Owning element for which members are required
+--    3   R      STRING      Types of siblings to be listed (comma separated)
+--    4   R      ARRAY       Data required (comma separated): data[1] headings, data[2] attributes
+-- Return:
+--   [Data Type] [Description]
+--
+----------------------------------------------------------------------------------------------------------------------------
+define method .getCate(!form is FORM, !owner is DBREF, !typesReqd is STRING, !list is ARRAY)
+----------------------------------------------------------------------------------------------------------------------------
+  -- Get siblings of required type
+  !types   = !typesReqd.split(|,|)
+  !members = ARRAY()
+
+  do !element values !owner.members
+    if (!types.findFirst(!element.type).set()) then
+      !members.append(!element)
+    endif
+  enddo
+
+  -- Get max number of params
+  !numParams = 0
+
+  do !element values !members
+    !numParams = max(!numParams, !element.param.size())
+      handle (2,779)
+      endhandle
+  enddo
+  -- Get data (last attribute may be parameters)
+  !value          = object STRING()
+  !headings       = !list[1].split(|,|)
+  !attributesReqd = !list[2].split(|,|)
+  !rows = ARRAY()
+  do !element values !members
+    !row  = ARRAY()
+    do !attribute values !attributesReqd
+      if (!attribute eq |param|) then
+
+        do !num from 1 to !numParams
+          -- using PML 1 to handle word parameters
+          VAR !par PARAM NUMBER $!num OF $!element
+          if( !par eq 'unset' ) then
+            !par = '0'
+          endif
+          !row.append(!par)
+        enddo
+
+      elseif (!attribute eq |blrfarray|) then
+        -- Bolting ref array - get first element if set
+        !stringVal = |unset|
+        if (!element.blrfarray.size() gt 0) then
+          if (!element.blrfarray[1].set()) then
+            if (!element.blrfarray[1].badref().not()) then
+              !stringVal = !element.blrfarray[1].namn
+            endif
+          endif
+        endif
+        !row.append(!stringVal)
+
+      else
+
+        -- Any other attribute
+        !value.delete()
+        !value = !element.attribute(!attribute)
+        !stringVal = |unset|
+        if (!value.objectType() inset(|ARRAY|, |DBARRATT|)) then
+          !stringVal = |array|
+        elseif (!value.objectType() eq |DBREF|) then
+          if (!value.set()) then
+            if (!value.badref().not()) then
+              !stringVal = !value.namn
+            endif
+          endif
+        else
+          !stringVal = !value.string()
+        endif
+        !row.append(!stringVal)
+
+      endif
+    enddo
+    !rows.append(!row)
+  enddo
+
+  -- Insert parameter titles
+  if (!numParams gt 0) then
+    !pa = !attributesReqd.findFirst(|param|)
+    !headings[!pa] = |PA1|
+    do !i from 2 to !numParams
+      !headings.insert(!pa + !i - 1, |PA| & !i)
+    enddo
+  endif
+
+-- Headings
+
+-- Setup the category grid control, except we need to skip this on occasions, to stop double calls happening.
+
+if (!form.getElement.setParameters EQ FALSE) then
+
+    -- Reset the flag back to TRUE ready for any other call.
+    !form.getElement.setParameters = TRUE
+
+    -- Abort this call here.
+    return
+endif
+
+
+-- Define grid control namespace
+   using namespace 'Aveva.Pdms.Presentation'
+
+  !desc = 'Parameters'
+  !showNumber = TRUE
+
+-- Check to see if we have less than a full grid, add empty items to fill it if necessary.
+  if (!rows.size() lt 9) then
+      !showNumber = FALSE
+
+      !numberParams = !rows[1].size()
+
+      do from 1 to 9 - !rows.size()
+         do !par from 1 to !numberParams
+            !row[!par] = ' '
+         enddo
+          !rows.append(!row)
+      enddo
+  endif
+
+  !contents = object NETDATASOURCE(!desc, !headings, !rows)
+  !form.cateTable.bindToDataSource(!contents)
+
+-- Add to tracking list.
+  !form.getElement.addToTrack(!form, !form.cateTable.getColumn(1), 3)
+
+-- Load Parameter values into object store.
+  !form.refData.parameters = !rows
+
+-- Set grid options and operation.
+  !form.cateTable.headerSort(FALSE)
+  !form.cateTable.setColumnColor(1,'lightBlue')
+  !form.cateTable.setColumnColor(2,'lightBlue')
+  !form.cateTable.extendLastColumn(true)
+  !form.cateTable.singleRowSelection(true)
+  !form.cateTable.editableGrid(true)
+  !form.cateTable.setLabelVisibility(!showNumber)
+  !form.cateTable.selectRow(!form.selectedRow)
+
+endmethod
+-- End of method definition for .getCate()
+
+
+-------------------------------------------------------------------------------------------------------
+define method .setList(!gadget is GADGET)
+-------------------------------------------------------------------------------------------------------
+
+  !gadget.setHeadings(!this.headings)
+  !gadget.setcolumns (!this.columns)
+  !gadget.rtext     = !this.rtext
+
+endmethod
+
+---------------------------------------------------------------------------------------------------------------------------
+define method .setRefs(!dbref is DBREF, !gadget is GADGET)
+---------------------------------------------------------------------------------------------------------------------------
+
+!form = !gadget.owner()
+
+if (!dbref.type.eq('PTSE')) then
+
+-- Get PTSE Data
+    !form.ptse.setRefs(!dbref, !gadget)
+
+elseif (!dbref.type.eq('GMSE')) then
+
+-- Get GMSE Data
+
+elseif (!dbref.type.eq('DTSE')) then
+
+-- Get DTSE Data
+
+endif
+
+
+endmethod
+-------------------------------------------------------------------------------------------------------
+define method .fitComponent(!form is FORM, !ce is DBREF)
+-------------------------------------------------------------------------------------------------------
+
+-- Grab the limits of the component in question.
+!limits = !ce.wvol
+
+if (!limits.set() ) then
+
+    -- Workout and set the limits for the view gadget.
+    !vlimits[1] = !limits[1]
+    !vlimits[2] = !limits[4]
+    !vlimits[3] = !limits[2]
+    !vlimits[4] = !limits[5]
+    !vlimits[5] = !limits[3]
+    !vlimits[6] = !limits[6]
+
+    -- Apply the limits and view the component.
+      !form.view.limits     = !vlimits
+      handle (61,620)
+      endhandle
+
+endif
+
+endmethod
+
+----------------------------------------------------------------------------------------------------
+define method .addModel(!form is FORM, !ce is DBREF)
+----------------------------------------------------------------------------------------------------
+
+  -- Fit component into graphics window.
+  !!catModelViews.limits(!form)
+
+-- Add component to graphical view, deal with drawlist code here too,
+-- If disabled then just add to current graphics view.
+
+  if (!form.localDrawlists) then
+    !drawlist = !!gphDrawlists.drawlist(!form.drawlist)
+    !drawlist.removeAll()
+    !drawlist.add(!ce)
+  else
+    model $!ce
+  endif
+
+endmethod
+
+-------------------------------------------------------------------------------
+define method .returnFromSearch(!gadget is GADGET,!type is STRING)
+-------------------------------------------------------------------------------
+
+!form = !gadget.owner()
+
+-- Set the value in the relevant form.
+!gadget.val = !form.returnList.val
+
+-- Now setup the frame ready for use again.
+!form.refData.setFrame(!form.returnFrame,!form)
+
+endmethod

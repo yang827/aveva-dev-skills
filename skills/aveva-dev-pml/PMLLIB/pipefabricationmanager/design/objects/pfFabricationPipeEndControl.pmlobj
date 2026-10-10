@@ -1,0 +1,458 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            pfFabricationPipeEndControl.pmlobj
+--    Type:          Object Definition
+--    Group:         Pipe Fabrication
+--      Keyword:     PF
+--    Module:        Design
+--  Author:          Jaehun Choi(Daniel)
+--  Created:         11 January 2013
+--
+--  Description:     object for fabrication pipe end
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  calculateWeight(DBREF)           -                   Calculate and set the current weight of the passed ftub
+--  createPipeEnd(DBREF,DBREF,REAL,BOOLEAN,BOOLEAN,STRING,PLANE,STRING,REAL) -                   create pipe end
+--  displaySlantedAngle(DBREF)       -                   display slanted angle information
+--  setLeaveTube(DBREF)              -
+--  setToRefPlane(DBREF)             -
+--
+------------------------------------------------------------------------
+-- Define object
+define object PFFABRICATIONPIPEENDCONTROL
+
+  member .undo        is UNDOABLE
+  member .orientation is STRING
+  member .aidNumber   is REAL
+  member .branchRef   is DBREF
+  member .tubeRef     is DBREF
+  member .note        is STRING
+  member .angle       is REAL
+  member .threadInfo  is STRING
+  member .clearanceValue is REAL
+  member .isHeadPart  is BOOLEAN
+  member .isForSlantedEnd is BOOLEAN
+  member .refPlane is PLANE
+
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:      createPipeEnd
+-- Description: create pipe end
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       branch ref
+--    2    R     DBREF       tube ref
+--    3    R     BOOLEAN     angle
+--    4    R     BOOLEAN     flag for head part
+--    5    R     STRING      is for slanted end
+--    6    R     PLANE       thread info
+--    7    R     STRING      ref plane
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createPipeEnd(!branchRef is DBREF, !tubeRef is DBREF, !angle is REAL,!isHeadPart is BOOLEAN, !isForSlantedEnd is BOOLEAN, !threadInfo is STRING, !refPlane is PLANE, !note is STRING, !clearanceValue is REAL)
+
+  !saveCe = !!ce
+
+  var !mode mode
+
+  FORWARD
+
+  !this.branchRef       = !branchRef
+  !this.tubeRef         = !tubeRef
+  !this.angle           = !angle
+  !this.isHeadPart      = !isHeadPart
+  !this.isForSlantedEnd = !isForSlantedEnd
+  !this.threadInfo      = !threadInfo
+  !this.note            = !note
+  !this.refPlane        = !refPlane
+  !this.clearanceValue  = !clearanceValue
+
+
+  if (!this.isHeadPart) then
+    !flowFlag = 1
+    !insertPos = !this.tubeRef.aPos
+    !location  = !this.branchRef
+  else
+    !flowFlag = -1
+    !insertPos = !this.tubeRef.lPos
+    !location = !this.tubeRef
+  endif
+
+  !!ce = !location
+
+  !tubeNB = !this.tubeRef.para[1]
+  !tubeOd = !this.tubeRef.para[2]
+
+  !line = object LINE(!this.tubeRef.aPos, !this.tubeRef.lPos)
+  !pv   = !line.pointVector()
+  !xDir = !pv.plane().orientation.xDir().string().before('WRT')
+  !yDir = !pv.plane().orientation.yDir().string().before('WRT')
+  !tubeOri  = object ORIENTATION('Z is ' & !yDir & ' AND Y is ' & !xDir)
+
+  !this.undo.description('createSlantedPipeEnd')
+  !this.undo.add()
+
+  !tubeLength = !this.tubeRef.ltLength
+  !tubeOwnerRef = object DBREF(!this.tubeRef.flnm.after('tube of'))
+
+  if (!tubeOwnerRef.hardType ne 'BRAN' and !tubeOwnerRef.sKey eq 'FLSO') then
+    !localVolume = object LOCALVOLUME(!tubeOwnerRef, !tubeOwnerRef)
+    !box = !localVolume.box()
+
+    !lengthList = object ARRAY()
+    !lengthList.append(!box.xLength)
+    !lengthList.append(!box.yLength)
+    !lengthList.append(!box.zLength)
+
+    !flangeThickness = !lengthList.sort()[1]
+    !tubeLength = !tubeLength - !flangeThickness
+  endif
+
+  if (!this.isForSlantedEnd.not()) then
+    !spcoRef  = object DBREF('/THREADPIPEEND/$!<tubeNB>')
+    handle any
+      !!alert.error(!!error.text)
+      return
+    endhandle
+  else
+    !spcoRef  = object DBREF('/SLANTEDPIPEEND/$!<tubeNB>')
+    handle any
+      !!alert.error(!!error.text)
+      return
+    endhandle
+  endif
+
+  if (!spcoRef.owner.name.occurs('/*LIMBOSPEC') gt 0) then
+    return error 1 |Function currently unavailable. Please reinstated the specification from the Limbo spec.|
+    --!!alert.warning(|Function currently unavailable. Please reinstated the specification from the Limbo spec.|)
+  endif
+
+  -- check whether slanted pipe end is exceed over source tube
+  if (!this.isForSlantedEnd) then
+    -- check condition
+    !outDia = !this.tubeRef.para[2].convertunits('mm')
+    !tubeLength = !this.tubeRef.ltLength.convertunits('mm')
+    !cutLength  = !!comValueConvert(!outDia / tan (90 - !this.angle), 'MM')
+    if (!cutLength ge !tubeLength) then
+      !!alert.error('Cannot make slanted end. The angle is exceed original tube length')
+      return
+    endif
+  endif
+
+  NEW FTUBE
+  handle any
+    !!alert.error(!!error.text)
+  endhandle
+
+  !fTubeRef = !!ce
+  SHOP TRUE
+  MTOC OFF
+  pos  $!<insertPos>
+  ori $!tubeOri
+
+  var !oriString ori of $!fTubeRef
+
+  !this.orientation = !oriString
+
+  !threadType = !this.threadInfo.part(1,'@')
+  !threadDesc = !this.threadInfo.part(2,'@')
+
+  if (!this.isForSlantedEnd.not()) then
+    !connectionType = !threadType
+    DESP 0 $!<tubeOd> $!<flowFlag> $!connectionType
+    SPREF $!spcoRef
+    handle any
+      !!alert.error(!!error.text)
+      $!mode
+      return
+    endhandle
+  else
+    DESP $!<this.angle> $!<tubeOd> $!<flowFlag>
+    SPREF $!spcoRef
+    handle any
+      !!alert.error(!!error.text)
+      $!mode
+      return
+    endhandle
+  endif
+
+  !offsetValue = !fTubeRef.pPos[1].distance(!fTubeRef.pPos[2])
+  if (!this.isHeadPart.not()) then
+    !newPos      = !fTubeRef.pos.offset(!fTubeRef.aDir, !offsetValue)
+    pos $!newPos
+
+    BRAN
+    conn pt to last mem
+    SAME
+  endif
+
+  -- set the leave tube to maintain selection if alternate tubes are used.
+  !this.setLeaveTube(!!ce)
+
+  if (!this.angle eq 0) then
+    !insertNote = !this.note
+  else
+    if (!this.isForSlantedEnd) then
+      !slantedData = !!pfCalculateSlantedEndData(!fTubeRef)
+
+      if (!!pfFabricationPipeEnd.note.val.occurs('{deg}') gt 0) then
+        !insertNote = '[$!slantedData[2]]' & !!pfFabricationPipeEnd.note.val.replace('{deg}', !slantedData[1]) & 'deg'
+      else
+        !insertNote = '[$!slantedData[2]]' & !!pfFabricationPipeEnd.slantedEndNote.replace('{deg}', !slantedData[1]) & 'deg'
+      endif
+    else
+      !insertNote = !threadDesc
+    endif
+  endif
+
+  !fTubeRef.matn = |$!insertNote|
+
+  if (!this.refPlane.set()) then
+     !this.setToRefPlane(!fTubeRef )
+  endif
+
+  -- Finally set the weight
+  !this.calculateWeight(!fTubeRef)
+
+  !this.undo.endUndoable()
+
+  $!mode
+
+  !!ce = !saveCe
+  handle any
+  endhandle
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      setToRefPlane
+-- Description: adjust the head and tail to the passed plane
+--
+-----------------------------------------------------------------------
+define method .setToRefPlane(!fTubeRef is DBREF )
+
+  !refPlaneDir = !this.refPlane.direction()
+  !line = object LINE(!fTubeRef.aPos, !fTubeRef.lPos)
+
+  !!ce = !fTubeRef
+  ORI
+  ORI and Z is $!refPlaneDir
+
+  if (!this.isHeadPart.not()) then
+    rotate by 180 about $!fTubeRef.lDir
+  endif
+
+  --!threadType = !this.threadInfo.part(1,'@')
+  !threadDesc = !this.threadInfo.part(2,'@')
+
+  if (!this.angle eq 0) then
+    !insertNote = !this.note
+  else
+    !slantedData = !!pfCalculateSlantedEndData(!fTubeRef)
+    !insertAngle = !slantedData[2]
+
+    if (!this.isForSlantedEnd) then
+      !insertNote = '[$!slantedData[1]' & !this.note.replace('{deg}', !insertAngle) & 'deg'
+    else
+      !insertNote = !threadDesc
+    endif
+  endif
+
+  matn |$!insertNote|
+
+  !checkPoint1 = !fTubeRef.pPos[4].wrt(world)
+  !checkPoint2 = !fTubeRef.pPos[5].wrt(world)
+
+  !fTubMidPoint = !checkPoint1.midPoint(!checkPoint2)
+  !intersections = !this.refPlane.intersection(!line)
+
+  if (!intersections.set()) then
+    -- move to intersection position
+    if (!this.isHeadPart) then
+      !moveDir = !fTubeRef.aDir
+    else
+      !moveDir = !fTubeRef.lDir
+    endif
+
+    !auxDist = !fTubeRef.pos.distance(!line.near(!fTubMidPoint))
+    if (!fTubeRef.pos.direction(!fTubMidPoint) eq !moveDir) then
+      !movePos = !intersections.offset(!moveDir.opposite(), !auxDist)
+    else
+      !movePos = !intersections.offset(!moveDir, !auxDist)
+    endif
+
+    !!ce = !fTubeRef
+    MOVE $!moveDir thro $!movePos
+
+   !checkPlane = object PLANE(!fTubeRef.pos, object ORIENTATION('Z is Z'))
+    !tubeDir    = !line.direction()
+    !projectedDir = !tubeDir.projected(!checkPlane)
+    handle any
+      !angleFlag = false
+    elsehandle none
+      !angleFlag = true
+
+      if (!tubeDir.dot(!projectedDir) eq 0) then
+        !angleFlag = false
+      else
+        !angleFlag = true
+      endif
+    endhandle
+
+    if (!angleFlag) then
+      !addDistance = abs(!this.clearanceValue / cos(!this.angle))
+    else
+      -- move to clearance position
+      !addDistance = !this.clearanceValue
+    endif
+
+    if (!this.clearanceValue lt 0 and !addDistance gt 0) then
+      !addDistance = !addDistance * -1
+    endif
+
+    !opDir = !moveDir.opposite()
+    MOVE $!opDir DIST $!addDistance
+
+  if (!this.isHeadPart) then
+    Branch
+    CONN PH TO FIRST MEM
+    SAME
+  else
+    !!ce.lstu = LSTU OF PREV
+    handle any
+      !!ce.lstu = HSTU OF BRAN
+    endhandle
+    branch
+    CONN PT TO LAST MEM
+  endif
+ endif
+
+ endmethod
+
+
+------------------------------------------------------------------------
+--
+-- Method:      displaySlantedAngle
+-- Description: display slanted angle information
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       fTube ref
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .displaySlantedAngle(!fTubeRef is DBREF)
+  !slantedData = !!pfCalculateSlantedEndData(!fTubeRef)
+  !rotateAngle = !slantedData[3].real()
+
+  !ori = object ORIENTATION('Z IS ' & !fTubeRef.aDir)
+  !arc = object ARC(!fTubeRef.pos, !ori, 0, 360, !fTubeRef.aBore.real() + 10mm, false)
+
+  !oriPos  = !fTubeRef.pos.wrt( /* )
+  !fromPos = !arc.anglePosition(90)
+  !toPos   = !arc.anglePosition(180 - (!rotateAngle + 90))
+
+  !fromDir = !oriPos.direction(!fromPos)
+  !toDir   = !oriPos.direction(!toPos)
+
+  !ruleTextFromPos = !fromPos.offset(!fromDir, 10mm)
+  !ruleTextToPos   = !toPos.offset(!toDir, 10mm)
+
+  AID LINE num $!<this.aidNumber> $!oriPos to $!fromPos
+  AID LINE num $!<this.aidNumber> $!oriPos to $!toPos
+  AID TEXT num $!<this.aidNumber> '0 deg' at $!ruleTextFromPos
+  AID TEXT num $!<this.aidNumber> '$!rotateAngle deg' at $!ruleTextToPos
+
+  !fromPos = !fromPos.offset(!fromDir.opposite(), 20mm)
+  !toPos   = !toPos.offset(!toDir.opposite(), 20mm)
+
+  !fromDir = !oriPos.direction(!fromPos)
+  !toDir   = !oriPos.direction(!toPos)
+
+  AID ARROW number $!<this.aidNumber> at $!fromPos  dir $!fromDir height 30mm prop 0.5
+  AID ARROW number $!<this.aidNumber> at $!toPos dir $!toDir height 30mm prop 0.5
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      setLeaveTube
+-- Description: maintain the leave tube reference and position the head/tail
+--
+------------------------------------------------------------------------
+define method .setLeaveTube(!part is DBREF )
+
+ !!ce = !part
+ if (!this.isHeadPart) then
+    !!ce.lstu = HSTU OF BRAN
+    branch
+    CONN PH TO FIRST MEM
+    SAME
+  else
+    !!ce.lstu = LSTU OF PREV
+    handle any
+      !!ce.lstu = HSTU OF BRAN
+    endhandle
+    branch
+    CONN PT TO LAST MEM
+    SAME
+  endif
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      .calculateWeight
+-- Description: Calculate and set the current weight of the passed ftub
+--
+-- the FTUB is defined by Design parameters.
+-- desp 1 is the angle from 0 no slope to somewhere below 90 degrees
+-- desp 2 is the tube OD
+-- desp 3 is either 1 or -1 1 applies the slope to the arrive end -1 applies the slope to the leave end
+-- desp 4 is the end connection type for when screwed ends are used
+-- desp 5 is the weight in whatever the units were at the time the end was applied.
+------------------------------------------------------------------------
+define method .calculateWeight(!ftub is DBREF)
+!!ce = !ftub
+if !ftub.fitlen.lt(1mm) then
+  -- if its a plain end its zero length zero weight
+  desp n5 0
+  return
+endif
+-- get the unit weight of the current lstu
+if (!!ce.lstu.cmpref.uwei.upcase().occurs('RPRO') gt 0) then
+  !property = !!ce.lstu.cmpref.uwei.after('RPRO').replace(')','').trim()
+  !uwei = !!ce.lstu.prop.attribute(!property).real()
+  handle any
+    !!alert.error('Cannot get unit weight for current end connection Please check Leave tube Weight')
+    !uwei = 0
+  endhandle
+else
+  !uwei = !!ce.lstu.cmpref.uwei.replace('(', '').replace(')', '').real()
+  handle any
+    !!alert.error('Cannot get unit weight for current end connection Please check Leave tube Weight')
+    !uwei = 0
+  endhandle
+endif
+-- the actual weight is half the equivalent tube weight taken from the lstu for the current fitlength
+!ftubWeight = 0.5 * (!uwei * !ftub.fitlen.value())
+
+!dim = object MEASURE('mass')
+!qual = !dim.unitqualifier()
+
+desp n5 $!ftubWeight $!qual
+
+endmethod

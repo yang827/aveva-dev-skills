@@ -1,0 +1,790 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-------------------------------------------------------------------
+--
+--   File:      compmoditem.pmlobj
+--   Type:      Object Definition
+--   Group:     Piping Application
+--   Keyword:   Piping
+--   Module:    design
+--   Replaces:
+--
+-- Author:  T.Martin
+-- Created: 30/08/2005 13:47
+--
+--
+-- Description:
+-- compmoditem object
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  bendRadius(STRING)               -
+--  compmoditem(DBREF)               -
+--  compmoditem(DBREF,STRING)        -
+--  getBendRadius()                  -                   gets the component bend radius from the supplied spcom
+--  getBores()                       -
+--  getDesc()                        -
+--  getILTube()                      -
+--  getNewBores()                    -
+--  getPBore(REAL,DBREF)             BORE                gets the ppoint bores from a spref
+--  getRadius()                      -
+--  getTube()                        -
+--  machineTest(DBREF)               REAL
+--  makeLine()                       ARRAY
+--  setChoices()                     -                   sets the new bores from the alternative component
+--  setChoicesAlt(STRING)            -                   sets the new bores from the alternative component for components in LIMBOSPEC or with no spec
+--  testBendRadius(DBREF,ARRAY,ARRAY) REAL
+--
+
+-- Define Object
+define object COMPMODITEM
+
+  -- component data - REF,TYPE,PDMS NAME
+  member .component           is DBREF
+  member .realcomponent       is DBREF
+  member .componentType       is STRING
+  member .designElement       is STRING
+
+  -- component's bore data
+  member .abore               is BORE
+  member .lbore               is BORE
+  member .pbor3               is BORE
+
+  -- component's spec data
+  member .spref               is DBREF
+  member .description         is STRING
+  member .material            is STRING
+  member .stype               is STRING
+
+  -- leave tube data: specRef and length
+  member .leavetube           is DBREF
+  member .tubeBeginComp       is DBREF
+  member .tubeLength          is REAL
+  member .tubeOD               is REAL
+
+  member .bendRadius          is REAL
+  member .errorlines          is ARRAY
+  member .errorflag           is BOOLEAN
+
+  -- store the selector choices
+  member .questions           is ARRAY
+  member .answers             is ARRAY
+
+  -- New spec component available in the selected spec
+  member .newSpref            is STRING
+
+  -- description of new spec component
+  member .newDescription      is STRING
+
+  -- bore of new component
+  member .newAbore            is BORE
+  member .newLbore            is BORE
+  member .newPbor3            is BORE
+
+  member .ispec               is DBREF
+  member .tspec               is DBREF
+
+endobject
+--------------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------------
+-- constructor method
+-- Given a dbref work out what to do with it
+define method .compmoditem(!comp is DBREF)
+
+     !this.component      = !comp
+     !this.componentType  = !comp.type
+     !this.designElement  = !comp.flnn
+     !this.spref          = !comp.spref
+     !this.newSpref       =  ''
+
+     if !this.componentType eq 'TUBI' then
+
+        -- set component type as TUBE (as in Spec) instead of TUBI
+        !this.componentType  = 'TUBE'
+
+        -- store the mtbe (Material tube beginning component) of tube
+        --!this.tubeBeginComp  = !comp.mtbe
+        !tubeRefString         = !comp.string()
+        !tubeBeginCompStr      = !tubeRefString.after('IL TUB OF').trim()
+        !tubeBeginningComponent = !tubeBeginCompStr.dbref()
+        !this.realcomponent     = !tubeBeginningComponent
+
+        -- set the tube length
+        !this.tubeLength     = !comp.itle.int()
+        !this.ispec          = !this.realcomponent.ispec
+        !this.tspec          = !this.realcomponent.tspec
+     else
+        !this.realcomponent  = !comp
+        if !comp.type.eq('BRAN') then
+          !this.leavetube      = !comp.hstu
+          !this.tubeLength     = !comp.ltle.int()
+          !this.tubeOD         = !comp.phod
+        else
+          !this.leavetube      = !comp.lstu
+          !this.tubeOD         = !comp.lod
+          handle any
+            !this.tubeOD = object REAL()
+          endhandle
+          !this.tubeLength     = !comp.ltle.int()
+          handle any
+            !this.tubeLength = 0
+          endhandle
+        endif
+        !this.ispec          = !comp.ispec
+        !this.tspec          = !comp.tspec
+     endif
+
+-- go and get
+
+        -- get the description and material
+        !this.getDesc()
+
+        -- get the current bores
+        !this.getBores()
+
+      if !comp.spref.set() then
+        -- get the current selector questions and answers
+--CW - P-25646 --setting spec for multiple 'LIMOSPECS'....i.e LIMBOSPEC_12
+        if !this.spref.owner.quest.eq('LIMB') then
+          !this.setChoicesAlt('LIMBO')
+          handle ANY
+            !!alert.warning('Failed to load component in LIMBOSPEC ' & !comp.flnn & '. Some functionality may not work for this component.')
+          endhandle
+        else
+          !this.setChoices()
+        endif
+      else
+        !this.setChoicesAlt('NOSPEC')
+      endif
+
+endmethod
+--------------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------------
+-- constructor method
+-- This is a special case where the component leave tube is zero length
+define method .compmoditem(!comp is DBREF, !type is STRING)
+
+     !this.realcomponent     = !comp
+     if !comp.type.eq('BRAN') then
+       if !comp.hstu.unset().or(!comp.hstu.badref()) then
+        !this.component         = object DBREF()
+        !this.spref             = object DBREF()
+       else
+        !this.component         = !comp.hstu
+        !this.spref             = !comp.hstu
+       endif
+       !this.designElement     = 'head tube of ' & !comp.flnn
+     else
+        !this.component          = !comp.lstu
+         !this.spref             = !comp.lstu
+         !this.designElement     = 'ileave tube of ' & !comp.flnn
+     endif
+     !this.componentType     = !type
+
+
+     !this.newSpref          =  ''
+     !tubeRefString          = !comp.string()
+
+     -- set the tube length
+     !this.tubeLength     = 0
+     !this.ispec          = !comp.ispec
+     !this.tspec          = !comp.tspec
+
+     -- get the description and material
+     !this.getDesc()
+
+     -- get the current bores
+     !this.getBores()
+
+     -- get the current selector questions and answers
+     if !this.spref.set() then
+       if !this.spref.owner.name.eq('/*LIMBOSPEC') then
+         !this.setChoicesAlt('LIMBO')
+       else
+         !this.setChoices()
+       endif
+     elseif !comp.type.eq('BRAN') then
+        !this.setChoicesAlt('NOSPEC')
+     else
+       if !comp.spref.set() then
+         --Used so that branches with components with Null ref for lstu can be loaded
+         !spec = '/' + !comp.spref.name.after('/').before('/')
+         var !sp coll all with Tanswer eq 'TUBE' for $!spec
+         !a = !sp[1].dbref()
+         var !sp2 coll all with Answer eq $!comp.abore for $!a
+         !b = !sp2[1].dbref()
+         var !sp3 coll all SPCO for $!b
+         !this.spref = !sp3[1].dbref()
+         !this.component = !sp3[1].dbref()
+         !this.setChoices()
+       else
+         --We have to do something else, but what is another matter.
+         !this.setChoicesAlt('NOSPEC')
+       endif
+     endif
+
+endmethod
+--------------------------------------------------------------------------------------
+
+$(
+--------------------------------------------------------------------------------------
+-- method to convert the current item into tube
+define method .getTube()
+
+   !this.componentType = 'TUBE'
+   !this.designElement = flnn of next tubi of $!this.component
+   !this.spref         = !this.component.lstu
+
+   -- get the description and material
+   !this.getDesc()
+   -- get the current bores
+   !this.getBores()
+
+endmethod
+--------------------------------------------------------------------------------------
+$)
+
+--------------------------------------------------------------------------------------
+--
+-- Method:      getDesc
+--
+-- Description: gets the component dtxr and mtxx
+-- Note
+-- Limited to dtxr and mtxx because this is what is commonly used.
+-- Extending to other types is possible but only if needed.
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getDesc()
+
+        !this.description   = !this.component.dtxr
+        handle ANY
+          !this.description = 'unset '
+        endhandle
+
+        !this.material      = !this.component.mtxx
+        handle ANY
+          !this.material = 'unset'
+        endhandle
+
+endmethod
+--------------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------------
+--
+-- Method:      bendradius
+--
+-- Description: sets the component radius
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .bendRadius(!value is STRING)
+
+       !this.bendRadius = !value.real()
+
+endmethod
+--------------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------------
+--
+-- Method:      getILTube
+-- Description: gets the leave tube length and sets the tube length
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getILTube()
+
+      !this.ltubelength = !this.component.ltlength.int()
+
+endmethod
+--------------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------------
+--
+-- Method:      getBores
+--
+-- Description: gets the component bores
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getBores()
+
+    if !this.realcomponent.type.eq('BRAN') then
+         !this.abore = !this.realcomponent.hbore
+         !this.lbore =  !this.realcomponent.hbore
+
+    if(!this.realcomponent.ppls.findfirst(3).set() ) then
+       !this.pbor3 = !this.realcomponent.ppbore[3]
+       handle (2,201)(2,759)
+       endhandle
+    endif
+
+  else
+    if (!this.realcomponent.spref.set()) then
+        !this.abore =  !this.realcomponent.abore
+        !this.lbore =  !this.realcomponent.lbore
+        handle (2,201)(2,759)
+        endhandle
+				
+        if(!this.realcomponent.ppls.findfirst(3).set() ) then
+           !this.pbor3 = !this.realcomponent.ppbore[3]
+           handle (2,201)(2,759)
+           endhandle
+        endif
+    else
+      --P-13341 gets the arrive and leave bore for components with no spec set
+      !currentElement = !!ce
+      !!ce = !this.realcomponent
+      do
+        prev
+        handle any
+          --Its hit the start of the branch.
+          !this.abore =  !!ce.owner.hbore
+          handle any
+            -- If the branch has no hbore attribute then we cant do anything
+            !!alert.error('Failed to load form some specs not set')
+            return
+          endhandle
+          break
+        endhandle
+
+        if !!ce.spref.set() then
+          !this.abore =  !!ce.lbore
+          break
+        endif
+      enddo
+
+      !!ce = !this.realcomponent
+
+      do
+        next
+        handle any
+          !this.lbore = !this.abore
+          break
+        endhandle
+
+        if !!ce.spref.set() then
+          !this.lbore = !!ce.abore
+          break
+        endif
+      enddo
+
+      !!ce = !currentElement
+      --ENdFix P-13341
+    endif
+        endif
+
+endmethod
+--------------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------------
+--
+-- Method:      getBendRadius
+--
+-- Description: gets the component bend radius from the supplied spcom
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getBendRadius( )
+
+    -- there are two mechanisms for getting a bend radius from a spcom
+    !table = object COMPONENTTABLE(!this.newSpref.dbref())
+
+    !radius = !this.testBendRadius(!this.newSpref.dbref(),!table.questions(),!table.answers(!this.newSpref.dbref()))
+
+    !this.bendRadius(!radius.string())
+
+    -- the radius selector
+    -- the zone bending machine at zone level
+
+endmethod
+--------------------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+--
+-- Method:      testBendRadius
+--
+-- Description: Called to test if a radius can be machine defined or spec defined
+--
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .testBendRadius(!component is DBREF,!questions is ARRAY, !answers is ARRAY )is REAL
+
+ !radius = REAL()
+ do !a index !questions
+      if !questions[!a].match('RAD').eq(1) then
+         -- the radius is set in the spec
+         !radius = !answers[!a].real()
+         return !radius
+      endif
+enddo
+
+-- if it gets here it couldn't find the right radius in the spec so now we need to test the dbfrad
+if !component.catref.compType.eq('VAR') then
+  !radius = !this.machineTest(!this.component)
+  if !radius.gt(-1) then
+    return !radius
+  else
+    !radius = 0
+  endif
+endif
+return !radius
+
+endmethod
+------------------------------------------------------------------------
+
+
+--------------------------------------------------------------------------------------
+--
+-- Method:      getRadius
+--
+-- Description: gets the component bend radius based on arrive and leave points
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getRadius()
+
+     !adir = !this.component.adir
+     !ldir = !this.component.ldir
+     !angle = !adir.angle(!ldir) / 2
+     !adj = !this.component.apos.distance(!this.component.pos)
+     if !adj.eq(0) then
+        !this.bendRadius = 0
+     else
+        !this.bendRadius = tan( !angle ) * !adj
+     endif
+
+endmethod
+--------------------------------------------------------------------------------------
+
+define method .makeLine() is ARRAY
+
+   !line = !this.designElement & '   ' & !this.componentType & ' ' & !this.spref.name & '    ' & !this.description & ' ' & !this.material $
+            & '   ' & !this.abore & ' ' & !this.lbore & '  ' & !this.pbor3
+
+    return !line
+
+endmethod
+--------------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------------
+ define method .makeheader()is ARRAY
+
+    !line = 'Type' & '  ' & 'Component' & ' ' & 'Description/material' $
+            & ' ' & 'Arrive Bore' & '   ' & 'Leave bore' & '    ' & 'P3 Bore'
+
+    return !line
+
+ endmethod
+--------------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------------
+--
+-- Method:      setChoices
+--
+-- Description: gets the selector questions and answers
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setChoices()
+
+    !questions = ARRAY()
+    !answers   = ARRAY()
+
+    !specRef = !this.spref
+    var !choices CHOICE with $!<specRef> number
+    !number = !choices.real()
+
+    -- modified routine for selecting component choices to get round the problem of spaces in stypes.
+    do !a to !number from 2
+      var !question CHOICE with $!<specRef> QUESTION $!a
+      !question = !question.replace('PBOR 0','PBOR0').replace('PBOR 1','PBOR1').replace('PBOR 2','PBOR2').replace('PBOR 3','PBOR3').replace('PBOR 4','PBOR4')
+      !questions.append(!question)
+      var !answer  CHOICE with $!<specRef> ANSWER $!a
+      if !question.matchwild('PBOR*') then
+          !boreAnswer = object BORE(!answer)
+          handle ANY
+            !answers.append(!this.abore)
+          elsehandle NONE
+            --P-13280: Allows the actual bore of each lstu to be gained instead of the value specified by the component.
+            if !this.componentType.eq('TUBE') and !boreAnswer.set() then
+      				!this.abore = !boreAnswer
+      				!this.lbore = !boreAnswer
+      			endif
+            !answers.append(!boreAnswer)
+          endhandle
+      else
+        var !answer CHOICE with $!<specRef> ANSWER $!a
+        !answers.append(!answer)
+     endif
+    enddo
+
+    !this.questions = !questions
+    !this.answers   = !answers
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      setChoicesAlt
+--
+-- Description: gets the selector questions and answers for components
+--          with no spref set and components with a spref in LIMBOSPEC.
+--          Manually builds q and a using available data.
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setChoicesAlt(!opFlag is STRING)
+
+    !questions = ARRAY()
+    !answers   = ARRAY()
+
+    if !opFlag.eq('LIMBO') then
+      -- Get spec from the name of the specRef for the component
+      !specRef = !this.spref
+      !specName = !this.spref.name.split('/')
+      if !specName[1].eq('') then
+        !specName.removeFirst()
+      endif
+      !specNameStr = '/' + !specName[1]
+      !spec = !specNameStr.dbref()
+    elseif !opFlag.eq('NOSPEC') then
+      !spec = !this.realcomponent.owner.pspec
+      handle any
+        !spec = !this.realcomponent.owner.owner.pspec
+        handle any
+          return
+        endhandle
+      endhandle
+      !specNameStr = !spec.name
+    endif
+
+    -- Get all sele of spec
+    !tanswer = !this.component.type
+    handle any
+      !tanswer = !this.componentType
+    endhandle
+    var !a coll all SELE with TANS eq !tanswer for $!spec
+
+    -- Search through sele and collect all SPCO and check they are all of same dDepth
+    do !b to !a.size()
+      !spec = !a[!b].dbref()
+      var !spcoArray coll all SPCO for $!spec
+    enddo
+    !spec = !spcoArray[1].dbref()
+
+    -- Assumption made that first spco found has same dDepth of others if this is not true process may fail.
+    !dDepth = !spcoArray[1].dbref().dDepth - !specNameStr.dbref().dDepth
+
+    do !x to !dDepth from 2
+      var !question CHOICE with $!<spec> QUESTION $!x
+      !question = !question.replace('PBOR 0','PBOR0').replace('PBOR 1','PBOR1').replace('PBOR 2','PBOR2').replace('PBOR 3','PBOR3').replace('PBOR 4','PBOR4')
+      !questions.append(!question)
+      if !question.matchwild('PBOR*') then
+        if (!question eq 'PBOR0') then
+          !answer = !this.abore.string()
+        elseif (!question eq 'PBOR1') then
+          !answer = !this.abore.string()
+        elseif (!question eq 'PBOR2') then
+          !answer = !this.lbore.string()
+        elseif (!question eq 'PBOR3') then
+          !answer = !this.pbor3.string()
+        elseif (!question eq 'PBOR4') then
+          !answer = !this.pbor3.string()
+        endif
+        !boreAnswer = object BORE(!answer)
+        handle ANY
+          !answers.append(!this.abore)
+        elsehandle NONE
+          !answers.append(!boreAnswer)
+        endhandle
+      elseif (!question eq 'STYP') then
+        !answer = !this.stype
+         !answers.append(!answer)
+      elseif (!question eq 'SHOP') then
+        !answer = 'TRUE'
+        !answers.append(!answer)
+      else
+        !answers.append('unset')
+      endif
+    enddo
+
+    !this.questions = !questions
+    !this.answers   = !answers
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:  getNewBores
+--
+-- Description: sets the new bores from the alternative component
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getNewBores()
+
+  -- Check if there is a new Spec Ref before getting new bores
+  if (!this.newSpref neq '') then
+
+     !spref = !this.newSpref.dbref()
+     handle any
+       return
+     endhandle
+
+     !arrive = !this.component.arrive
+     handle any
+       !arrive = 1
+     endhandle
+     !leave  = !this.component.leave
+     handle any
+       !leave = 2
+     endhandle
+
+   -- check if the current element has a pbor3
+     !unusedCheck = !this.component.ppbore[3]
+     handle any
+       -- no pbor3
+     elsehandle NONE
+        !spare         = (6 - (!arrive + !leave))
+        !this.newPbor3 = !this.getPBore(!spare,!spref)
+     endhandle
+
+     !this.newAbore = !this.getPBore(!arrive,!spref)
+     !this.newLbore = !this.getPBore(!leave,!spref)
+
+  -- No Spec Ref so reset bores
+  else
+     !unsetBore = object BORE()
+     !this.newAbore = !unsetBore
+     !this.newLbore = !unsetBore
+     !this.newPbor3 = !unsetBore
+  endif
+
+endmethod
+--------------------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+--
+-- Method:  getPBore
+--
+-- Description: gets the ppoint bores from a spref
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+--------------------------------------------------------------------------------------
+define method .getPBore(!number is REAL, !spref is DBREF)is BORE
+
+  !bore = !spref.ppbore[!number]
+  handle ANY
+    return object bore()
+ endhandle
+ return !bore
+
+endmethod
+--------------------------------------------------------------------------------------
+------------------------------------------------------------------------
+--
+-- Method:     MachineTest
+--
+-- Description: Called to test if a radius can be machine defined
+--
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .machineTest(!component is DBREF ) is REAL
+  !bendMacList = object ARRAY()
+  --Appending the bendmacref of branch,pipe,zone of the component in the array
+  !bendMacList.append(!this.component.owner.bendmacref)
+  !bendMacList.append(!this.component.owner.owner.bendmacref)
+  !bendMacList.append(!this.component.owner.owner.owner.bendmacref)
+
+  --if the bendmacref is set for any of the branch,pipe or zone then storing it.
+  do !bendMacRef values !bendMacList
+    if(!bendMacRef.set()) then
+      !macList = !bendMacRef
+      break
+    endif
+  enddo
+
+  if !macList.unset().or(!macList.badref()) then
+    return -1
+  else
+    var !machines collect all FMBDIM for $!macList
+    do !a values !machines
+       -- fix to add a tolerance to the outside diameters
+      !radiusDiff = abs(!a.dbref().od - !this.tubeOD)
+      handle ANY
+         -- if any of the values are unset then its not a match
+         return -1
+      endhandle
+      !radiusTest = !radiusDiff.lt(1mm)
+      if !radiusTest then
+        if !a.dbref().wThickness.neq(0) then
+          -- test the wall thickness
+          !wallDiff = abs(!a.dbref().wThickness - !component.pwallth[1] )
+          if !wallDiff.lt(0.1mm) then
+             return !a.dbref().bradius * !this.tubeOD
+          endif
+        else
+        return !a.dbref().bradius * !this.tubeOD
+        endif
+      endif
+    enddo
+  endif
+
+  return -1
+
+endmethod
+------------------------------------------------------------------------

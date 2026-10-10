@@ -1,0 +1,1265 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            pipeStubIn.pmlfrm
+--   Type:          Form Definition
+--   Group:         Piping Application
+--     Keyword:     PIPE
+--   Module:        Design
+--   Replaces:
+--
+-- Author:           T.martin
+--  Created:         21/06/2010 09:03:13
+--
+-- Description:     Form for managing special stub in tees
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  alignComponent()                 -
+--  checkSpref()                     BOOLEAN             enables/disables the connect button
+--  clearAids()                      -
+--  connect()                        -                   callback for connect button
+--  connectionPick(EDGPICKDATA)      -                   Pick item to connect to
+--  connectionPick(STRING)           -
+--  defaultGadgets(BOOLEAN)          -                   set the form status when shown
+--  detailGadgets(BOOLEAN)           -                   set the form status when shown
+--  dismiss()                        -                   form dismiss button callback
+--  findConnections()                -                   find any head and tail connections and delete them
+--  getIntersectComponent(ARRAY)     -                   sorts through a multiple list of head and tail components
+--  getTeeTypes()                    -                   When the user selects the stub in branch we need to
+--  getTubeBores(STRING)             -                   get the available tube sizes from the stub in spec
+--  getTubePosition(POSITION,DBREF)  PLANE
+--  getVectors(DBREF)                ARRAY
+--  init()                           -                   initialisation
+--  initialiseVariables()            -                   method to get all the variables from the current connection object
+--  pickIntersectionPoint()          -                   Setup EDG mode to pick branch for connecting
+--  pickMainBranch(DBREF)            -                   pick the main branch to be connected
+--  pickPoint()                      -
+--  pickStubInBranch(DBREF,BOOLEAN)  -                   pick the stub in branch to be connected
+--  pipeStubIn()                     -
+--  setHeadTailDtext()               -
+--  setInsert(REAL)                  -
+--  stubInComponent(EDGPICKDATA)     -                   Save first intersection element and check that it is the first or
+--  swapHeadTail()                   -                   method to convert between the connected branch head and tail
+--  tagBranch(DBREF,STRING)          -                   Tag branch selected in the branch list
+--  testForComponents()              -                   method to make sure we have the right components in the database
+--  tidy()                           -                   cleanUp any created items when the form is dismissed
+--  validateOlet(DBREF)              BOOLEAN             check to see if the olet needs to be deleted.
+--
+
+--
+------------------------------------------------------------------------
+
+setup form !!pipeStubIn
+
+   !!pipeStubIn.formTitle     = 'Pipe Stub In Connections'
+   !!pipeStubIn.iconTitle     = 'Stub In'
+   !!pipeStubIn.callback      = '!!pipeStubIn.init()'
+   !!pipeStubIn.formRevision  = ' $Revision: 1.0 $ '
+
+
+   --Hold branch to be connected into
+   member .mainBranch is DBREF
+   --Hold Branch to be connected
+   member .connectedBranch is DBREF
+   --Hold end to be connected head or tail (true False)
+   member .connectedEnd is STRING
+   -- hold end to be picked
+   member .edgSelection is STRING
+   -- the spec from which the tees are derived.
+   -- currently this is the spec of the main branch
+   member .teeSpec is DBREF
+
+   member .headComponent     is PIPESTUBINCONNECTION
+   member .tailComponent     is PIPESTUBINCONNECTION
+   member .currentConnection is PIPESTUBINCONNECTION
+
+   -- tagging numbers
+   member .tagStubHead                  is REAL
+   member .tagStubTail                  is REAL
+   member .tagMainHead                  is REAL
+   member .tagMainTail                  is REAL
+   member .branchCylinder               is REAL
+
+   member .hcomp is DBREF
+   member .tcomp is DBREF
+
+   -- save the stype of the selected connection
+   member .originalstype is STRING
+
+   -- description of current active EDG operation
+   member .edgDescription      is STRING
+   member .undo                is UNDOABLE
+   member .tempUndo            is UNDOABLE
+
+   frame .mainBranchFrame 'Main Branch' at xMin yMin
+      path down
+      halign left
+      vdist 0
+      hdist 0
+
+      button .pickMain linklabel  'Select  ' callback  '!this.connectionPick(|Main Branch|)'
+      paragraph .mainName at xmax Ymin  width 35
+   exit
+
+
+   frame .stubInBranchFrame 'Stub In Branch' at xmin.mainBranchFrame ymax
+      path down
+      halign left
+      vdist 0
+      hdist 0
+      button .pickStubIn linklabel 'Select  ' callback '!this.connectionPick(|Stub in Branch|)'
+      paragraph .stubInName at xmax Ymin  width 35
+      text   .branchInsert 'Insert Depth' at xmin.pickStubIn ymax callback '!this.setInsert(!this.branchInsert.val)' width 7 is REAL format !!distanceFmt
+      option .connectedEndOption 'Connected End' at xmax ymin callback '!this.swapHeadTail()' width 7
+      option .stubInType 'Branch Type ' at xmin.pickStubIn ymax call '!this.getTubeBores(!this.stubInType.selection())' width 16
+
+   exit
+
+   button .connect ' Apply ' at Xmin.stubInBranchFrame Ymax.stubInBranchFrame callback '!this.connect()'
+   button .dismiss ' Dismiss ' at xmax form - size ymin callback '!this.dismiss()'
+
+exit
+-- End of form definition for !!pipeStubIn
+------------------------------------------------------------------------
+--
+-- Method:      !pipeStubIn()
+--
+-- Description: constructor
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .pipeStubIn()
+
+-- Aid graphic numbers
+
+  !this.tagStubHead       = !!aidNumbers.add('Branch Tagging')
+  !this.tagStubTail       = !!aidNumbers.add('Branch Tagging')
+  !this.tagMainHead       = !!aidNumbers.add('Branch Tagging')
+  !this.tagMainTail       = !!aidNumbers.add('Branch Tagging')
+  !this.branchCylinder    = !!aidNumbers.add('Branch cylinder')
+
+endmethod
+-- End of method definition for .pipeStubIn()
+------------------------------------------------------------------------
+--
+-- Method:      !init()
+--
+-- Description: initialisation
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .init()
+
+     -- test to see if we have the right database components
+     !this.testForComponents()
+     -- reset the form variables
+     !this.defaultGadgets(FALSE)
+     !this.detailGadgets(FALSE)
+     -- remove any aid graphics
+     !this.clearAids()
+
+     -- reset the branch variables
+    !this.pickStubIn.tag = 'Select  '
+    !this.currentConnection.connectedBranch = object DBREF()
+    !this.stubInName.val = ''
+    !this.pickMain.tag = 'Select  '
+    !this.mainBranch = object DBREF()
+    !this.mainName.val = ''
+    !this.connectedEndOption.dtext = ARRAY()
+
+endmethod
+-- End of method definition for .init()
+------------------------------------------------------------------------
+--
+-- Method:      .defaultGadgets()
+--
+-- Description: set the form status when shown
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .defaultGadgets(!action is BOOLEAN)
+
+    --!this.stubInBranchFrame.active = !action
+    --!this.componentSelection.active = !action
+    !this.pickStubIn.active = !action
+    !this.connect.active = !action
+    !this.branchInsert.val = 0
+    !this.stubInName.val = ''
+    !this.pickStubIn.tag = 'Select  '
+    !this.connectedEndOption.dtext = ARRAY()
+    !this.stubInType.val = 1
+    handle ANY
+    endhandle
+
+endmethod
+-- End of method definition for defaultGadgets()
+
+------------------------------------------------------------------------
+--
+-- Method:      .detailGadgets()
+--
+-- Description: set the form status when shown
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .detailGadgets(!action is BOOLEAN)
+
+   !this.branchInsert.active        = !action
+   !this.connectedEndOption.active  = !action
+   !this.stubInType.active          = !action
+
+endmethod
+-- End of method definition for detailGadgets()
+
+------------------------------------------------------------------------
+--
+-- Method:      checkSpref()
+--
+-- Description: enables/disables the connect button
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .checkSpref() is BOOLEAN
+
+   if !this.currentConnection.teeSpref.unset() then
+     -- we can't make a connection at this size so disable the connect button
+     !!alert.error('Branch $!this.currentConnection.headOrTail cannot be connected using this type of component')
+     !this.branchInsert.val = 0
+     !this.connect.active = FALSE
+     return FALSE
+   else
+     !this.connect.active = TRUE
+     return TRUE
+   endif
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      .clearAids()
+--
+-- Description: remove the graphical aids
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .clearAids()
+
+    AID CLEAR ALL $!<this.tagMainHead>
+    AID CLEAR ALL $!<this.tagMainTail>
+    AID CLEAR ALL $!<this.tagStubHead>
+    AID CLEAR ALL $!<this.tagStubTail>
+    AID CLEAR ALL $!<this.branchCylinder>
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      !connect()
+--
+-- Description: callback for the connect/reconnect button
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .connect()
+
+ if !this.currentConnection.set() then
+    !this.undo.description('Start of Connect')
+    !this.undo.add()
+    !this.currentConnection.connect()
+    !this.undo.endundoable()
+
+    !this.currentConnection.drawFitting(FALSE,!this.branchCylinder)
+    !this.tagBranch(!this.currentConnection.connectedBranch,'STUB')
+ endif
+
+  !selection =  !this.connectedEndOption.val
+  handle ANY
+   !selection = 1
+  endhandle
+
+  if !this.tailComponent.set().and(!this.headComponent.set()) then
+       !this.headComponent.updateParameters(!this.headComponent.componentType,FALSE)
+       !this.tailComponent.updateParameters(!this.tailComponent.componentType,FALSE)
+  elseif !this.tailComponent.set() then
+       !this.tailComponent.updateParameters(!this.tailComponent.componentType,FALSE)
+  elseif !this.headComponent.set() then
+       !this.headComponent.updateParameters(!this.headComponent.componentType,FALSE)
+  endif
+
+  !this.connectedEndOption.val = !selection
+
+  !this.swapHeadTail()
+  !this.setHeadTailDtext()
+  !this.initialiseVariables()
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      pickStubInBranch()
+--
+-- Description: pick the stub in branch to be connected
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN      True if in Millimetres
+--
+------------------------------------------------------------------------
+define method .pickStubInBranch(!pickedBranch is DBREF,!override is BOOLEAN)
+
+   !this.headComponent     = object PIPESTUBINCONNECTION()
+   !this.tailComponent     = object PIPESTUBINCONNECTION()
+   !this.currentConnection = object PIPESTUBINCONNECTION()
+   !this.connectedBranch = object DBREF()
+
+   if !pickedBranch.eq(!this.currentConnection.connectedBranch).and(!override.not()) then
+       !!alert.error('This branch is already selected')
+       return
+   endif
+
+   if !pickedBranch.eq(!this.mainBranch) then
+      !!alert.error('You have selected the main Branch. - You cannot connect a branch to itself')
+      return
+   endif
+
+   -- set up the available bores by examining the branch spec
+   !spec = !pickedBranch.pspec
+   if !spec.unset() then
+      !!alert.error('Connected branch Piping Spec is Unset - Please set the spec')
+      return
+   endif
+
+   if !pickedBranch.hBore.unset().or(!pickedBranch.tBore.unset()) then
+     !!alert.error('Connected Branch hBore or tBore is unset - Please set these before continuing')
+     return
+   endif
+
+   -- check if the branch can be written to
+   if !!dbRefUpdatable(!pickedBranch).not() then
+     !!alert.error('You are unable to modify this branch - $!!error.text')
+     !this.stubInName.val = ''
+     !this.currentConnection.connectedBranch = object DBREF()
+     return
+   endif
+
+   !this.currentConnection.connectedBranch = !pickedBranch
+   !this.connectedBranch = !pickedBranch
+
+   !this.stubInName.val = !pickedBranch.flnm
+   --!this.setHeadTailVisibility(TRUE)
+   handle ANY
+     !this.mainName.val = ''
+     !this.pickMain.tag = 'Select  '
+   endhandle
+   !this.pickStubIn.tag = 'Reselect'
+   !this.tagBranch(!pickedBranch,'stub')
+
+   -- go and check for an existing connection and temporarily delete the connection olets
+   !this.findConnections()
+
+   -- new method for finding if the picked branch intersects the main branch
+   -- first work out the vector for the head and tail
+   !vectors = !this.getVectors(!pickedBranch)
+
+   if !vectors.unset() then
+      !!alert.error('Branches do Not intersect')
+      return
+   endif
+
+   if !this.headComponent.set() then
+     !headVector = object POINTVECTOR()
+   else
+      !headVector = !vectors[1]
+   endif
+
+   if !this.tailComponent.set() then
+     !tailVector = object POINTVECTOR()
+   else
+     !tailVector = !vectors[2]
+   endif
+
+    --!this.headComponent = object PIPESTUBINCONNECTION()
+   --!this.tailComponent = object PIPESTUBINCONNECTION()
+   !q = object PIPEINTERSECTION()
+   !headComponents = ARRAY()
+   !tailComponents = ARRAY()
+   -- special check to check headtube
+   -- type is 'TUBE'
+
+   !vector = object POINTVECTOR()
+   !vector = !q.impliedTubeIntersection(!this.mainBranch,!headVector)
+   if !vector.set() then
+      !vector.direction = !headVector.direction.opposite()
+      !headComponent = object PIPESTUBINCONNECTION( !this.mainBranch,'TUBE','HEAD',!vector,!pickedBranch,!this.stubInType.selection())
+      !headComponents.append(!headComponent)
+   endif
+   !vector = object POINTVECTOR()
+   !vector = !q.impliedTubeIntersection( !this.mainBranch,!tailVector)
+   if !vector.set() then
+      !vector.direction = !tailVector.direction.opposite()
+      !tailComponent = object PIPESTUBINCONNECTION( !this.mainBranch,'TUBE','TAIL',!vector,!pickedBranch,!this.stubInType.selection())
+      !tailComponents.append(!tailComponent)
+   endif
+
+   do !a values !this.mainBranch.members
+     !vector = object POINTVECTOR()
+     !element = !a
+     -- type is 'ELEMENT'
+     !vector = !q.intersection(!a,!headVector)
+     if !vector.set() then
+        !vector.direction = !headVector.direction.opposite()
+        !headComponent = object PIPESTUBINCONNECTION(!a,'COMPONENT','HEAD',!vector,!pickedBranch,!this.stubInType.selection())
+        !headComponents.append(!headComponent)
+     endif
+     !vector = !q.intersection(!a,!tailVector)
+      if !vector.set() then
+         !vector.direction = !tailVector.direction.opposite()
+         !tailComponent = object PIPESTUBINCONNECTION(!a,'COMPONENT','TAIL',!vector,!pickedBranch,!this.stubInType.selection())
+         !tailComponents.append(!tailComponent)
+      endif
+     -- type is 'TUBE'
+     !vector = !q.impliedTubeIntersection(!a,!headVector)
+      if !vector.set() then
+         !vector.direction = !headVector.direction.opposite()
+         !headComponent = object PIPESTUBINCONNECTION(!a,'TUBE','HEAD',!vector,!pickedBranch,!this.stubInType.selection())
+         !headComponents.append(!headComponent)
+     endif
+     !vector = !q.impliedTubeIntersection(!a,!tailVector)
+      if !vector.set() then
+         !vector.direction = !tailVector.direction.opposite()
+         !tailComponent = object PIPESTUBINCONNECTION(!a,'TUBE','TAIL',!vector,!pickedBranch,!this.stubInType.selection())
+         !tailComponents.append(!tailComponent)
+     endif
+   enddo
+
+   if !headComponents.size().gt(0).and(!this.headComponent.unset()) then
+      !this.getIntersectComponent(!headComponents)
+   endif
+
+   if !tailComponents.size().gt(0).and(!this.tailComponent.unset()) then
+      !this.getIntersectComponent(!tailComponents)
+   endif
+
+   -- go and set the dtext of the head tail option
+   !this.setHeadTailDtext()
+
+   if !this.tailComponent.unset().and(!this.headComponent.unset()) then
+      !!alert.error('Cannot find a valid intersection point with the main branch - Please pick another branch')
+      !this.currentConnection.connectedBranch = object DBREF()
+      !this.connectedBranch = object DBREF()
+      !this.stubInName.val = ''
+      !this.branchInsert.val = 0
+      !this.detailGadgets(FALSE)
+      return
+   endif
+
+   -- go and set the form up
+   !this.initialiseVariables()
+   !this.detailGadgets(TRUE)
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      getIntersectComponent()
+--
+-- Description: sorts through a multiple list of head and tail components
+-- to find the best match
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--        head    ARRAY of PIPESTUBINCONNECTIONs
+--        tail    ARRAY of PIPESTUBINCONNECTIONs
+--
+------------------------------------------------------------------------
+define method .getIntersectComponent(!newComponents is ARRAY)
+
+!type = !newComponents[1].headOrTail
+
+if !newComponents.size().eq(1) then
+  if !type eq 'HEAD' then
+    !this.headComponent = !newComponents[1]
+  else
+    !this.tailComponent = !newComponents[1]
+  endif
+  return
+endif
+
+-- find out if its head or tail
+!direction = !newComponents[1].branchDirection
+!sPosition = !newComponents[1].surfacePosition
+!bestSelection = 1
+
+!vector = object POINTVECTOR()
+!vector.position = !sPosition
+!vector.direction = !direction
+!line = !vector.line(1)
+!components = ARRAY()
+
+do !a from 1 to !newComponents.size()
+ -- P-32657
+
+ -- get the best fit component
+ if !newComponents[!a].nearestEnd() then
+   skip
+ endif
+  if !newComponents[!a].inBetween() then
+   skip
+ endif
+
+ !components.append(!newComponents[!a])
+
+enddo
+
+if !components.size().eq(0) then
+  return
+endif
+
+do !a from 2 to !components.size()
+
+   if !line.onProjected(!components[!a].surfacePosition).not() then
+     -- we need to extend the line one way or another
+     !near = !line.near(!components[!a].surfacePosition)
+     if !near.distance(!line.endPosition).lt(!near.distance(!line.startPosition)) then
+        !line.endPosition = !components[!a].surfacePosition
+        !bestSelection = !a
+     else
+        !line.startPosition = !components[!a].surfacePosition
+     endif
+   endif
+
+enddo
+
+if !type eq 'HEAD' then
+  !this.headComponent = !components[!bestSelection]
+else
+  !this.tailComponent = !components[!bestSelection]
+endif
+
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      pickMainBranch()
+--
+-- Description: pick the main branch to be connected
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN      True if in Millimetres
+--
+------------------------------------------------------------------------
+define method .pickMainBranch(!pickedBranch is DBREF)
+
+    if !pickedBranch.eq(!this.mainBranch) then
+       !!alert.error('this branch is already selected')
+    else
+        -- check if the branch can be written to
+        if !!dbRefUpdatable(!pickedBranch).not() then
+          !!alert.error('You are unable to modify this branch - $!!error.text')
+          !this.defaultGadgets(FALSE)
+          !this.detailGadgets(FALSE)
+          return
+        endif
+    endif
+
+    -- P-34080 added to warn of unset hstu
+    if !pickedBranch.hstu.unset().or(!pickedBranch.hstu.badref()) then
+        !!alert.error('Branch has unset Head Tube(HSTU) - Please set this and try again')
+        !this.defaultGadgets(FALSE)
+        !this.detailGadgets(FALSE)
+        !this.mainName.val = ''
+        !this.pickMain.tag =  'Select   '
+    endif
+
+    !this.mainBranch = !pickedBranch
+    !this.mainName.val = !pickedBranch.flnm
+    handle ANY
+     !this.mainName.val = ''
+     !this.pickMain.tag =  'Select   '
+    endhandle
+
+    !this.pickMain.tag = 'Reselect'
+    --!this.tag(!pickedBranch)
+    !this.tagBranch(!pickedBranch,'main')
+
+    !this.teeSpec = !pickedBranch.pspec
+    -- go and look at the spec to see if there are any tees of the right type
+    !this.getTeeTypes()
+    -- if there are any errors getting default tees then we need to
+    -- issue an error here and stop the gadgets being activated.
+
+    -- later
+
+    -- activate the remaining form gadgets now that we have a main branch
+    !this.defaultGadgets(TRUE)
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      findConnections()
+--
+-- Description: find any head and tail connections and delete them
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN      True if in Millimetres
+--
+------------------------------------------------------------------------
+define method .findConnections()
+
+   if  !this.connectedBranch.href.set() then
+      -- the branch tail is already set
+      if !this.validateOlet(!this.connectedBranch.href) then
+         !this.headComponent = object PIPESTUBINCONNECTION(!this.connectedBranch.href,!this.connectedBranch)
+      else
+         !this.headComponent = object PIPESTUBINCONNECTION()
+     endif
+   endif
+   if !this.connectedBranch.tref.set() then
+      -- the branch tail is already set
+      if !this.validateOlet(!this.connectedBranch.tref) then
+        !this.tailComponent = object PIPESTUBINCONNECTION(!this.connectedBranch.tref,!this.connectedBranch)
+      else
+        !this.tailComponent = object PIPESTUBINCONNECTION()
+     endif
+   endif
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:     validateOlet()
+--
+-- Description: check to see if the olet needs to be deleted.
+--
+--
+------------------------------------------------------------------------
+
+define method .validateOlet(!comp is DBREF)is BOOLEAN
+
+  if !comp.badref() then
+    return FALSE
+  endif
+
+  -- we are at the cref
+  if !comp.type.eq('OLET') and !comp.catref.compType inset('STUH','STUT','BOSH','BOST','TAPH','TAPT','SSUH','SSUT','SEXH','SEXT','SSAH','SSAT') then
+    return TRUE
+  else
+    return  FALSE
+  endif
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      connectionPick
+--
+-- Description: Pick item to connect to
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .connectionPick( !pickBranch is STRING )
+
+  !this.detailGadgets(FALSE)
+  !this.edgSelection = !pickBranch
+  --'Stub in Branch'
+  -- Initialise Variables
+
+  -- Define EDG Packet
+  !packet                 = object EDGPACKET()
+  !packet.elementPick('Identify $!pickBranch:')
+  !packet.description     = !pickBranch
+
+  -- When the component has been created successfully
+  !packet.remove          = true
+  !packet.priority        = 2
+  !packet.action          = '!!pipeStubIn.connectionPick(!this.return[1])'
+
+  -- Add to event system
+  if(!!edgCntrl.add(!packet)) then
+  endif
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      connectionPick
+--
+-- Description: Pick item to connect to
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R     EDGPICKDATA  Data returned from the pick
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .connectionPick(!data is  EDGPICKDATA)
+
+  -- Initialise Variables
+  --!edgType    = !data.type
+  !type       = !data.item.type
+  if !type.eq('BRAN') then
+     !element  = !data.item
+  else
+     !element  = !data.item.owner
+  endif
+
+   -- Process element
+  if(undefined(!element)) then
+    !element = object DBREF()
+  endif
+
+ if !this.edgSelection.eq('Stub in Branch') then
+      !this.pickStubInBranch(!element,FALSE)
+ else
+      !this.pickMainBranch(!element)
+ endif
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      tagBranch
+--
+-- Description: Tag branch selected in the branch list
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .tagBranch(!branch is DBREF,!branchType is STRING)
+
+  -- Initialise Variables
+  if !branchType .eq('main') then
+    AID CLEAR ALL $!<this.tagMainHead>
+    !tagHead = !this.tagMainHead
+    AID CLEAR ALL $!<this.tagMainTail>
+    !tagTail = !this.tagMainTail
+  else
+    AID CLEAR ALL $!<this.tagStubHead>
+    !tagHead = !this.tagStubHead
+    AID CLEAR ALL $!<this.tagStubTail>
+    !tagTail =!this.tagStubTail
+  endif
+  -- End information
+  !headText      = 'Head'
+  !tailText      = 'Tail'
+
+  -- Position
+  !hPosition     = !branch.hPosition.wrt(World)
+  !tPosition     = !branch.tPosition.wrt(World)
+  -- Direction
+  !hDirection    = !branch.hDirection.wrt(World)
+  !tDirection    = !branch.tDirection.wrt(World)
+
+  -- hBore
+  !hBore         = !branch.hBore
+  if(!hBore.unset()) then
+    !height     = 100mm
+  else
+    !height     = !hBore.real() * 2
+   -- tBore
+  endif
+  !tBore         = !branch.tBore
+  if(!tBore.unset()) then
+    !height     = 100mm
+  else
+    !height     = !tBore.real() * 2
+  endif
+
+  -- Aid headInformation
+  !arrowPosition    = !hPosition.offset(!hDirection.opposite(), !height)
+  AID ARROW NUMBER $!<tagHead> AT $!<arrowPosition> DIRECTION $!<hDirection> HEIGHT $!<height> PROPORTION 0.5
+  AID TEXT NUMBER $!<tagHead> '$!headText' AT $!<arrowPosition>
+ -- Aid tailInformation
+  !arrowPosition    = !tPosition.offset(!tDirection.opposite(), !height)
+  AID ARROW NUMBER $!<tagTail> AT $!<arrowPosition> DIRECTION $!<tDirection> HEIGHT $!<height> PROPORTION 0.5
+  AID TEXT NUMBER $!<tagTail> '$!tailText' AT $!<arrowPosition>
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      connectionPick
+--
+-- Description: Pick item to connect to for stub in branch
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pickPoint( )
+
+  --'Stub in Branch'
+
+  -- Initialise Variables
+  -- Define EDG Packet
+  !packet                 = object EDGPACKET()
+  !packet.elementPick('Pick intersection point')
+  !packet.description     = 'pick a point'
+  !packet.pickPacket.picks[1].pick.stdGraphics()
+
+  -- When the component has been created successfully
+  !packet.remove          = true
+  !packet.priority        = 2
+  !packet.action          = '!!pipeStubIn.pickPoint(!this.return[1])'
+
+  -- Add to event system
+  if(!!edgCntrl.add(!packet)) then
+  endif
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      method .getTubePosition
+--
+-- Description: method to orientate the plane according to the pick direction
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getTubePosition(!pickPosition is POSITION, !element is DBREF) is PLANE
+
+   !finalPlane = object PLANE()
+   -- need to handle branch tube
+   if !element .type.eq('BRAN') then
+      !lpos = !element.hpos.wrt( /* )
+      !ldir = !element.hdir.wrt( /* )
+   else
+      !lpos = !element.lpos.wrt( /* )
+      !ldir = !element.ldir.wrt( /* )
+   endif
+   !leavePV = object POINTVECTOR()
+   !leavePV.position = !lpos
+   !leavePV.direction = !ldir
+   !centreLinePV = !leavePV.through(!pickPosition)
+   !finalPlane = !centreLinePV.plane()
+
+   return !finalPlane
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      .getTubeBores
+--
+-- Description: get the available tube sizes from the stubIn spec
+--            : and populate the bore gadget on the form
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Select string
+-- Return:
+--
+------------------------------------------------------------------------
+define method .getTubeBores(!stubInType is STRING)
+
+   if !this.currentConnection.connectedBranch.unset() then
+     return
+   endif
+
+   !this.currentConnection.updateParameters(!stubInType, TRUE )
+   handle ANY
+     !this.branchInsert.val = 0
+   endhandle
+   !this.branchInsert.val = !this.currentConnection.insertDepth
+
+   !this.initialiseVariables()
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      .getTeeTypes()
+--
+-- Description: When the user selects the stub in branch we need to
+-- get all of the tee types available in that spec.
+-- the tee types need to have a compType of 'STUB','BOSS' or 'TAPI'
+-- we may need to add new tee types in future. This is where they will be added.
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Select string
+-- Return:
+--
+------------------------------------------------------------------------
+define method .getTeeTypes()
+
+   if !this.teeSpec.unset() then
+      --$p teeSpec is not set
+      return
+   endif
+   --var !a coll all sele with tans eq 'TEE'  and dDepth eq 3 for $!this.teeSpec
+   var !a coll all sele with tans eq 'OLET'  and dDepth eq 3 for $!this.teeSpec
+   do !i values !a
+      var !b append coll all spco for $!i
+   enddo
+   var !c eval compType of catref for all from !b
+   !c.unique()
+   !final = ARRAY()
+   do !type values !c
+      skip if !type.eq('unset')
+      if !type inset('STUH','STUT','BOSH','BOST','TAPH','TAPT','SSUH','SSUT','SEXH','SEXT','SSAH','SSAT') then
+          !final.append(!type)
+      endif
+   enddo
+
+   if !final.size().eq(0) then
+      !!alert.error('Branch Spec $!this.teeSpec does not contain components with compType in the range STU,BOS,TAP,SSU,SEX,SAT this branch cannot be connected')
+      return
+   endif
+
+   !dtext[1] = 'Insert Connection'
+   !rtext[1] = 'STU'
+   !dtext[2] = 'Surface Connection'
+   !rtext[2] = 'SSU'
+   !dtext[3] = 'Saddle Connection'
+   !rtext[3] = 'SSA'
+   !dtext[4] = 'Tapped Boss'
+   !rtext[4] = 'TAP'
+   !dtext[5] = 'Welded Boss'
+   !rtext[5] = 'BOS'
+   !dtext[6] = 'Extruded Connection'
+   !rtext[6] = 'SEX'
+   !this.stubInType.dtext = !dtext
+   !this.stubInType.rtext = !rtext
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .alignComponent()
+--
+-- Description: When the plane and positions have been defined
+--              we can align the stub direction with a component
+--              This orientates the direction towards a component
+--              and sets the head/tail up?
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Select string
+-- Return:
+--
+------------------------------------------------------------------------
+define method .alignComponent()
+
+  -- check that no other EDG operation is active
+  if( !this.edgDescription.empty().not() ) then
+    -- abort active EDG operation if it is not merge
+    !this.tidy()
+  endif
+
+  -- Clean the object members
+  !this.insertComponent     = object DBREF()
+
+
+  -- Define EDG packet for picking elements
+  !packet              =   object EDGPACKET()
+  !packet.elementPick('Pick intersecting Branch component')
+  !this.edgDescription = 'Pick intersecting Branch component'
+  !packet.description  = !this.edgDescription
+
+   -- Add filter for Pick
+  !packet.pickPacket.picks[1].pick.input[3]   = |OWNER eq | &!this.currentConnection.connectedBranch
+  !packet.pickPacket.picks[1].pick.modifiable = FALSE
+  !packet.action          =   '!!pipeStubIn.stubInComponent(!this.return[1])'
+
+  !packet.priority        =   1
+  !packet.remove          =   false
+
+  !!edgCntrl.add(!packet)
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+
+-- if the connected branch and main branches are not set then error
+-- need to do two edg picks making sure that they are on the correct branches.
+
+ ------------------------------------------------------------------------
+--
+-- Method:      .stubInComponent
+--
+-- Description: Save first intersection element and check that it is the first or
+-- last component in the branch
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Select string
+-- Return:
+--
+------------------------------------------------------------------------
+define method .stubInComponent(!data is EDGPICKDATA)
+
+   !component = !data.item
+
+   if !component.order.neq(1).and(!component.order.neq(!component.owner.members[!component.owner.members.size()].order)) then
+       !!alert.error('picked component must be the first or last component')
+        return
+   else
+        -- component is ok
+   endif
+
+   -- pick the item which will be intersected
+   !this.pickIntersectionPoint()
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      pickIntersectionPoint()
+--
+-- Description: Setup EDG mode to pick branch for connecting
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pickIntersectionPoint()
+
+  -- Define EDG packet for picking elements
+  !packet = object EDGPACKET()
+  !packet.elementPick('Pick penetrated item')
+  !this.edgDescription = 'Pick penetrated item'
+  !packet.description  = !this.edgDescription
+
+   -- Add filter for Pick
+  !packet.pickPacket.picks[1].pick.input[3]   = |OWNER eq & !this.mainBranch|
+  !packet.pickPacket.picks[1].pick.modifiable = FALSE
+  !packet.action          = '!!pipeStubIn.intersectionCheck(!this.return[1])'
+  !packet.escape          = '!!pipeStubIn.tidy()'
+  !packet.priority        = 1
+  !packet.remove          = false
+
+  !!edgCntrl.add(!packet)
+
+endmethod
+------------------------------------------------------------------------
+-- Method:      tidy()
+-- Description: cleanUp any created items when the form is dismissed
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .tidy()
+
+  if( !this.edgDescription.empty().not() ) then
+    !!edgCntrl.remove(!this.edgDescription)
+  endif
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      .setInsert()
+-- Description: method called to work out the insert depth for each fitting
+-- This is called from manually setting the insert but needs to be called
+-- as part of the component selection process
+--
+--
+--
+------------------------------------------------------------------------
+define method .setInsert(!value is REAL)
+
+-- this is a method for setting the insert but needs completing
+-- the passed value is the setting for the modified insert depth
+-- and we need to modify the appropriate position values and redraw the
+-- component
+  if !value.unset() then
+    !!alert.error('Please enter an insert value')
+    return
+  endif
+  !this.currentConnection.setInsert(!value)
+  if !this.checkSpref() then
+     -- now we need to draw something
+     !this.currentConnection.drawFitting(FALSE,!this.branchCylinder)
+     !this.currentConnection.drawFitting(TRUE,!this.branchCylinder)
+  endif
+
+endmethod
+
+------------------------------------------------------------------------
+-- Method:      .getVectors()
+-- Description: return an array of POINTVECTORs based on the head and tails of the passed branch
+--
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .getVectors(!branch is DBREF)is ARRAY
+
+  !vectors = ARRAY()
+  -- if the head an tails have position and direction, use their vectors to derive a position
+  if !branch.members.size().gt(0) then
+    !comp1Vector = object POINTVECTOR()
+    !comp1Vector.direction = !branch.members[1].adir.wrt(/* )
+    !comp1Vector.position  = !branch.members[1].apos.wrt(/* )
+    !vectors.append(!comp1Vector)
+    !compNVector = object POINTVECTOR()
+    !compNVector.position  = !branch.members[!branch.members.size()].lpos.wrt(/* )
+    !compNVector.direction = !branch.members[!branch.members.size()].ldir.wrt(/* )
+    !vectors.append(!compNVector)
+  else
+    !headVector = object POINTVECTOR()
+    !headVector.position = !branch.hpos.wrt(/* )
+    !headVector.direction = !branch.hdir.wrt(/* ).opposite()
+    !vectors.append(!headVector)
+    !tailVector = object POINTVECTOR()
+    !tailVector.position = !branch.tpos.wrt(/* )
+    !tailVector.direction = !branch.tdir.wrt(/* ).opposite()
+    !vectors.append(!tailVector)
+  endif
+
+return !vectors
+
+endmethod
+
+------------------------------------------------------------------------
+-- Method:      .dismiss
+-- Description: form dismiss button callback
+--
+--
+-- Method Type: Function/Procedure
+------------------------------------------------------------------------
+define method .dismiss()
+
+  -- remove all the aid graphics
+  !this.clearAids()
+  !this.hide()
+
+endmethod
+------------------------------------------------------------------------
+-- Method:      .swapHeadTail()
+-- Description: method to convert between the connected branch head and tail
+-- updates the values and resets the graphics
+--
+-- Method Type: Function/Procedure
+------------------------------------------------------------------------
+define method .swapHeadTail()
+
+  !this.connectedEnd = !this.connectedEndOption.selection()
+  if !this.connectedEnd.eq('Head') then
+      !this.currentConnection = !this.headComponent
+  elseif !this.connectedEnd.eq('Tail') then
+    !this.currentConnection = !this.tailComponent
+  else
+    !this.currentConnection = object PIPESTUBINCONNECTION()
+  endif
+
+  --  !this.currentConnection.updateParameters(!this.stubInType.selection(),FALSE)
+  --  handle ANY
+  --  endhandle
+    !this.initialiseVariables()
+
+endmethod
+------------------------------------------------------------------------
+-- Method:      .swapHeadTail()
+-- Description: method to convert between the connected branch head and tail
+--
+--
+-- Method Type: Function/Procedure
+------------------------------------------------------------------------
+define method .setHeadTailDtext()
+
+  !dtext = ARRAY()
+  if !this.tailComponent.set().and(!this.headComponent.set()) then
+       !dtext[1] = 'Head'
+       !dtext[2] = 'Tail'
+       !this.currentConnection = !this.headComponent
+
+  elseif !this.tailComponent.set() then
+       !dtext[1] = 'Tail'
+       !this.currentConnection = !this.tailComponent
+  elseif !this.headComponent.set() then
+       !dtext[1] = 'Head'
+       !this.currentConnection = !this.headComponent
+  else
+     !dtext[1] = 'unset'
+     !this.currentConnection = object PIPESTUBINCONNECTION()
+  endif
+
+  !this.connectedEndOption.dtext = !dtext
+  !this.connectedEndOption.val = 1
+
+endmethod
+
+------------------------------------------------------------------------
+-- Method:      .initialiseVariables()
+-- Description: method to get all the variables from the current connection object
+--
+--
+-- Method Type: Function/Procedure
+------------------------------------------------------------------------
+
+define method .initialiseVariables()
+
+!this.stubInType.select('RTEXT',!this.currentConnection.componentType)
+!this.branchInsert.val = !this.currentConnection.insertDepth
+ if !this.checkSpref() then
+   !this.currentConnection.drawFitting(FALSE,!this.branchCylinder)
+   !this.currentConnection.drawFitting(TRUE,!this.branchCylinder)
+ endif
+
+endmethod
+
+------------------------------------------------------------------------
+-- Method:      .testForComponents()
+-- Description: method to make sure we have the right components in the database
+--
+--
+-- Method Type: Function/Procedure
+------------------------------------------------------------------------
+define method .testForComponents()
+
+!unusedTest = object DBREF('/00TVVVH')
+handle (2,109)
+  !!appdesmain.createStubin.active = FALSE
+  handle ANY
+  endhandle
+  return error  4 'Cannot find special OLET components for this application - Please contact your System Administrator'
+endhandle
+
+return TRUE
+
+endmethod
+-- End of code

@@ -1,0 +1,836 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:    MdsPSL.pmlobj
+--   Type:    Object Definition
+--   Group:   Multi Discipline Supports Application
+--   Keyword:   MDS
+--   Module:    design
+--   Replaces:
+--
+-- Author:    D.flannery
+-- Created:   Mon 22nd Nove 2004
+--
+--
+-- Description:
+-- Multi Discipline Support PSL hanger object.
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  invertlines(ARRAY)               ARRAY
+--  mdsPSL(FORM,FORM)                -
+--  oriConstant()                    -
+--  oriGamma(REAL)                   -
+--  oriPcla()                        -
+--  oriPcla(STRING)                  -
+--  oriSlug()                        -
+--  oriSnub()                        -
+--  oriVspr()                        -
+--  postBuild()                      -
+--  preBuild(ARRAY)                  ARRAY
+--  readDespars(ARRAY,REAL,BOOLEAN)  ARRAY
+--  readOri(ARRAY,REAL,BOOLEAN)      STRING
+--  setUbol()                        -
+--
+
+-- Define Object
+define object MDSPSL
+
+  member .supportName is STRING
+  member .ce is DBREF
+  member .savedTailPosition is POSITION
+  member .savedTailDirection is DIRECTION
+  member .hangerForm is FORM
+  member .vendorForm is FORM
+
+-- End object
+endobject
+
+--====================================================================================
+define method .mdsPSL(!vendorForm is FORM, !form is FORM)
+
+  -- Method to Initialise and build object
+  !this.supportName = !vendorForm.ce.name
+  !this.ce = !vendorForm.ce
+  !this.hangerForm = !form
+  !this.vendorForm = !vendorForm
+
+endmethod
+
+
+--====================================================================================
+define method .preBuild(!fileLines is ARRAY) is ARRAY
+
+  !pslSpec = /2001-PSL-MDS
+
+  !vendorFormName = !this.vendorForm.fullname()
+  !hangerFormName = !this.hangerForm.fullname()
+
+-- Get config from second line of file
+
+  if !fileLines[2].match('CONFIG').eq(1) then
+    !config = !fileLines[2].split(' ')
+-- If the config is set to either of the config below, then do not invert file lines
+    -- 3,7  removed because file upside down already
+    -- if (!config[2] inset('3','7','53','54','57','58','63','64','65','66')) then
+    if (!config[2] inset('53','54','57','58','63','64','65','66')) then
+      !invert = FALSE
+    else
+      !invert = TRUE
+    endif
+  endif
+
+
+  -- !fileLines is a BOM file from PSDesigner, need to convert to inputable lines
+
+  !newFileLines = ARRAY()
+
+  !bOMLines = !fileLines[1].split(',')
+  !supportName = !bOMLines[3]
+-- Need to invert the lines of the file in blocks marked with the end command
+  if !invert then
+    !invertedFileLines = !this.invertlines(!fileLines)
+  else
+    !invertedFileLines = !fileLines
+  endif
+  -- !fileLines.invert()
+  !fileLines.clear()
+  !fileLines = !invertedFileLines
+
+  !newFileLines.append('/$!supportName/H1')
+  !newFileLines.append('HSPEC $!pslSpec')
+
+  !prevComp = 'XXXX'
+  !hang2 = FALSE
+  --!trapeze = FALSE
+  --!saveDespars = ''
+
+  do !count from 1 to !fileLines.size()
+    --do !build values !fileLines
+
+    !typeOfCatref = 'xxxx'
+    if !fileLines[$!count].match('BOM').eq(1) then
+      skip
+-- Need to find out what the files are
+-- BOM,1,PS11989,0,-PS11989,26-11-04,5000,0,0,0,1
+    elseif !fileLines[$!count].match('CONFIG').eq(1) then
+      skip
+    elseif !fileLines[$!count].match('GAMMA').eq(1) then
+      skip
+    elseif !fileLines[$!count].match('DATA').eq(1) then
+      !splitLine = !fileLines[$!count].split(',')
+      !newFileLines.append('/' + !supportName)
+      !newFileLines.append(!splitLine[2] + ' ' + !splitLine[3])
+      !newFileLines.append('SAME')
+    elseif !fileLines[$!count].match('DESPAR').eq(1) then
+      skip
+      --!saveDespars = !fileLines[$!count]
+-- Angle line for component, skip as we read it in later
+    elseif !fileLines[$!count].match('ANGL').eq(1) then
+      skip
+-- Keyword END to create another branch
+    elseif !fileLines[$!count].upcase().match('END').eq(1) then
+      !newFileLines.append('NEW HANG /$!supportName/H2')
+      !elementToConnectTo = !fileLines[$!count].upcase().replace('END','')
+      !newFileLines.append('BACK')
+      !newFileLines.append('CONN PH TO $!elementToConnectTo of /$!supportName/H1')
+      --!newFileLines.append('hbore $!paBore[1]')
+      !newFileLines.append('hbore ( lbore of $!elementToConnectTo of /$!supportName/H1 )')
+      !newFileLines.append('FORW')
+      !hang2 = TRUE
+-- Keyword ORI to orientate clamps
+    elseif !fileLines[$!count].upcase().match('ORI').eq(1) then
+      skip
+    elseif !fileLines[$!count].upcase().match('INVERTED').eq(1) then
+      !inverted = !fileLines[$!count].after('=')
+    else
+      !splitLine = !fileLines[$!count].split(',')
+      !sprefWithPar = !pslSpec.name + '/' + !splitLine[4]
+      !spref = !sprefWithPar.split(' ')
+      !typeOfCatref = :MDSType of CATE of catref of $!spref[1]
+      handle ANY
+        if !spref[1].match('F226-M').gt(0) then
+-- Threaded rod
+          !spref[1] = !spref[1] + '-3-3'
+          !typeOfCatref = :MDSType of CATE of catref of $!spref[1]
+        elseif !spref[1].match('Variable-').gt(0) then
+-- Variable Springs
+          !springType = !splitLine[5].after('Variable Effort Support ').before('"')
+          !springSize = !spref[1].replace('Variable-','').replace(!pslSpec.name,'').replace('/','')
+          !spref[1] = !pslSpec.name + '/' + !springType + '-' + !springSize
+          -- !spref[1] = !spref[1].replace('Variable-','')
+
+          !typeOfCatref = :MDSType of CATE OF catref of $!spref[1]
+        elseif !splitLine[5].match('Constant').gt(0) then
+-- Constant Efforts
+          -- !spref[1] = !pslSpec.name + '/' + !splitLine[5].after('Support ') + '-' + !splitLine[6].trim().before('"') + '-' + !splitLine[4]
+          !spref[1] = !pslSpec.name + '/' + !splitLine[5].after('Support ').before('"')  + !splitLine[6].trim().before('"') + '-' + !splitLine[4]
+          !typeOfCatref = :MDSType of CATE OF catref of $!spref[1]
+              handle ANY
+            !spref[1] = !pslSpec.name + '/' + !splitLine[5].after('Support ') + '-' + !splitLine[6].trim().before('"') + '-' + !splitLine[4]
+            !typeOfCatref = :MDSType of CATE OF catref of $!spref[1]
+          endhandle
+        elseif  !spref[1].match('511-').gt(0) then
+            write 'Items 511 rigid strut not found in catalogue ******'
+          !typeOfCatref = 'HELE'
+        elseif  !spref[1].match('513-').gt(0) and !spref[1].match('_S').gt(0) then
+            !temp = !spref[1].replace('_S','').replace('513-','513S-')
+            !spref[1] = !temp
+          !typeOfCatref = 'PCLA'
+        elseif  !spref[1].match('513S-').gt(0) and !spref[1].match('_S').gt(0) then
+            !temp = !spref[1].replace('_S','')
+            !spref[1] = !temp
+          !typeOfCatref = 'PCLA'
+          else
+          !typeOfCatref = 'notyetcoded'
+          endif
+        endhandle
+        --q var !spref[1]
+      --q var !typeOfCatref
+
+      if !typeOfCatref.eq('CONS') then
+
+        !newFileLines.append('NEW VSPR spref $!spref[1]')
+        !checkForDespars = !this.readDespars(!fileLines,!count,!invert)
+        if !checkForDespars[1].neq('NONE') then
+          do !loopDespars from 1 to !checkForDespars.size()
+            !newFileLines.append(!checkForDespars[$!loopDespars])
+          enddo
+          !newFileLines.append('!!mdsOriConstant = object MDSPSL($!vendorFormName, $!hangerFormName)')
+          !newFileLines.append('!!mdsOriConstant.oriConstant()')
+          !newFileLines.append('!!mdsOriConstant.delete()')
+        endif
+      else
+        !newFileLines.append('NEW $!typeOfCatref spref $!spref[1]')
+        !checkForDespars = !this.readDespars(!fileLines,!count,!invert)
+        if !checkForDespars[1].neq('NONE') then
+          do !loopDespars from 1 to !checkForDespars.size()
+            !newFileLines.append(!checkForDespars[$!loopDespars])
+          enddo
+          !newFileLines.append('FCONN')
+        endif
+        !checkForOri = !this.readOri(!fileLines,!count,!invert)
+        if !checkForOri.neq('NONE') then
+          !splitOri = !checkForOri.split(' ')
+          !newFileLines.append('FCONN')
+          !newFileLines.append('ORI AND P4 IS $!splitOri[2]')
+        endif
+      endif
+
+-- Set height/design parameters attribute
+      if !fileLines[$!count].match('L=').gt(0) then
+        !height = !fileLines[$!count].after('L=').before(',')
+        !newFileLines.append('Height $!height')
+      endif
+
+      if !prevComp.eq('PCLA') and !prevSpref.matchwild('*/PB*').not() then
+        if !spref[1].matchwild('*518I*') then
+          !paBore = para 2 of $!spref[1]
+        else
+          !paBore = para 1 of $!spref[1]
+        endif
+        !newFileLines.append('PREV')
+        !newFileLines.append('DESP N1 $!paBore[1]')
+        if !spref[1].matchwild('*F511*') then
+          !newFileLines.append('DESP N1 (PA BORE OF NEXT)')
+          !newFileLines.append('DESP N2 (PA BORE OF NEXT)')
+        elseif !spref[1].matchwild('*F516*') then
+          !newFileLines.append('DESP N1 (PA BORE OF NEXT)')
+          !newFileLines.append('DESP N2 (PA BORE OF NEXT)')
+        elseif !spref[1].matchwild('*F517*') then
+          !newFileLines.append('DESP N1 (PA BORE OF NEXT)')
+          !newFileLines.append('DESP N2 (PA BORE OF NEXT)')
+        endif
+        !newFileLines.append('!!pSLSPREF = SPREF')
+        !newFileLines.append('NEXT')
+      endif
+      if !typeOfCatref.eq('EYNT') and !prevComp.eq('PCLA') then
+        !newFileLines.append('!!mdsPslSetDia(|PCLA|)')
+      elseif !typeOfCatref.eq('EYNT') and !prevComp.eq('HNUT') then
+        !newFileLines.append('!!mdsPslSetDia(|HNUT|)')
+      elseif !typeOfCatref.eq('EYNT') and !prevComp.eq('HPIN') then
+        !newFileLines.append('!!mdsPslSetDia(|HPIN|)')
+      elseif !typeOfCatref.eq('EYNT') and !prevComp.eq('HELE') then
+        !newFileLines.append('!!mdsPslSetDia(|HPIN|)')
+      elseif !typeOfCatref.eq('EYNT') then
+        !newFileLines.append('!!mdsPslSetDia(|HPIN|)')
+      endif
+      if !typeOfCatref.eq('PCLA') then
+-- PCLA
+        if !this.vendorForm.type.eq('V') then
+          if (defined(!spref[2])) then
+            !despars = !spref[2].after('S=')
+            !newFileLines.append('DESP 0 0 $!despars 0 0')
+          endif
+          !newFileLines.append('CONN')
+          !newFileLines.append('!!mdsOriPcla = object MDSPSL($!vendorFormName, $!hangerFormName)')
+          !newFileLines.append('!!mdsOriPcla.oriPcla()')
+          !newFileLines.append('!!mdsOriPcla.delete()')
+          if (defined(!config[2])) then
+            if !config[2].eq('57') or !config[2].eq('58') then
+              !newFileLines.append('!!mdsOriPcla = object MDSPSL($!vendorFormName, $!hangerFormName)')
+              !newFileLines.append('!!mdsOriPcla.oriPcla(|$!config[2]|)')
+              !newFileLines.append('!!mdsOriPcla.delete()')
+            endif
+          endif
+        elseif !spref[1].match('PB').gt(0) then
+          --!newFileLines.append('CONN AND P5 IS U')
+          !newFileLines.append('CONN AND P19 IS D')
+          !newFileLines.append('desp 0 0 0')
+        elseif !spref[1].match('513-').gt(0) or !spref[1].match('513S-').gt(0) then
+-- Do nothing for ori and this is passed by PSD with the "ORI" keyword
+        elseif !spref[1].match('514-').gt(0) or !spref[1].match('514S-').gt(0) then
+-- Do nothing for ori and this is passed by PSD with the "ORI" keyword
+        elseif !spref[1].match('515-').gt(0) or !spref[1].match('515S-').gt(0) then
+-- Do nothing for ori and this is passed by PSD with the "ORI" keyword
+        elseif !spref[1].match('PC3').gt(0) then
+          if (defined(!spref[2])) then
+            !despars = !spref[2].after('C=')
+            !newFileLines.append('DESP NUM 2 $!despars')
+            !newFileLines.append('!!ce.spref = !!ce.spref.name.replace(|PC3|,|SPC3|).dbref()')
+          endif
+          !newFileLines.append('CONN AND P4 IS U')
+        else
+          !newFileLines.append('CONN AND P4 IS U')
+        endif
+      elseif !typeOfCatref.eq('VSPR') then
+-- VSPR
+        -- !despars = !fileLines[$!count].after('DESPAR ')
+        --!newFileLines.append('DESP $!despars')
+        --if !saveDespars.eq('') then
+        --!newFileLines.append('CONN')
+        --endif
+        !newFileLines.append('CONN')
+        !newFileLines.append('!!mdsOriVspr = object MDSPSL($!vendorFormName, $!hangerFormName)')
+        !newFileLines.append('!!mdsOriVspr.oriVspr()')
+        !newFileLines.append('!!mdsOriVspr.delete()')
+      elseif !typeOfCatref.eq('SNUB') then
+-- SNUB
+        if (defined(!spref[2])) then
+          !despars = !spref[2].after('S=')
+          !newFileLines.append('DESP $!despars')
+        endif
+        !newFileLines.append('!!mdsOriSnub = object MDSPSL($!vendorFormName, $!hangerFormName)')
+        !newFileLines.append('!!mdsOriSnub.oriSnub()')
+        !newFileLines.append('!!mdsOriSnub.delete()')
+      elseif !typeOfCatref.eq('HELE') then
+-- HELE - Spreader Beam
+        if (defined(!spref[2])) then
+          !height = !spref[2].after('S=')
+          if !height.neq('') then
+            !newFileLines.append('HEI $!height')
+          endif
+        endif
+        if !spref[1].match('/F486I').gt(0) then
+          if !inverted.boolean() then
+            !newFileLines.append('CONN AND P1 is U')
+          else
+            !newFileLines.append('FCONN AND P10 IS P10 OF /$!supportName')
+            !newFileLines.append('!!mdsSetUbol = object MDSPSL($!vendorFormName, $!hangerFormName)')
+            !newFileLines.append('!!mdsSetUbol.setUbol()')
+            !newFileLines.append('!!mdsSetUbol.delete()')
+          endif
+        elseif !spref[1].match('/F486').gt(0) or !spref[1].match('/F487').gt(0) or !spref[1].match('/F518').gt(0) then
+          !newFileLines.append('FCONN AND P10 IS P10 OF /$!supportName')
+          !newFileLines.append('!!mdsSetUbol = object MDSPSL($!vendorFormName, $!hangerFormName)')
+          !newFileLines.append('!!mdsSetUbol.setUbol()')
+          !newFileLines.append('!!mdsSetUbol.delete()')
+          --elseif !spref[1].match('/F486I').gt(0) then
+          -- write method inverted to return true false, this will fix item 119
+          --if !inverted
+          --  !newFileLines.append('CONN AND P1 is U')
+          -- else
+          --  !newFileLines.append('CONN AND P10 IS P10 OF /$!supportName')
+          --endif
+        else
+          !newFileLines.append('CONN')
+        endif
+      elseif !typeOfCatref.eq('CLEV') or !typeOfCatref.eq('EYNT') then
+        !newFileLines.append('CONN')
+      elseif !typeOfCatref.eq('SLUG') then
+        !newFileLines.append('!!mdsOriSlug = object MDSPSL($!vendorFormName, $!hangerFormName)')
+        !newFileLines.append('!!mdsOriSlug.oriSlug()')
+        !newFileLines.append('!!mdsOriSlug.delete()')
+      elseif !typeOfCatref.eq('UBOL') then
+        !newFileLines.append('DESP 0')
+        !newFileLines.append('FCONN AND P9 IS D')
+      else
+-- FCONN at this point because it gets rebuilt with correct rod types etc in POSTBUILD later
+-- Do nor force connect if a constant
+        if !typeOfCatref.neq('CONS') then
+          !newFileLines.append('FCONN')
+        endif
+      endif
+
+      !prevComp = !typeOfCatref
+      !prevSpref = !spref[1]
+
+      --if !saveDespars.neq('') then
+      --!newFileLines.append(!saveDespars)
+      --!newFileLines.append('CONN')
+      --!saveDespars = ''
+      --endif
+
+    endif
+
+    !!pSLLINES = !newFileLines
+
+  enddo
+
+  !newFileLines.append('/$!supportName')
+  !!dTFLINES = !newFileLines
+  return !newFileLines
+
+endmethod
+
+--====================================================================================
+define method .postBuild()
+
+  !ce = !!ce
+
+  !supportName = !this.hangerForm.support.datum.name
+
+  !hanger = !supportName + '/H1'
+
+  !!ce = !hanger.dbref()
+
+-- Loop through comps and set rod insertion depths where required
+
+  rest
+  do !loopHangers from 1 to !!ce.mcount()
+    hang $!loopHangers
+
+    if !loopHangers.eq(2) then
+        -- $p Reposition hh of hang2
+        !hhref = !!ce.href
+        BACK
+        CONN PH TO $!hhref
+        FORW
+        1
+        pos pa at hh
+        hang
+      endif
+
+    do !loop from 1 to !!ce.mcount()
+        hang
+        !rtva = '0'
+          handle ANY
+          endhandle
+        !rtvb = '0'
+          handle ANY
+          endhandle
+      $!loop
+      !rod = FALSE
+      -- If the current component has a rina and rinb property then it must be a rod
+      !unusedTestForRina = prop RINA
+          handle ANY
+          elsehandle NONE
+        !unusedTestForRinB = prop RINB
+              handle ANY
+              elsehandle NONE
+          !rod = TRUE
+              endhandle
+          endhandle
+
+      if !rod then
+-- Get the property RTVB from the prev element that is not a nut (styp NUT or LOCKNUT)
+        !thisIsARod = !!ce
+        do !loop1 from !!ce.order - 1 to 1 by -1
+            hang
+          $!loop1
+            if !!ce.styp.eq('NUT') or !!ce.styp.eq('LOCKNUT') then
+              skip
+            else
+            !rtvb = prop rtvb
+                handle ANY
+              !rtvb = '0'
+                elsehandle NONE
+                  !prevConn  = lconn
+              --!prevStype = stype
+                  break
+                endhandle
+            endif
+          enddo
+
+        !!ce = !thisIsARod
+
+        do !loop2 from !!ce.order to !!ce.owner.mcount()
+            hang
+          $!loop2
+          if !!ce.styp.eq('NUT') or !!ce.styp.eq('LOCKNUT') then
+            skip
+          else
+            !rtva = prop rtva
+            handle ANY
+              !rtva = prop rtvb
+              handle ANY
+                !rtva = '0'
+                !nextConn = 'HOLE'
+              elsehandle NONE
+                !nextConn = Aconn
+                !nextStype = stype
+                break
+              endhandle
+            elsehandle NONE
+              !nextConn = Aconn
+              !nextStype = stype
+              break
+            endhandle
+          endif
+        enddo
+
+        !!ce = !thisIsARod
+
+-- Set despar 1 to !rtvb and despar 2 to !rtva
+          despar n1 $!rtvb
+          despar n2 $!rtva
+            handle ANY
+              !rtva = '0'
+              despar n2 $!rtva
+            endhandle
+
+-- Remove the !rtva and !rtbv from the height
+        !height = height
+        !height = !height - !rtva.real() - !rtvb.real()
+        height $!height
+
+-- Select correct rod type eg RH/RH or LH/RH
+        !rodSpref = !!ce.spref.name
+        if !rodSpref.match('F226-M') gt 0 then
+          if defined(!prevConn) then
+            if !prevConn.eq('LHOL') or  !nextConn.eq('LHOL') then
+              !newSpref = !rodSpref.replace('-3-3','-Z-3')
+              spref $!newSpref
+              endif
+            endif
+          endif
+          conn
+        else
+
+-- Reconn up all elements apart from comp 1
+        if !loop.neq(1) then
+            --conn
+            pos pa at pl of prev
+          endif
+        endif
+
+      enddo
+
+-- Tidy up tail
+
+      hang
+    var !ptbor pl bore of last mem
+    tbor $!ptbor
+      pos pt at pl of last mem
+
+  enddo
+
+  !!ce = !ce
+
+endmethod
+
+define method .readDespars(!string is ARRAY,!counter is REAL,!invert is BOOLEAN) is ARRAY
+
+  !vendorFormName = !this.vendorForm.fullname()
+  !hangerFormName = !this.hangerForm.fullname()
+
+-- PSL to add HEI to end of line if the height is to be set
+-- Need to split into two lines
+
+-- Read in any design parameters from the next line
+
+  if !invert then
+    !nextLine = !counter - 1
+    !nextLine1 = !counter - 2
+  else
+    !nextLine = !counter + 1
+    !nextLine1 = !counter + 2
+  endif
+  if !string[$!nextLine].match('DESPAR').eq(1) then
+    !despars = !string[$!nextLine].split('H')
+    if (defined(!despars[2])) then
+      !despars[2] = !despars[2].replace('EI','HEI')
+    endif
+  else
+    !despars[1] = 'NONE'
+  endif
+  if !nextLine1.gt(0) then
+    if !string[$!nextLine1].match('GAMMA').eq(1) then
+      !gamma = !string[$!nextLine1].after('=')
+      !despars.append('!!mdsOriConstant = object MDSPSL($!vendorFormName, $!hangerFormName)')
+      !despars.append('!!mdsOriConstant.oriGamma($!gamma)')
+      !despars.append('!!mdsOriConstant.delete()')
+    endif
+  endif
+
+  return !despars
+
+endmethod
+
+define method .readOri(!string is ARRAY,!counter is REAL,!invert is BOOLEAN) is STRING
+
+-- Read in any orientation from the next line
+  if !invert then
+    !nextLine = !counter - 1
+  else
+    !nextLine = !counter + 1
+  endif
+  if !string[$!nextLine].match('ORI').eq(1) then
+    !ori = !string[$!nextLine]
+  else
+    !ori = 'NONE'
+  endif
+
+  return !ori
+
+endmethod
+
+define method .invertlines(!lines is ARRAY) is ARRAY
+
+  !newLines = ARRAY()
+  !linesToInvert = ARRAY()
+
+  do !loop from 1 to !lines.size()
+
+    if !lines[$!loop].match('BOM').eq(1) then
+      !newLines.append(!lines[$!loop])
+    elseif !lines[$!loop].upcase().match('END').eq(1) then
+      !linesToInvert.invert()
+      !newLines.appendarray(!linesToInvert)
+      !linesToInvert.clear()
+      !newLines.append(!lines[$!loop])
+    elseif !lines[$!loop].match('DATA').eq(1) then
+      if !linesToInvert.size().gt(0) then
+        !linesToInvert.invert()
+        !newLines.appendarray(!linesToInvert)
+        !linesToInvert.clear()
+      endif
+      !newLines.append(!lines[$!loop])
+    else
+      !linesToInvert.append(!lines[$!loop])
+    endif
+
+  enddo
+
+  return !newLines
+
+endmethod
+
+define method .oriSnub()
+
+  FCONN AND P6 IS P4 OF PREV
+    handle ANY
+      fconn and p6 is u
+    endhandle
+
+-- Find out if we are on a slope and if so redirect
+
+  !p6grad = p6 grad
+  if !p6grad.eq(1000000) or !p6grad.eq(-1000000) then
+  elseif !p6grad.lt(0) then
+    conn and p6 is d
+  else
+    conn and p6 is u
+  endif
+
+-- Special case of snub and riser clamp RC4 or RC
+   prev
+     handle (2,113)
+       hang
+       conn ph to p3 of pcla 1 of hang 1
+          handle ANY
+            conn ph to p3 of hele 1 of hang 1
+          endhandle
+       same
+       ori and p6 is $!!p12dir
+       pos pa at p3 of pcla 1 of hang 1
+          handle ANY
+        endhandle
+       !!p12dir.delete()
+     elsehandle NONE
+       if !!ce.styp.matchwild('*RC*') or !!ce.spref.name.matchwild('*F518*') then
+         if !!ce.styp.matchwild('*RC*') then
+           !p12dir = p12 dir
+        else
+          !p12dir = p4 dir
+        endif
+        next
+ -- We have to move the clamp by its depth, this will position the clamp
+ -- but the struts will be short because we are using the RC clamps instead of the
+ -- dynamic clamp which no catalogue exists for. PSL to supply details at a later date.
+      if !p12dir.string().before('WRT').trim().eq('D') then
+           prev
+        !move = cpar
+        by u $!move[5]
+           next
+         endif
+         ori and p6 is $!p12dir
+         pos pa at pl of prev
+      !!p12dir = !p12dir
+       else
+         next
+       endif
+   endhandle
+
+endmethod
+
+define method .oriSlug()
+  !slug = !!ce
+  CONN AND P2 IS P6 OF PREV
+    handle ANY
+      FCONN
+    endhandle
+
+  prev
+    handle ANY
+    elsehandle NONE
+    if !!ce.spref.name.match('/F486I').gt(0) then
+         next
+         flip ori
+        conn
+    endif
+   endhandle
+   !!ce = !slug
+endmethod
+
+define method .oriConstant()
+
+-- Removed as PSDesigner now passes direction
+
+return
+
+-- If we are using a beam clamp we need to orientate it correctly
+
+  if !!ce.type.eq('VSPR') and !!ce.catref.owner.:MDSType.eq('CONS') then
+    !p20dir = ldir of href of owner wrt world
+    fconn and p20 is $!p20dir
+  endif
+
+endmethod
+
+define method .oriGamma(!gamma is REAL)
+
+-- PSDesigner will pass the angle from north as a real in an anti clockwise direction
+  if !!ce.type.eq('VSPR') and !!ce.catref.owner.:MDSType.eq('CONS') then
+    fconn and p20 is n $!gamma w
+-- This is because p20 is pointing at 180 degrees from north, the p20 p-point already
+-- existed for this type
+      if !!ce.spref.name.matchwild('*MDS/VBM*') then
+        fconn and p20 is s $!gamma e
+      endif
+  elseif !!ce.type.eq('VSPR') then
+
+--  if !!ce.stype.match('TS1-V').gt(0) or !!ce.stype.match('TA-V').gt(0) or !!ce.stype.match('BM1-V').gt(0) then
+  if !!ce.catref.name.match('TS1-V').gt(0) or !!ce.catref.name.match('TA-V').gt(0) or !!ce.catref.name.match('BM1-V').gt(0) then
+      fconn and p9 is n $!gamma w
+      angle $!gamma
+    else
+      fconn and p2 is n $!gamma w
+      angle $!gamma
+    endif
+  endif
+
+endmethod
+
+define method .oriPcla()
+
+-- First of all find steel members are the same of different
+
+  !steelSame = FALSE
+  !steelMembers = !this.vendorForm.steelMem
+  do !removeUnset from 1 to !steelMembers.size()
+    if !steelMembers[$!removeUnset].badref() then
+      !steelMembers[$!removeUnset].delete()
+    endif
+  enddo
+  !steelMembers.unique()
+  if !steelMembers.size().eq(1) then
+    !steelSame = TRUE
+  endif
+
+  !hardType = !steelMembers[1].hardType
+  if !hardType.eq('PANE') then
+    --we are dealing with civils so just connect without orientating the pcla
+    conn
+  else
+    if !steelSame then
+      if !!ce.stype.eq('RC') then
+        --<RM> 12/04/2011 P-27842 added a new test for riser clamps where the pleave of the atta is D as this was causing
+          --the hangers to be built upside down. The solution is to flip the ori of the atta and reset hdir of the hanger to be up
+        !ce = !!ce
+        --navigate to the atta
+        own
+        !hang = !!ce
+        !href = !!ce.href
+        if !href.badref().not() then
+          if !href.type.eq('ATTA') then
+            !!ce = !href
+            !pldir = pl dir wrt /*
+            if !pldir.up.eq(-1) then
+              flip ori
+              !!ce = !hang
+              hdir u wrt /*
+            endif
+          endif
+        endif
+        !!ce = !ce
+        --<RM> 12/04/2011 P-27842 added a new test for riser clamps where the pleave of the atta is D as this was causing
+        --the hangers to be build upsode down. the solution is to flip the ori of the atta and reset hdir of the hanger to be up - end
+        conn and p14 is zdir of $!steelMembers[1]
+      else
+        conn and p12 is zdir of $!steelMembers[1]
+      endif
+    else
+      conn and p3 is zdir of $!steelMembers[1]
+    endif
+  endif
+
+endmethod
+
+define method .oriPcla(!ori is STRING)
+
+   !p14dir = p14 dir
+   ori p14 is $!p14dir and p12 is D
+
+endmethod
+
+define method .setUbol()
+
+-- Needs to set the ubol desp 1 as 1/2 of the cross centres from the i beam
+
+  !ce = !!ce
+  !despars = desp
+  !cc = ((!despars[3] + !despars[4]) / 4)
+  hang
+  1
+  if !!ce.type.eq('UBOL') then
+    desp $!cc
+  endif
+  !!ce = !ce
+
+endmethod
+
+define method .oriVspr()
+
+-- Needs to set the vspr angle (not constants) stored in angle att
+
+  !angle = angle
+--  if !!ce.stype.match('TS1-V').gt(0) or !!ce.stype.match('TA-V').gt(0) or !!ce.stype.match('BM1-V').gt(0) then
+  if !!ce.catref.name.match('TS1-V').gt(0) or !!ce.catref.name.match('TA-V').gt(0) or !!ce.catref.name.match('BM1-V').gt(0) then
+    fconn and p9 is n $!angle w
+    angle $!angle
+  else
+    fconn and p2 is n $!angle w
+      handle ANY
+      endhandle
+    angle 90
+  endif
+
+endmethod

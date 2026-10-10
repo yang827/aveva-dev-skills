@@ -1,0 +1,311 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            hmrestrictioncfitt.pmlobj
+--   Type:          Object Definition
+--   Group:
+--     Keyword:     Hole Management
+--   Module:        All
+-- Author:          Martin Ward
+--  Created:        January 2008
+--
+-- Description:
+--   Object used to verify an association in the Hole Management system
+--    1.  Get profile of virtual hole
+--    2.  Get profile of the catalogue hole
+--    3.  Create union of virtual and catalog hole profiles
+--    4.  Test union profile same as virtual hole profile
+
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  checkProfilesCoincident()        BOOLEAN             check the fitting profile and virtual profile are coincident
+--  hmRestrictionCFitt()             -
+--  testEv()                         BOOLEAN
+--
+------------------------------------------------------------------------
+
+define object HMRESTRICTIONCFITT
+
+ -- MEMBER names are compulsory to tie in with ASSOCIATIONS
+ -- COMPONENT = RESTRICTION element
+   member .association   is DBREF
+   member .component     is DBREF
+
+   -- Additional members required to simplify processing
+   member .hmHole       is HMHOLE
+
+   member .debug         is BOOLEAN
+endobject
+-- End of object definition
+
+
+------------------------------------------------------------------------
+--
+-- Method:      hmRestrictionCFitt
+--
+-- Description: Constructor method
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .hmRestrictionCFitt()
+
+  !this.debug = FALSE
+  if (defined(!!debug) ) then
+    !this.debug = TRUE
+  endif
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      testEv
+--
+-- Description: make sure that the FIXING elements and ATTA elements are coincident
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .testEv() is BOOLEAN
+
+-- Manually trigger the CONSTRUCTOR - does not get run automatically at the moment
+  !this.hmRestrictionCFitt()
+
+  -- save current units
+  !savedUnits = object COMUNITS(true)
+  -- set to mm
+  UNITS MM DIST
+
+-- Check on profile of Hole Owner
+  !result = !this.checkProfilesCoincident()
+  handle any
+    !result = false
+  endhandle
+
+  !savedUnits.restoreSavedUnitsByPtype('DIST')
+
+ -- Once all checks completed successfully...
+  return !result
+
+endmethod
+-- End of method
+
+
+
+------------------------------------------------------------------------
+--
+-- Method:      checkProfilesCoincident
+--
+-- Description: check the profiles are coincident
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .checkProfilesCoincident() is BOOLEAN
+
+--    1.  Get profile of virtual hole
+
+  -- Check the profiles of the virtual hole and the profile defined
+  -- by the catalogue fitting are coincident
+  !this.hmHole = object HMHOLE(!this.association)
+  !virtualHole = !this.hmHole.virtualHole
+  -- make sure the references ar OK.
+  if (badref(!virtualHole)) then
+    !!setRestrictionError(!this.association, !this.component, |Bad reference to virtual hole|)
+    return FALSE
+  endif
+
+  -- Get the profile of the fixing hole
+  -- Find the LOOP and use that as the virtual hole profile
+  !find = object COLLECTION()
+  !find.type('LOOP')
+  !find.scope(!virtualHole)
+  !loop = !find.results()
+
+  if (!loop.size() eq 0 ) then
+    !!setRestrictionError(!this.association, !this.component, |Unable to find a valid LOOP in the virtual hole|)
+    return FALSE
+  endif
+  !virtualHoleProfile = object PROFILE(!loop[1])
+  handle any
+    !!setRestrictionError(!this.association, !this.component, |Unable to create profile from virtual hole LOOP|)
+    return FALSE
+  endhandle
+
+--    2.  Get profile of the catalogue hole
+  if (badref(!this.hmHole.primaryElement.amemrf)) then
+    !!setRestrictionError(!this.association, !this.component, |Bad reference to fixing|)
+    return FALSE
+  else
+    !fixing = !this.hmHole.primaryElement.amemrf
+    -- Get the profile of the fixing hole
+    !cataHoleProfile = !!hmFindHoleProfile(!fixing)
+    if( !cataHoleProfile.unset() ) then
+      !!setRestrictionError(!this.association, !this.component, |Unable to get profile of fixing hole|)
+      return false
+    endif
+  endif
+
+--    3.  Create union of virtual and catalog hole profiles
+
+-- Add the profiles together and check the areas are the same
+
+  -- get approved hole
+  !status      = !this.hmHole.getFullStatus()
+  !holeProfile = object PROFILE()
+  if (!status eq 'APPROVED') then
+    !holeElement = !this.hmHole.getPrimaryHole()
+    if( badref(!holeElement) ) then
+      !!setRestrictionError(!this.association, !this.component, |Approved (primary) hole not found|)
+      return FALSE
+    endif
+    if (!holeElement.type eq 'CMFI') then
+      -- find the NXTR
+      !block     = object BLOCK('NXTR 1 OF TMPL 1')
+      !extrusion = !holeElement.evaluate(!block)
+      handle any
+        !!setRestrictionError(!this.association, !this.component, |Unable to find extrusion in approved (primary) hole|)
+        return FALSE
+      endhandle
+      !holeElement = !extrusion
+    endif
+    if (!holeElement.type eq 'NXTR') then
+      !holeProfile = object PROFILE(!holeElement.member[1])
+      handle any
+        !!setRestrictionError(!this.association, !this.component, |Unable to get profile of approved (primary) hole|)
+        return FALSE
+      endhandle
+    else
+      -- no test for other hole types - so success is assumed
+    endif
+  endif
+
+  !unionProfile = !virtualHoleProfile.union(!cataHoleProfile)
+  handle any
+    -- handle case where virtual hole and catalogue profile are not in the same plane - and any other failure
+    !!setRestrictionError(!this.association, !this.component, |Unable to create a union of the virtual hole and catalog hole profiles|)
+    return FALSE
+  endhandle
+
+  -- If for any reason the fixings do not intersect there will be more than one overall profile
+  -- in which case it is a failure
+
+  if (!unionProfile.size() neq 1 ) then
+    !!setRestrictionError(!this.association, !this.component, |Virtual hole and catalog hole profiles do not intersect|)
+    return FALSE
+  endif
+
+--    4.  Test union profile same as virtual hole profile
+  !difference = ((!unionProfile[1].area() - !virtualHoleProfile.area()) / !virtualHoleProfile.area())
+  !diffString = !difference.string('d4')
+  !difference = !diffString.real()
+  if (!difference neq 0 ) then
+    !!setRestrictionError(!this.association, !this.component, |Catalog hole profile does not lie entirely within virtual hole profile|)
+    return FALSE
+  endif
+
+  -- Now test that the virtual hole profile fits inside the approved hole profile
+  if ( !holeProfile.set() ) then
+    !unionProfile = !holeProfile.union(!cataHoleProfile)
+    handle any
+      -- handle case where virtual hole and catalogue profile are not in the same plane - and any other failure
+      !!setRestrictionError(!this.association, !this.component, |Unable to create a union of the virtual hole and approved hole profiles|)
+      return FALSE
+    endhandle
+
+    -- If for any reason the fixings do not intersect there will be more than one overall profile
+    -- in which case it is a failure
+    if (!unionProfile.size() neq 1 ) then
+      !!setRestrictionError(!this.association, !this.component, |Virtual hole and approved hole profiles do not intersect|)
+      return FALSE
+    endif
+
+--      4.  Test union profile same as virtual hole profile
+    !difference = ((!unionProfile[1].area() - !holeProfile.area()) / !holeProfile.area())
+    !diffString = !difference.string('d4')
+    !difference = !diffString.real()
+    if (!difference neq 0 ) then
+      !!setRestrictionError(!this.association, !this.component, |Virtual hole profile does not lie entirely within approved hole profile|)
+      return FALSE
+    endif
+
+  endif
+
+  -- Additional check for projected wall openings
+  -- The two wall opening profiles need to be equal
+  if (!this.hmHole.extraWallOpening.set()) then
+
+    !opening          = !this.hmHole.primaryElement.amemrf
+    !extraWallOpening = !this.hmHole.extraWallOpening.amemrf
+    if (badref(!opening) or badref(!extraWallOpening)) then
+      !!setRestrictionError(!this.association, !this.component, |At least one bad reference to a wall opening|)
+      return FALSE
+    endif
+
+    -- find the respective rPath elements for each item
+    !find = object COLLECTION()
+    !find.type('RPATH')
+    !find.scope(!opening.owner)
+    !openingRPath = !find.results()
+    !find.scope(!extraWallOpening)
+    !extraWallOpeningRPath = !find.results()
+    if (!openingRPath.empty() or !extraWallOpeningRPath.empty()) then
+      !!setRestrictionError(!this.association, !this.component, |Unable to find RPATH of at least one wall opening|)
+      return FALSE
+    endif
+
+    !openingProfile          = object PROFILE(!openingRPath[1])
+    !extraWallOpeningProfile = object PROFILE(!extraWallOpeningRPath[1])
+
+    !unionProfile = !openingProfile.union(!extraWallOpeningProfile)
+    handle any
+      -- handle case where virtual hole and catalogue profile are not in the same plane - and any other failure
+      !!setRestrictionError(!this.association, !this.component, |Unable to create union of the two wall openings|)
+      return FALSE
+    endhandle
+
+    -- If for any reason the fixings do not intersect there will be more than one overall profile
+    -- in which case it is a failure
+
+    if (!unionProfile.size() neq 1 ) then
+      !!setRestrictionError(!this.association, !this.component, |The two wall openings do not intersect|)
+      return FALSE
+    endif
+
+    !difference = ((!unionProfile[1].area() - !extraWallOpeningProfile.area()) / !extraWallOpeningProfile.area())
+    !diffString = !difference.string('d4')
+    !difference = !diffString.real()
+    if (!difference neq 0 ) then
+      !!setRestrictionError(!this.association, !this.component, |Extra wall opening does not lie entirely inside main wall opening|)
+      return FALSE
+    endif
+
+  endif
+
+!!setRestrictionError(!this.association, !this.component, |No Error|)
+return TRUE
+
+endmethod
+-- End of method

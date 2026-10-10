@@ -1,0 +1,531 @@
+-----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            assydrwg.pmlobj
+--   Type:          Object Definition
+--   Group:         <group>
+--     Keyword:     <keyword>
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         Tue 03 Aug 2006
+--
+--
+-- Description:
+-- Holds the data for the drawing and creates it
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  assyDrwg(DBREF,DBREF,BOOLEAN)    -                   Construct
+--  create(BOOLEAN)                  -                   Create the DRWG
+--  runTasks()                       -                   Run all tasks
+--  setNoClipping()                  -                   For all model views, set no clipping (i.e. set the view
+--  update(DBREF)                    -                   Update the existing DRWG
+--
+------------------------------------------------------------------------
+define object ASSYDRWG
+
+  member .reference  is DBREF
+
+  member .drtmplRef  is DBREF
+
+  member .asmblyRefe is DBREF
+
+  member .asmblyData is ASMBLYDATA
+
+  member .rootName   is STRING
+
+  member .tasks      is ARRAY
+
+  member .shTmpl     is DBREF
+
+  member .sheets     is ARRAY
+
+  member .update     is BOOLEAN
+
+  member .nameRules  is ASSYNAMERULE
+
+endobject
+------------------------------------------------------------------------
+--
+-- Method:        .assyDrwg(DBREF,DBREF)
+--
+-- Description:   Construct
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       The drawing template element
+--    2   R      DBREF       The assembly element
+--    3   R      BOOLEAN     Whether to update an existing drawing
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .assyDrwg(!drtmplRef is DBREF, !asmblyRefe is DBREF, !update is BOOLEAN)
+
+  -- Store passed data
+  !this.drtmplRef  = !drtmplRef
+  !this.asmblyRefe = !asmblyRefe
+  !this.update     = !update
+  !drwgRefe        = object DBREF()
+
+  -- Get the sheet template for this drtmpl
+  VAR !allShtmpl COLL ALL SHTMPL FOR $!<this.drtmplRef>
+  !this.shTmpl = !allShtmpl[1].dbref()
+
+  -- Get data about the assembly
+  !this.asmblyData.setDrawn(!asmblyRefe)
+
+  -- Create the drawing
+  if (!this.asmblyData.mode[1].eq('Create')) then
+
+    NEW DRWG
+    !this.create(false)
+
+  -- Update the drawing
+  elseif (!this.update) then
+
+    -- Access  the drawing
+    !!ce = !this.asmblyData.dwgRefs[1]
+
+    -- Attempt to claim it
+    CLAIM CE
+      handle any
+        !!assyLog.add(' Exiting, as cannot claim DRWG ' & !!ce.flnn)
+      elsehandle none
+
+        -- Update the drawing
+        UNLOCK ALL
+        !this.update(!!ce)
+
+      endhandle
+
+  -- Recreate the drawing
+  else
+
+    -- Access the original
+    !!ce = !this.asmblyData.dwgRefs[1]
+
+    -- Attempt to claim it
+    CLAIM CE
+      handle any
+        !!assyLog.add(' Exiting, as cannot claim DRWG ' & !!ce.flnn)
+      elsehandle none
+
+        -- Delete the original drawing members
+        UNLOCK ALL
+        DELETE DRWG MEM
+
+        -- Create it again
+        !this.create(true)
+
+      endhandle
+
+  endif
+
+endmethod
+-- End of method definition for .assyDrwg(DBREF,DBREF)
+
+-----------------------------------------------------------------------
+--
+-- Method:      .create()
+--
+-- Description: Create the DRWG
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      BOOLEAN     Whether the drawing is being regenerated
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .create(!regenerate is BOOLEAN)
+
+  -- Initialise variables
+  !drTmplRefe     = !this.drtmplRef
+  !this.reference = !!ce
+  !drwgDate       = !!ce.date
+
+  -- Get the current coordinate system
+  !coordinates = object COORDSTRANSFER()
+
+  -- Set the default start sheet number
+  !shtNum = 1
+
+  -- Set default staring index for any parts list
+  !partsStartIndex = 1
+
+  -- Copy the drawing template
+  COPY LIKE $!drTmplRefe BSRF UNSET
+  LINKREF $!drTmplRefe
+
+  -- Reset the date to that of the DRWG not the DRTMPL
+  DATE |$!drwgDate|
+
+  -- Set the positions format
+  if (!coordinates.isXYZ()) then
+    POSFORMAT XYZ
+  else
+    POSFORMAT ENU
+  endif
+
+  -- Set the update type for use by any task
+  SPPURP $!<this.update>
+
+  -- Set idln to the assembly
+  IDLN $!<this.asmblyRefe>
+
+  -- Set the drawing NAME
+  -- Uses the set IDLN to get the assembly reference
+  !this.rootName = !!assyNameDrwg(!!ce, !this.nameRules.drwgNameRule)
+
+  -- Send log message
+  if (!regenerate) then
+    !!assyLog.add(' Regenerating Drawing ' & !this.rootName)
+  else
+    !!assyLog.add(' Creating Drawing ' & !this.rootName)
+  endif
+
+  -- Build names
+  !libyName = !this.rootName & '/LIBY'
+  !dllbName = !this.rootName & '/Dllb'
+  !idliName = !this.rootName & '/DRAWLIST'
+
+  -- Create the libraries
+  NEW LIBY $!libyName
+    handle (41,12)
+      -- Name already used
+      -- Delete useless liby
+      DELETE LIBY
+
+      -- Access the existing drawing
+      !!ce = !libyName.dbref()
+      DELETE LIBY MEM
+
+    endhandle
+
+  -- Create the drawlist
+  NEW DLLB $!dllbName
+
+    NEW IDLI $!idliName
+    !idliRefe = !!ce
+
+      NEW ADDE IDNM $!<this.asmblyRefe>
+
+  -- Build sheet object
+  !sheetObj = object ASSYSHEET(!this.asmblyRefe, !idliRefe, !this.rootName)
+
+  -- Create the sheet
+  -- Test each sheet for the length of the parts list table if used
+  -- The relevant task will use the sheet function attribute to store the indices used on that sheet
+  -- Let us assume that there are never anymore than 999 sheets per drawing
+  do !count from 1 to 999
+
+    -- Send message
+    if (!count.eq(1)) then
+      !!assyPrompt('Creating Sheet ' & !count,2)
+    else
+      !!assyPrompt('Creating Overflow Sheet ' & !count,2)
+    endif
+
+    -- Add a new sheet object
+    !this.sheets.append(!sheetObj)
+
+    -- Create a sheet
+    !nextStartIndex = !this.sheets[!shtNum].create(!this.shTmpl, !shtNum, !partsStartIndex, !this.nameRules)
+
+    -- This will return a range of created parts list entries if the parts list task has been run
+    if (!nextStartIndex.eq(0)) then
+
+      -- There is no parts list on the drawing so a single sheet is sufficient
+      break
+
+    else
+
+      -- Test if the maximum range equals the number of parts in the assembly plus one (for the next one)
+      !assyPartsObj = object ASSYPARTS(!this.asmblyRefe.smemb,!this.sheets[!shtNum].sumUp)
+      !partLength = !assyPartsObj.parts.size()
+      if (!nextStartIndex.geq(!partLength)) then
+
+        -- Last sheet: No more sheets are required
+        break
+
+      else
+
+        -- Set new starting index
+        !partsStartIndex = !nextStartIndex
+
+      endif
+
+    endif
+
+    -- Set next sheet number
+    !shtNum = !count + 1
+
+    -- Send log message
+    !!assyLog.add('  Creating sheet ' & !shtNum & ' for parts list overflow')
+
+  enddo
+
+  -- Return to drawing
+  !!ce =!this.reference
+
+  -- Create the drawing tasks
+  -- When regenerating consider only those tasks that must be executed, ignoring those that should not
+  if (!regenerate) then
+    VAR !allTasks COLL ALL TASK WI SPPURPOSE EQ 'DTASK'FOR $!drTmplRefe
+
+  -- When creating consider all tasks
+  else
+    VAR !allTasks COLL ALL TASK WI SPPURPOSE EQ 'DTASK' OR SPPURPOSE EQ 'DTASKX' FOR $!drTmplRefe
+
+  endif
+
+  -- For each task
+  do !index ind !allTasks
+
+    -- Initialise variables
+    !taskRefe = !allTasks[!index].dbref()
+    !taskName = !this.rootName & '/DTask' & !index
+
+    -- Copy task
+    NEW TASK COPY $!taskRefe NAME $!taskName
+
+    -- Build task object
+    !this.tasks.append(object ASSYTASK(!!ce))
+
+  enddo
+
+  -- Return to this drawing
+  !!ce = !this.reference
+
+  -- Send message
+  !!assyPrompt('Executing Drawing Tasks',2)
+
+  -- Run the drawing tasks
+  !this.runTasks()
+
+  -- Return to drawing
+  !!ce =!this.reference
+
+  -- Update the annotation
+  -- This is in case any drawing task has set data for backing sheet hash codes e.g. the drawing number
+  WARNINGS OFF
+
+  UPDATE ANNO
+    handle any
+    endhandle
+
+  WARNINGS ON
+
+  -- Set drawing type for the search tool
+  SPPURP ASYADP
+
+  -- Set "no clipping" for all model views
+  !this.setNoClipping()
+
+  -- Save this drwg
+  SAVEWORK
+
+endmethod
+-- End of method definition for .create()
+
+-----------------------------------------------------------------------
+--
+-- Method:      .runTasks()
+--
+-- Description: Run all tasks
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .runTasks()
+
+  -- Execute each task function
+  do !task val !this.tasks
+    !!assyLog.add('   Executing Drawing Task: ' & !task.description)
+    !task.execute()
+  enddo
+
+endmethod
+-- End of method definition for .runTasks()
+
+-----------------------------------------------------------------------
+--
+-- Method:      .update(DBREF)
+--
+-- Description: Update the existing DRWG
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       The DRWG to update
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .update(!drwgRefe is DBREF)
+
+  -- Initialise variables
+  !this.reference  = !drwgRefe
+  !shtNum          = 1
+  !partsStartIndex = 1
+
+  -- Send log message
+  !!assyLog.add(' Updating Drawing ' & !drwgRefe.flnn)
+
+  -- Get current number of sheets
+  VAR !allSheets COLL ALL SHEE WI SPPURPOSE EQ 'ASYADP' FOR $!drwgRefe
+
+  -- Get the root name
+  !this.rootName = !drwgRefe.flnm
+
+  -- Build a sheet object using the first sheet, as there should always be at least one existing?
+
+  if (!allSheets.size().eq(0)) then
+    -- Send log message
+      !!assyLog.add('  Update not possible as no there is no existing sheet.')
+    return
+  endif
+
+  !sheetObj = object ASSYSHEET(!this.asmblyRefe, !allSheets[1].dbref().idln, !this.rootName)
+
+  -- Update each sheet
+  do !count from 1 to 999
+
+    -- Send message
+    !!assyPrompt('Updating Sheet ' & !count,2)
+
+    -- Add a new sheet object
+    !this.sheets.append(!sheetObj)
+
+    -- Create a new sheet
+    if (!shtNum.gt(!allSheets.size())) then
+      !messageText    = 'Creating'
+      !nextStartIndex = !this.sheets[!shtNum].create(!this.shTmpl, !shtNum, !partsStartIndex)
+
+    -- Update the sheet
+    else
+      !messageText    = 'Updating'
+      !nextStartIndex = !this.sheets[!shtNum].update(!allSheets[!count].dbref(), !shtNum, !partsStartIndex)
+
+    endif
+
+    -- This will return a range of created parts list entries if the parts list task has been run
+    if (!nextStartIndex.eq(0)) then
+
+      -- There is no parts list on the drawing so a single sheet is sufficient
+      break
+
+    else
+
+      -- Test if the maximum range equals the number of parts in the assembly plus one (for the next one)
+      !assyPartsObj = object ASSYPARTS(!this.asmblyRefe.smemb,!this.sheets[!shtNum].sumUp)
+      !partLength = !assyPartsObj.parts.size()
+      if (!nextStartIndex.geq(!partLength)) then
+
+        -- Last sheet: No more sheets are required
+        break
+
+      else
+
+        -- Set new starting index
+        !partsStartIndex = !nextStartIndex
+
+      endif
+
+    endif
+
+    -- Set next sheet number
+    !shtNum = !count + 1
+
+    -- Send log message
+    !!assyLog.add('  ' & !messageText & ' sheet ' & !shtNum & ' for parts list overflow')
+
+  enddo
+
+  -- Delete excess sheets
+  if (!shtNum.lt(!allSheets.size())) then
+    do !count from (!shtNum + 1) to !allSheets.size()
+      !!ce = !allSheets[!count].dbref()
+      DELETE SHEE
+    enddo
+  endif
+
+  -- Return to this drawing
+  !!ce = !this.reference
+
+  -- Send message
+  !!assyPrompt('Executing Drawing Tasks',2)
+
+  -- Run the drawing tasks
+  VAR !allTasks COLL ALL TASK WI SPPURPOSE EQ 'DTASK' FOR $!drwgRefe
+  do !task val !allTasks
+    !this.tasks.append(object ASSYTASK(!task.dbref()))
+  enddo
+  !this.runTasks()
+
+  -- Access the drawing
+  !!ce =!this.reference
+
+  -- Update the annotation in case any task has modified the backing sheet data
+  WARNINGS OFF
+
+  UPDATE ANNO
+    handle any
+      !!assyLog.add('   There were unknown errors when updating the drawing annotation. Please check below for any drafting errors.')
+    endhandle
+
+  WARNINGS ON
+
+  -- Save this drwg
+  SAVEWORK
+
+endmethod
+-- End of method definition for .update()
+
+-----------------------------------------------------------------------
+--
+-- Method:      .setNoClipping()
+--
+-- Description: For all model views, set no clipping (i.e. set the view
+--              attribute noclipview to true). A model view is a view were
+--              the idln attribute is set.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setNoClipping()
+
+  -- get all views in the drawing
+  var !views collect all VIEW for $!this.reference
+
+  do !index ind !views
+     !nextView = !views[!index].dbref()
+     if !nextView.idln.set() then
+        !nextView.noclipview = TRUE
+     endif
+  enddo
+
+endmethod
+-- End of method definition for .setNoClipping()

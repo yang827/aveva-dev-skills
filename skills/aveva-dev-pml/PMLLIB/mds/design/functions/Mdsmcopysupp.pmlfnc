@@ -1,0 +1,521 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File: Mdsmcopysupp.pmlfnc
+--   Type:  Result Macro
+--   Group:  Multi Discipline Supports Application
+--     Keyword:  MDS
+--   Module:  Design
+--   Replaces:
+--
+-- Author:  N.morris
+-- Created:  Mon Aug 18
+--
+--
+-- Description:
+-- Macro to copy an entire support
+--------------------------------------------------------------------------------
+
+define function !!mdsMCopySupp(!form is FORM)
+
+  -- Find current units and set the distance unit to metric
+
+  !currentunits = !!kgetSetUnits()
+
+  -- Set the form vars to variables
+
+  !name     = !form.name.val
+  !copies   = !form.nooff.val.real()
+  !distance = !form.distance.val
+
+  -- Is the name gadget a valid name
+
+  if (!name.upcase() eq |UNSET|)then
+    !form.name.setfocus()
+    !!alert.error ('Support has not been selected to copy')
+    !!kRestoreUnits(!currentunits)
+    return
+  endif
+
+  if (!copies.lt(1))then
+    !form.nooff.setfocus()
+    !form.nooff.val = '1'
+    !!alert.error ('Number off must be at least one')
+    !!kRestoreUnits(!currentunits)
+    return
+  endif
+
+  if (!distance.eq(0))then
+    !form.distance.setfocus()
+    !!alert.error ('Please enter a distance to offset the support by.')
+    !!kRestoreUnits(!currentunits)
+    return
+  endif
+
+  --------------------------------------------------------------------------------
+  -- OK everything seems to be OK now copy the support
+  -- Find the direction to move it from the pl direction of the datum atta
+  -- All the members of the support are in the variable !!mdsCopySupp.supportMem
+
+  -- Find direction to move from the first atta encountered
+
+  do !atta values !!mdsCopySupp.supportMem
+    !!ce = !atta
+    if (!!ce.type eq 'ATTA') then
+      !direction = pl dir wrt /*
+      break
+    elseif (!!ce.type.string().eq('STRU') and !!ce.:MDSSuppType.string().eq('FT22')) then
+      -- BedPlate 'FT22' does NOT have any Associated Attas
+      !direction = n wrt /*
+      !!kFormattext.text.val = !!mdsCopySupp.distance.val
+      !fDist = !!kFormattext.text.val.string(!!$!!kFormattext.text.format)
+
+      !!alert.warning('Bed Plate Supports are Copied to the NORTH wrt /*, DISTANCE ' & $
+      !fDist & ' apart. Use the ''Position>...'' options from the top $
+      bar menu to correctly position the Copies')
+    endif
+  enddo
+
+  --------------------------------------------------------------------------------
+  !times  = 0
+  !memnum = 0
+  --!dist = !distance
+
+  -- Clear ARRAY of Names
+  !!mdsCopySupp.copynames.clear()
+
+  -- array to save all VT19 members (for quick deletion)
+  !vt19mem = object ARRAY()
+
+  do from 1 to !copies
+
+    !times = !times + 1
+    !vt19mem[!times] = object ARRAY()
+    --------------------------------------------------------------------------------
+    -- Build Temporary Name for each Copy of the Support
+    !tempName = '/' & 'TempName' & !times
+
+    -- Check if the name $!tempName EXISTS
+    var !exists EXISTS $!tempName
+    if (!exists eq 'TRUEA') then
+      -- Redefine variable '!tempName' if name Already EXISTS
+      var !uniq unique
+      !tempName = '/' & !uniq &  '-TempName' & !times
+    endif
+    --------------------------------------------------------------------------------
+    !haveJoints = false
+
+    do !copy values !!mdsCopySupp.supportMem
+      !!ce = !copy
+      !xnam = !!ce.name
+      !type = !!ce.type
+      if (type inset('SNOD', 'SJOI')) then
+        !haveJoints = true
+        skip
+      endif
+      !direction
+      !move = (!distance * !times)
+      !origName = '/' & !!mdsCopySupp.name.val
+      !orignamedatum = '/' & !!mdsCopySupp.name.val & '/DATUM'
+      !orignamesref = '/' & !!mdsCopySupp.name.val & '/SREF'
+
+      !!mdsDacControl(true)
+
+      -- Copy Support Structure and Associated Attas
+      if (!!ce.type.string().eq('STRU')) then
+        -- Create a New Stru
+        -- If model object manager is being used then we do not require to copy the values
+        -- of :MMSControl :MMSOrigin and :MMSSid
+
+        !unusedTestForMMS = :MMSControl
+        handle ANY
+          new $!type $!tempName copy prev rename $!origName $!tempName
+        elsehandle NONE
+          !wasSet.delete()
+          handle ANY
+          endhandle
+          !wasSet = ''
+          new stru $!tempName
+          copy mem of prev rename $!origName $!tempName
+          !attListOfStru = attlist of $!origName
+          do !setAtt values !attListOfStru
+            if !setAtt.upcase().eq(':MMSCONTROL') or !setAtt.upcase().eq(':MMSORIGIN') or !setAtt.upcase().eq(':MMSSID') then
+              -- Skip model manager attributes
+            elseif !setAtt.upcase().eq('NAME') or !setAtt.upcase().eq('OWNER') or !setAtt.upcase().eq('TYPE') or !setAtt.upcase().eq('LOCK') then
+              -- Skip pdms unsettable attributes
+            else
+              !wasSet.delete()
+              handle ANY
+              endhandle
+              !wasSet = ( $!setAtt of $!origName )
+              if !wasSet.objectType().eq('STRING') then
+                if !wasSet.eq('').not() then
+                  $!setAtt |$!wasSet|
+                  handle (2,502)
+                    -- No access by a DAC, leave as default
+                  elsehandle (47,15)
+                    -- attribute does not need || around
+                    $!setAtt $!wasSet
+                    handle (2,502)
+                      -- No access by a DAC, leave as default
+                    endhandle
+                  endhandle
+                endif
+              elseif !wasSet.objectType().eq('ARRAY') then
+                !counter = 1
+                do values !wasSet
+                  $!setAtt number $!counter $!wasSet[$!counter]
+                  handle (2,502)
+                    -- No access by a DAC, leave as default
+                    break
+                  endhandle
+                  !counter = !counter + 1
+                enddo
+              elseif !wasSet.objectType().eq('REAL') then
+                if !wasSet.set() then
+                  $!setAtt $!wasSet
+                  handle (2,502)
+                    -- No access by a DAC, leave as default
+                  endhandle
+                endif
+              else
+                $!setAtt $!wasSet
+                handle (2,502)
+                  -- No access by a DAC, leave as default
+                endhandle
+              endif
+            endif
+          enddo
+        endhandle
+        !memnum = !memnum + 1
+        :MDSBpref1 nulref
+        :MDSBpref2 nulref
+
+        -- delete all compensations if any
+        if !!ce.type.eq('STRU') then
+          !stru = !!ce
+          !compensations = !!mdsCollectAll('FIXING','gtyp eq ''$!!mdsCompplateDflts.gtyp''',!stru)
+          do !comp values !compensations
+            !!ce = !comp
+            delete $!!ce.type
+          enddo
+          !!ce = !stru
+        endif
+
+        -- Clear all :MdsAncRef settings
+
+        var !collAllMem coll all for ce
+        do !loopThroughMembers values !collAllMem
+          !!ce = !loopThroughMembers.dbref()
+          :MdsAncref def
+          handle ANY
+          endhandle
+        enddo
+        stru
+
+        -- dtf >>> 11.10.04 If IsPartOfGroup and Original has Hangers Delete the fittings
+        !orice = !!ce
+        if !!mdsCopySupp.isPartOfGroup and !!mdsCopySupp.connectedHangers.size().gt(0) then
+          --$P Clean up rogue fittings
+          var !fittcoll coll all fitt with (badref(cref)) for stru
+          do !findex values !fittcoll
+            $!findex
+            delete FITT
+          enddo
+        endif
+        !!ce = !orice
+        -- dtf <<< End Of Mod
+
+        --------------------------------------------------------------------------------
+        -- mjb >>> 22.02.06 elseif modified specifically for ATTA
+        -- mjb >>> to avoid MDSPackRef error with OLETS
+      elseif (!!ce.type.string().eq('ATTA')) then
+        -- mjb <<< end of mod
+        !extn = !xnam.after(!origName)
+        !nnam = '$!tempName' & !extn
+
+        -- Check if Current Atta has a Valid :MDSPackRef etc
+        !pack = :MDSPackRef
+        if (!pack.badref().not()) then
+          !pxtn = !!ce.:MDSPackRef.name.string().after(!origName)
+          !pnam = '$!tempName' & !pxtn
+        endif
+        !!mdsDacControl(TRUE)
+        -- Create a New Atta
+        new $!type $!nnam copy prev
+        -- Update Atta uda :MDSPackRef to Temporary Name or nulref
+        if (!pack.badref()) then
+          :MDSPackRef nulref
+        else
+          :MDSPackRef $!pnam
+        endif
+        -- Unset Other Atta uda's to nulref or the string 'unset'
+        :MDSBpref1 nulref
+        :MdsAncRef def
+        --xxx        :guide  'unset'
+        --xxx        :guide2 'unset'
+        :MDSGuideRef  unset
+        :MDSStop   'unset'
+        :MDSStop2  'unset'
+
+        -- mjb >>> 22.02.06 elseif added to create copy of OLET
+        -- mjb >>> (following previous mod to avoid MDSPackRef errors)
+      elseif (!!ce.type.string().eq('OLET')) then
+        -- dtf >>> 4.05.06 no need to copy olet the get created with mdscreatelugs later
+        --         that way we can guarantee the order of the lugs.
+        --!extn = !xnam.after(!origName)
+        --!nnam = '$!tempName' & !extn
+        --new $!type $!nnam copy prev
+      endif
+      -- mjb <<< end of mod
+
+      --------------------------------------------------------------------------------
+      --------------------------------------------------------------------------------
+
+      if (match(!!ce.name,|/DATUM|) gt 0 and !!ce.type eq 'ATTA') then
+        !ref = !!ce.ref
+        bran
+        reorder same after $!orignamesref
+        !!ce = !ref
+      elseif (match(!!ce.name,|/SREF|) gt 0 and !!ce.type eq 'ATTA') then
+        !ref = !!ce.ref
+        bran
+        reorder same after $!orignamesref
+        !!ce = !ref
+
+        -->> Added SJR Jan2003 - COPY for VT19 guide trunnions (4 branches)
+        -- check for VT19
+        $!origName
+        if (!!ce.:mdssupptype.eq('VT19')) then
+          $!orignamedatum
+          PIPE
+          !pipeName = !!ce.name
+          -- copy each trunnion branch
+          --<dw>aug2008 dun979 - flow direction turned off
+          do !ii from 1 to 4
+            $!<pipeName>/$!!<mdsCopySupp.name.val>/$!ii
+            !href = !!ce.href
+            !newName = !pipeName & '/TempName' & $!times & '/' & !ii
+            NEW BRAN COPY PREV rename $!origName $!tempName
+            NAME $!newName flowdir OFF
+            !memnum = !memnum + 1
+            !!mdsCopySupp.copynames[!times][!memnum] = !!ce
+            var !unusedN name
+            !vt19mem[!times].append(!!ce)
+            !moveDir = !direction.string().before('WRT')
+            BY $!moveDir $!move
+            $!href
+            NEW TEE COPY PREV
+            !vt19mem[!times].append(!!ce)
+            !newTeeRef = !!ce
+            bran
+            reorder same after $!ref
+            $!newTeeRef
+            move $!direction dist $!move
+            $!newName
+            HREF $!newTeeRef
+          enddo
+        endif
+
+        !!ce = !ref
+
+      endif
+
+      -- Add new copy in array variable
+      !memnum = !memnum + 1
+      !!mdsCopySupp.copynames[!times][!memnum] = !!ce
+      move $!direction dist $!move
+    enddo
+
+
+    -- If we happen to be at an olet, then goback to the atta
+
+    if !!ce.type.eq('OLET') then
+      !getname = !!ce.name.before('/LUG')
+      !!ce = !getname.dbref()
+      handle any
+      endhandle
+    endif
+
+    -- Did support have external joints
+
+    if !haveJoints then
+      !message = 'Retain copy of support? Please note that the external joints have not been copied!'
+    else
+      !message = 'Retain copy of support?'
+    endif
+
+    if (!!alert.confirm('$!message') eq |NO|)then
+
+      do !delete values !!mdsCopySupp.copynames[!times]
+        !!ce = !delete
+        !type = !!ce.type
+        --<RM> 30/06/11 P-38756 add function call to remove pnod and pjoi rules that are causing errors when delete stru mem is run - start
+        if !type.eq('STRU') then
+          !!mdsRemoveAutoPadRules(!!ce)
+        endif
+        --<RM> 30/06/11 P-38756 add function call to remove pnod and pjoi rules that are causing errors when delete stru mem is run - end
+        delete $!type
+      enddo
+
+      -- delete all VT19 related trunnions and tees
+      do !delete values !vt19mem[!times]
+        !!ce = !delete
+        !type = !!ce.type
+        delete $!type
+      enddo
+
+      !!kresetactive(!!mdsCopySupp,true)
+      !!mdsCopySupp.copynames.clear()
+      break
+    endif
+
+    -- Re-associate the cross bars with Temporary Atta Names
+    do !cross values !!mdsCopySupp.copynames[!times]
+      !!ce = !cross
+      if (!!ce.type eq 'STRU') then
+        !bars = (!!kcollectAllFor('SCTN', '', !!ce))
+        do !cbars values !bars
+          !!ce = !cbars
+          -- Unset references to :mdsconn and :mdsxconn attributes
+          :mdsconn def
+          :mdsxconn def
+          !attaref = !!ce.:MDSAttaRef
+          :mdsattaref unset
+          do !c indices !attaref
+            skip if !attaref[!c].badref()
+            if !attaref[!c].name.match('/DATUM').boolean() then
+              !newattaref[1] = object DBREF(!tempName & '/DATUM')
+              !!ce.:mdsattaref = !newattaref
+              break
+            endif
+          enddo
+$(
+          !attaref = ARRAY()
+          !attaref = !!ce.:MDSAttaRef
+          !setAttaref = ARRAY()
+          do !loop values !attaref
+            !name = !loop.name
+            !newName = (after(|$!name|,|$!origName|))
+            !newName = '$!tempName' & !newName
+            !setAttaref.append(|$!newName|)
+          enddo
+          by n 0
+          :MDSAttaRef def
+          handle (41,232)
+          endhandle
+          !num = 0
+          do !set values !setAttaref
+            !num = !num + 1
+            :MDSAttaRef num $!num $!set
+          enddo
+$)
+        enddo
+      endif
+      -- reorder attas in correct sequence
+      if (!!ce.owner.type eq 'BRAN') then
+        !ref = !!ce.ref
+        bran
+        !branch = !!ce
+        !!mdsReoAtta(!branch)
+        !!ce = !ref
+      endif
+    enddo
+
+    -- Rename Copied Supports
+    --------------------------------------------------------------------------------
+    -- Rebuild form 'Mdsmodifyname' as type BLOCKING
+    !!kloadftype('Mdsmodifyname','BLOCKING')
+
+    -- Deactivate ALL Permissible Gadgets on the form 'mdsCopySupp'
+    -- Until All Copies of Supports have been ReNamed
+    !!kresetactive(!!mdsCopySupp,false)
+    !!kresetactive(!!mdsmodifyname,false)
+    !!mdsmodifyname.cancel.active = true
+    !!mdsmodifyname.newName.active = true
+    !!mdsmodifyname.ok.active      = true
+    !!mdsmodifyname.autoname.active      = true
+
+    --------------------------------------------------------------------------------
+    --------------------------------------------------------------------------------
+    !count = 0
+    !numb  = !times
+    do !index index !!mdsCopySupp.copynames[!numb]
+      if (!!mdsCopySupp.copynames[!numb][!index].type.string().eq('STRU')) then
+        -- Set Index of the ARRAY !!mdsCopySupp.copynames[!numb]  which is of the TYPE - STRU -
+        !count = !index
+        break
+      elseif (!!mdsCopySupp.copynames[!numb][!index].type.string().eq('ATTA')) then
+        if !!mdsCopySupp.copynames[!numb][!index].name.eq(!tempName) then
+          !count = !index
+          break
+        endif
+      else
+        skip
+      endif
+    enddo
+
+    -- If a STRU is NOT found in the ARRAY !!mdsCopySupp.copynames[!numb]
+    -- the !count variable will still be set to'0' (zero)
+    -- Thus the Support being Copied is an INDEPENDENT Atta type (eg: PIPE-SHOE 'AT01' etc),
+    -- and is Associated with a Support Framework. Therefore variable !count is set to
+    -- the variable '!memnum'
+    if (!count.eq(0)) then
+      !count = !memnum
+    endif
+    --------------------------------------------------------------------------------
+    --------------------------------------------------------------------------------
+
+    -- Set the Callback for the 'Apply' button on the form 'Mdsmodifyname'
+    !!mdsmodifyname.applyform[1] = |!!mdsmodifyname($!<count>,$!<numb>,'COPY')|
+
+    -- Show Form to Modify Names of Structure and Associated Attas
+    --xxx$P*************************************************************************************
+    --xxx$P    !!mdsmodifyname.name.val    = !!mdsCopySupp.copynames[$!<numb>][$!<count>].namn
+    --xxx$P*************************************************************************************
+    !!mdsmodifyname.name.val    = !!mdsCopySupp.copynames[$!<numb>][$!<count>].namn
+    !!mdsmodifyname.newName.val = 'unset'
+
+    -- Set focus of form
+    !!mdsmodifyname.newName.setfocus()
+
+    !!ce = !getname.dbref()
+    handle any
+    endhandle
+
+    -- Show Modify Support Name Form
+    waiton !!mdsmodifyname
+
+    -- Reactivate All gadgets on the form 'mdsCopySupp' after Naming the LAST Copy
+    if (!numb.eq(!copies)) then
+      !!kresetactive(!!mdsCopySupp,true)
+      !!kresetactive(!!mdsmodifyname,true)
+    endif
+
+  enddo
+
+  --------------------------------------------------------------------------------
+  -- Clear member .copynames
+  !!mdsCopySupp.copynames.clear()
+
+  -- Reactivate All Possible Gadgets on forms 'mdsCopySupp' and 'mdsmodifyname'
+  !!mdsmodifyname.applyform[3] = |!!kresetactive(!!mdsmodifyname,true)|
+  !!mdsmodifyname.applyform[4] = |!!kresetactive(!!mdsCopySupp,true)|
+
+  --------------------------------------------------------------------------------
+  -- Rebuild form 'Mdsmodifyname' as type NON-BLOCKING
+  !!kloadftype('Mdsmodifyname','')
+
+  --------------------------------------------------------------------------------
+
+
+  -- Reset Units
+
+  !!kRestoreUnits(!currentunits)
+  !!mdsDacControl(false)
+
+endfunction
+-- End of Function

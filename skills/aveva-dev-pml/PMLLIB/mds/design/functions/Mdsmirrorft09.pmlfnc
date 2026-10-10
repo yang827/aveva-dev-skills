@@ -1,0 +1,243 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:  Mdsmirrorft09.pmlfnc
+--   Type:  Function Definition
+--   Group:  Multi Discipline Supports Application
+--     Keyword:  MDS
+--   Module:  design
+--   Replaces:          MMIRPS132
+--
+-- Author:  I.osborne
+-- Created:  Wed Jul 02
+--
+--
+-- Description:
+-- function to reverse steelwork in support frame
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsMirrorFT09()
+
+  -- Initialise variables
+  !support  = !!mdsft09.support
+  !stru     = !support.stru
+  !name     = !stru.name
+  !frame    = !name & '/MAIN'
+  !origin   = !!ce
+  !bars     = !!kCollectAllFor('SCTN', '((match(name, |-BAR-|) gt 0) and type of owner eq |FRMW|)', !support.stru)
+  !vertical = !!kCollectAllFor('SCTN', '((match(name, |-V|) gt 0) and type of owner eq |FRMW|)', !support.stru)
+  VAR !supportFrame  EXISTS $!frame
+
+  -- Check that support structure has been created
+  if (!supportFrame eq 'FALSEA')then
+    !!alert.message('Support structure has not been created')
+    return
+  endif
+
+
+  -- Check the template selected can be mirrored
+
+  if !stru.:mdsFraMirror.not() then
+    !!alert.message('The currently selected template cannot be mirrored')
+    return
+  endif
+
+  -- Can only mirror framwork if we can write to the stru
+
+  if !!mdsComClaimDac(!stru,'DACMOD','POS').not() then
+    !!alert.error('Unable to mirror support as write access to the support structure is not available')
+    return
+  endif
+
+  !!ce = $!<name>-V1
+  VAR !drns DRNS WRT WORLD
+  VAR !drne DRNE WRT WORLD
+  if !support.mirror then
+    --<kp>oct06
+    --var !udir drne wrt worl
+    !udir = !!ce.zdir.wrt(worl).opposite().string().before(' WRT')
+  else
+    --<kp>oct06
+    --var !udir drns wrt worl
+    !udir = !!ce.zdir.wrt(worl).string().before(' WRT')
+  endif
+
+  -- Cross-Bars
+
+  -- If the cross bar has joints then this will not need doing as the setting of jois and joie
+  -- will sort the ori out
+
+  do !v values !bars
+
+    !!ce = !v
+    PIN 9 AT $!stru
+    PIN 9 DIR $!support.p11DIR
+    VAR !midp DERI MIDP
+    PIN 8 AT $!midp
+    PIN 9 PLANE PIN 9 THRO PIN 8
+    PIN 9 DIR $!udir WRT WORLD
+    ROTATE THRO PIN 9 ABOUT $!udir WRT WORLD BY 180
+    --<K.pleschner> June 2005
+    -- handle pads of angle profiles
+    --<kp>oct06 commented out - moved to second loop processing cross-bars
+    --    !!mdsMirrorPads(!v,'EXECUTE')
+
+  enddo
+
+  -- Vertical members
+
+  do !v values !vertical
+    !joie = !v.joie
+    !jois = !v.jois
+    -- temporarily remove joint ref
+    !!ce = !v
+
+    --<K.pleschner> June 2005
+    -- handle pads of angle profiles
+    !!mdsMirrorPads(!v,'PREPROCESS')
+
+    PIN 9 AT $!stru
+    PIN 9 DIR $!support.p11DIR
+    VAR !midp DERI MIDP
+    PIN 8 AT $!midp
+    PIN 9 PLANE PIN 9 THRO PIN 8
+    PIN 9 DIR $!udir WRT WORLD
+    !sctnDrne = drne
+    !sctnDrns = drns
+    ROTATE THRO PIN 9 ABOUT $!udir WRT WORLD BY 180
+    --$(
+    --------------------------------------***** connexions ***** ------------------------------
+    JOIS $!jois
+    JOIE $!joie
+    -------------------------------------------------------------------------------------------
+    --$)
+    FLIP
+    Drne $!sctnDrns
+    Drns $!sctnDrne
+
+    --<kp>Mar07 Flip snipes
+    !!mdsMirrorSnipes(!v)
+
+    -- <K.pleschner>  June2005  PADs of angle profiles
+    !!mdsMirrorPads(!v,'EXECUTE')
+
+  enddo
+
+  !!ce = !support.stru
+
+  -------------------------------------------------------------
+  -------------------------------------------------------------
+  -- Mirror Packing Pieces if any Associated with the Framework
+  call !!mdsMirrorFT25(!!mdsft09, 'FRAME')
+
+  --$(
+
+  -------------------------------------------------------------
+  -------------------------------------------------------------
+  ----------------------------- **** connexions **** -----------------------------
+
+  !haveJoints = FALSE
+
+  if(!support.joints.unset().not()) then
+    !joints     = !support.joints
+    !attributes = ARRAY()
+    !haveJoints = !!kRestoreJoints(!joints,!attributes,'SAVE','')
+    handle ANY
+      !haveJoints = FALSE
+      !support.joints.clear()
+      -- in case they have been deleted and cancel is used
+    endhandle
+  endif
+
+  ---------------------------------------------------------------------------------
+
+  if(!haveJoints) then
+    do !index indices !joints
+      -- if support cursor picking is too unlike the existing then the connections will fail
+      if(!joints[!index].badref()) then
+        !!alert.error('Reconnection is not possible, connections will be deleted.')
+        !!mdsSelectJoints(!!mdsft09,'DISCONNECT','')
+        !support.joints.clear()
+        break
+      endif
+
+      if(!attributes[!index][8].dbref().:MDSConn.eq(!joints[!index].owner.owner)) then
+        !mainStl = !attributes[!index][8].dbref().:MDSConn
+        !support.joints[!index] =  !!mdsCreateJoint(!mainStl, !attributes[!index][8].dbref(),!joints[!index],!attributes[!index])
+      endif
+    enddo
+  endif
+  ----------------------------------------------------------------------
+
+  --$)
+
+  -- If the support is mirrored and contains joints because the joints remain on the same side then
+  -- the cross bars will require and extra flip
+
+  do !flip values !bars
+    !!ce = !flip
+    if !!ce.jois.badref().not() or !!ce.joie.badref().not() then
+      !jois = jois
+      !joie = joie
+      jois $!joie
+      joie $!jois
+      --<kp>oct06 Flip cutting planes
+      var !drne drne
+      var !drns drns
+      drne $!drns
+      drns $!drne
+      !!mdsMirrorPads(!flip,'EXECUTE')
+      --<kp>Mar07 Flip snipes
+      !!mdsMirrorSnipes(!flip)
+    endif
+  enddo
+
+  -- Reset pins
+  Call !!mdsResetPins(7,9)
+
+  -- Reset Form Gadget
+  if (!support.mirror)then
+    !support.mirror = false
+  else
+    !support.mirror = true
+  endif
+  -- dtf 4july07 check to see if support has pnods
+  var !pnodColl coll all pnod with matchwild(name, '*-V*/PNOD') FOR $!stru
+  do !pnodIndex values !pnodColl
+    $!pnodIndex
+    var !rule rule
+    if !rule.matchwild('*NPOS*POSS*') then
+      rule set npos dynamic POSE OF PREV SCTN
+    else
+      rule set npos dynamic POSS OF PREV SCTN
+    endif
+  enddo
+  -- dtf end
+
+  -- If a joint is being used and it is handed then their will be a alternative spref of the
+  -- opposite hand joint and the bang to set separated by a ,
+
+  !!mdsSwapIntJoi(!support.stru,!support.mirror,!support.alias)
+
+  !!ce = !origin
+
+  -- Update support data held in form
+  !!mdsft09.support = !support
+
+  -- Modify weld positions if needed
+  !!mdsWeldPositions(!!mdsft09,!support.stru,!support.mirror)
+
+endfunction

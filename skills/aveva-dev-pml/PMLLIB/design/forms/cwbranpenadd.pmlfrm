@@ -1,0 +1,451 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:          cwbranpenadd.pmlfrm
+-- Type:          Form Definition
+-- Group:         General Application
+-- Keyword:       Penetration
+-- Module:        Design
+--
+--  Description:     -- Add to a penetration--
+--
+--  Author:          M. Ward
+--  Created:         Wed Dec 12 15:37:39 2007
+--
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  apply()                          -                   Invoke the hole manager with selected items
+--  close()                          -                   Close form actions
+--  cwBranPenAdd()                   -                   Constructor
+--  edgPickPenetrating()             -                   Set EDG to pick penetrating items
+--  findPenetrations()               -                   Find penetrations positions
+--  initialiseForm()                 -                   Actions when form is shown
+--  overridePenetrationType(STRING)  -                   Force set penetration type. Must be called after the form
+--  pickPenetrating(EDGPICKDATA)     -                   EDG callback for penetrating items pick
+--  setPenetrating(BOOLEAN)          -                   Set to True if currently in a penetrating EDG pick cycle
+--  tidy()                           -                   Tidy up state of this form
+--  updatePenetrating()              -                   Update penetrating items list and highlight penetrating items
+--
+
+-- Define form
+setup form !!cwBranPenAdd dialog resize
+
+  --------------------------------- MEMBERS -----------------------------
+  -- List of penetrating items as picked
+  member .penetratingRaw         is ARRAY
+  -- List of penetrating items
+  member .penetrating            is ARRAY
+  -- List of penetrated items
+  member .penetrated             is DBREF
+  -- Penetration type (Cable Way)
+  member .penetrationType        is STRING
+  -- List of elements highlighted in this form
+  member .enhancePenetrating     is ARRAY
+
+  -- Penetrating EDG packet
+  member .penetratingPacketDesc  is STRING
+
+  -- Is penetrating pick
+  member .isPenetratingPick      is BOOLEAN
+
+  -- pipe penetration data object
+  member .cWayPenetrations       is ARRAY
+
+  --------------------------------  FORM  ------------------------------
+
+  frame .framePenetrating panel  anchor left + top + right at x0 y0
+    button .butPickPenetrating   anchor left + top         'Pick Penetrating Items' at x0.5 ymax
+    list   .listPenetrating      anchor left + top + right at xmin ymax+0.5   width 34 length 6
+  exit
+
+
+  -- Bottom Line
+  button .ok      anchor bottom + left  'OK'     at x0.5 ymax  width 9
+  button .cancel  anchor bottom + right 'Cancel' at xmax form-size ymin  width 9 callback '!this.close()'
+
+-- End of form definition
+exit
+
+------------------------------------------------------------------------
+--
+-- Method:      .branPenAdd()
+--
+-- Description: Constructor
+--
+------------------------------------------------------------------------
+define method .cwBranPenAdd()
+
+  -- form properties
+  !this.callback         = |!this.initialiseForm()|
+  !this.formTitle        = 'Add Penetration'
+  !this.iconTitle        = 'Add Penetration'
+  !this.autoScroll       = true
+
+  -- gadget properties
+  !this.ok.callback      = '!this.apply()'
+  !this.cancelCall       = '!this.close()'
+  !this.cancel.callback  = '!this.close()'
+
+  !this.butPickPenetrating.callback = '!this.edgPickPenetrating()'
+
+  -- EDG
+  !this.penetratingPacketDesc       = 'Pick Penetrating'
+  !this.isPenetratingPick           = false
+
+  !this.penetrationType = 'CWBRAN'
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      initialiseForm
+--
+-- Description: Actions when form is shown
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .initialiseForm()
+
+  -- Initialise common parts of the form
+  -- Make properties and plotfile buttons inactive
+  !this.ok.active         = false
+  !this.listPenetrating.clear()
+  !this.penetrating.clear()
+  !this.penetratingRaw.clear()
+  -- Set application so that the correct specs are retrieved
+  if( !!appCntrl.currentApp() eq 'CABLINGSYSTEM' ) then
+    !this.penetrationType = 'CWBRAN'
+  endif
+
+  !this.penetrated = !!hmCWayDefinition.managedHole.holeOwner
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .close()
+--
+-- Description: Close form actions
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .close()
+
+  !this.tidy()
+  !this.hide()
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .tidy()
+--
+-- Description: Tidy up state of this form
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .tidy()
+
+  !enhanceList = ARRAY()
+  !enhanceList.appendArray(!this.enhancePenetrating)
+  UNENHANCE ALL FROM !enhanceList
+  handle any
+  endhandle
+  !!edgCntrl.remove('Pick Penetrating')
+
+endmethod
+
+
+------------------------------------------------------------------------
+--
+-- Method:      .edgPickPenetrating()
+--
+-- Description: Set EDG to pick penetrating items
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .edgPickPenetrating()
+
+  -- Define packet for penetrating items
+  !packet                = object EDGPACKET()
+  !packet.elementPick('Pick penetrating item')
+  !packet.description    = !this.penetratingPacketDesc
+  !packet.priority       = 3
+  !packet.close          = '!!cwBranPenAdd.setPenetrating(FALSE)'
+  !packet.action         = '!!cwBranPenAdd.pickPenetrating(!this.return[1])'
+  !packet.pickPacket.picks[1].pick.input[3]   = 'HARDTYPE inset(|CWBRAN|,|CTMTRL|,|CTFEAT|) or HARDTYPE OF OWNER inset(|CWBRAN|,|CTMTRL|,|CTFEAT|) or HARDTYPE OF OWNER OF OWNER inset(|CWBRAN|,|CTMTRL|,|CTFEAT|) '
+  !packet.pickPacket.picks[1].pick.modifiable = false
+
+  -- Add to system
+  !!edgCntrl.add(!packet)
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .pickPenetrating()
+--
+-- Description: EDG callback for penetrating items pick
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .pickPenetrating(!data is EDGPICKDATA)
+  -- find the CWAY that owns the picked item
+  !type[1] = 'CWBRAN'
+  !branch  = !!dtbOwnerOfTypes(!data.item, !type)
+  if (unset(!branch)) then
+    return
+  endif
+   -- second pick on an item removes it from the list
+  !index = !this.penetratingRaw.findFirst(!branch)
+  if( !index.set() ) then
+    !this.penetratingRaw.remove(!index)
+  else
+    !this.penetratingRaw.append(!branch)
+  endif
+  !this.updatePenetrating()
+
+  !!edgCntrl.remove('Pick Penetrating')
+
+  !this.edgPickPenetrating()
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .updatePenetrating()
+--
+-- Description: Update penetrating items list and highlight penetrating items
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .updatePenetrating()
+
+  !dText            = ARRAY()
+  !rText            = ARRAY()
+  !this.penetrating = ARRAY()
+
+  -- unenhance old list
+  !oldList = !this.enhancePenetrating
+  UNENHANCE ALL FROM !oldList
+  !newList = ARRAY()
+
+  do !item values !this.penetratingRaw
+    !displayedItem = !item
+    if( !item.owner.owner.hardType eq 'CWBRAN' ) then
+      !displayedItem = !item.owner.owner
+    elseif( !item.owner.hardType eq 'CWBRAN' ) then
+      !displayedItem = !item.owner
+    elseif( !item.hardType eq 'CWBRAN' ) then
+      !displayedItem = !item
+    endif
+    !this.penetrating.append(!displayedItem)
+    !dText.append(!displayedItem.fullname)
+    !rText.append(!displayedItem.string())
+    -- collect members of branch to highlight
+    VAR !cableBranchItems COLLECT ALL with ( SIGNIF ) FOR $!<displayedItem>
+    !newList.appendArray(!cableBranchItems)
+  enddo
+
+  !this.listPenetrating.dText = !dText
+  !this.listPenetrating.rText = !rText
+  !this.enhancePenetrating    = !newList
+
+  !this.ok.active = !this.penetrating.empty().not()
+
+  -- enhance new list
+  ENHANCE ALL FROM !newList COL 30
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .setPenetrating()
+--
+-- Description: Set to True if currently in a penetrating EDG pick cycle
+--              False otherwise
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .setPenetrating(!state is BOOLEAN)
+
+  !this.isPenetratingPick = !state
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .apply()
+--
+-- Description: Invoke the hole manager with selected items
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .apply()
+  -- find new penetrations
+  !this.findPenetrations()
+  !this.tidy()
+  !this.hide()
+
+  if(!this.cWayPenetrations.empty()) then
+    !!alert.warning('No penetrations found')
+    return
+  endif
+
+  do !i index !!hmCWayDefinition.multiPenetrationData
+    -- make sure the position is properly set up after clasher
+    !!hmCWayDefinition.multiPenetrationData[!i].usePenetratingMarkerPosition()
+  enddo
+
+  -- make new penetration
+  !!hmCWayDefinition.merged = TRUE
+  !!hmCWayDefinition.setPenetrationData(!this.cWayPenetrations)
+  !!hmCWayDefinition.processPenetrationData()
+  !!hmCWayDefinition.drawHole()
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .findPenetrations()
+--
+-- Description: Find penetrations positions
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .findPenetrations()
+
+  -- Save Clash Data
+  !!runSynonym(|CALLSTL DCLADAT SET|)
+
+  -- Perform Clash Check between penetrated and penetrating items
+  !this.cWayPenetrations = ARRAY()
+
+  -- loop through each penetrated item in turn to find the penetration
+  !penetratedItem = !this.penetrated
+
+  -- Set Obstructions
+  DESCLASH
+    REMOVE OBST ALL
+    if( !penetratedItem.hardType eq 'HPANEL' ) then
+      do !panelMember values !penetratedItem.members
+        if( !panelMember.hardType eq 'HPLATE' ) then
+          OBST $!<panelMember>
+        endif
+      enddo
+    elseif( !penetratedItem.hardType eq 'CPANEL' ) then
+      do !panelMember values !penetratedItem.smembers
+        if( !panelMember.hardType eq 'CPLATE' ) then
+          OBST $!<panelMember>
+        endif
+      enddo
+    else
+      OBST $!<penetratedItem>
+    endif
+    MIDPOINT ON
+  EXIT
+
+  -- find clash position for each penetrating object
+  do !index indices !this.penetrating
+
+    !penetratingItem = !this.penetrating[!index]
+    DESCLASH CHECK $!<penetratingItem> EXIT
+
+    var !ccnt           clash count all
+    var !ccnt           ($!ccnt A A A )
+    !clashCount = !ccnt.real()
+    skip if(!clashCount eq 0)
+
+    -- find the nearest clash to the original selected component
+    !clashPosition    = ARRAY()
+    !distanceFromPick = ARRAY()
+    do !cIndex from 1 to !clashCount
+      var !cPos  CLASH $!cIndex POS
+      !clashPosition[!cIndex]    = !cPos.position()
+      !distanceFromPick[!cIndex] = !clashPosition[!cIndex].distance(!this.penetratingRaw[!index].position)
+      handle any
+        -- special cases - e.g. branch with no components - just accept the first clash
+        !distanceFromPick[!cIndex] = 0
+        break
+      endhandle
+    enddo
+
+    -- use sort to find index of closest clash to the original picked component
+    !indexNearToPick = !distanceFromPick.sortedIndices()
+    !number = !indexNearToPick[1]
+
+    -- find clash data for the selected clash
+    var !cObj  CLASH $!number FIRST
+    var !cTar  CLASH $!number SECOND
+
+    if (!cObj.dbref().type eq 'CWBRAN') then
+      !cwBranch = !cObj.dbref()
+    else
+      !cwBranch = !cObj.dbref().owner
+    endif
+
+    if (!cTar.dbref().type eq 'PANE') then
+      !panel  = !cTar.dbref()
+    else
+      !panel = !cTar.dbref().owner
+    endif
+
+    if (!!hmCheckExistingHole(!cwBranch, !panel, !clashPosition[!number])) then
+      !errorString = 'A hole already exists at the current location for ' & !cwBranch.fullname
+      !!alert.error(!errorString)
+      !existing = TRUE
+    else
+      !existing = FALSE
+    endif
+
+    if (!existing.not()) then
+      !cWayPenetration = object CWBRANPENETRATIONDATA(!cObj.dbref(), !cTar.dbref(), !clashPosition[!number])
+      !this.cWayPenetrations.append( !cWayPenetration )
+    endif
+  enddo
+  DESCLASH MIDPOINT OFF EXIT
+
+
+  -- Restore Clash Data
+  !!runSynonym(|CALLSTL DCLADAT LOAD|)
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .overridePenetrationType()
+--
+-- Description: Force set penetration type. Must be called after the form
+--              is shown or the type will be reset to the current application
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      CWBRAN
+--
+------------------------------------------------------------------------
+define method .overridePenetrationType(!penetrationType is STRING)
+
+  !this.penetrationType = !penetrationType
+
+endmethod

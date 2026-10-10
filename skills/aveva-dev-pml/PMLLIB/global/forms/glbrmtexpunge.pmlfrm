@@ -1,0 +1,680 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--   File:          glbrmtexpunge.pmlfrm
+--   Type:          Form Definition
+--   Group:         General Application
+--   Keyword:       GEN
+--   Module:        global
+--   Replaces:
+--
+-- Author:          I.Clark
+-- Created:         Wed May 5 12:15:52 BST 1999
+--
+--
+-- Description:
+-- A function to allow administrators to remotely expunge users from DBs
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  cbApply()                        -                   The Apply Method for this Form
+--  cbDb()                           -                   callback function for the db top make sure only db is selected,
+--  cbDbType()                       -
+--  cbLocn()                         -                   callback function for the location gadget
+--  getForLocs()                     BOOLEAN             Get all the locations this primary dB location can administer
+--  init()                           -
+--  list()                           -                   To sort and filter the DBs
+--  refreshLocData()                 -                   Refresh location data [Switch to appropriate location first]
+--  ulist()                          -                   To sort and filter the Users
+--  userProcessList()                -                   Get list of users with process ID
+--
+------------------------------------------------------------------------
+
+setup form !!glbRmtExpunge resize
+
+  !this.formTitle     = 'Remote Expunge'
+  !this.iconTitle     = 'Remote Expunge'
+  !this.callback      = '!this.init()'
+  !this.formRevision  = ' $Revision: 1.13 $ '
+
+  -- Body of form definition
+
+  option .locn at x 1 y 0 anchor top+left |Expunge at Location :- | call |!this.cbLocn()| width 6
+  option .forLocn at xmax+1 ymin anchor top+left |for Location :- | call || width 6
+
+  rgroup .type at x1 ymax+0.2 anchor top+left|Type of Database| HORIZONTAL callback |!this.cbDbType()|
+    add tag |User | select |USER|
+    add tag |System | select |SYSTEM|
+  exit
+
+  list   .db      at x1 ymax+1.2 anchor top+bottom+left  ||       call |!this.cbDb()| MULTIPLE columns width 40 height 15
+  option .sort    at xmin ymax+0.2 anchor bottom+left |Sort By|    call |!this.list()|          width 12
+  text   .filter  at xmax+1 ymin anchor bottom+left |Filter|   call |!this.list()|           width 10 STRING
+  para   .message at xmax.db-22 ymin.db-1 anchor top+left text |Pick a Database (AND / OR) Pick some Users|
+  list   .users   at xmax.db+0.5 ymin.db anchor all || call || MULTIPLE columns            width 40 height 15
+  option .uSort   at xmin ymax+0.2 anchor bottom+left |Sort By|    call |!this.cbLocn()| width 12
+  text   .uFilter at xmax+1 ymin anchor bottom |Filter|   call |!this.cbLocn()| width 10 STRING
+
+  button .apply at x 0 ymax.sort+0.5 anchor bottom+left |Apply| call |!this.cbApply()| APPLY
+  button .dismiss at xmax form-size ymin anchor bottom+right |Dismiss| CANCEL
+
+  --Member Variables
+  member .curLoc is DBREF
+  -- Array of project databases
+  member .dbArray is ARRAY
+  -- Array of project Users
+  member .userArray is ARRAY
+  -- Sort and Filter gadget memory
+  member .dbFilter is STRING
+  member .dbSort   is STRING
+  member .userFilter is STRING
+  member .userSort   is STRING
+
+ --The at location i.e. the location of the databases to be expunged
+  member .location is DBREF
+
+  -- Array of possible locations
+  member .locList is ARRAY
+
+  -- Assign Sort gadget values
+  !!admDbSortGadg(!!glbRmtExpunge.sort)
+
+  -- Set filter gadget
+  !this.filter.val = |*|
+
+   -- Assign Sort gadget values
+  !!admUserSortGadg(!!glbRmtExpunge.uSort)
+
+  -- Set filter gadget
+  !this.uFilter.val = |*|
+
+exit
+-- End of form definition for !!glbRmtExpunge
+------------------------------------------------------------------------
+--
+--  Method: initialise form with the relevant data
+--
+--  Description:
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .init()
+
+  !this.db.clear()
+  !this.dbArray.clear()
+  !this.curLoc = object DBREF()
+
+  --Set up the locations gadgets
+  --Get current physical Location
+  !this.curLoc = !!dbrGlbCurLocRf()
+  --Get all Locations
+  !project = CURRENT PROJECT
+  !allLocs = !project.locations()
+
+  !tempDtext = ARRAY()
+  !tempRtext = ARRAY()
+  !this.locList.clear()
+
+  -- Find valid locations (Must be online and initialised)
+  do !location values !allLocs
+    -- check for this location
+    !locRef = !location.refNo.dbRef()
+    if(!location.name eq !this.curLoc.name) then
+      !this.locList.append(!locRef)
+      !tempDtext.append(!locRef.locId)
+      !tempRtext.append(!locRef.name)
+      skip
+    endif
+-- ** This is not true DFN2046
+    --!primaryLoc = !locRef.prmRf
+    --skip if(!primaryLoc.unset() )
+    -- Remove locations not administered by this physical location!
+    --skip if(!primaryLoc NEQ !this.curLoc)
+-- **
+    -- Remove locations not online
+    skip if(!locRef.iconn EQ 0)
+    -- Remove if location is not initialised
+    skip if(!locRef.lInit.not())
+    !this.locList.append(!locRef)
+    !tempDtext.append(!locRef.locId)
+    !tempRtext.append(!locRef.name)
+  enddo
+
+  !this.locn.dText = !tempDtext
+  !this.locn.rText = !tempRtext
+
+  !this.cbLocn()
+
+  --  ## Will Need to be filled out for User IDs
+
+endmethod
+-- End of method definition for .init()
+------------------------------------------------------------------------
+--
+--Method: .cbLocn()
+--
+-- Description: callback function for the location gadget
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+--   1   R      STRING       The string of the location
+-- Return:
+--  [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .cbLocn()
+
+  !this.location = !this.locList[!this.locn.val]
+
+  !txtOfLocation  = !this.locn.selection(|DTEXT|)
+    -- [Note that this could be a remote query but mixing data retrieved remotely and data retrieved locally could cause problems]
+--  !project        = CURRENT PROJECT
+--  !allLocs        = !project.locations()
+  -- Find selected location and get its DB's [Note that this could be a remote query]
+--  do !location values !allLocs
+--    skip if(!location.locId neq !txtOfLocation)
+--     !dbAtLocation = !location.dbList()
+--     handle any
+--       !!alert.error('Location ' & !location.name & ' cannot be contacted? - [' & !!error.text & ']')
+--       return
+--     endhandle
+--  enddo
+  call !!admCommand(|ADMINISTER SYSTEM AT '$!txtOfLocation'|)
+
+  -- refresh the location data
+  !this.refreshLocData()
+  handle any
+    -- handle any errors to make sure that code is forced through the ADMINISTER SYSTEM SAME command
+  endhandle
+
+  call !!admCommand(|ADMINISTER SYSTEM SAME|)
+
+  -- Get the for Locations
+  !this.getForLocs()
+
+endmethod
+-- End of method definition for .cbLocn()
+------------------------------------------------------------------------
+--
+--Method: .refreshLocData()
+--
+-- Description: Refresh location data [Switch to appropriate location first]
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .refreshLocData()
+
+  !dbArray        = ARRAY()
+  !nameOfLocation = !this.locn.selection(|RTEXT|)
+  !dbAtLocation   = DBS
+
+ -- find DB's primary at this location
+  do !database values !dbAtLocation
+    skip if( !database.foreign eq 'FOREIGN')
+    !dbRef        = !database.refNo.dbRef()
+    !locRf        = !dbRef.mem[1].locRf
+    -- Skip if not Primary at this Location [note that this is not a network query]
+    skip if(!locRf.unset())
+    skip if(!locRf.name NEQ !nameOfLocation)
+    -- Skip if not propagating DB
+    skip if(!dbRef.mem[1].propg EQ FALSE)
+    !dbArray.append(!dbRef)
+  enddo
+
+  !this.dbArray = !dbArray
+
+  -- generate the DB list
+  !this.list()
+
+  -- generate user list
+  !this.userProcessList()
+
+endmethod
+-- End of method definition for .refreshLocData()
+------------------------------------------------------------------------
+--
+--Method: ulist()
+--
+-- Description: To sort and filter the Users
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .ulist()
+
+  !this.users.clear()
+  !userRefs = ARRAY()
+
+  -- Capture the sort and filter gadget values
+  !this.userSort     = !this.uSort.selection('dtext')
+  !this.userFilter   = !this.uFilter.val
+  !block = object BLOCK('!this.userArray[!evalIndex].dbRef')
+  !userRefs = !this.userArray.evaluate(!block)
+  -- Sort, filter and display the Users list
+  !userArray = !!adminFilterSort(!userRefs,!this.uSort,!this.uFilter)
+  !!adminUserTxtList(!userArray,!this.users,!!admDisplayConfig.fmtUserGet(),!!admDisplayConfig.eleTypeGet())
+
+endmethod
+-- End of method definition for .ulist()
+
+------------------------------------------------------------------------
+--
+--Method: list()
+--
+-- Description: To sort and filter the DBs
+-- NEED TO SWITCH TO TARGET LOCATION TO REPORT ONDB's IN THE CORRECT STATE
+-- BEFORE ENTERING THIS METHOD, AND SWITCH BACK WHEN LEAVING
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .list()
+
+  !this.db.clear()
+
+   -- Capture the sort and filter gadget values
+  !this.dbSort     = !this.sort.selection('dtext')
+  !this.dbFilter   = !this.filter.val
+
+  !locationRef = !this.locn.selection(|RTEXT|).dbRef()
+  -- Sort, filter and display the database list
+  !displayList = !!adminFilterSort(!this.dbArray,!this.sort,!this.filter)
+  !!adminDbTxtList(!displayList,!this.db,!!admDisplayConfig.fmtDbGet(),!!admDisplayConfig.eleTypeGet(), !locationRef)
+
+endmethod
+-- End of method definition for .list()
+------------------------------------------------------------------------
+--
+--Method: .cbDbType()
+--
+-- Description:
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .cbDbType()
+  if(!this.type.selection() EQ |SYSTEM|)then
+    !this.getForLocs()
+    !this.db.active = FALSE
+    !this.users.active = FALSE
+  elseif(!this.type.selection() EQ |USER|)then
+    !this.getForLocs()
+    !this.db.active = TRUE
+    !this.users.active = TRUE
+  endif
+endmethod
+-- End of method definition for .cbDbType()
+------------------------------------------------------------------------
+--
+--Method: .cbApply()
+--
+-- Description: The Apply Method for this Form
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .cbApply()
+--   this forms will be used to give the functionality of this command
+--
+--   REMOTE-> location-> user_id
+--                    -> DB     -> db_name
+--                              -> db_name-> USER ->user_id
+--                              -> SYSTEM
+  !commandArray = ARRAY()
+
+  !rmtLocn = !this.locn.selection(|RTEXT|).dbRef().locId
+  !commandHeader = |REMOTE '| + !rmtLocn + |' EXPUNGE |
+
+  if(!this.type.selection() EQ |SYSTEM|)then
+    if (!this.locn.selection('dText') eq !this.forLocn.selection('dText')) then
+      !commandArray.append(!commandHeader + |DB SYSTEM|)
+    else
+      !forLocation = !this.forLocn.selection('dText')
+      !commandArray.append(!commandHeader + |DB SYSTEM FOR '| & !forLocation & |'|)
+    endif
+  else
+
+    !targetDbs = !this.db.selection(|RTEXT|)
+    if(!targetDbs.size() EQ 1)then
+      !targetDb = !targetDbs[1]
+    else
+      !targetDb = object DBREF()
+    endif
+    !targetUsers = !this.users.selection(|RTEXT|)
+
+    -- Construct an Array of Commands
+
+    -- If no db selected
+    if(!targetDb.unset())then
+      -- if no user selected
+      if(!targetUsers.empty())then
+        -- nothing to do must quit
+        return
+      else
+        do !j values !this.users.selection(|RTEXT|)
+          !dbName = !j.dbRef().name.substring(2)
+          handle any
+            skip
+          endhandle
+          !commandArray.append(!commandHeader + | '| + !dbName + |'|)
+         enddo
+      endif
+    else
+      !commandHeader = !commandHeader + |DB | + !targetDb.dbRef().name.substring(3) + | |
+      if(!targetUsers.empty())then
+        -- expunge DB only
+        !commandArray.append(!commandHeader)
+      else
+        -- by DB and user
+        do !j values !this.users.selection(|RTEXT|)
+          !dbName = !j.dbRef().name.substring(2)
+          handle any
+            skip
+          endhandle
+          !commandArray.append(!commandHeader + |USER '| + !dbName + |'|)
+        enddo
+      endif
+    endif
+
+  endif
+
+  do !h values !commandArray
+    call !!admCommand(!h)
+--$p $!h
+    handle (1,500) (1,501)
+      -- Daemon errors
+      !!alert.error(!!messageFile.messageString(141, 704, !!error.text.after(')').trim('L')))
+      -- This is the generic message and need to be replaced
+    elsehandle any
+      -- Non-specific error
+      !!alert.error(!!messageFile.messageString(141, 704, !!error.text))
+    endhandle
+  enddo
+endmethod
+-- End of method definition for .cbApply()
+------------------------------------------------------------------------
+--
+--Method: .cbDb()
+--
+-- Description: callback function for the db top make sure only db is selected,
+-- even though the list gadget is multiple list.
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .cbDb()
+  if(!this.db.selection().size() GT 1)then
+    !array = ARRAY()
+    !array[1] = !this.db.pickedField
+    !this.db.val = !array
+  else
+    -- do nothing
+  endif
+endmethod
+-- End of method definition for .cbDb()
+------------------------------------------------------------------------
+--
+--Method: .userProcessList()
+--
+-- Description: Get list of users with process ID
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .userProcessList()
+
+  !prev = !!ce
+  !this.users.clear()
+
+  -- GET THE USERS AT REMOTE LOCATION
+  /*U
+  !userArray = !!ce.mem
+  !temp = object ADMVIRTUSER()
+  !this.userArray.clear()
+
+  -- iterate through the users capturing info
+  do !k values !userArray
+    !temp.goVirtual(!k)
+    !this.userArray.append(!temp)
+  enddo
+
+  -- display the list
+  !this.ulist()
+  !!ce = !prev
+
+  -------------------------------------------------------------------------------------------------------
+  -- THIS COMMENTED CODE SHOULD BE USED WHEN THE REMOTE EXPUNGE COMMAND GETS THE SAME FACILITIES
+  -- AS THE LOCAL EXPUNGE - IT WILL STILL NEEDS SOME WORK TO GET SORING AND FILTERING WORKING
+--   !txtOfLocation  = !this.locn.selection(|DTEXT|)
+--   call !!admCommand(|ADMINISTER SYSTEM AT '$!txtOfLocation'|)
+--   !project  = CURRENT PROJECT
+--   !sessions = !project.sessions()
+--   call !!admCommand(|ADMINISTER SYSTEM SAME|)
+--   !now      = object DATETIME()
+--   !year     = !now.year()
+--     -- Gather session information before sorting
+--   do !i index !sessions
+--
+--     -- Create arrays of the process data
+--     !isCurrent[!I]    = !sessions[!I].isCurrent
+--     -- get start date of session
+--     !startDate[!I]    = !sessions[!I].entered.split()
+--     !month = !startDate[!I][4]
+--     handle any
+--       !month = !startDate[!I][3]
+--     endhandle
+--     !day = real (!startDate[!I][3])
+--     handle any
+--       !day = real (!startDate[!I][2])
+--     endhandle
+--     !date             = object DATETIME( !year, !month, !day )
+--     !monthString      = '0' + !date.month().string()
+--     !dayString        = '0' + !date.date().string()
+--
+--     !sortDate[!I]     = !monthString.substring(-2) + !dayString.substring(-2) + !startDate[!I][1]
+--     !realName[!I]     = !sessions[!I].name
+--     !hostName[!I]     = !sessions[!I].host
+--     !processID[!i]    = !sessions[!I].uniqueId
+--     !user[!I]         = !sessions[!I].user().name
+--     !module[!I]       = !sessions[!I].module()
+--
+--   enddo
+--
+--   -- Sort the data based on the value of the sort gadget
+-- --   if (!sortOn eq |Date|) then
+-- --     -- Sort on DATE
+-- --     !sortOrder        = !sortDate.sortedIndices()
+-- --   elseif (!sortOn eq |Real Name|) then
+-- --     -- Sort on REAL NAME
+-- --     !sortOrder        = !realName.sortedIndices()
+-- --   elseif (!sortOn eq |Username|) then
+--     -- Sort on USER
+--     !sortOn = |Username|
+--     !sortOrder        = !user.sortedIndices()
+-- --   elseif (!sortOn eq |Host|) then
+-- --     -- Sort on HOST
+-- --     !sortOrder        = !hostName.sortedIndices()
+-- --   elseif (!sortOn eq |Module|) then
+-- --     -- Sort on MODULE
+-- --     !sortOrder        = !module.sortedIndices()
+-- --   endif
+--
+--   !replList = ARRAY()
+--   !dispList = ARRAY()
+--   -- Build list of display texts
+--   do !i values !sortOrder
+--
+--     -- Replacement text is PID
+--     !replList.append(!processID[!i])
+--
+--     -- Construct display text template
+--     if (!sortOn eq |Date|) then
+--
+--       !command  = | space 0 '|& !startDate[!i][2] &|' width 2  |&$
+--                   | space 1 '|& !startDate[!i][3] &|' width 3  |&$
+--                   | space 2 '|& !startDate[!i][1] &|' width 5  |&$
+--                   | space 2 '|& !realName[!i]          &|' width |& !realName.width().string() &$
+--                   | space 2 '|& !hostName[!i]          &|' width |& !hostName.width().string() &$
+--                   | space 2 '|& !user[!i]              &|' width |& !user.width().string() &$
+--                   | space 2 '|& !module[!i]            &|' width |& !module.width().string()
+--
+--     elseif (!sortOn eq |Real Name|) then
+--
+--       !command  = | space 0 '|& !realName[!i]          &|' width |& !realName.width().string() &$
+--                   | space 2 '|& !startDate[!i][2] &|' width 2  |&$
+--                   | space 1 '|& !startDate[!i][3] &|' width 3  |&$
+--                   | space 2 '|& !startDate[!i][1] &|' width 5  |&$
+--                   | space 2 '|& !hostName[!i]          &|' width |& !hostName.width().string() &$
+--                   | space 2 '|& !user[!i]              &|' width |& !user.width().string() &$
+--                   | space 2 '|& !module[!i]            &|' width |& !module.width().string()
+--
+--     elseif (!sortOn eq |Username|) then
+--
+--       !command  = | space 0 '|& !user[!i]              &|' width |& !user.width().string() &$
+--                   | space 2 '|& !module[!i]            &|' width |& !module.width().string() &$
+--                   | space 2 '|& !realName[!i]          &|' width |& !realName.width().string() &$
+--                   | space 2 '|& !startDate[!i][2] &|' width 2  |&$
+--                   | space 1 '|& !startDate[!i][3] &|' width 3  |&$
+--                   | space 2 '|& !startDate[!i][1] &|' width 5  |&$
+--                   | space 2 '|& !hostName[!i]          &|' width |& !hostName.width().string()
+--
+--     elseif (!sortOn eq |Host|) then
+--
+--       !command  = | space 0 '|& !hostName[!i]          &|' width |& !hostName.width().string() &$
+--                   | space 2 '|& !startDate[!i][2] &|' width 2  |&$
+--                   | space 1 '|& !startDate[!i][3] &|' width 3  |&$
+--                   | space 2 '|& !startDate[!i][1] &|' width 5  |&$
+--                   | space 2 '|& !realName[!i]          &|' width |& !realName.width().string() &$
+--                   | space 2 '|& !user[!i]              &|' width |& !user.width().string() &$
+--                   | space 2 '|& !module[!i]            &|' width |& !module.width().string()
+--
+--     elseif (!sortOn eq |Module|) then
+--
+--       !command  = | space 0 '|& !module[!i]            &|' width |& !module.width().string() &$
+--                   | space 2 '|& !user[!i]              &|' width |& !user.width().string() &$
+--                   | space 2 '|& !startDate[!i][2] &|' width 2  |&$
+--                   | space 1 '|& !startDate[!i][3] &|' width 3  |&$
+--                   | space 2 '|& !startDate[!i][1] &|' width 5  |&$
+--                   | space 2 '|& !realName[!i]          &|' width |& !realName.width().string() &$
+--                   | space 2 '|& !hostName[!i]          &|' width |& !hostName.width().string()
+--
+--     endif
+--
+--
+--     -- Compose the text array
+--     !textLines        = !!composeText(!command)
+--
+--     -- Check for current session
+--     if (!isCurrent[!i]) then
+--       -- Place asterisk in front of current session
+--       !textLines[1] = |* |& !textLines[1]
+--     else
+--       -- Blank before other sessions
+--       !textLines[1] = |  |& !textLines[1]
+--     endif
+--
+--     -- Display text
+--     !dispList.append(!textLines[1])
+--
+--   enddo
+--
+--   -- Add texts to list gadget
+--   !this.users.dText = !dispList
+--   !this.users.rText = !replList
+
+endmethod
+-- End of method definition for .userProcessList()
+------------------------------------------------------------------------
+--
+--Method: .getForLocs()
+--
+-- Description: Get all the locations this location can administer:-
+-- i.e. all sites this site can administer (plus always itself)
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  [Data Type] [Description]
+--   Boolean      Are there any valid locations
+--
+------------------------------------------------------------------------
+define method .getForLocs() is BOOLEAN
+
+  -- initialise Location Gadget
+  !this.forLocn.clear()
+  !result = false
+
+  -- Get a list of locations which are on-line
+  !clause = |ICONN EQ 1|
+  !resultingLocs = !!collectAllFor(|loc|,!clause,!!dbrAdminGetWorld(|LOC|))
+  !textOfLocs = ARRAY()
+
+  do !i values !resultingLocs
+    -- The rules are ;-
+    -- 1. Hub or Sat - All locations that the location is administering. (Even itself)
+    if (!i.prmRf eq !this.location or !i eq !this.location) then
+      !textOfLocs.append(!i.locId)
+    endif
+  enddo
+
+  !this.forLocn.dText = !textOfLocs
+
+  -- Only make active if expunging the system dB
+  if (!!glbRmtExpunge.type.selection('rtext') eq 'SYSTEM') then
+    !this.forLocn.active = true
+  else
+    !this.forLocn.active = false
+  endif
+
+  -- We need some on line locations to do a remote expunge for
+  if (!textOfLocs.size() eq 0) then
+    !this.forLocn.active = false
+    return !result
+  endif
+
+  !result = true
+  return !result
+
+endmethod
+-- End of method definition for .getForLocs()

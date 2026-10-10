@@ -66,7 +66,7 @@ exit
 setup form !!pipeManager dialog
   title 'Piping Component Manager'
   
-  paragraph .p1 text 'Right-click a pipe to access operations:' at x 1 y 1
+  paragraph .p1 at x 1 y 1 text 'Right-click a pipe to access operations:'
   list .lstPipes 'Active Lines:' at x 1 ymax+0.5 width 28 height 8 menu !!pipeContextMenu
   
   button .btnRefresh 'Refresh View' at x 1 ymax+1 callback '!this.onRefreshViews()'

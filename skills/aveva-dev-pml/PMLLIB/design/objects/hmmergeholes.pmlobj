@@ -1,0 +1,474 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            hmmergeholes.pmlobj
+--    Type:          Object Definition
+--    Group:         Undefined
+--      Keyword:     Undefined
+--    Module:        Undefined
+--  Author:          Undefined
+--  Created:         Fri Jun 25 15:26:05 2010
+--
+-- Description:
+-- Combine existing managed holes into a merged penetration
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  buildPenetrationData(ARRAY)      BOOLEAN             Build penetration data from an array of components
+--  buildPenetrationData(HMHOLE)     BOOLEAN             Build penetration data from an HMHOLE object
+--  createMergedHole()               -                   create the required fixing structure for single holes
+--  getHolesFor(DBREF)               ARRAY               Get holes for the given element
+--  hmMergeHoles()                   -                   Constructor
+--  mergeHoles(ARRAY)                BOOLEAN             Identify holes to list of holes to merge
+--
+------------------------------------------------------------------------
+
+-- Define object
+define object HMMERGEHOLES
+
+  -- Array of penetration data objects. One for each penetration being processed
+  member .multiPenetrationData   is ARRAY
+  -- Standard hole GPART data
+  member .gPartData              is HMHOLETYPE
+  -- virtual hole storage area
+  member .fixingArea             is DBREF
+  -- Merged hole
+  member .mergedHole             is HMMERGEDPENETRATION
+  -- list of holes to be merged - Array of HMHOLE
+  member .holeList               is ARRAY
+  -- merged hole boundary
+  member .boundaryProfile        is PROFILE
+
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:      hmMergeHoles
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .hmMergeHoles()
+
+  if(not defined(!!holeManagementConfiguration)) then
+    !tempConfig = object HMCONFIG()
+    if(!tempConfig.loadConfigurationFile().not()) then
+      return error 1 'Error in configuration file. Please Contact your systems administrator'
+    endif
+  endif
+
+  -- initialise the hole management types
+  !holeTypeController = object HMHOLETYPEMANAGER()
+  !holeTypeController.loadFromCatalogue()
+  !holeTypeController.select('TMPL')
+  !this.gPartData     = !holeTypeController.selected()
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      mergeHoles
+--
+-- Description: Merge given list of managed holes
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       of DBREF of managed holes
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     true = success
+--
+------------------------------------------------------------------------
+define method .mergeHoles(!penetrations is ARRAY) is BOOLEAN
+
+  -- Get list of holes from given array of DBREF
+  !penetrationList = ARRAY()
+  do !penetrationReference values !penetrations
+    !penetrationList.appendArray(!this.getHolesFor(!penetrationReference))
+  enddo
+
+  -- check that there are no duplicate holes - this can happen if tubing was selected by the user
+  !penetrationList.unique()
+
+  if(!penetrationList.empty()) then
+    !!alert.error('No penetrations found to merge')
+    return false
+  endif
+
+  -- clear the list of holes
+  !this.holeList   = ARRAY()
+  !holeDiscipline  = ''
+
+  -- for each hole, check that it can be deleted and replaced by a new hole
+  !hmControl       = object HMCONTROL()
+  do !holeRef values !penetrationList
+
+    !hmHole        = object HMHOLE(!holeRef)
+    if( !hmControl.validateNewStatus('DELETE',!hmHole) ) then
+      !status      = !hmHole.getFullStatus()
+      if (!status.unset() ) then
+        !status    = ''
+      endif
+      if (!status eq 'REQUESTED' ) then
+        !!alert.error('Hole merge aborted: One of the selected holes has REQUESTED status. All merge holes must have no status set')
+        return false
+      else
+        !ableToModify = !hmHole.claimHole()
+        if (!ableToModify) then
+          !this.holeList.append(!hmHole)
+        else
+          !!alert.error('Hole merge aborted: One of the selected holes cannot be claimed to merge with other holes')
+          return false
+        endif
+      endif
+    else
+      !!alert.error('Hole merge aborted: One of the selected holes cannot be deleted')
+      return false
+    endif
+
+    !discipline = !hmHole.getHoletype()
+    if( not !discipline inset('PIPE','DUCT') ) then
+      !!alert.error('Hole merge aborted: One of the selected holes is not a piping or HVAC penetration (' + !discipline + ')' )
+      return false
+    endif
+    if( !holeDiscipline.empty() ) then
+      !holeDiscipline = !hmHole.getHoletype()
+    else
+      if( !discipline neq !holeDiscipline ) then
+        !!alert.error('Hole merge aborted: Mixed discipline holes are not supported (' + !holeDiscipline + ' & ' + !discipline + ')' )
+        return false
+      endif
+    endif
+
+  enddo
+
+  -- find boundaries of holes to be merged and build penetration data structure
+  !holeProfiles = ARRAY()
+  !this.multiPenetrationData.clear()
+  do !holeData values !this.holeList
+    -- build penetration data structure
+    if( !this.buildPenetrationData(!holeData).not() ) then
+      -- error message should be output already
+      return false
+    endif
+  enddo
+
+  -- find STRU of master penetration
+  !this.fixingArea = !this.holeList[1].getVirtualHole().owner.owner
+
+  -- all holes in merged hole must be in same penetrated item
+  !penetrated      = object DBREF()
+  !holeProfiles    = ARRAY()
+  do !holeData values !this.multiPenetrationData
+    !penetratedFromData = !holeData.getPenetratedObject()
+    if( badref(!penetratedFromData) ) then
+      !!alert.error('All holes to be merged must belong to the same penetrated item')
+      return false
+    endif
+    if( !penetrated.set() ) then
+      if( !penetrated neq !penetratedFromData ) then
+        !!alert.error('All holes to be merged must belong to the same penetrated item')
+        return false
+      endif
+    else
+      !penetrated = !penetratedFromData
+    endif
+    -- record profile for this hole
+    !virtual = !holeData.getVirtualHole()
+    !holeProfiles.append(!!hmFindHoleProfile(!virtual))
+  enddo
+
+  !plane    = !holeProfiles[1].plane()
+  -- Use the convexBoundary object to work out the profile
+  !boundary = object CONVEXBOUNDARY()
+  !boundary.add(!plane,!holeProfiles)
+  !this.boundaryProfile = !boundary.profile()
+  if( !this.boundaryProfile.unset() ) then
+    !!alert.error('Cannot calculate profile enclosing selected holes')
+    return false
+  endif
+  -- Check the profile is closed and use it on the loop
+  if (!this.boundaryProfile.isClosed().not()) then
+    !this.boundaryProfile.close()
+  endif
+
+  return true
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      getHolesFor
+--
+-- Description: Get holes for the given element
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       reference of item
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Array of string hole Assoc References
+--
+------------------------------------------------------------------------
+define method .getHolesFor(!item is DBREF) is ARRAY
+
+  if( badref(!item) ) then
+    return ARRAY()
+  endif
+  !searchItem = !item
+  if( !item.type eq 'EXTR' ) then
+    if( !item.owner.owner.type eq 'FIXING' ) then
+      !searchItem = !item.owner.owner
+    endif
+  endif
+  !holeFinder = object HMHOLEFINDER(!searchItem)
+  !holeArray  = !holeFinder.search()
+
+  return !holeArray
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      createMergedHole()
+--
+-- Description: create the required fixing structure for single holes
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .createMergedHole()
+
+  !numberOfHoles = !this.multiPenetrationData.size()
+  if( !numberOfHoles eq 0 ) then
+    return
+  endif
+
+  -- set to free hole type and remove any coaming
+  do !index indices !this.multiPenetrationData
+    !this.multiPenetrationData[!index].setVirtualHoleType(!this.multiPenetrationData[!index].getPenetratingFixingtype())
+    !this.multiPenetrationData[!index].setHoleType(!this.gPartData)
+    !this.multiPenetrationData[!index].updateCoaming()
+  enddo
+
+  -- Set first hole as the master hole
+  !this.mergedHole = object HMMERGEDPENETRATION()
+  !this.mergedHole.setMasterPenetration(!this.multiPenetrationData[1])
+  !holeDiscipline  = !this.multiPenetrationData[1].penetratingType
+
+  do !index from 2 to !numberOfHoles
+      -- subsequent penetrations are added as secondary penetrations
+      !this.mergedHole.addPenetration(!this.multiPenetrationData[!index])
+  enddo
+
+  !saveCE = !!ce
+  -- validate penetration
+  do !holeData values !this.holeList
+    if(!!dbrefUpdate(!holeData.element).not()) then
+      !!alert.error('Merge aborted: You do not have access to modify ' + !holeData.element.fullName)
+      return
+    endif
+    !holeFramework = !holeData.getVirtualHole().owner
+    if(!!dbrefUpdate(!holeFramework).not()) then
+      !!alert.error('Merge aborted: You do not have access to modify ' + !holeFramework.fullName)
+      return
+    endif
+  enddo
+  -- delete original hole associations
+  do !holeData values !this.holeList
+    !holeFramework = !holeData.getVirtualHole().owner
+    !!ce = !holeData.element
+    DELETE ASSOC
+    handle any
+    endhandle
+    !!ce = !holeFramework
+    DELETE FRMW
+    handle any
+    endhandle
+  enddo
+  !!ce = !saveCE
+  handle any
+  endhandle
+
+  -- create the framework and fixings for the penetration
+  !this.mergedHole.setHoleType(!this.gPartData)
+  !this.mergedHole.createVirtualFixing(!this.fixingArea)
+  handle any
+    -- handle errors not properly handled in lower level objects
+    !!alert.error(!!error.text)
+    return
+  endhandle
+
+  !virtualHole = !this.mergedHole.getVirtualHole()
+  !boundary    = loop 1 of extr 1 of tmpl 1 of $!virtualHole
+  !this.boundaryProfile.dbwrite(!boundary)
+
+  !interface = object HMINTERFACE()
+  !itemList = !this.mergedHole.getItemList()
+  if (!holeDiscipline.eq('PIPE')) then
+    !result = !interface.createPipeHole(!itemList.unique(), !this.mergedHole.getPosition())
+    handle any
+      !!alert.error(!!error.text)
+       return
+    endhandle
+  elseif (!holeDiscipline.eq('HVAC')) then
+    !result = !interface.createDuctHole(!itemList.unique(), !this.mergedHole.getPosition())
+    handle any
+      !!alert.error(!!error.text)
+       return
+    endhandle
+  endif
+
+    -- store the penetration thickness on the association
+    !thick = !this.mergedHole.masterPenetrationData.thickness
+    !fixi = !this.mergedHole.masterPenetrationData.virtualHoleRef
+    !assos = !fixi.assos[1]
+    !!ce = !assos
+    LnID /HoleOwner
+    realXpr $!thick
+    !!ce = !fixi
+  return
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      buildPenetrationData
+--
+-- Description: Build penetration data from an HMHOLE object
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      HMHOLE      Hole data
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if data gathered OK
+------------------------------------------------------------------------
+define method .buildPenetrationData(!objHole is HMHOLE) is BOOLEAN
+
+  !holeAssociation    = !objHole.getAssociation()
+
+  -- Get data from association members
+  !components = ARRAY()
+  do !assMember values !holeAssociation.members
+    skip if( !assMember.hardType neq 'ASSMBR' )
+    if (!assMember.asstar.set()) then
+      !components.append(!assMember.asstar)
+    else
+      !components.append(!assMember.amemrf)
+    endif
+  enddo
+
+  -- Create penetration data for each component in the components array
+  return !this.buildPenetrationData(!components)
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      buildPenetrationData
+--
+-- Description: Build penetration data from an array of components
+--              Input array must contain grouped items 1 penetrating : 1 marker : 1 sub-fixing
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       Input array must contain grouped items
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if data gathered OK
+------------------------------------------------------------------------
+define method .buildPenetrationData(!components is ARRAY) is BOOLEAN
+
+  -- Separate the different types of components into different arrays
+  !markerTypes       = !!holeManagementConfiguration.markerTypes
+  !penetrating       = ARRAY()
+  !penetrationMarker = ARRAY()
+  !virtualHole       = object DBREF()
+  !subFixings        = ARRAY()
+  !panel             = object DBREF()
+
+  do !component values !components
+
+    skip if( badref(!component) )
+    !componentType = !component.hardType
+    if ( !componentType inset('PANE', 'HPLATE', 'CPLATE', 'HPANEL', 'CPANEL', 'CTWALL','SCTN','GENSEC') ) then
+      -- Penetrated item
+      !panel = !component
+    elseif ( !componentType inset( 'BRAN', 'SCTN', 'GENSEC') ) then
+      -- penetrating item
+      !penetrating.append(!component)
+    elseif ( !markerTypes.findFirst(!componentType).set() ) then
+      -- Pipe penetration marker
+      !penetrationMarker.append(!component)
+    elseif (!componentType eq 'FITT') then
+      -- SCTN penetration marker
+      !penetrationMarker.append(!component)
+    elseif (!componentType eq 'FIXING') then
+      !item = !component.owner
+      if( !item.hardType eq 'FIXING' ) then
+      	if (!item.owner.hardType eq 'FRMW') then
+          -- This must be a penetration sub-fixing
+          if( !virtualHole.unset() ) then
+            !virtualHole = !item
+          else
+            if( !virtualHole neq !item ) then
+              -- more than one virtual hole should not be passed to this function
+              !!alert.error('Hole incorrectly setup. Please validate the hole using the Hole Management form')
+              return false
+            endif
+          endif
+          !subFixings.append(!component)
+        elseif (!item.owner.hardType eq 'PLDATU') then
+        	--gensec penetration marker
+        	!penetrationMarker.append(!component)
+        endif
+      endif
+    endif
+
+  enddo
+
+  -- check that minimum data requirements have been met
+  if ( !panel.unset() or !penetrating.empty() or !penetrationMarker.empty()  or !subFixings.empty() ) then
+    !!alert.error('Hole is invalid: Please validate the hole using the Hole Management form')
+    return false
+  endif
+
+  -- check that we have a consistent set of penetrating, marker and sub-fixing
+  if ( !penetrating.size() neq !penetrationMarker.size()  or !penetrating.size() neq !subFixings.size() ) then
+    !!alert.error('Hole is invalid: Please validate the hole using the Hole Management form')
+    return false
+  endif
+
+  -- save the multi-penetration data
+  do !count from 1 to !subFixings.size()
+    !penetrationDataObject = object HMPENETRATIONDATA(!penetrating[!count], !penetrationMarker[!count], !panel )
+    !penetrationDataObject.setVirtualHole(!virtualHole)
+    !penetrationDataObject.setVirtualPenetration(!subFixings[!count])
+    !this.multiPenetrationData.append(!penetrationDataObject)
+  enddo
+
+  return true
+
+endmethod
+-- End of method definition

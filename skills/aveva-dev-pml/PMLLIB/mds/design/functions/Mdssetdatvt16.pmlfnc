@@ -1,0 +1,511 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:  Mdssetdatvt16.pmlfnc
+--   Type:  Function Definition
+--   Group:  Multi Discipline Supports Application
+--     Keyword:  MDS
+--   Module:  design
+--   Replaces:
+--
+-- Author:  Wayne Dodwell
+-- Created:  Thursday 12th February 1998
+--
+--
+-- Description:
+-- Creation function for Trunnion Type 'VT16'
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         FORM        FORM of current Trunnion Type
+--     2     R        STRING       CREATE - for Creating the Datum Atta - Trunnion Type and Size
+--                              or MODIFY - for Reselecting the Datum Atta - Trunnion Type and Size
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+
+
+-- Define Function
+define function !!mdssetdatVT16(!form is FORM, !dummymode is STRING,!onType is STRING)
+
+  -- Find current units and set the distance unit to metric
+
+  !currentunits = !!kgetsetunits()
+
+  -- Set calling form name
+  !fromAtta    = !!mdsVT16.support.preliminaryStore.set()
+  !name = |/| + !form.name.val
+
+  --if (!mode.upcase() eq 'CREATE') then
+
+  -- Select Tube
+  -- <ak> 21/06/2012
+  if (!fromAtta AND defined (!!mdsAutoTubePicker) AND !!mdsAutoTubePicker.enabled()) then
+    -- return if limit of pick tries exceeded
+    if (!!mdsAutoTubePicker.allowedPicks.eq(0)) then
+      !!ce = object DBREF(!name)
+      delete stru
+      !!mdsAutoTubePicker.cancel()
+      !!kRestoreUnits(!currentunits)
+      return FALSE
+    endif
+
+    !picked = !!mdsAutoTubePicker.pick('TUBE','')
+    if unset(!picked) then
+      !!alert.warning ('valid tube could not be selected for preliminary support.')
+      !!ce = object DBREF(!name)
+      delete stru
+      !!mdsAutoTubePicker.cancel()
+      !!kRestoreUnits(!currentunits)
+      return false
+    else
+      !!ce = !picked
+    endif
+  else
+    -- <ak>
+    prompt off
+    prompt load escape 'Identify $!onType for guide'
+    ID $!onType @
+    handle (61,528)
+      prompt on
+      if (!fromAtta) then
+        !!ce = object DBREF(!name)
+        delete stru
+        !!ce = object DBREF(!name & '_Pre')
+        !!ce.name = !name
+        !!mdsVT16.hide()
+      endif
+      !!kRestoreUnits(!currentunits)
+      return false
+    endhandle
+    prompt on
+
+  endif
+  !element = !!ce
+
+  -- identify Jacket leg
+
+  prompt off
+  prompt load escape |Identify Jacket Leg|
+  id sctn cyli @
+  handle (61,528)
+    prompt on
+    if (!fromAtta) then
+      !!ce = object DBREF(!name)
+      delete stru
+      !!ce = object DBREF(!name & '_Pre')
+      !!ce.name = !name
+      !!mdsVT16.hide()
+    endif
+    !!kRestoreUnits(!currentunits)
+    return
+  endhandle
+  prompt dismiss
+  prompt on
+
+  !jacket = !!ce
+
+  if (!jacket.type.eq('CYLI')) then
+    var !jacketODtemp diameter
+    !jacketOD = !jacketODtemp.real().value().string()
+  elseif (!jacket.type.eq('SCTN')) then
+    var !jacketODtemp prop DIAM
+    handle (2,207) $* Property Code DIAM does NOT exist
+      !!alert.error('Property Code DIAM not found in dataset of the selected Jacket Leg - SCTN')
+      if (!fromAtta) then
+        !!ce = object DBREF(!name)
+        delete stru
+        !!ce = object DBREF(!name & '_Pre')
+        !!ce.name = !name
+        !!mdsVT16.hide()
+      endif
+      !!kRestoreUnits(!currentunits)
+      return
+    elsehandle NONE
+      !jacketOD = !jacketODtemp.real().value().string()
+    endhandle
+  endif
+
+  -- Check if PIPE is NOT Vertical and within the Maximum Slope Allowed,
+  -- for Horizontal Pipes, displayed on the 'Settings>Options...' form.
+  !!ce = !element
+  if (!!ce.type eq 'BRAN') then
+    !hdir = hdir wrt /*
+  else
+    !hdir = pl dir wrt /*
+  endif
+
+  !bore   = pa bore
+  handle any
+    !bore = ph bore
+  endhandle
+
+  -- Check if the bore of the identified pipe does not exceed the maximum allowed bore
+  !mdsTrunObj  = object MDSREADTRUNDATA()
+  !mdsTrunData = !mdsTrunObj.mdsTrunData('VT16', !bore.real().value())
+
+  -- Check if current selected bore is available
+  if (!mdsTrunData.not()) then
+    !errormessage = !mdsTrunObj.mdsStd.cmess
+    !!kRestoreUnits(!currentunits)
+    !!alert.error(!errormessage)
+    if (!fromAtta) then
+      !!ce = object DBREF(!name)
+      delete stru
+      !!ce = object DBREF(!name & '_Pre')
+      !!ce.name = !name
+      !!mdsVT16.hide()
+    endif
+    return
+  endif
+
+  forwards
+
+  !!ce = !element
+
+  !od = pa od
+  handle (2,252)
+    !od = ph od
+  endhandle
+
+  !!mdsResetPins(1,1)
+
+  -- Get Session Bore Units
+  if(!!kGetBoreUnits()) then
+    !boreUnits = 'inch bore'
+  else
+    !boreUnits = ''
+  endif
+  !bore = pl bore
+  handle any
+    !bore = ph bore
+  endhandle
+
+  -- The support is created as a branch create branch and connect to appropriate member
+  !!mdsDacControl(true)
+
+  !teeOD = pl bore
+  handle (2,252)
+    !teeOD = ph bore
+  endhandle
+
+  new tee
+  !newTee = !!ce
+
+  if !!mdsSelectComp(!!ce.type).not() then
+    !!alert.error('Unable to find a suitable tee in the current specification')
+    !!mdsDacControl(true)
+    delete tee
+    !!mdsDacControl(false)
+    if (!fromAtta) then
+      !!ce = object DBREF(!name)
+      delete stru
+      !!ce = object DBREF(!name & '_Pre')
+      !!ce.name = !name
+      !!mdsVT16.hide()
+    endif
+    !!kRestoreUnits(!currentunits)
+    return
+  endif
+
+  !!mdsDacControl(true)
+  -- spref $!foundTee
+  sel lstu
+  !paod = pa od
+  !dist = !paod / 2 + 100mm
+  dist $!dist from pl of prev
+  handle any
+    dist $!dist from ph
+  endhandle
+  !form.dist.val = $!dist
+  ori and p3 is tow $!jacket
+
+  -- get distance from tee origin to wall of jacket
+  pin 1 copy p3
+  pin 2 copy pin 1
+  pin 2 thr $!jacket
+  var !dim1 const dist pin 1 to pin 2
+  var !dim1 ($!dim1 - $!jacketOD / 2 )
+
+  -- Dimension 1 should not exceed the maximum dimension stored in the para object maximum value
+  !maxlen = !mdsTrunObj.maxlength
+  if !maxlen.set() then
+    if !maxlen.lt(!dim1.real()) then
+      !!alert.error('Dimension 1 exceeds the maximum dimension of $!maxlen.')
+      delete tee
+      !!mdsDacControl(false)
+      if (!fromAtta) then
+        !!ce = object DBREF(!name)
+        delete stru
+        !!ce = object DBREF(!name & '_Pre')
+        !!ce.name = !name
+        !!mdsVT16.hide()
+      endif
+      !!kRestoreUnits(!currentunits)
+      return
+    endif
+  endif
+
+  !!mdsVT16.dim1.val = $!dim1
+
+  new bran
+  :MDSTrun true
+  conn ph to same
+
+  !!mdsDacControl(true)
+  Tcon ATT
+  sel hstu
+  pipe
+  !pipeName = name
+  same
+  name $!pipeName/$!form.name
+  !newBran = !!ce
+
+  !tbore = !mdsTrunObj.bores[1]
+  !stype = !mdsTrunObj.stypes[1]
+  !splitStype = !stype.split(',')
+
+  -- Create riser clamp
+  if !fromAtta then
+    !prelimAttaName = !name & '_Pre'
+    include $!prelimAttaName
+    !!ce = object DBREF(!name & '_Pre')
+    :mdssupptype default
+    :mdssuppfunc default
+    select spref with styp '$!splitStype[1]' spec /MDS
+    handle any
+      !!alert.error('Question SPRE cannot be answered')
+      !!ce = object DBREF(!name)
+      delete stru
+      !!ce = !newBran
+      delete bran
+      !!ce = !newTee
+      delete tee
+      !!mdsRestorePre(!!mdsVT16, true)
+      !!mdsVT16.hide()
+      !!mdsDacControl(false)
+      !!kRestoreUnits(!currentunits)
+      return
+    endhandle
+  else
+    new atta despar 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm
+    select spref with styp '$!splitStype[1]' spec /MDS
+    handle ANY
+      !!alert.error('Question SPRE cannot be answered')
+      delete atta
+      !!ce = object DBREF(!name)
+      delete stru
+      !!ce = !newBran
+      delete bran
+      !!ce = !newTee
+      delete tee
+      !!mdsVT16.hide()
+      !!mdsDacControl(false)
+      !!kRestoreUnits(!currentunits)
+      return
+    endhandle
+  endif
+  -- stext '$!form.name.val'
+  spkbrk true
+  sel lstu
+  -- set the design pars for clamp
+  !!mdsSetDesPars(!!ce)
+  !!mdsDacControl(true)
+  conn and p11 is pl of href of bran
+  handle any
+    fconnect and p11 is pl of href of bran
+  endhandle
+  -- ORI
+  name $!name
+  !form.support.datum = !!ce
+  !form.support.atta.append(!!ce)
+
+  -- Test user criteria
+  !check = object MDSCHECKFRAME()
+  !criteria = !check.criteria()
+  if (!criteria.empty().not()) then
+    !!kRestoreUnits(!currentunits)
+    if !fromAtta then
+      !!ce = !newBran
+      delete bran
+      !!ce = !newTee
+      delete tee
+      !!mdsRestorePre(!form, true)
+      !form.hide()
+      !!alert.error (!criteria)
+      return
+    endif
+    delete atta
+    !!ce = !newBran
+    delete bran
+    !!ce = !newTee
+    delete tee
+    !!alert.error (!criteria)
+    return
+  endif
+
+  !!mdsDacControl(true)
+
+  -- Sref atta
+  new atta despar $!dim1 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm
+  spkbrk true
+  select spref with styp 'VT16' spec /MDF
+  sel lstu
+  connect
+  handle (7,3)
+    fconnect
+  endhandle
+  shop true
+  name $!name/SREF
+  :MDSSuppType 'VT16'
+  !form.support.atta.append(!!ce)
+
+  -- set stex for atta
+  --!sAtta = !!ce
+  stex '$!form.name.val'
+  -- Call !!mdsTransport(!sAtta,!name)
+  !!mdsDacControl(true)
+
+  -- get OD of riser clamp
+  !od = PL OD
+  prev
+  var !p1p9dist const dist p0 to p9
+  next
+
+
+  -- makeup piece
+
+  new REDU select spref with styp 'MAKEUPOFF' spec /MDS
+  despar $!tbore  0mm 0mm
+  sel lstu
+  !tod = PL OD
+  !hyp = (!od / 2)
+  !hyp = !p1p9dist.real()
+  !side1 = (!tod / 2)
+  !offset = (sqrt ((!hyp * !hyp) - (!side1 * !side1)))
+  despar $!tbore  $!offset  0mm
+  connect
+  handle (7,3)
+    fconnect
+  endhandle
+  mtoc off
+  name $!name/MAKEUP
+  !form.support.atta.append(!!ce)
+
+  -- Create plate for the jacket leg
+
+  new plat despar 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm 0mm
+  select spref with styp '$!splitStype[2]' spec /MDS
+  sel lstu
+  conn and p3 is d
+  handle (7,3)
+    fconnect and p3 is d
+  endhandle
+  handle (7,3)
+    fconnect
+  endhandle
+  dist $!dim1 from PH
+  name $!name$n.1
+  !form.support.atta.append(!!ce)
+
+  -- set the design pars for plate
+  !!mdsSetDesPars(!!ce)
+  !!mdsDacControl(true)
+  DESP NUM 1 $!jacketOD
+  !dps = desp
+
+  -- move the PA to allow for curvature
+  !hyp = ($!jacketOD / 2 + $!dps[4] )
+  !side1 = (!tod / 2)
+  !offset = !hyp - (sqrt ((!hyp * !hyp) - (!side1 * !side1))) - $!dps[4]
+  DESP NUM 5 $!offset
+
+  -- Set the material and shop flags for all comps except the notes
+
+  !!mdsDacControl(true)
+
+  bran
+  conn pt to last mem
+  ispe =0
+  !members = mem count
+  do !set from 1 to !members
+    bran
+    $!set
+    !!mdssetmatref(!!ce)
+    handle any
+    endhandle
+    ispe =0
+  enddo
+
+  !!mdsDacControl(true)
+  bran
+  !shop = !mdsTrunObj.shop
+  shop $!shop
+
+  do !set from 1 to !members
+    bran
+    $!set
+    shop $!shop
+  enddo
+
+  -- Activate/Deactivate gadgets
+  !form.trunMat.active = true
+  if !onType.eq('TUBE') then
+    !form.bdist.active = true
+    !form.dist.active = true
+    !form.bthro.active = true
+    !form.select.active = true
+    !form.dim.active = true
+  endif
+  !form.datum.active = false
+  !form.zoom.active = true
+  !form.oK.active = true
+
+  if !!mdsVT16.graphicalDim then
+    !!mdsshowdim(!!mdsVT16)
+  endif
+
+  -- clear any dimension errors from previous support build and determine
+  -- if any min/max errors exist for this build
+  !!mdsVT16.dimerrors.clear()
+
+  !maxspan = !mdsTrunObj.maxlength
+
+  -- check if the created framework's span (dim 1) is greater than maximum
+  if !maxspan.set() then
+    if ($!dim1 gt !maxspan) then
+      !!kRestoreUnits(!currentunits)
+      prec var 1/16
+      var !dimLMaxD dist($!maxspan)
+      units mm bore mm dist
+      !error = |Support dimension 1 is greater than allow maximum of $!dimLMaxD|
+      !!alert.warning(!error)
+      !!mdsVT16.dimerrors.append(!error)
+    endif
+  endif
+
+  --------------------------------------------------------------------------------
+
+  -->>>-<wd>-nov2002
+  -- Show the Trunnion Material Form
+  !!mdsTrunMat.init(!!mdsVT16)
+  --<<<-<wd>-nov2002
+
+  !!mdsResetPins(1,2)
+
+  -- Deactivate MDS DAC control variable
+
+  !!mdsDacControl(false)
+
+  -- Reset Units
+  !!kRestoreUnits(!currentunits)
+
+endfunction

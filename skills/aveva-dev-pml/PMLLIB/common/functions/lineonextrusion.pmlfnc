@@ -1,0 +1,243 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            lineonextrusion.pmlfnc
+--   Type:          Function Definition
+--   Group:         General Application
+--     Keyword:     GEN
+--   Module:        design
+--   Replaces:
+--
+-- Author:          N.Holmes
+-- Created:         Fri Apr 4 13:19:51 WAT 1997
+--
+--
+-- Description:
+-- Returns an picked edge objects containing information about
+-- the projected line on an extrusion/panel.
+--
+--     Edge number
+--     Edge nearest to line (as a vector) on picked surface
+--     Edge as a (line object)  -- Surface picked as a plane
+--     Surface picked TOP/BOTTOM
+--     Surface picked as a plane
+--     Opposite surface as a plane
+--     Position on the Surface
+--     Position nearest pick on edge
+--     Vertex at beginning of edge
+--     Distance from pick to edge
+--
+------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      VECTOR      Line being project onto the passed extru/pane
+--    2   R      DBREF       Extrusion/Panel.
+-- Return:
+--   [Data Type] [Description]
+--    PICKEDEDGE  Picked Information
+--
+------------------------------------------------------------------------
+
+-- Define function
+define function !!lineOnExtrusion (!line is VECTOR, !extrusion is DBREF) is PICKEDEDGE
+
+  -- Initialise Variables
+  !pickedEdge = object PICKEDEDGE()
+  -- Extract data if item is a PANE
+  if(!extrusion.type eq 'PANE') then
+    !loop  = PLOO 1 of $!extrusion
+    !vType = |PAVE|
+    !thk   = !loop.heig
+    !just  = !loop.sJustification
+
+  -- Extract data if item is a EXTRU
+  elseif (!extrusion.type eq 'EXTRU') then
+    !loop  = LOOP 1 of $!extrusion
+    !vType = |VERT|
+    !thk   = !extrusion.heig
+    !just  = ''
+
+  else
+    return !pickedEdge
+  endif
+
+  -- If there are is no loop found
+  if(!loop.unset()) then
+    return !pickedEdge
+  endif
+
+  -- Set justification to either, TOP, CENTRE or BOTTOM
+  if(!just.match('CEN') gt 0 or !just.match('MID') gt 0) then
+    !just = 'CENTRE'
+  elseif (!just.match('TOP') gt 0) then
+    !just = 'TOP'
+  else
+    !just = 'BOTTOM'
+  endif
+
+  -- Extrusion Plane (through origin)q var !topOffset !bottomOffset
+  !plane           = object VECTOR()
+  !plane.direction = !extrusion.ori.zDir().wrt(World)
+  !plane.position  = !extrusion.pos.wrt(World)
+
+  -- Initialise Offset
+  !topOffset    = 0
+  !bottomOffset = !thk * -1
+
+  -- Centre justified
+  if(!just eq 'CENTRE') then
+    !topOffset    = !thk * 0.5
+    !bottomOffset = !thk * -0.5
+
+  -- Bottom Justified
+  elseif (!just eq 'BOTTOM') then
+    !topOffset    = !thk
+    !bottomOffset = 0
+
+  endif
+
+  -- Determine Side of extrusion we have picked
+  !pickedPlane   = object VECTOR()
+  !oppositePlane = object VECTOR()
+
+  -- Calculate angle between picked line and panel
+  var !const CONST ANGLE $!line.direction AND $!plane.direction
+  if(!const.trim().empty()) then
+    !const = '0'
+  endif
+  !angle = !const.real()
+
+  -- Angle >= 90, we have picked the top surface
+  if(!angle ge 90) then
+
+    var !const CONST PLANE $!plane.direction THROUGH $!plane.position DISTANCE $!topOffset
+    var !posStr CONST POS $!const
+    !pickedPlane.position    = !posStr.position()
+    var !dirStr CONST DIR NORMAL $!const
+    !pickedPlane.direction   = !dirStr.direction()
+
+    var !const CONST PLANE $!plane.direction THROUGH $!plane.position DISTANCE $!bottomOffset
+    var !posStr CONST POS $!const
+    !oppositePlane.position  = !posStr.position()
+    var !dirStr CONST DIR NORMAL $!const
+    !oppositePlane.direction = !dirStr.direction()
+
+
+    !pickedEdge.surface = 'TOP'
+
+  -- Angle < 90, we have picked the bottom surface
+  else
+
+
+    var !const CONST PLANE $!plane.direction THROUGH $!plane.position DISTANCE $!bottomOffset
+    var !posStr CONST POS $!const
+    !pickedPlane.position    = !posStr.position()
+    var !dirStr CONST DIR NORMAL $!const
+    !pickedPlane.direction   = !dirStr.direction()
+
+    var !const CONST PLANE $!plane.direction THROUGH $!plane.position DISTANCE $!topOffset
+    var !posStr CONST POS $!const
+    !oppositePlane.position  = !posStr.position()
+    var !dirStr CONST DIR NORMAL $!const
+    !oppositePlane.direction = !dirStr.direction()
+
+    !pickedEdge.surface = 'BOTTOM'
+
+  endif
+
+  -- Position on picked surface
+  var !const CONST POS INTER LINE $!line.direction THROUGH $!line.position PLANE $!pickedPlane.direction THROUGH $!pickedPlane.position
+  !pickedPos = !const.position()
+
+  -- Get all position of items
+  !block     = object BLOCK('!loop.members[!evalIndex].pos')
+  !positions = !loop.members.evaluate(!block)
+  !positions.append(!positions[1])
+
+  -- Create an array of lines (zero Z component of position)
+  do !i indices !loop.members
+    !j = !i + 1
+    !lines[!i]                  = object FINITELINE()
+    var !const CONST POS NEAR $!positions[$!i] ON PLANE $!pickedPlane.direction THROUGH $!pickedPlane.position
+    !lines[!i].startPosition    = !const.position()
+    var !const CONST POS NEAR $!positions[$!j] ON PLANE $!pickedPlane.direction THROUGH $!pickedPlane.position
+    !lines[!i].endPosition      = !const.position()
+
+  enddo
+
+  -- Calculate Position on each "Line"
+  do !i indices !lines
+
+    -- Define a "line" between the start/end positions of the bounded line
+    !startPosition = !lines[!i].startPosition.string()
+    !endPosition   = !lines[!i].endPosition.string()
+    var !lineStr CONST LINE JOIN $!startPosition TO $!endPosition
+
+    -- Map Position onto Line
+    var !posStr CONST POS NEAR $!pickedPos ON $!lineStr
+    !newPos  = !posStr.position()
+
+    -- Calculate distance from S-E S-N and E-N
+    var !lenStr CONST DIST $!startPosition TO $!endPosition
+    !length  = !lenStr.real()
+    var !lenStr CONST DIST $!startPosition TO $!posStr
+    !lengthA = !lenStr.real()
+    var !lenStr CONST DIST $!endPosition   TO $!posStr
+    !lengthB = !lenStr.real()
+
+    -- Check if the new position is between start & end positions
+    if(!lengthA + !lengthB le !length * 1.01) then
+      !linePos[!i] = !newPos
+    else
+      !linePos[!i] = object POSITION()
+    endif
+  enddo
+  --------------------------------------------------------------
+
+  do !i indices !linePos
+    skip if(!linePos[!i].east.unset())
+    var !const CONST DIST $!pickedPos TO $!linePos[$!i]
+    !distances[!i] = !const.real()
+  enddo
+  --------------------------------------------------------------
+
+  !sort       = !distances.sortedIndices()
+
+  -- Return Data
+  !edgeNumber               = !sort[1]
+
+  !pickedEdge.number        = !edgeNumber
+  -- Finite Line
+  !pickedEdge.finiteLine    = !lines[!edgeNumber]
+
+  -- Line of edge
+  var !lineStr CONST LINE JOIN $!lines[$!edgeNumber].startPosition TO $!lines[$!edgeNumber].endPosition
+
+  var !const CONST LINE PROJ $!lineStr ON PLANE $!pickedPlane.direction THROUGH $!pickedPlane.position
+  var !posStr CONST POS $!const
+  !pickedEdge.line.position  = !posStr.position()
+  var !dirStr CONST DIR $!const
+  !pickedEdge.line.direction = !dirStr.direction()
+
+  -- Vertex
+  !pickedEdge.vertex        = !loop.members[!edgeNumber]
+
+  -- Positions
+  !pickedEdge.surfacePos    = !pickedPos
+  !pickedEdge.edgePos       = !linePos[!edgeNumber]
+
+  -- Distance
+  !pickedEdge.distance      = !distances[!edgeNumber]
+
+  -- Planes
+  !pickedEdge.pickedPlane   = !pickedPlane
+  !pickedEdge.oppositePlane = !oppositePlane
+
+  -- Return
+  return !pickedEdge
+
+endfunction
+-- End of function definition for !!lineOnExtrusion

@@ -1,0 +1,333 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            isomto.pmlfnc
+--   Type:          Function Definition
+--   Group:         ISOADP
+--     Keyword:     Isometric
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         25 March 2001
+--
+-- Description:
+-- Creates the mto table labels
+-- This function is GENERIC and calls a user function to supply the data
+--
+-- Assumptions:
+-- The ce is the mto table laye
+--
+-- Logic:
+-- The each cell in a table row is an SYTM in the relevant mto library depending on the mto defaults.
+-- Each row is built up from these cells using data held at the SYTM.
+-- The LALB holds the build data in udas :IdpMove and :IdpDire
+-- The SYTM holds the following data:
+--    :IdpDesc        - used only to indicate which cell holds the POSITION number
+--    :IdpColumn      - the column number
+--    :IdpFunc        - the function called to determine the cell contents
+--    :IdpPurp        - the purpose of the cell "Entry" or "Last Line"
+--    :IdpSort        - whether the cell is to be sorted. TRUE or FALSE. CURRENTLY ONLY ONE CELL IS ALLOWED TO BE SORTED
+--    :IdpCheck       - whether a cell needs to be checked for overflow to the next cell. TRUE or FALSE
+--    :IdpEnd         - the end position of the cell. This value is relative to the table origin/first cell position in the row
+--
+------------------------------------------------------------------------
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     ARRAY       The components in this drawing
+--    2    R     STRING      Type of drawing being processed (HVAC or CWAY)
+--    3    R     ISODEFAULTS The defaults settings
+--
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Array of ISOMTOENTRY objects holding data for a table row - referred to as an entry
+--
+------------------------------------------------------------------------
+define function !!isoMto(!allComponents is ARRAY, !runType is STRING, !defaults is ISODEFAULTS) is ARRAY
+
+  -- Initialise variables
+  !stdLibrary = !defaults.stdLibrary
+  !tableLaye  = !!ce
+  !entries    = ARRAY()
+  !allComp    = ARRAY()
+  !nRows      = 0
+
+  -- Remove any unwanted components
+  do !componentRefe val !allComponents
+
+    -- Ignore unsuitable elements
+    skip if (!componentRefe.type.upcase().eq('POINTR'))
+
+    -- For HVAC
+    if (!runType.eq('HVAC')) then
+
+      -- Use this component
+      !allComp.append(!componentRefe)
+
+    -- For CWAY
+    else
+
+      -- Get the members of this part
+      !allComp.appendArray(!!isoCwbranMem(!componentRefe, 'PARTMEM'))
+
+    endif
+
+  enddo
+
+  -- Read mto table position
+  VAR !rect COLL ALL RECT WI SPPURP OF OWNE EQ 'TABLE' AND :IdpFunc EQ 'Mto' FOR $!<defaults.backingSheet>
+  !table = object ISORECTANGLE(!rect[1].dbref())
+
+  -- Get discipline data
+  if (!runType.eq('HVAC')) then
+
+    -- Get whether table is sorted
+    !toBeSorted = !defaults.hvacMtoGen.sorted
+
+    -- Get table template libraries
+    if (!toBeSorted) then
+      VAR !entryLib COLL ALL LALB WI FUNC EQ 'Hvac Mto Table Template' AND SPPURP EQ 'SORTED' FOR $!stdLibrary
+      VAR !headerLib COLL ALL LALB WI FUNC EQ 'Hvac Mto Table Display' AND SPPURP EQ 'SORTED' FOR $!stdLibrary
+
+    else
+      VAR !entryLib COLL ALL LALB WI FUNC EQ 'Hvac Mto Table Template' FOR $!stdLibrary
+      VAR !headerLib COLL ALL LALB WI FUNC EQ 'Hvac Mto Table Display' FOR $!stdLibrary
+
+    endif
+
+  else
+
+    !toBeSorted = !defaults.elecMtoGen.sorted
+
+    if (!toBeSorted) then
+      VAR !entryLib COLL ALL LALB WI FUNC EQ 'Cway Mto Table Template' AND SPPURP EQ 'SORTED' FOR $!stdLibrary
+      VAR !headerLib COLL ALL LALB WI FUNC EQ 'Cway Mto Table Display' AND SPPURP EQ 'SORTED' FOR $!stdLibrary
+
+    else
+      VAR !entryLib COLL ALL LALB WI FUNC EQ 'Cway Mto Table Template' FOR $!stdLibrary
+      VAR !headerLib COLL ALL LALB WI FUNC EQ 'Cway Mto Table Display' FOR $!stdLibrary
+
+    endif
+
+  endif
+
+  -- Read table build direction and movement
+  !move = !entryLib[1].dbref().:IdpMove
+  !dire = !entryLib[1].dbref().:IdpDire
+
+  -- Get max number of entries
+  !table.max(!move)
+
+  -- Get relevant table corner move, position expression and max number of entries
+  if (!dire.eq('-Y')) then
+    !corner     = !table.tl
+    !posCalc    = '!yPos = !yPos - !move'
+    !maxEntries = !table.maxY
+    !xyScale    = '1 1'
+
+  elseif (!dire.eq('Y')) then
+    !corner     = !table.bl
+    !posCalc    = '!yPos = !yPos + !move'
+    !maxEntries = !table.maxY
+    !xyScale    = '1 -1'
+
+  elseif (!dire.eq('-X')) then
+    !corner     = !table.br
+    !posCalc    = '!xPos = !xPos - !move'
+    !maxEntries = !table.maxX
+    !xyScale    = '1 1'
+
+  elseif (!dire.eq('X')) then
+    !corner     = !table.bl
+    !posCalc    = '!xPos = !xPos + !move'
+    !maxEntries = !table.maxX
+    !xyScale    = '1 -1'
+
+  endif
+
+  -- Read table start point
+  !xPos = !corner.east
+  !yPos = !corner.north
+
+  -- Read header templates
+  VAR !allHdr COLL ALL SYTM WI :IdpPurp EQ 'Header Display' FOR $!headerLib[1]
+
+  -- Read last entry underline template
+  VAR !lastLine COLL ALL SYTM WI :IdpPurp EQ 'Last Line' FOR $!entryLib[1]
+
+  -- Get table cells
+  if (!toBeSorted) then
+
+    -- Read table cells for data and find the one to be sorted
+    VAR !allCells COLL ALL SYTM WI :IdpPurp EQ 'Entry' AND :IdpSort EQ FALSE FOR $!entryLib[1]
+    VAR !sorted   COLL ALL SYTM WI :IdpPurp EQ 'Entry' AND :IdpSort EQ TRUE  FOR $!entryLib[1]
+
+    !sortFunction = !sorted[1].dbref().:IdpFunc
+    !cellRefe     = !sorted[1].dbref()
+    !numbCells    = !allCells.size() + 1
+
+    -- Build the table entry objects using the sorted cell function
+    !entries = $!sortFunction
+
+  else
+
+    -- Read all table cells for data
+    VAR !allCells COLL ALL SYTM WI :IdpPurp EQ 'Entry' FOR $!entryLib[1]
+    !numbCells = !allCells.size()
+
+    -- Build a table entry object for each component
+    do !index ind !allComp
+
+      -- Get component type
+      !compType = !allComp[!index].type.upcase()
+
+      -- Ignore unsuitable elements
+      skip if (!compType.eq('POINTR'))
+
+      -- Build the entry object
+      !entries[!index]            = object ISOMTOENTRY()
+      !entries[!index].dbRefes[1] = !allComp[!index]
+
+    enddo
+
+  endif
+
+  -- Get all the cells data
+  do !cell val !allCells
+
+    !cellRefe = !cell.dbref()
+    !function = !cell.dbref().:IdpFunc
+    !entries  = $!function
+
+  enddo
+
+  -- Build the table header
+  do !index ind !allHdr
+
+    -- Initialise variables
+    !compRefe = !entries[1].dbRefes[1]
+    !tempRefe = !allHdr[!index].dbref()
+    !xPos     = !corner.east
+    !yPos     = !corner.north
+
+    -- Get the header description
+    VAR !headerBtex EVAL BTEX FOR TEXP 1 OF $!tempRefe
+
+    -- Remove any CR hash codes
+    if (!headerBtex.unset()) then
+      !headerDesc = 'Col' & !index
+
+    else
+      !headerDesc = !headerBtex[1].replace('#/',' ')
+
+     endif
+
+    -- Store the header description in the first entry object
+    !entries[1].setHeader(!headerDesc)
+
+    -- Create symbolic label
+    NEW SLAB on $!compRefe LEAD OFF
+     TMRF $!tempRefe  XYPO 0 0   OSET FALSE  TXCOLOUR TEMP  LFSTYLE TEMP  LFCOLOUR TEMP  BLNK FALSE
+     XYPO X $!xPos Y $!yPos
+
+  enddo
+
+  -- Build the table entries
+  do !index ind !entries
+
+    -- Initialise variables
+    !entry = !entries[!index]
+
+    -- Access the table layer
+    !!ce = !tableLaye
+
+    -- Calculate xy position
+    if (!index.gt(1)) then
+      $!posCalc
+    endif
+
+    -- Build cells for each table entry
+    do !number from 1 to !numbCells
+
+      -- Initialise variables
+      !member   = '!entry.c' & !number.string()
+      !atex     = $!member
+      !member   = '!entry.t' & !number.string()
+      !tempRefe = $!member
+
+      -- Create symbolic label
+      NEW SLAB on $!<entry.dbRefes[1]> ATEX |$!atex| LEAD OFF
+       TMRF $!tempRefe  XYPO 0 0  OSET FALSE  TXCOLOUR TEMP  LFSTYLE TEMP  LFCOLOUR TEMP  BLNK FALSE
+       XYPO X $!xPos Y $!yPos
+
+      -- Build row object
+      VAR !extent EXTENT BTEXT
+      !row[!number] = object ISOSLAB(!!ce,!extent)
+
+    enddo
+
+    -- Raise number of actual rows
+    !nRows = !nRows + 1
+
+    -- Test for extent overlap & reduce atex as necessary
+    !dataArray = !!isoExtent(!row, !dire, !defaults.hvacMtoGen.separator)
+    if (!dataArray[1]) then
+
+      -- Access Laye
+      LAYE
+
+      -- Calculate new xypo
+      $!posCalc
+
+      -- Scan the cells for overlap
+      do !count ind !dataArray[2]
+
+        -- Initialise variables
+        !slabObj = !dataArray[2][!count]
+
+        -- For an overlap create a new row
+        if (!slabObj.overlap) then
+
+          -- Create symbolic label with the extra overlapping text
+          NEW SLAB on $!<slabObj.reference.ddnm> ATEX |$!<slabObj.btext[2]>| LEAD OFF
+           TMRF $!<slabObj.reference.tmrf>  XYPO 0 0   OSET FALSE  TXCOLOUR TEMP  LFSTYLE TEMP  LFCOLOUR TEMP  BLNK FALSE
+           XYPO X $!xPos Y $!yPos
+
+        else
+
+          -- Create symbolic label with a blank field
+          NEW SLAB on $!<slabObj.reference.ddnm> ATEX | | LEAD OFF
+           TMRF $!<slabObj.reference.tmrf>  XYPO 0 0   OSET FALSE  TXCOLOUR TEMP  LFSTYLE TEMP  LFCOLOUR TEMP  BLNK FALSE
+           XYPO X $!xPos Y $!yPos
+
+        endif
+
+      enddo
+
+      -- Raise number of actual rows
+      !nRows = !nRows + 1
+
+    endif
+
+    -- Build row underline
+    NEW SLAB on $!compRefe LEAD OFF
+     TMRF $!lastLine[1]  XYPO 0 0  OSET FALSE  TXCOLOUR TEMP  LFSTYLE TEMP  LFCOLOUR TEMP  BLNK FALSE
+     XYPO X $!xPos Y $!yPos  XYSC $!xyScale
+
+    -- Test for last possible entry in reserved area
+    if (!nRows.eq(!maxEntries)) then
+
+      -- FUTURE DEVELOPMENT
+
+    endif
+
+  enddo
+
+  -- Return to the laye
+  !!ce = !tableLaye
+
+  return !entries
+
+endfunction

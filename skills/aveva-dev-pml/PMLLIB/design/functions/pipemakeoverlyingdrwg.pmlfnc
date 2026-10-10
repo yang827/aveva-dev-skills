@@ -1,0 +1,295 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            pipemakeoverlyingdrwg.pmlfnc
+--    Type:          Function Definition
+--    Group:         Pipe
+--      Keyword:     Pipe
+--    Module:        draft
+--  Author:          Daniel(Jaehun Choi)
+--  Created:         23 July 2010
+--
+--  Description:     make overlaying drawing for pipe spool drawing
+--
+------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define function !!pipemakeoverlyingdrwg(!spoolList is ARRAY, !isoOptionFile is FILE, !errorList is ARRAY) is BOOLEAN
+  -- load iso option file
+
+  !readData = !isoOptionFile.readFile()
+  handle any
+    !table[1] = !isoOptionFile.fullname()
+    !table[2] = 'Error creating overlay drawing - Error loading iso option file $!isoOptionFile'
+    !errorList.append(!table)
+    return false
+  endhandle
+
+  -- initialise iso option default
+  !isoExportPath  = '%pdmsuser%'
+  !isoMargin      = object ARRAY()
+  !isoViewType    = 'ISO3'
+  !isoCharCheight = 2.4
+  !dwgRegiName    = ''
+
+  !errorList      = object ARRAY()
+
+  -- read iso option default
+  do !data values !readData
+    !splitData = !data.split(',')
+    if (!data.upcase().occurs('DWGTYPE') gt 0) then
+      !dwgTemplName = !splitData[2]
+
+    elseif (!data.upcase().occurs('DWGREGINAME') gt 0) then
+      !dwgRegiName = !splitData[2]
+      if (substring(!dwgRegiName,1,1) eq '/') then
+        !dwgRegiName = substring(!dwgRegiName,2)
+      endif
+
+    elseif (!data.upcase().occurs('ISOVIEWTYPE') gt 0) then
+      !isoViewType = !splitData[2]
+
+    elseif (!data.upcase().occurs('ISOCHARCHEIGHT') gt 0) then
+      if (!splitData.size() eq 2) then
+        !isoCharCheight = !splitData[2].real()
+        handle any
+          !isoCharCheight = 2.4
+        elsehandle none
+          if (!isoCharCheight.unset()) then
+            !isoCharCheight = 2.4
+          endif
+        endhandle
+      endif
+
+    elseif (!data.upcase().occurs('ISOFILEPATH') gt 0) then
+      !isoExportPath = !splitData[2]
+
+    elseif (!data.upcase().occurs('OUTPUTUNITS') gt 0) then
+      !outputUnits = !splitData[2]
+    endif
+
+  enddo
+
+  -- check if drawing template is exist
+  !dwgTemplRef = !dwgTemplName.dbref()
+  !dwgTmplCheckFlag = true
+  handle any
+    !dwgTmplCheckFlag = false
+  elsehandle none
+    if (!dwgTemplRef.badref()) then
+      !dwgTmplCheckFlag = false
+    endif
+  endhandle
+
+  -- get drawing template for evaluate overlay position
+  if (!dwgTmplCheckFlag.not()) then
+    !!alert.error('Error creating overlay drawing - Drawing Template does not exist.')
+    return
+  endif
+
+  -- Issue warning if template uses TrueType fonts
+  if (!!collectAllFor('SHEE', 'TTFEnabled eq true', !dwgTemplRef).set()) then
+    !message = 'Warning: plot file(s) for preview cannot be created as the drawing template uses True Type fonts. Do you want to continue?'
+    if (!!alert.confirm(!message).boolean() eq false) then
+      return false
+    endif
+  endif
+  !olayRefVnote = !!collectAllFor('VNOT',|purp of owner eq 'OLAY'|, !dwgTemplRef)
+  if (!olayRefVnote.unset()) then
+    !!alert.error('Error creating overlay drawing - Check VNOT for OLAY')
+    return false
+  endif
+
+  !olayRefRect = !!collectAllFor('RECT','', !olayRefVnote[1])
+  if (!olayRefRect.unset()) then
+    !!alert.error('Error creating overlay drawing - Check AREA for OLAY')
+    return false
+  endif
+
+  !sheeSize = size of shee of $!olayRefRect[1]
+
+  if (!isoMargin.unset()) then
+    !xypos = xypos of ptrf of $!olayRefRect[1]
+    !xlen  = xlen of $!olayRefRect[1]
+    !ylen  = ylen of $!olayRefRect[1]
+
+    !xmin  = !xypos.east - ( !xlen / 2 )
+    !xmax  = !xypos.east + ( !xlen / 2 )
+
+    !ymin  = !xypos.north - ( !ylen / 2 )
+    !ymax  = !xypos.north + ( !ylen / 2 )
+
+    -- calculation iso margin and size
+    !isoMargin[1] = !xmin
+    !isoMargin[2] = !sheeSize[1] - !xmax
+    !isoMargin[3] = !sheeSize[2] - !ymax
+    !isoMargin[4] = !ymin
+  endif
+
+  !isoSize = |W $!<sheeSize[1]> H $!<sheeSize[2]>|
+
+  --var !oldUnits units
+  !savedUnits = object COMUNITS(TRUE)
+
+  -- change mode
+  isodraftMode
+  handle(47,15)
+    exit
+    isodraftMode
+  endhandle
+
+  -- load iso option file which used te be based when create iso picture file
+  var !projCode proj code
+  !isoFile = |%| + !projCode + |iso| + |%| + |\STD\pipespool.met|
+
+  !checkIsoOptFile = object FILE(!isoFile)
+  if (!checkIsoOptFile.exists().not()) then
+    !!alert.error('Error creating overlay drawing - ISO Option file does not exist.')
+    exit
+    return false
+  endif
+
+  $m /$!isoFile
+  handle any
+    !!alert.error(|Error creating overlay drawing - Problem with iso option file : $!isoFile|)
+    exit
+    return false
+  endhandle
+
+  -- check output dir which used to saved the result picture file
+  if !isoExportPath eq |%pdmsuser%| then
+    var !isoExportPath evar pdmsuser
+    !isoExportPath = !isoExportPath.replace(';','')
+  endif
+
+  !outputDir = object FILE(|$!isoExportPath\$!dwgRegiName\iso|)
+  if (!outputDir.exists().not()) then
+    syscom 'md "$!outputDir"'
+  endif
+
+  if (!outputUnits.occurs('IMPERIAL') gt 0) then
+    Units IMPERIAL
+  endif
+
+  do !spool values !spoolList
+
+    -- check spool type
+    if (!spool.pstyp.upcase() eq 'SITE') then
+      Dimension OFF
+    elseif (!spool.pstyp.upcase() eq 'FITT') then
+      Dimension ON
+    else
+      Dimension ON
+    endif
+
+    -- delete wasted files
+    if (substring(!isoExportPath, -1,1) eq |\|) then
+      !isoExportPath = substring(!isoExportPath,1, !isoExportPath.length() - 1)
+    endif
+
+    --check if the spool name has '/' as it causes a problem
+    !invalidStr  = |/|
+    !invalidList = !invalidStr.split('')
+    !newSpoolName = ''
+
+    do !i from 1 to !spool.namn.length()
+      !char = substring(!spool.namn, !i, 1)
+
+      !index = !invalidList.find(!char)
+      if (!index.set()) then
+        if (!i eq 1 and !char eq '/') then
+          !newSpoolName = !newSpoolName + !char
+        else
+          !newSpoolName = !newSpoolName + '_'
+        endif
+      else
+        !newSpoolName = !newSpoolName + !char
+      endif
+    enddo
+
+    -- rename the spool name if it is unnamed
+    !invalidStr = substring(!newSpoolName,1,1)
+    if !invalidStr.eq('=') then
+      !newSpoolName = substring(!newSpoolName,2)
+    endif
+
+    !iso  = !newSpoolName & |.iso|
+    !wasteFiles = |$!isoExportPath\$!dwgRegiName\iso\$!iso|
+    --Check if the file exists before being deleted.
+    !checkIsoOptFile = object FILE(!wasteFiles)
+    if (!checkIsoOptFile.exists()) then
+      syscom |del "$!wasteFiles"|
+    endif
+    !longName = |U-| & !newSpoolName  & |.iso.plt|
+    !wasteFiles = |$!isoExportPath\$!dwgRegiName\iso\$!longName|
+    --Check if the file exists before being deleted.
+    !checkIsoOptFile = object FILE(!wasteFiles)
+    if (!checkIsoOptFile.exists()) then
+      syscom |del "$!wasteFiles"|
+    endif
+
+    !outputTransName = |$!isoExportPath\$!dwgRegiName\iso\$!newSpoolName| & |-trans|
+    trans "$!outputTransName"
+
+    !outputName = |$!isoExportPath\$!dwgRegiName\iso\$!iso|
+    File "$!outputName" SINGLE
+
+    -- modify iso options
+    Charheight      $!isoCharCheight
+    Size            $!isoSize
+
+    $!isoViewType
+
+    Reserve  $!<isoMargin[4]>
+    Margin  LEFT   $!<isoMargin[1]>
+
+
+    Margin  TOP     $!<isoMargin[3]>
+    Margin  RIGHT   $!<isoMargin[2]>
+    MessageFile "mess_temp" OVERWRITE
+    -- P34083 force a material file to be written
+    MaterialList TableDefinition Column 1 PARTNUMBER with Width 3
+    Column 2 DESCRIPTION with Width 41
+    Column 3 BORE with Width 8
+    Column 4 ITEMCODE with Width 12
+    Column 5 QUANTITY in Millimetres with Width 8
+    Column 6 REMARKS and ANGL  on ELBO with Width 12
+    Column 7 OTHER Heading 'SPOOLNAME' PCRFA  with Width 50
+
+    detail $!spool
+    handle ANY
+      !table[1] = !spool.name
+      !table[2] = 'Error creating overlay drawing'
+      !errorList.append(!table)
+    endhandle
+
+     -- rename the plot file to the new format
+    !plotFile = !outputName & |001|
+    !longName = |U-| & !newSpoolName  & |.iso.plt|
+    syscom 'ren "$!plotFile" "$!longName"'
+
+  enddo
+
+  !result = true
+  var !unusedStatus isodraw status
+  handle any
+     return FALSE
+  endhandle
+  exit
+
+
+  !savedUnits.restoreSavedUnitsByPtype('DIST')
+  !savedUnits.restoreSavedUnitsByPtype('BORE')
+
+
+  return !result
+ endfunction
+-- End of function definition for pipemakeoverlyingdrwg

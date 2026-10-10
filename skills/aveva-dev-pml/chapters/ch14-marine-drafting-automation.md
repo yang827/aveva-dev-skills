@@ -344,7 +344,7 @@ endfunction
 * **Opening Drawings Concurrently**: Marine Drafting is strictly Single Document Interface (SDI); always call `!marDraft.DwgClose()` before activating a different drawing.
 
 ## Key Takeaways
-1. Always import `marapi` inside `handle (1000, 0)`.
+1. Always place `handle (1000, 0) endhandle` immediately **after** `import 'marapi'` — the import stays outside the trap; the block holds only the recovery for the "already loaded" error (see SKILL.md Core Framework 9).
 2. Interactive dialogs (`AnswerReqPML`, `StrReqPML`, `PointPlanarReqPML`) return status codes compared against `!marUtil.YesPML()`, `OkPML()`, etc.
 3. Coordinate translation uses `!marUtil.TraCoordShip` (Sheet to Ship), `!marUtil.TraCoordPan` (Sheet to Panel), and `!marDraft.PointTranform` (Ship to Sheet). Structural frames are converted via `!marUtil.CoordToPos`.
 4. High-performance data extraction from the hull model is driven by `Aveva.Marine.DataExtraction.MarDex`.

@@ -1,0 +1,1078 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            mdscompplatedflts.pmlobj
+--   Type:          Object Definition
+--   Group:         Xxxxx xxxxx xxxxx
+--     Keyword:     XXX
+--   Module:
+--   Replaces:
+--
+-- Author:          Karel Pleschner
+-- Created:         08/06/2012 10:00:49
+--
+--
+-- Description:
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  checkGap(REAL)                   -
+--  compensatingPlates(ARRAY)        -
+--  compensatingPlates(DBREF)        ARRAY
+--  compensatingPlates(FORM)         ARRAY
+--  compensatingPlates(MDSFTSEVENTYONE) ARRAY
+--  compensatingPlates(MDSSUPPORT)   ARRAY
+--  createCompplate(FORM)            -
+--  createCompplate(FORM,DBREF)      -
+--  deleteCompplate(DBREF)           -
+--  deleteCompplate(FORM)            -
+--  matref()                         DBREF
+--  mdsCompplateDflts()              -
+--  mdsCompplateMaterials(STRING)    ARRAY               Return a list of available materials for each compensating plate size
+--  methodKey()                      ARRAY
+--  modifyCompplates(FORM)           -
+--  rebuildCompplate(DBREF)          -
+--  roundingMethodDesc()             ARRAY
+--  roundingMethodDesc(STRING)       STRING
+--  roundoff(REAL,REAL)              REAL
+--  size(STRING,DBREF,DBREF)         REAL
+--  spref(REAL,DBREF)                ARRAY
+--  thknMethodDesc()                 ARRAY
+--  thknMethodDesc(STRING)           STRING
+--  width(DBREF,DBREF)               REAL
+--
+define object MDSCOMPPLATEDFLTS
+
+  -- size lookup table
+  member .xsize is MDSCOMPPLATESIZE
+  member .ysize is MDSCOMPPLATESIZE
+
+  -- plate spec.ref. table
+  member .thkn is ARRAY
+  member .spref is ARRAY
+  member .matref is ARRAY
+  member .dfltMatrefIndex is REAL
+
+  -- template references
+  member .panel is DBREF
+  member .prflTmpl is DBREF
+
+  -- admin
+  member .gtyp is STRING
+  member .nameSuffix is STRING
+  member .loadError is STRING
+
+  -- options
+  member .mingap is REAL
+  member .maxgap is REAL
+  member .maxgapPrfl is REAL
+  member .thknCalculationMethod is STRING
+  member .accommodateThkn is BOOLEAN
+  member .roundingMethod is STRING
+  member .xrounding is REAL
+  member .yrounding is REAL
+
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description: Default constructor
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]      [Description]
+--
+-- Return:
+--   [Data Type]       [Description]
+--
+------------------------------------------------------------------------
+
+define method .mdsCompplateDflts()
+
+  -- hardcoded values
+  !this.gtyp = 'CPLT'
+  !this.nameSuffix = '-CP-'
+
+  -- load design templates
+  !tmplarea = 'STRU /MDS/COMPENSATING-PLATES'
+  !this.panel = !!mdsCollectAll('PANE','',!tmplarea.dbref()).first()
+  handle ANY
+    !this.loadError = !tmplarea & ' must exist and contain a template (PANE) of compensating plate.'
+    return
+  endhandle
+
+  !this.prflTmpl = object DBREF('TMPL 1 of ' & !tmplarea )
+  handle ANY
+    !this.loadError = !tmplarea & ' must exist and contain a template (TMPL) with compensating profile.'
+    return
+  endhandle
+
+  -- load lookup table with x-size definitions
+  !xtable = 'SECT /MDS/COMPENSATING-PLATES/X-SIZE'
+  !this.xsize.mdsCompplateSize(!xtable)
+  handle ANY
+    !this.loadError = !!error.text
+    return
+  endhandle
+
+  -- load lookup table with y-size definitions
+  !ytable = 'SECT /MDS/COMPENSATING-PLATES/Y-SIZE'
+  !this.ysize.mdsCompplateSize(!ytable)
+  handle ANY
+    !this.loadError = !!error.text
+    return
+  endhandle
+
+  -- load options from catalogue
+  !options = object DBREF('DTSET /MDS/COMPENSATING-PLATES/OPTIONS/DTSE')
+  handle ANY
+    !this.loadError = 'SECT /MDS/COMPENSATING-PLATES/OPTIONS does not exist. Contact MDS administrator.'
+    return
+  endhandle
+  !this.mingap = !options.rpro.ming
+  !this.maxgap = !options.rpro.maxg
+  !this.maxgapPrfl = !options.rpro.maxp
+  !this.thknCalculationMethod = !options.prop.thcm
+  !this.accommodateThkn = !options.fprop.athk
+  !this.roundingMethod = !options.prop.rndm
+  !this.xrounding = !options.rpro.xrnd
+  !this.yrounding = !options.rpro.yrnd
+
+  -- load plate spec
+  !spec = !this.panel.spown
+
+  if !spec.unset() then
+    !this.loadError = 'A compensating plate specification does not exist in the MDB. Please refer to the MDS/CATA database.'
+    return
+  endif
+
+  !spref = ARRAY()
+  !thkn = ARRAY()
+  !allspref = !!mdsCollectAll('SPCO','',!spec)
+  !thkn = !allspref.evaluate(object BLOCK('!allspref[!evalindex].rpro.thkn'))
+  !materialDefaults = '/MDS/COMPENSATING-PLATES/MATERIAL'
+  !matrefData = !!mdsCollectAll('DATA','',!materialDefaults.dbref())
+  handle ANY
+    !this.loadError = 'SECT /MDS/COMPENSATING-PLATES/MATERIAL does not exist. Contact MDS administrator.'
+    return
+  endhandle
+  !matref = object ARRAY()
+  do !i from 1 to !matrefData.size()
+    !currentMatrefPpro = $!<matrefData[$!i].ppro>
+    !currentMatref = !currentMatrefPpro.dbref()
+    handle ANY
+      skip
+    elsehandle NONE
+      if !currentMatref.unset() then
+        skip
+      endif
+    endhandle
+    !matref.append(!currentMatref)
+  enddo
+  !matref.unique()
+
+  !newindex = !thkn.sortedIndices()
+  !allspref.reindex(!newindex)
+  !thkn.reindex(!newindex)
+  !thkn.unique()
+
+  !members = !spec.members
+  !spref = object ARRAY()
+  do !i from 1 to !thkn.size()
+    !currentThickness = !thkn[!i]
+    do !j from 1 to !members.size()
+      if !currentThickness.eq(!members[!j].rpro.thkn) then
+        !spref.append(!members[!j])
+        break
+      endif
+    enddo
+  enddo
+
+  !this.spref = !spref
+  !this.thkn = !thkn
+  !this.matref = !matref
+  !defaultString = '/MDS/COMPENSATING-PLATES/MATERIAL/DFLT/MATREF'
+  !defaultPproString = !defaultString.dbref().ppro
+  handle ANY
+    !this.loadError = 'DATA /MDS/COMPENSATING-PLATES/MATERIAL/DFLT/MATREF does not exist. Contact MDS administrator.'
+    return
+  endhandle
+  !defaultPpro = $!defaultPproString
+  !defaultMatref = !defaultPpro.dbref()
+  handle ANY
+  endhandle
+  !this.dfltMatrefIndex = !matref.findfirst(!defaultMatref)
+  handle ANY
+  endhandle
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .size(!xy is STRING, !atta is DBREF, !sctn is DBREF) is REAL
+
+  !table = !this.attribute(!xy.upcase() & 'SIZE')
+  !roundval = !this.attribute(!xy.upcase() & 'ROUNDING')
+  !width = !this.width(!sctn,!atta)
+
+  !size = !table.size(!atta,!width)
+  !this.roundoff(!size,!roundval)
+
+  return !size
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .roundoff(!size is REAL, !roundval is REAL) is REAL
+
+  if !roundval.leq(0) then
+    return !size
+  endif
+
+  !method = !this.roundingMethod
+
+  !rounded = !roundval * int(!size / !roundval)
+  !rest = !size - !rounded
+  if !rest.gt(0) then
+    if !method.eq('UP') then
+      !rounded = !rounded + !roundval
+    elseif !method.eq('CLOSEST') then
+      if !rest.geq(!roundval * 0.5) then
+        !rounded = !rounded + !roundval
+      endif
+    endif
+    !size = !rounded
+  endif
+
+  return !size
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .spref(!gap is REAL, !dummyMatr is DBREF) is ARRAY
+
+  !spref = ARRAY()
+
+  !thkn = !this.thkn
+  !entries = !this.spref
+
+  !remainGap = !gap
+  !method = !this.thknCalculationMethod
+
+  if !method.eq('DOWN').and(!gap.lt(!thkn.first())).and(!this.accommodateThkn.eq(FALSE)) then
+    !error = 'The gap (' & !gap.currentUnits(!!distanceFmt.units).string(!!distanceFmt) & ') is less than thinnest compensation plate (' & !thkn[1].string() & ') available.'
+    return error 1 '$!error'
+  endif
+
+  if !method.eq('DOWN').or(!method.eq('CLOSEST')) then
+    do
+
+      if !remainGap.nint().leq(!thkn.first()) then
+        if !this.accommodateThkn.eq(TRUE) then
+          !spref.append(!entries.first())
+          !remainGap = !remainGap - !thkn.first()
+        endif
+        break
+      endif
+
+      do !c from !thkn.size() to 1 by -1
+        if !thkn[!c].leq(!remainGap) then
+          !spref.append(!entries[!c])
+          !remainGap = !remainGap - !thkn[!c]
+          break
+        endif
+      enddo
+    enddo
+  endif
+
+  if !method.eq('UP') then
+    do
+      do !c indices !thkn
+        if !thkn[!c].geq(!remainGap) then
+          !spref.append(!entries[!c])
+          !remainGap = !remainGap - !thkn[!c]
+          break
+        endif
+      enddo
+      break if !remainGap.leq(0)
+      do !c from !thkn.size() to 1 by -1
+        if !thkn[!c].leq(!remainGap) then
+          !spref.append(!entries[!c])
+          !remainGap = !remainGap - !thkn[!c]
+          break
+        endif
+      enddo
+      break if !remainGap.eq(0)
+    enddo
+  elseif !method.eq('CLOSEST').and(!remainGap.boolean()) then
+    if !spref.unset() then
+      !spref.append(!entries[1])
+      !remainGap = !remainGap - !thkn[1]
+    else
+      if !remainGap.geq(!thkn[1] * 0.5) then
+        !current = !entries.findfirst(!spref.last())
+        !next = !current + 1
+        if !next.leq(!entries.size()) then
+          !spref.removeLast()
+          !spref.append(!entries[!next])
+          !remainGap =  !remainGap - (!thkn[!next] - !thkn[!current])
+        else
+          !spref.append(!entries[1])
+          !remainGap = !remainGap - !thkn[1]
+        endif
+      endif
+    endif
+  endif
+
+  !gap = !remainGap
+  handle ANY
+  endhandle
+
+  return !spref
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .compensatingPlates(!support is MDSSUPPORT) is ARRAY
+
+  !plates = !this.compensatingPlates(!support.stru)
+
+  return !plates
+
+  !plates = ARRAY()
+  if !this.loadError.set() then
+    return !plates
+  endif
+
+  !allfitt = !!mdsCollectAll('FIXING','gtyp eq ''$!this.gtyp''',!support.stru)
+  do !fitt values !allfitt
+    !plates.append(object MDSCOMPPLATE(!fitt))
+    handle ANY
+    endhandle
+  enddo
+
+  return !plates
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .compensatingPlates(!support is MDSFTSEVENTYONE) is ARRAY
+
+  !plates = !this.compensatingPlates(!support.stru)
+
+  return !plates
+
+  !plates = ARRAY()
+  if !this.loadError.set() then
+    return !plates
+  endif
+
+  !allfitt = !!mdsCollectAll('FIXING','gtyp eq ''$!this.gtyp''',!support.stru)
+  do !fitt values !allfitt
+    !plates.append(object MDSCOMPPLATE(!fitt))
+    handle ANY
+    endhandle
+  enddo
+
+  return !plates
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .compensatingPlates(!form is FORM) is ARRAY
+
+  !plates = !this.compensatingPlates(!form.support.stru)
+
+  return !plates
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .compensatingPlates(!stru is DBREF) is ARRAY
+
+  !plates = ARRAY()
+  if !this.loadError.set() then
+    return !plates
+  endif
+
+  !allfitt = !!mdsCollectAll('FIXING','gtyp eq ''$!this.gtyp''',!stru)
+  do !fitt values !allfitt
+    !plates.append(object MDSCOMPPLATE(!fitt))
+    handle ANY
+    endhandle
+  enddo
+
+  return !plates
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .compensatingPlates(!plates is ARRAY)
+
+  do !plate values !plates
+    !plate.build()
+    handle ANY
+      !!alert.error(!!error.text)
+    endhandle
+  enddo
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .createCompplate(!form is FORM)
+
+  if !this.loadError.set() then
+    !!alert.error('Cannot create compensation! ' & !this.loadError)
+    return
+  endif
+
+  !atta = !!mdsSinglePick('ATTA','')
+  if !atta.unset() then
+    return
+  endif
+
+  if !form.support.atta.find(!atta).unset() then
+    !!alert.error(!atta.namtyp & ' does not belong to support ' & !form.support.stru.namn )
+    return
+  endif
+
+  if !atta.eq(!form.support.sref()) then
+    !atta = !form.support.datum
+  endif
+
+  !this.createCompplate(!form, !atta)
+  handle ANY
+    !!alert.error(!!error.text)
+    return
+  endhandle
+
+  !modform = !!fmsys.loadform('mdsmodifycompplate')
+  !modform.init(!form)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .modifyCompplates(!form is FORM)
+
+  if !this.loadError.set() then
+    !!alert.error('No compensation can be modified! ' & !this.loadError)
+    return
+  endif
+
+  !modform = !!fmsys.loadform('mdsmodifycompplate')
+  !modform.init(!form)
+  handle ANY
+    !!alert.error(!!error.text)
+  endhandle
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .createCompplate(!form is FORM, !atta is DBREF)
+
+  !bar = object DBREF()
+  !frmw = !form.support.frmw()
+  if !frmw.set() then
+    !members = !frmw.memb
+  else
+    !error = 'Compensation cannot be created, the framework does not exist'
+    return error 1 '$!error'
+  endif
+
+  -- handle frames that have TMPL
+  !tmpl = object DBREF(!form.support.stru.name & '/TMPL')
+  handle NONE
+    !members.appendarray(!tmpl.memb)
+  elsehandle ANY
+  endhandle
+  do !sctn values !members
+    skip if !sctn.type.neq('SCTN')
+    if !sctn.:mdsattaref.find(!atta).set() then
+      !bar = !sctn
+      break
+    endif
+  enddo
+
+  if (!bar.unset()) then
+    !bar = !!mdsSinglePick('SCTN','')
+    if !bar.unset() then
+      !error = 'Bar is unset'
+      return error 1 '$!error'
+    endif
+
+    if !form.support.frmw().memb.find(!bar).unset() then
+       !error = !bar.namtyp & ' does not belong to support ' & !form.support.stru.namn
+      return error 1 '$!error'
+    endif
+  endif
+
+  !plate = object MDSCOMPPLATE(!atta,!bar)
+  handle ANY
+    !error = 'Cannot create compensation! ' & !!error.text
+    return error 1 '$!error'
+  endhandle
+
+  if !plate.fitt.set() then
+    !error = 'Compensation of ' & !atta.namtyp & ' already exists.'
+    return error 1 '$!error'
+  endif
+
+  !plate.build()
+  !!ce = !plate.fitt
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .deleteCompplate(!form is FORM)
+
+  if !this.loadError.set() then
+    !!alert.error('No compensation can be deleted! ' & !this.loadError)
+    return
+  endif
+
+  do
+    !fitt = !!mdsSinglePick('ATTA FIXING','Pick compensation plate/profile or compensated ancillary.')
+    if !fitt.unset() then
+      return
+    endif
+
+    if !fitt.type.eq('ATTA') then
+      if !form.support.atta.find(!fitt).unset() then
+        !!alert.error('The item picked does not belong to support ' & !form.support.stru.namn )
+        skip
+      endif
+      !comp = object MDSCOMPPLATE(!fitt)
+      handle ANY
+        !!alert.error(!!error.text)
+        skip
+      endhandle
+    else
+      if !fitt.ownls.find(!form.support.stru).unset() then
+        !!alert.error('The item picked does not belong to frame ' & !form.support.stru.name)
+        skip
+      endif
+      !comp = object MDSCOMPPLATE(!fitt)
+      handle ANY
+      endhandle
+    endif
+    break
+  enddo
+
+  if !!alert.confirm('O.K. to delete compensation of support ' & !comp.atta.name & ' ?').boolean().not() then
+    return
+  endif
+
+  !washere = !!ce
+  !!ce = !comp.fitt
+  delete $!!ce.type
+  !!ce = !washere
+  handle ANY
+  endhandle
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description: Routine to delete compensation (FIXING) associated with ATTA. No error is returned if no such exists.
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .deleteCompplate(!atta is DBREF)
+
+  !washere = !!ce
+  !compensation = object MDSCOMPPLATE(!atta)
+  handle ANY
+    -- no compensation so exit silently
+    return
+  endhandle
+
+  !!ce = !compensation.fitt
+  delete $!!ce.type
+
+  !!ce = !washere
+  handle ANY
+  endhandle
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .rebuildCompplate(!atta is DBREF)
+
+  !washere = !!ce
+  !compensation = object MDSCOMPPLATE(!atta)
+  handle ANY
+    -- no compensation so exit silently
+    return
+  endhandle
+
+  !compensation.build()
+
+  !!ce = !washere
+  handle ANY
+  endhandle
+
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .checkGap(!gap is REAL)
+
+  !gapstr = !gap.string(!!distanceFmt).replace('''','''''')
+  if !gap.lt(!this.mingap) then
+    !mingap = !this.mingap.string(!!distanceFmt).replace('''','''''')
+    return error 1 'Gap ($!gapstr) is less than minimum specified ($!mingap).'
+  elseif !gap.gt(!this.maxgapPrfl) then
+    !maxgap = !this.maxgapPrfl.string(!!distanceFmt).replace('''','''''')
+    return error 2 'Gap ($!gapstr) is greater than maximum specified ($!maxgap).'
+  endif
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .width(!sctn is DBREF,!atta is DBREF) is REAL
+
+  !zdir = !sctn.plori.na.zdir()
+  !angle = !zdir.angle(!atta.ldir)
+  if !angle.gt(45).and(!angle.lt(135)) then
+    !width = !sctn.para[2]
+  else
+    !width = !sctn.para[1]
+  endif
+  !width = distconvert(!width)
+
+  return !width
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:  Default material
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .matref() is DBREF
+
+  !matref = !this.matref[!this.dfltMatrefIndex]
+  handle ANY
+    !matref = !this.matref.first()
+  endhandle
+
+  return !matref
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .roundingMethodDesc(!key is STRING) is STRING
+
+  !index = !this.methodKey().findfirst(!key.upcase())
+
+  return !this.roundingMethodDesc()[!index]
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .roundingMethodDesc() is ARRAY
+
+  return split('Always Up\Always Down\To Closest Value','\')
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .thknMethodDesc(!key is STRING) is STRING
+
+  !index = !this.methodKey().findfirst(!key.upcase())
+
+  return !this.thknMethodDesc()[!index]
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .thknMethodDesc() is ARRAY
+
+  return split('Greater or equal the gap\Less or equal the gap\Closest to the gap','\')
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .methodKey() is ARRAY
+
+  return split('UP DOWN CLOSEST')
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method: mdsCompplateMaterials
+--
+-- Description: Return a list of available materials for each compensating plate size
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R       STRING    Section name where material list is stored
+-- Return:
+--   [Data Type] [Description]
+--    2D ARRAY
+------------------------------------------------------------------------
+
+define method .mdsCompplateMaterials(!table is STRING) is ARRAY
+
+  !tableref = !table.dbref()
+  handle ANY
+    !error = !table & ' does not exists. Contact MDS administrator.'
+    return error 1 '$!error'
+  endhandle
+
+  !dfltdata = object DBREF(!tableref.name & '/DFLT')
+  !this.default = !dfltdata.prde.expr.real()
+  !this.defexpr = object EXPRESSION(!dfltdata.prop.expr)
+
+  !i = 0
+  do !cate values !tableref.memb
+    skip if !cate.type.neq('CATE')
+    !j = 0
+    do !dtse values !cate.memb
+      skip if !dtse.type.neq('DTSE')
+
+      !code = !dtse.prop.matr
+      handle ANY
+        skip
+      endhandle
+      !expr = object EXPRESSION(!dtse.prop.expr)
+      handle ANY
+        skip
+      endhandle
+      !this.code.append(!code)
+      !this.expr.append(!expr)
+      !j = !j + 1
+    enddo
+    !i = !i + 1
+  enddo
+
+endmethod

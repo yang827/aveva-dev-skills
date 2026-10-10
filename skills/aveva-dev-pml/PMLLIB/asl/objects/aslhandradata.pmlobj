@@ -1,0 +1,761 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            aslhandradata.pmlobj
+--   Type:          Object Definition
+--   Group:         ASL Application
+--     Keyword:     GEN
+--   Module:        DESIGN
+--   Replaces:
+-- Author:          Lars Leppin
+-- Created:         Tue Aug 1 09:00:00 GMT 2006
+--
+-- Description:     container for HandRa data
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  aslHandRaData()                  -
+--  createGates()                    -                   create the postset
+--  createPosts()                    -                   create the postset
+--  createRailset()                  -                   create the railset
+--  drawAccess()                     -                   draws gates
+--  enhance()                        -                   enhances the element
+--  erase()                          -                   erases all traces
+--  getError()                       BOOLEAN             returns the error status
+--  resetError()                     -                   resets error status
+--  showVolFeedback()                -                   draws the element with aid lines
+--  unEnhance()                      -                   unenhances the element
+--  updateDB()                       -                   creates/updates HandRa element
+--  updateDataObj(DBREF)             -                   read the values from the HandRa
+--
+
+-- Define object
+define object ASLHANDRADATA
+
+  -- public members
+  ---------------------------------------------------------------------------
+  -- contains the direction of handrail segments
+  member .directions           is ARRAY
+
+  -- contains all gates
+  member .gates                is ARRAY
+
+  -- reference
+  member .refe                 is DBREF
+
+  -- routing
+  member .routing              is POLYLINE
+
+  -- post spacing
+  member .postSpacing          is REAL
+
+  -- tangent spacing
+  member .tangentSpacing       is REAL
+
+  -- end spacing
+  member .endSpacing           is REAL
+
+  -- rail spacing
+  member .railSpacing          is ARRAY
+
+  -- radius
+  member .radius               is REAL
+
+  -- rail height
+  member .height               is REAL
+
+  -- link to the uses setting
+  member .settingReference     is STRING
+
+  -- reference to the central template
+  member .tmplReference        is DBREF
+
+  -- contains the types of handrail segments
+  member .types                is ARRAY
+
+
+
+  -- private members
+  ---------------------------------------------------------------------------
+  -- true if an error occurs
+  member .error             is BOOLEAN
+
+  -- controls if the object uses the undo functionality
+  member .undoable          is BOOLEAN
+
+
+endobject
+-- End of object definition for ASLHandRaData
+
+------------------------------------------------------------------------
+--
+-- Method:      ASLHandRaData
+--
+-- Description: default constructor
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+
+define method .aslHandRaData()
+
+  -- inits
+  !this.error    = false
+  !this.undoable = false
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      createGates
+--
+-- Description: create the postset
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+
+define method .createGates()
+
+  -- collect the all hrfeature elements
+  !collection = object COLLECTION()
+  !collection.scope(!this.refe)
+  !collection.type('HRFEAT')
+  !collection.initialise()
+  !allHRFeatures = !collection.results()
+
+  -- delete the hrfeature elements
+  if ( !this.gates.empty() ) then
+    do !hrFeature value !allHRFeatures
+      !!ce = !hrFeature
+      DELETE HRFEAT
+    enddo
+    return
+  endif
+
+  -- create hrfeature element if not exist
+  if ( !allHRFeatures.empty() ) then
+    NEW HRFEAT
+  else
+    !!ce = !allHRFeatures[1]
+  endif
+  DELETE HRFEAT MEM
+
+  do !gateIdx index !this.gates
+    !gate = !this.gates[!gateIdx]
+
+    -- collect the path points from the handrail
+    !collection = object COLLECTION()
+    !collection.scope(!this.refe)
+    !collection.type('POINTR')
+    !collection.initialise()
+    !allPointr = !collection.results()
+
+    do !i index !allPointr
+      skip if ( !i.eq(!allPointr.size()) )
+
+      !line = !allPointr[!i].position.line(!allPointr[!i + 1].position)
+
+      if ( !line.distance(!gate.position).lt(500mm) and $
+           !line.onProjected(!gate.position) ) then
+        NEW HRGATE
+        !this.gates[!gateIdx].refe = !!ce
+
+        -- create the points
+        !!ce = !allPointr[!i]
+        NEW POINTR
+        !!ce.position  = !gate.getArrivePosition()
+        !arrivePoint   = !!ce
+        NEW POINTR
+        !!ce.position  = !gate.getLeavePosition()
+
+        !!ce           = !this.gates[!gateIdx].refe
+        !!ce.posRef    = !arrivePoint
+        !!ce.zDistance = !gate.arriveOffset
+        break
+      endif
+    enddo
+  enddo
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      createPosts
+--
+-- Description: create the postset
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+
+define method .createPosts()
+
+  -- collect all railsets for the template
+  !collection = object COLLECTION()
+  !collection.scope(!this.tmplReference)
+  !collection.type('HRPOST')
+  !collection.initialise()
+  !allPosts = !collection.results()
+
+  if ( !allPosts.empty() ) then
+    return
+  endif
+
+  -- collect the path points from the handrail
+  !collection = object COLLECTION()
+  !collection.scope(!this.refe)
+  !collection.type('POINTR')
+  !collection.initialise()
+  !allPointr = !collection.results()
+
+  -- collect all gates
+  !collection = object COLLECTION()
+  !collection.scope(!this.refe)
+  !collection.type('HRGATE')
+  !collection.initialise()
+  !allGates = !collection.results()
+
+  NEW POSTSE
+  -- Record whether the handrail is closed or not
+  var !closeFlag CLOSEFLAG of HANDRA
+  !closed = !closeFlag.boolean()
+
+  -- connect all rails to the points
+  do !i from 1 to !allPointr.size()
+
+    !j = !i
+    if (!closed and (!i eq !allPointr.size())) then
+      -- 4 points = 4 sides (last point going back to start)
+      !j = 0
+    elseif (!closed.not() and (!i eq !allPointr.size())) then
+      -- 4 points = 3 sides
+      skip
+    endif
+
+    -- skip if point is at the same position as the next point
+    skip if ( !allPointr[!i].position.eq(!allPointr[!j + 1].position) )
+
+    -- check if point belongs to a gate
+    !gateFlag = false
+    do !gate value !allGates
+      if ( !gate.posRef.eq(!allPointr[!i]) ) then
+        !gateFlag = true
+      endif
+    enddo
+    skip if ( !gateFlag )
+
+    -- distance to the next point
+    !distance = !allPointr[!i].position.distance(!allPointr[!j + 1].position)
+
+    -- create a post at start
+    NEW HRPOST COPY $!allPosts[1]
+    !!ce.posRef    = !allPointr[!i]
+    if ( !allPointr[!i].fRadius.eq(0) ) then
+      !!ce.zDistance = !this.endSpacing
+    else
+      !!ce.zDistance = !this.tangentSpacing
+    endif
+    !hrPost1       = !!ce
+
+    -- create a second post at the end
+    NEW HRPOST COPY $!allPosts[1]
+    !!ce.posRef    = !allPointr[!i]
+    !!ce.zDistance = !distance
+    !hrPost2       = !!ce
+
+    !distance      = !hrPost1.position.distance(!hrPost2.position)
+    if ( !allPointr[!j + 1].fRadius.eq(0) ) then
+      !!ce.zDistance = !hrPost1.zDistance + !distance - !this.endSpacing
+    else
+      !!ce.zDistance = !hrPost1.zDistance + !distance - !this.tangentSpacing
+    endif
+
+    -- calculate the distance anew, when radius at the corners this must be done
+    !distance      = !hrPost1.position.distance(!hrPost2.position)
+
+    -- calculate the number of posts and the "real" post spacing
+    !numberOfPosts = INT(!distance / !this.postSpacing)
+
+    skip if ( !numberOfPosts.eq(0) )
+    !postSpacing   = !distance / (!numberOfPosts + 1)
+
+    !!ce = !hrPost1
+    do !l to !numberOfPosts
+      NEW HRPOST COPY $!allPosts[1]
+      !!ce.posRef    = !allPointr[!i]
+      if ( !allPointr[!i].fRadius.eq(0) ) then
+        !!ce.zDistance = !this.endSpacing + !postSpacing * !l
+      else
+        !!ce.zDistance = !this.tangentSpacing + !postSpacing * !l
+      endif
+    enddo
+    !!ce = !hrPost2
+  enddo
+
+  !!ce = !this.refe
+  RULE REXECUTE
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      createRailset
+--
+-- Description: create the railset
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+
+define method .createRailset()
+
+  -- collect all railsets for the template
+  !collection = object COLLECTION()
+  !collection.scope(!this.tmplReference)
+  !collection.type('RAILSE')
+  !collection.initialise()
+  !allRailsets = !collection.results()
+
+  if ( !allRailsets.empty() ) then
+    return
+  endif
+
+  !refe = !!ce
+
+  -- collect the path points from the handrail
+  !collection = object COLLECTION()
+  !collection.scope(!this.refe)
+  !collection.type('POINTR')
+  !collection.initialise()
+  !allPointr = !collection.results()
+
+  -- collect the path points from the handrail
+  !collection = object COLLECTION()
+  !collection.scope(!this.refe)
+  !collection.type('HRGATE')
+  !collection.initialise()
+  !allGates = !collection.results()
+
+  ---------------------------------------------------------------------------
+  -- sort the gates
+  !gateDistance = ARRAY()
+  do !gate value !allGates
+    !gateDistance.append(!gate.posRef.order)
+  enddo
+  !sortedIndices = !gateDistance.sortedIndices()
+  !allGates.reIndex(!sortedIndices)
+
+  ---------------------------------------------------------------------------
+  -- array of start references
+  !startPoints = ARRAY()
+  !endPoints = ARRAY()
+
+  !startPoints.append(!allPointr.first())
+
+  -- for all gates append the referenced points to the arrays
+  do !gate value !allGates
+    !endPoints.append(!gate.posRef)
+    !!ce = !gate.posRef
+    NEXT
+    !startPoints.append(!!ce)
+  enddo
+
+  if (CLOSEFLAG of HANDRA) then
+    !endPoints.append(!allPointr.first())
+  else
+    !endPoints.append(!allPointr.last())
+  endif
+
+  -- create the railset
+  !!ce = !refe
+  do !i index !startPoints
+    NEW RAILSE COPY $!allRailsets[1]
+
+    -- connect all rails to the points
+    do !rail value !!ce.members
+      !rail.staRef = !startPoints[!i]
+      !rail.endRef = !endPoints[!i]
+    enddo
+  enddo
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      enhance
+--
+-- Description: enhances the element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+
+define method .enhance()
+
+  call !!aslEnhance(!this.refe)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      drawAccess
+--
+-- Description: draws gates
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+
+define method .drawAccess()
+
+  do !i index !this.gates
+    !this.gates[!i].showVolFeedback()
+    !position  = !this.gates[!i].position
+    !label     = 'Gate: ' & !i.string()
+    !aidNumber = !!aslCentralData.aidDim
+    AID TEXT NUMBER $!aidNumber '$!label' AT $!position
+  enddo
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      erase
+--
+-- Description: erases all traces
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+
+define method .erase()
+
+  -- deletes the element
+  call !!aslErase(!this.refe)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      getError
+--
+-- Description: returns the error status
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     error status
+------------------------------------------------------------------------
+
+define method .getError() is BOOLEAN
+
+  -- inits
+  !error = !this.error
+
+
+
+  return !error
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      resetError
+--
+-- Description: resets error status
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+
+define method .resetError()
+
+  !this.error = false
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      showVolFeedback
+--
+-- Description: draws the element with aid lines
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+
+define method .showVolFeedback()
+
+  -- May not be required
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      unEnhance
+--
+-- Description: unenhances the element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+
+define method .unEnhance()
+
+  call !!aslUnEnhance(!this.refe)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      updateDB
+--
+-- Description: creates/updates HandRa element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+
+define method .updateDB()
+
+  -- create undo mark
+  if ( !this.undoable ) then
+    !undo = object UNDOABLE()
+    !undo.description('Create/update handrail')
+    !undo.add()
+  endif
+
+--  if(!!aslStoreTable.getStore('handrail').unset() or !!aslStoreTable.getStore('handrail').badRef())then
+--    !!alert.error('Storage area is not set. Handrail is generated under the current element.')
+--  else
+--    !!ce = !!aslStoreTable.getStore('handrail')
+--  endif
+
+  -- creates/updates the owner element
+  !this.refe          = !!aslCreate('HANDRA', !this.refe)
+
+  !spacing            = !this.railSpacing
+  !spacingHeight      = 0
+  !spacingHeight    = !spacing[!spacing.size()]
+  !lastGap            = !this.height - !spacingHeight
+
+  if ( !lastGap.gt(0) ) then
+    !spacing.append(!lastGap)
+  endif
+
+  !this.refe.railHeight     = !spacing
+  !this.refe.bRadius        = !this.radius
+
+  !this.refe.postSpacing    = !this.postSpacing
+  if (!this.tangentSpacing eq 0) then
+    !this.refe.tangOffset     = !this.tangentSpacing + 0.1
+  else
+  !this.refe.tangOffset     = !this.tangentSpacing
+  endif
+  !this.refe.ePostOffset    = !this.endSpacing
+
+  !this.refe.description    = !this.tmplReference.string() & ' ' & !this.settingReference.string()
+
+  -- create the routing
+  RPATH 1
+  handle ANY
+    new RPATH
+  elsehandle NONE
+    DELETE RPATH MEMBER
+  endhandle
+  !this.routing = !this.routing.mergeLines()
+  !this.routing.dbWrite(!!ce)
+  -- For a handrail, any coincident first and last points are not required
+  RPATH
+  -- If no members we don't need this RPATH
+  if (!!ce.members.size() eq 0) then
+    DELETE RPATH
+  else
+    !positionOne = !!ce.members[1].position
+    !positionLast = !!ce.members[!!ce.members.size()].position
+    if (!positionOne eq !positionLast) then
+      -- Make the handrail closed
+      HANDRA
+      CLOSEFLAG true
+      SAME
+      1
+      -- Set radius
+      FRAD $!this.radius
+      LAST
+      !type = !!ce .type
+      DELETE $!type
+    endif
+
+    -- create the gates
+    !this.createGates()
+
+    -- create the handrails
+    !this.createRailset()
+
+    -- create the posts
+    !this.createPosts()
+  endif
+
+  -- end undo mark
+  if ( !this.undoable ) then
+    !undo.endUndoable()
+  endif
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      updateDataObj
+--
+-- Description: read the values from the HandRa
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       reference element
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+
+define method .updateDataObj(!refe is DBREF)
+
+  !this.refe           = !refe
+
+  !this.railSpacing    = !refe.railHeight
+  !this.height         = 0
+  do !gap value !this.railSpacing
+    !this.height       = !this.height + !gap
+  enddo
+
+  !this.postSpacing    = !refe.postSpacing
+  !this.tangentSpacing = !refe.tangOffset
+  !this.endSpacing     = !refe.ePostOffset
+  !this.radius         = !refe.bRadius
+
+  -- collect all railsets for the template
+  !collection = object COLLECTION()
+  !collection.scope(!refe)
+  !collection.type('RPATH')
+  !collection.initialise()
+  !allPaths = !collection.results()
+
+  if ( !allPaths.empty() ) then
+    return
+  endif
+  !this.routing = object POLYLINE(!allPaths[1])
+  !this.tmplReference     = object DBREF(!this.refe.description.before(' '))
+  !this.settingReference  = !this.refe.description.after(' ')
+
+
+  -- reads the gates
+  ---------------------------------------------------------------------------
+  -- inits
+  !this.gates  = object ARRAY()
+
+  -- collects all handrail gates
+  !collection  = object COLLECTION()
+  !collection.type('HRGATE')
+  !collection.scope(!refe)
+  !collection.initialise()
+  !hrGateRefes = !collection.results()
+
+  -- stops if there are no gates
+  if ( !hrGateRefes.empty() ) then
+    return
+  endif
+
+  -- collects all pointers of the handrail path
+  !collection  = object COLLECTION()
+  !collection.type('POINTR')
+  !collection.scope(!refe)
+  !collection.initialise()
+  !pointrRefes = !collection.results()
+
+  -- handles all gates
+  do !hrGateRefe value !hrGateRefes
+    -- evaluates the reference pointr
+    !posRefPointr = !hrGateRefe.posRef
+
+    -- stops if the there is no valid reference
+    skip if ( !posRefPointr.badRef() )
+
+    -- evaluates the number of the reference pointr
+    !matchIdx = !pointrRefes.findFirst(!posRefPointr)
+
+    -- stop if there is no next pointer element after the reference pointr
+    skip if ( !pointrRefes.size().eq(!matchIdx) )
+
+    -- evaluates the next pointr element after the gate
+    !nextPointr = !pointrRefes[!matchIdx + 1]
+
+    -- evaluates the direction of the line between both pointr
+    !line      = object LINE(!posRefPointr.position, !nextPointr.position)
+    !direction = !line.direction()
+
+    -- evaluates the gate position
+    !position = !posRefPointr.position.offSet(!direction, !hrGateRefe.zDistance)
+
+    -- assumption
+    !entryDir = !direction.orthogonal(U)
+    !exitDir  = !direction.opposite()
+
+    !gate = object GATE(!position, !entryDir, !exitDir)
+    !this.gates.append(!gate)
+  enddo
+
+endmethod
+
+
+-- End of method

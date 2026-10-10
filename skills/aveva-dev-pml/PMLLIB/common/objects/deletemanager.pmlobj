@@ -1,0 +1,407 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            deletemanager.pmlobj
+--   Type:          Object Definition
+--   Group:
+--
+--     Keyword:     Delete
+--   Module:        General
+--   Replaces:
+--
+-- Author:          Neil.Holmes
+-- Created:         Thursday Jan 11 10:00:00 GMT 2007
+--
+-- Description:
+--   Object for managing the deletion of elements within the system
+--
+--   Applications can register a special case mechanism for the deletion
+--   of an element type that it manages. This is done by registering an
+--   object that has a database element delete method (don't use ".delete"
+--   method, as this relates to the PML variable).
+--   The method definition should only have a single argument which is
+--   of a DBREF type and should return a boolean to specify whether the
+--   delete was successful or not. Where the delete failed, then the
+--   !!error.text should be used to return the relevant error message.
+--
+--    usage:
+--      !!deleteManager.registerObject('elementType', object OBJECTNAME(), 'methodName')
+--    Where:
+--      !!deleteManager is the global variable used for deletion
+--      elementType     is the database element type to be handled
+--      OBJECTNAME      is the PML object containing the deletion method to the element
+--      methodName      is the method of the object which will be used to delete
+--                      the element and should be defined like:
+--
+--                        define object .methodName(!element is DBREF) is BOOLEAN
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  dbDelete(ARRAY)                  BOOLEAN             Delete DB element
+--  dbDelete(ARRAY,BOOLEAN)          BOOLEAN             Delete DB element
+--  dbDelete(DBREF)                  BOOLEAN             Delete DB element
+--  dbDelete(DBREF,BOOLEAN)          BOOLEAN             Delete DB element
+--  dbDeleteCmd(DBREF)               BOOLEAN             Delete DB element using standard command
+--  error(DBREF,STRING)              -                   Add error to error stack
+--  errors()                         ARRAY               Returns error stack
+--  registerObject(STRING,ANY)       BOOLEAN             Registers element and an object with "dbDelete(DBREF)" method
+--  registerObject(STRING,ANY,STRING) BOOLEAN             Registers element and an object with given method for deleting
+--
+------------------------------------------------------------------------
+
+define object DELETEMANAGER
+
+  -- Element list
+  member .elementTypes  is ARRAY
+
+  -- Object list for element types
+  member .objects       is ARRAY
+
+  -- Method list for objects (Delete methods should only have a single argument
+  -- of DBREF, which is the element to be delete)
+  member .methods       is ARRAY
+
+  -- Error stack of any errors encountered when deleting
+  member .errorStack    is ARRAY
+
+  -- Undo object
+  member .undo          is UNDOABLE
+
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:     registerObject
+--
+-- Description: Registers element and an object with "dbDelete(DBREF)" method
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Element type to be handled
+--    2   R      ANY         Object containing delete method for element type
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if added into the system
+--
+------------------------------------------------------------------------
+
+define method .registerObject(!type is STRING, !object is ANY) is BOOLEAN
+  return !this.registerObject(!type, !object, 'DBDELETE')
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:     registerObject
+--
+-- Description: Registers element and an object with given method for deleting
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Element type to be handled
+--    2   R      ANY         Object containing delete method for element type
+--    3   R      STRING      Method of object for deleting element
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if added into the system
+--
+------------------------------------------------------------------------
+
+define method .registerObject(!type is STRING, !object is ANY, !method is STRING) is BOOLEAN
+
+  -- Initialise Variable
+  !return           = true
+  !methodName       = !method.upcase()
+  !passedObject     = !object
+
+  -- Get element type
+  var !noun noundef $!<type> name
+  handle ANY
+    return false
+  endhandle
+  !elementType      = !noun[1]
+
+  -- Check if type is already in the system
+  !index            = !this.elementTypes.findFirst(!elementType)
+  if(!index.set()) then
+    !!error.text    = 'Element type "' & !elementType & '" already registered within the system.'
+    return false
+  endif
+
+  -- Check that object has given method conforming to .methodName(DBREF)
+  if(!passedObject.methods().findFirst(!methodName & '(DBREF)').unset()) then
+    !!error.text    = 'Object "' & !passedObject.objectType() & '" does not have given method "' & !methodName & '(DBREF)" defined.'
+    return false
+  endif
+
+  -- Add element to register
+  !this.elementTypes.append(!elementType)
+  !this.objects.append(!object)
+  !this.methods.append(!methodName)
+
+  -- Return
+  return true
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:     dbDelete
+--
+-- Description: Delete DB element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element to delete
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True is successful, False is failed (error returned via .errorStack)
+--
+------------------------------------------------------------------------
+
+define method .dbDelete(!element is DBREF) is BOOLEAN
+  return !this.dbDelete(!element, true)
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:     dbDelete
+--
+-- Description: Delete DB element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       List of elements to be deleted
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if all elements have been deleted successful
+--                False if any delete has failed (error returned via .errorStack)
+--
+------------------------------------------------------------------------
+
+define method .dbDelete(!elements is ARRAY) is BOOLEAN
+  return !this.dbDelete(!elements, true)
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:     dbDelete
+--
+-- Description: Delete DB element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element to delete
+--    2   R      BOOLEAN     True if UNDO is to be handled by method
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True is successful, False is failed (error returned via .errorStack)
+--
+------------------------------------------------------------------------
+
+define method .dbDelete(!element is DBREF, !undo is BOOLEAN) is BOOLEAN
+
+  -- Initialise Variables
+  !this.errorStack.clear()
+  !return         = false
+  !elementType    = !element.fulltype
+
+  -- Encapsulate delete with UNDO
+  if(!undo) then
+    !this.undo.description('Delete element (' & !element.flnn & ')')
+    !this.undo.add()
+  endif
+
+  -- Check if element is in the element list
+  !index          = !this.elementTypes.findFirst(!elementType)
+
+  -- Use registered delete mechanism for element
+  if(!index.set()) then
+    !command      = object BLOCK('!this.objects[!index].' & !this.methods[!index] & '(!element)')
+    !return       = !command.evaluate()
+    -- Handles
+    handle ANY
+      !return     = false
+    endhandle
+    if(!return.not()) then
+      !this.error(!element, !!error.text)
+    endif
+
+  -- Use DELETE command
+  else
+    !return       = !this.dbDeleteCmd(!element)
+  endif
+
+  -- Mark end of UNDO
+  if(!undo) then
+    !this.undo.endUndoable()
+  endif
+
+  -- Return
+  return !return
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:     dbDelete
+--
+-- Description: Delete DB element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       List of elements to be deleted
+--    2   R      BOOLEAN     True if UNDO is to be handled by method
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if all elements have been deleted successful
+--                False if any delete has failed (error returned via .errorStack)
+--
+------------------------------------------------------------------------
+
+define method .dbDelete(!elements is ARRAY, !undo is BOOLEAN) is BOOLEAN
+
+  -- Initialise Variables
+  !errors   = ARRAY()
+
+  -- Encapsulate delete with UNDO
+  if(!undo) then
+    !this.undo.description('Delete list of elements')
+    !this.undo.add()
+  endif
+
+  -- Loop through list of elements in the passed array
+  do !i indices !elements
+
+    -- Ignore entries which are not DBREF type
+    skip if(!elements[!i].objectType().neq('DBREF'))
+
+    -- Delete element
+    if(!this.dbDelete(!elements[!i], false).not()) then
+      !errors.appendArray(!this.errorStack)
+    endif
+  enddo
+
+  -- Mark end of UNDO
+  if(!undo) then
+    !this.undo.endUndoable()
+  endif
+
+  -- Return
+  !this.errorStack  = !errors
+  return !this.errorStack.empty()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:     dbDeleteCmd
+--
+-- Description: Delete DB element using standard command
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element to delete
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True is successful, False is failed (error returned via .errorStack)
+--
+------------------------------------------------------------------------
+
+define method .dbDeleteCmd(!element is DBREF) is BOOLEAN
+
+  -- Initialise Variables
+  !elementType  = !element.fulltype
+  !notCE = !!ce.neq(!element)
+  if ( !notCE) then
+    !refCE    = !!ce
+    !!ce          = !element
+  endif
+
+  -- Check if element can be delete
+
+  -- Delete element
+  DELETE $!<elementType>
+  handle ANY
+    !this.error(!element, !!error.text)
+    if (!notCE) then
+      !!ce        = !refCE
+      handle ANY
+      endhandle
+    endif
+    return false
+  endhandle
+
+  -- Return to original element
+  if (!notCE) then
+  	!!ce          = !refCE
+    handle ANY
+    endhandle
+  endif
+
+  -- Return
+  return true
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:     error
+--
+-- Description: Add error to error stack
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element error relates to
+--    2   R      STRING      Error message
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .error(!element is DBREF, !errorText is STRING)
+  !error[1] = !element
+  !error[2] = !errorText
+  !this.errorStack.append(!error)
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:     errors
+--
+-- Description: Returns error stack
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       2D array of element and error
+--
+------------------------------------------------------------------------
+
+define method .errors() is ARRAY
+  return !this.errorStack
+endmethod
+-- End of method

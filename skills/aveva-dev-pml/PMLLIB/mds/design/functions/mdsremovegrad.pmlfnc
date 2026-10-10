@@ -1,0 +1,367 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:    mdsremovegrad.pmlfnc
+--   Type:    Function Definition
+--   Group:   Multi Discipline Supports Application
+--     Keyword:   MDS
+--   Module:    design
+--   Replaces:
+--
+-- Author:    Wayne Dodwell
+-- Created:   Wednesday 29th September 2004
+--
+--
+-- Description:
+-- -- Function to Get the ORTHOGONAL Directions of a Piping Component
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R        DBREF         DBREF of the Piping Component
+--
+-- Return:
+--    [Data Type]   [Description]
+--     ARRAY         [1] ORTHOGONAL Pleave Direction Object of the Piping Component, e.g.mDS Support Datum Atta
+--                   [2] ORTHOGONAL Opposite Direction Object to PLeave of the Piping Component, e.g.mDS Support Datum Atta
+--
+--                   [3] ORTHOGONAL PPoint[9] Direction Object of the Piping Component, e.g.mDS Support Datum Atta
+--                   [4] ORTHOGONAL Opposite Direction Object to PPoint[9] of the Piping Component, e.g.mDS Support Datum Atta
+--
+--                   [5] ORTHOGONAL PPoint[10] Direction Object of the Piping Component, e.g.mDS Support Datum Atta
+--                   [6] ORTHOGONAL PPoint[11] Opposite Direction Object to PPoint[10] of the Piping Component, e.g.mDS Support Datum Atta
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsremovegrad(!atta is DBREF) is ARRAY
+
+  -- mdsgradient returns true if the pipe is on a greater slope than allowed
+  !desc = desc of /MDS/TEMPLATES
+  !manif = !!mdshangif
+  handle ANY
+    !manif = 'UNDEFINED'
+  elsehandle NONE
+    if undefined(!manif) then
+      !manif = 'UNDEFINED'
+    endif
+  endhandle
+
+  if !desc.neq('Framatome Templates') and !manif.neq('LISEGA') then
+    if !!mdsgradient(!atta) then
+      !directions[1] = !atta.adir.wrt(/* )
+      !directions[2] = !atta.ldir.wrt(/* )
+      !directions[3] = !atta.pdir[9].wrt(/* )
+      !directions[4] = !atta.pdir[9].wrt(/* ).opposite()
+
+      -- this test has been added for hangers 'FH' and 'VH' as their point sets do not
+      -- contain p10 or p11, these directions are assigned by taking crossdir from the arrive direction
+      -- of the atta and p9 of the atta.
+      -- RM 06/07/06
+      if !atta.styp.substring(1,2).eq('FH') or !atta.styp.substring(1,2).eq('VH') then
+        !crossdir = !atta.pdir[9].wrt(/* ).cross(!!ce.adir.wrt( /* ))
+        !directions[5] = !crossdir
+        !directions[6] = !crossdir.opposite()
+      else
+        !directions[5] = !atta.pdir[10].wrt(/* )
+        !directions[6] = !atta.pdir[11].wrt(/* )
+      endif
+      return !directions
+    endif
+  endif
+
+  -- Initialise Variables
+  !directions = ARRAY()
+  !origin     = !!ce
+
+  -- Check that the Passed DBREF Element is a Piping Component
+  if (!atta.ohtype.neq('BRAN').and(!atta.ohtype.neq('CTRAY'))) then
+    !!alert.error('The passed element must be a PDMS Piping Component')
+    return !directions
+  endif
+
+  -- Save EXISTING DATA for 3 PINS before re-using the 3 Pins, Pin1 to Pin3 inclusive.
+  !pinarray[1] = 1
+  !pinarray[2] = 2
+  !pinarray[3] = 3
+  !!mdspindata('SAVE',!pinarray)
+
+  -------------------------------------------------------------------------------
+  -------------------------------------------------------------------------------
+  -- Generate the Pleave and Parrive Orthogonal Directions of the Piping Component
+  -------------------------------------------------------------------------------
+  !pvectorpl           = object POINTVECTOR()
+  !pvectorpl.position  = !atta.pos.wrt(world)
+  !pvectorpl.direction = !atta.ldir.wrt(world)
+  handle ANY
+    !pvectorpl.direction = !atta.pdir[2].wrt(world)
+  endhandle
+
+  -- Create a LINE Object
+  !linepl = !pvectorpl.line(100)
+
+  -- Create a PLANE Object
+  !planepl          = object PLANE()
+  !planepl.position = !atta.pos.wrt(world)
+
+  -- Determine if Pipe is either predominantly VERTICAL or HORIZONTAL
+  !attapldir = !pvectorpl.direction
+  if (!attapldir.up.abs().eq(1)) then
+    -- Vertical Pipe
+    !planepl.orientation = Y is U wrt /* and Z is N wrt /*
+  else
+    -- Horizontal or a Sloping Horizontal Pipe
+    !planepl.orientation = Y is N wrt /* and Z is U wrt /*
+  endif
+
+  if !desc.eq('Framatome Templates') and !manif.eq('LISEGA') then
+    if (!attapldir.up.abs().geq(0.9)) then
+      -- Vertical Pipe
+      !horizontal = FALSE
+    else
+      -- Horizontal or a Sloping Horizontal Pipe
+      !horizontal = TRUE
+    endif
+
+    if !horizontal then
+      --remove the z component from the direction atta pl direction
+      !normalisedpl = object DIRECTION()
+      !normalisedpl.east = !attapldir.east
+      !normalisedpl.north = !attapldir.north
+      !normalisedpl.up = 0
+      !normalisedpl.origin = !attapldir.origin
+      !directionpl = !normalisedpl
+    else
+      --remove the z component from the direction atta pl direction
+      !normalisedpl = object DIRECTION()
+      !normalisedpl.east = 0
+      !normalisedpl.north = 0
+      !normalisedpl.up = 1
+      !normalisedpl.origin = !attapldir.origin
+      !directionpl = !normalisedpl
+    endif
+  endif
+
+  -- Create a NEW LINE Object Projected onto the PLANE Object to Determine
+  -- the DATUM Atta ORTHOGONAL PLeave Direction and the Opposite Direction
+  if !desc.neq('Framatome Templates') then
+    !projline    = !linepl.projected(!planepl)
+    !directionpl = !projline.direction()
+  endif
+  !oppositepl  = !directionpl.opposite()
+
+  -- Populate the !directions array with the ORTHOGONAL PLeave[1] and PArrive[2] Directions
+  !directions[1] = !directionpl
+  !directions[2] = !oppositepl
+
+  -------------------------------------------------------------------------------
+  -------------------------------------------------------------------------------
+  -- Determine the DATUM Atta ORTHOGONAL PPoint[9] Direction and the Opposite Direction
+  -- Assume for Horizontal and Sloping Horizontal Pipes that the PPoint[9] is = D wrt /*
+  -------------------------------------------------------------------------------
+
+  -- Position Pins to Calculate the ORTHOGONAL PPoint[9] Direction and the Opposite PPoint[9] Direction
+  pin 1 at $!atta
+  !attap9dir = !atta.pdir[9].wrt(/* )
+
+  if (!attapldir.up.abs().eq(1)) then
+    -- Vertical Pipes Only
+    ----------------------
+
+    -- The ATTA Pleave Direction is a TRUE ORTHOGONAL direction
+    -- either U or D wrt /*
+    -- Set the "ORTHOGONAL" PPoint[10] and Opposite Direction Variables to their Actual values
+    !directionp9 = !attap9dir
+    !oppositep9  = !attap9dir.opposite()
+
+  elseif (!attapldir.up.eq(0)) then
+    -- Non-Sloping Horizontal Pipes Only
+    ------------------------------------
+
+    -- The ATTA Pleave Direction is a TRUE ORTHOGONAL direction
+    -- E, N, W or S wrt /*, or E 45 N wrt /* etc...
+    -- Set the "ORTHOGONAL" PPoint[9] and Opposite Direction Variables to their Actual values
+    !directionp9 = !attap9dir
+    !oppositep9  = !attap9dir.opposite()
+
+  else
+
+    -- Sloping Horizontal Pipes Only
+    --------------------------------
+
+    -- Split into an array the Calculated ORTHOGONAL Pleave Direction
+    !splitpldir = !directions[1].string().split()
+    -- Redirect and Plane Pin 3 thro P9 of !atta
+    if (!splitpldir.size().eq(3)) then
+      -----------------------------------
+      -- Pleave Direction is a TRUE ORTHOGONAL direction - East, North, West or South WRT /* -: e.g. N WRT /*
+      -- <RM 23/07/08> added the up and down test here
+      if (!splitpldir[1].eq('E') or !splitpldir[1].eq('X')) then
+        !pin1dir = E (90) D wrt /*
+        !pin3dir = E (90) N wrt /*
+      elseif (!splitpldir[1].eq('N') or !splitpldir[1].eq('Y')) then
+        !pin1dir = N (90) D wrt /*
+        !pin3dir = N (90) W wrt /*
+      elseif (!splitpldir[1].eq('W') or !splitpldir[1].eq('-X')) then
+        !pin1dir = W (90) D wrt /*
+        !pin3dir = W (90) S wrt /*
+      elseif (!splitpldir[1].eq('S') or !splitpldir[1].eq('-Y')) then
+        !pin1dir = S (90) D wrt /*
+        !pin3dir = S (90) W wrt /*
+      elseif (!splitpldir[1].eq('U') or !splitpldir[1].eq('Z')) then
+        !pin1dir = U (90) N wrt /*
+        !pin3dir = U (90) E wrt /*
+      elseif (!splitpldir[1].eq('D') or !splitpldir[1].eq('-Z')) then
+        !pin1dir = D (90) S wrt /*
+        !pin3dir = D (90) W wrt /*
+      endif
+      -- <RM 23/07/08> end of fix
+
+      -- Position and Direct Pins 1, 2 and 3
+      pin 1 dir $!pin1dir
+      pin 2 copy pin 1
+      -- Plane Pin 2 thro P9 of !atta
+      pin 2 plane pin 2 thro p9 of $!atta
+      pin 3 copy pin 2
+      pin 3 dir $!pin3dir
+
+    else
+      -- Pleave Direction is a NOT TRUE ORTHOGONAL direction -: e.g. E 45 N WRT
+      if (!attap9dir.up.eq(0)) then
+        !pin1dir = $!splitpldir[1] ($!splitpldir[2] + 90) $!splitpldir[3] wrt /*
+        !pin3dir = !attap9dir.opposite()
+
+      elseif (!attap9dir.up.lt(0)) then
+        !pin1dir = $!splitpldir[1] $!splitpldir[2] $!splitpldir[3] 90 D wrt /*
+        !pin3dir = $!splitpldir[1] ($!splitpldir[2] + 90) $!splitpldir[3] wrt /*
+
+      elseif (!attap9dir.up.gt(0)) then
+        !pin1dir = $!splitpldir[1] $!splitpldir[2] $!splitpldir[3] 90 U wrt /*
+        !pin3dir = $!splitpldir[1] ($!splitpldir[2] + 90) $!splitpldir[3] wrt /*
+
+      endif
+    endif
+
+
+    -- Setup Pin Positions and Directions
+    -- Pin 1
+    pin 1 dir $!pin1dir
+    -- Pin 2
+    pin 2 copy pin 1
+    -- dtf >>> 25.07.06 FH01 and VH01 have p9 at p0 but p9 is always D
+    if !atta.styp.matchwild('FH*') or !atta.styp.matchwild('VH*') then
+      !directionp9 = D wrt /*
+      !oppositep9  = !directionp9
+    else
+      pin 2 plane pin 2 thro p9 of $!atta
+      pin 2 dir $!pin3dir
+      -- Pin 3
+      pin 3 copy pin 2
+      pin 3 plane pin 3 thro p9 of $!atta
+      pin 3 direct tow pin 1
+      -- Determine "ORTHOGONAL" PPoint[9] and Opposite Directions
+      var !p9oppdir pin 3 dir wrt /*
+      !oppositep9  = !p9oppdir.direction()
+      !directionp9 = !oppositep9.opposite()
+    endif
+
+  endif
+
+  -- Populate the !directions array with the ORTHOGONAL PPoint[9] and Opposite PPoint[9] Directions
+  !directions[3] = !directionp9
+  !directions[4] = !oppositep9
+
+  -- see what the cross product of p9 and pl is
+  !newdir = !attap9dir.cross( !directionpl )
+  if !newdir.north.eq(0) and !newdir.east.eq(0) then
+    !newdir.up = 1
+  elseif !newdir.north.eq(0) and !newdir.up.eq(0) then
+    !newdir.east = 1
+  elseif !newdir.east.eq(0) and !newdir.up.eq(0) then
+    !newdir.north = 1
+  endif
+
+  -- Populate the !directions array with the ppoint10 and 11 directions
+  -- this is calculated using the cross product of the orthogonal pl and the orthogonal p9
+
+
+  -- Populate the !directions array with the ORTHOGONAL PPoint[10] and Opposite PPoint[10] Direction
+
+  --<tm> swap the p10 p11 directions if they are 180 out
+  !attap10dir = !atta.pdir[10].wrt(/* )
+  handle ANY
+    !attap10dir = !newdir
+  endhandle
+  !angle = !attap10dir.angle(!newdir)
+
+  if !angle.gt(90) then $* its the wrong angle
+    !directions[5] = !newdir.opposite()
+    !directions[6] = !newdir
+  else
+    !directions[5] = !newdir
+    !directions[6] = !newdir.opposite()
+  endif
+
+  --was getting errors when the derived direction vectors were very close to 1 or 0 so as a final check loop though the direction array and
+  -- change any of these close values to 1 or 0
+  do !i from 1 to !directions.size()
+
+    !xNegative = FALSE
+    !yNegative = FALSE
+    !zNegative = FALSE
+
+    !x = !directions[!i].east
+    !y = !directions[!i].north
+    !z = !directions[!i].up
+
+    if !x.lt(0) then
+      !xNegative = TRUE
+    elseif !y.lt(0) then
+      !yNegative = TRUE
+    elseif !z.lt(0) then
+      !zNegative = TRUE
+    endif
+
+    !x = !x.abs()
+    !y = !x.abs()
+    !z = !x.abs()
+
+    if !x.gt(0.999) then
+      !directions[!i].east = 1
+      if !xNegative then
+        !directions[!i].east = -1
+      endif
+    elseif !x.lt(0.001) then
+      !directions[!i].east = 0
+    elseif !y.gt(0.999) then
+      !directions[!i].north = 1
+      if !yNegative then
+        !directions[!i].east = -1
+      endif
+    elseif !y.lt(0.001) then
+      !directions[!i].north = 0
+    elseif !z.gt(0.999) then
+      !directions[!i].up = 1
+      if !zNegative then
+        !directions[!i].east = -1
+      endif
+    elseif !z.lt(0.001) then
+      !directions[!i].up = 0
+    endif
+
+  enddo
+
+  -- Restore ALL Pins held in the GLOBAL array !!mdspindata
+  !pinarray = ARRAY()
+  !!mdspindata('RESTORE',!pinarray)
+
+  -- Navigate to the Original Element in the Database
+  !!ce = !origin
+
+  return !directions
+
+endfunction

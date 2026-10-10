@@ -1,0 +1,375 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            pfPartNo.pmlobj
+--    Type:          Object Definition
+--    Group:         Pipe Fabrication
+--      Keyword:     PF
+--    Module:        Design
+--  Author:          Jaehun Choi(Daniel)
+--  Created:         11 January 2013
+--
+--  Description:     object for managing part number
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  checkPiece(DBREF,DBREF)          BOOLEAN
+--  createPartNo(DBREF)              -                   create part no
+--  getPieceNumber(DBREF,DBREF)      REAL                gets the actual pipe piece the component lives in
+--  markShipPositionOnComponent(DBREF) -                   mark ship position on component
+--  pfPartNo()                       -                   constructor
+--  testAfter(DBREF,DBREF)           BOOLEAN
+--  testBefore(DBREF,DBREF)          BOOLEAN
+--  tubeNumberForSlantedPipeAtEnd(DBREF) REAL                computes tube number for slanted pipe which is at the end of the branch
+--  updateComponents(DBREF)          -                   update the components tube number and sequence
+--  updatePartNumberForSlantedPipe(ARRAY) -                   update part number for slanted pipe
+--  updateTubes(DBREF)               -                   loops through the spool components (BELRFA) and updates
+--
+------------------------------------------------------------------------
+-- Define object
+define object PFPARTNO
+  member .pipeSpoolManager is PFPIPESPOOLMANAGER
+  member .checkDBWrite     is COMCHECKDBWRITE
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:      pfPartNo
+-- Description: constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .pfPartNo()
+  !this.checkDBWrite.showAlert = false
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      createPartNo
+-- Description: create part no
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       pipe ref
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createPartNo(!pipeRef is DBREF)
+
+  -- save the mode
+  var !mode mode
+  forw
+
+  if (defined(!!pfContext)) then
+    !!pfContext.delete()
+  endif
+
+  !context = object PFCONTEXT()
+  !context.globalInstance()
+
+  var !device device
+  if (!device.upCase() eq 'GRAPHICS') then
+    !isGraphicalMode = true
+  else
+    !isGraphicalMode = false
+  endif
+
+  if (!isGraphicalMode and !!pfContext.disablePartumberMsg) then
+    -- hide messages on the command window
+    !!cadcSYS.hide()
+    !!cadcSYS.cadcCOM.channel = 'RQUEST'
+  endif
+
+  PARTNO CREATE $!pipeRef
+  handle any
+    if (!isGraphicalMode and !!pfContext.disablePartumberMsg) then
+      !!cadcBTH.cadcCOM.channel = 'RQUEST'
+    endif
+    return
+  endhandle
+
+   !pipeSpools = !!collectAllFor('PSPOOL', '', !pipeRef)
+    do !pipeSpoolRef values !pipeSpools
+       !this.updateTubes(!pipeSpoolRef)
+       !this.updateComponents(!pipeSpoolRef)
+    enddo
+
+  -- update part no for slanted pipe and threaded pipe
+  !fTubeList = !!collectAllFor('FTUB', |compType inset ('SEND','THRD')|, !pipeRef)
+  if (!fTubeList.set()) then
+    !this.updatePartNumberForSlantedPipe(!fTubeList)
+  endif
+
+  if (!isGraphicalMode and !!pfContext.disablePartumberMsg) then
+    !!cadcBTH.cadcCOM.channel = 'RQUEST'
+  endif
+
+  --restore the current mode
+  $!mode
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      .updateComponents(!spool is dbref)
+-- Description: update the components tube number and sequence
+-- This replaces the old methods
+--
+------------------------------------------------------------------------
+define method .updateComponents(!spool is DBREF)
+
+!components = !spool.melrfa
+!index = 0
+do !comp values !components
+  skip if !comp.type.eq('WELD')
+  skip if !comp.type.eq('TEE').and(!comp.skey.eq('TESO'))
+  skip if !comp.type.eq('PTAP')
+  skip if !comp.type.eq('FTUB').and(!comp.comptype inset('SEND','THRD'))
+  !index = !index + 1
+  skip if !comp.type.eq('PPIECE')
+  !comp.ptno = !index
+  if(!!module().productfamily.upCase() eq 'MARINE') then
+     !this.markShipPositionOnComponent(!comp)
+  endif
+enddo
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .updateTubes(!spool is DBREF)
+-- Description: loops through the spool components (BELRFA) and updates
+-- the pipe piece numbers for each component
+--
+------------------------------------------------------------------------
+define method .updateTubes(!spool is DBREF)
+ !components = !spool.belrfa
+ do !comp values !components
+   if !comp.tGeom then
+     !ptnt = !this.getPieceNumber(!comp,!spool)
+     !comp.ptnt = !ptnt
+     handle any
+       !comp.ptnh = !ptnt
+     endhandle
+    else
+      --if there is no tgeom then assigning  ptnt=0 for that component
+      !comp.ptnt = 0
+   endif
+ enddo
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .getPieceNumber(!component is DBREF,!spool is DBREF)
+-- Description: gets the actual pipe piece the component lives in
+--
+------------------------------------------------------------------------
+define method .getPieceNumber(!component is DBREF,!spool is DBREF) is REAL
+
+   -- get the pieces
+   !pieces = !spool.pprfa
+   do !piece index !pieces
+     if !this.checkPiece(!component, !pieces[!piece]) then
+       return !piece
+       break
+     endif
+   enddo
+   return 0
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .checkPiece(!component is DBREF, !piece is DBREF)is BOOLEAN
+-- Description: returns true if the passed component lives in the passed pipe piece
+--
+------------------------------------------------------------------------
+
+define method .checkPiece(!component is DBREF, !piece is DBREF)is BOOLEAN
+!boundaries = !piece.aelrfa
+!start = !boundaries[1]
+handle any
+  return false
+endhandle
+!end   = !boundaries[2]
+handle any
+  return false
+endhandle
+-- special check for il tube
+if !component.type.eq('TUBI') then
+    !comp = !component.string().after('OF ').dbref()
+    if !comp.eq(!start) then
+      -- the pipe piece start is the il tube of the passed component so we can return true
+      return true
+    endif
+endif
+
+if !this.testAfter(!start,!component).and(!this.testBefore(!end,!component)) then
+  return true
+else
+  return false
+endif
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:     .testAfter(!start is DBREF,!component is DBREF) is BOOLEAN
+-- Description: returns true if the passed component lives after the start
+-- element of the current pipe piece
+--
+------------------------------------------------------------------------
+define method .testAfter(!start is DBREF,!component is DBREF) is BOOLEAN
+
+  if !start.type.eq('BRAN') then
+    if !component.owner.eq(!start) then
+       return TRUE
+    else
+       return false
+    endif
+  elseif !start.owner.eq(!component.owner).and(!start.sequence.leq(!component.sequence)) then
+    return true
+  else
+    return false
+  endif
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:     .testBefore(!end is DBREF,!component is DBREF) is BOOLEAN
+-- Description: returns true if the passed component lives before the end
+-- element of the current pipe piece
+--
+------------------------------------------------------------------------
+define method .testBefore(!end is DBREF,!component is DBREF) is BOOLEAN
+
+  if !end.type.eq('BRAN') then
+    if !component.owner.eq(!end) then
+       return TRUE
+    else
+       return false
+    endif
+  elseif !end.owner.eq(!component.owner).and(!end.sequence.gt(!component.sequence)) then
+    return true
+  else
+    return false
+  endif
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      updatePartNumberForSlantedPipe
+-- Description: update part number for slanted pipe
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     ARRAY       f tube list
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .updatePartNumberForSlantedPipe(!fTubeList is ARRAY)
+
+ do !fTubeRef values !fTubeList
+    !sourceComp = $!fTubeRef
+      handle (2,113)
+        skip
+      endhandle
+    if !sourceComp.sequence.gt(1) then
+      if(!sourceComp.ptnt.gt(0)) then
+       !tubeNumber = !sourceComp.ptnt - 1
+      else
+        !tubeNumber = !this.tubeNumberForSlantedPipeAtEnd(!sourceComp)
+      endif
+    else
+        !tubeNumber = !sourceComp.ptnt
+    endif
+    if (!tubeNumber eq 0) then
+      !tubeNumber = 1
+    endif
+
+    !fTubeRef.ptno = !tubeNumber
+    !fTubeRef.partnu = !tubeNumber
+      handle (2,791)
+      endhandle
+    !fTubeRef.mToc = 'on'
+  enddo
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      tubeNumberForSlantedPipeAtEnd
+-- Description: computes tube number for slanted pipe which is at the end of the branch
+--
+-- Method Type: Function
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     ARRAY       f tube list
+-- Return:
+--   [Data Type] [Description]
+--      REAL      return the tube number of the slanted pipe
+------------------------------------------------------------------------
+define method .tubeNumberForSlantedPipeAtEnd(!sourceComp is DBREF) is REAL
+  !sourceCompOwnerMem = !sourceComp.owner.members
+  do !index index !sourceCompOwnerMem
+    if(!sourceComp.eq(!sourceCompOwnerMem[!index])) then
+      !previndex = !index - 1
+      break
+    endif
+  enddo
+  !prevComp = !sourceCompOwnerMem[!previndex]
+  !tubeNumber = !prevComp.ptnt
+  return !tubeNumber
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      markShipPositionOnComponent
+--
+-- Description: mark ship position on component
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .markShipPositionOnComponent(!component is DBREF)
+  !shipPositions = !!comTranslateShipPosition(!component.pos.wrt( /* ))
+  if (!shipPositions.unset()) then
+    return
+  endif
+
+  !shipPos = 'X:' & !shipPositions[1] & $
+             ' $Y:' & !shipPositions[2] & $
+             ' $Z:' & !shipPositions[3]
+  handle any
+    return
+  endhandle
+  !shipPos = !shipPos.replace('mm','')
+  !component.:isoShipCoord = '$!shipPos'
+  handle any
+  endhandle
+endmethod
+-- End of method

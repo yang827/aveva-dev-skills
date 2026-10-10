@@ -1,0 +1,306 @@
+--------------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:                MdsOverView.pmlfnc
+--   Type:              Function
+--   Group:             Multi Discipline Supports Application
+--     Keyword:         MDS
+--   Module:            Draft MDS using ABA
+--   Replaces:
+--
+-- Author:              Karel Pleschner
+-- Created:             21 April 2005
+--
+--
+-- Description:
+--
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+-- Define Function
+
+define function !!MdsCreOverView()
+
+-- first pick the view to be copied
+
+  prompt off
+  !Prompt = 'Identify VIEW to be copied or ESCAPE'
+
+  do
+    prompt load escape '$!Prompt'
+    !View = ref of id VIEW@
+      handle ANY
+        !View = nulref
+        break
+      endhandle
+    !IsMdsView = !View.Owne.LinkRef.Owne.Func.eq('MDS')
+      handle ANY
+        !IsMdsView = FALSE
+      endhandle
+      if !IsMdsView.Not() then
+        !Prompt = 'Not a MDS View! Identify another VIEW or ESCAPE'
+        skip
+      else
+        var !ViewTask collect all TASK with (upcase(pmlfunc) eq 'MDSABAVIEWTASK') for $!View.Name/Tasks
+          handle ANY
+          endhandle
+        if !ViewTask.Unset() then
+          !Prompt = 'Not a MDS View! Identify another VIEW or ESCAPE'
+          skip
+        endif
+      endif
+    break
+  enddo
+
+  if !View.Badref() then
+    return
+  endif
+
+-- check if RW database
+  if !View.Dbwrite.Not() then
+    !!Alert.Error('Cannot create VIEW - read-only database!')
+    return
+  endif
+
+-- check if locked
+  if !View.Owne.Lock then
+    !!Alert.Error('Cannot create VIEW - ' + !View.Owne.Namety + ' is locked!')
+    return
+  endif
+
+-- check if Drawing Library exists
+  !MainLib = !View.Idln.Owne.Owne
+    handle ANY
+      !!Alert.Error('Cannot create VIEW - MDS Drawing is not properly structured!')
+      return
+    endhandle
+
+  if !MainLib.Owne.neq(!View.Owne.Owne) then
+    !!Alert.Error('Cannot create VIEW - MDS Drawing is not properly structured!')
+    return
+  endif
+
+-- check main library if locked
+  if !MainLib.Lock then
+    !!Alert.Error('Cannot create VIEW - ' + !MainLib.Namety + ' is locked!')
+    return
+  endif
+
+-- get support name
+  !SuppName = !View.Owne.Darref.Name.Before('-AREA')
+
+-- store name of the source view
+  !OrigViewName = !View.Name
+
+-- get name of new view
+  !SheeName = !View.Owne.Name
+  do !C from 1
+    !NewViewName = !SheeName + '/V$!<C>'
+    !NewViewName.Dbref()
+      handle ANY
+        break
+      endhandle
+  enddo
+
+-- compose library names
+  !OrigDrawLib = nulref
+  !OrigPlaneLib = nulref
+  !OrigTagLib = nulref
+  !OrigDrawLib.Dbref(!OrigViewName + '/IDLIST')
+    handle ANY
+    endhandle
+  !OrigPlaneLib.Dbref(!OrigViewName + '/PLANES')
+    handle ANY
+    endhandle
+  !OrigTagLib.Dbref(!OrigViewName + '/TAGLIB')
+    handle ANY
+    endhandle
+
+  !DrawLib = !NewViewName + '/IDLIST'
+  !PlaneLib = !NewViewName + '/PLANES'
+  !Taglib = !NewViewName + '/TAGLIB'
+  !DrawLibRef = !DrawLib.Dbref()
+    handle NONE
+      if !DrawLibRef.Owne.neq(!MainLib).or(!DrawLibRef.Type.neq('DLLB')) then
+        !!Alert.Error('Cannot create VIEW - MDS Drawing is not properly structured!')
+        return
+      endif
+    elsehandle ANY
+      !DrawLibRef = nulref
+    endhandle
+
+  !PlaneLibRef = !PlaneLib.Dbref()
+    handle NONE
+      if !PlaneLibRef.Owne.neq(!MainLib).or(!PlaneLibRef.Type.neq('PLLB')) then
+        !!Alert.Error('Cannot create VIEW - MDS Drawing is not properly structured!')
+        return
+      endif
+    elsehandle ANY
+      !PlaneLibRef = nulref
+    endhandle
+
+  !TagLibRef = !TagLib.Dbref()
+    handle NONE
+      if !TagLibRef.Owne.neq(!MainLib).or(!TagLibRef.Type.neq('TRLB')) then
+        !!Alert.Error('Cannot create VIEW - MDS Drawing is not properly structured!')
+        return
+      endif
+    elsehandle ANY
+      !TagLibRef = nulref
+    endhandle
+
+-- go to last view and create new
+  !!ce = last view of $!View.Owner
+  new VIEW $!NewViewName copy $!View rename $!OrigViewName $!NewViewName
+  !!CE.SpPurp = 'USER'
+  !NewView = !!CE
+
+-- delete all TASK elements
+  var !AllViewTask collect all TASK for ce
+  do !Task values !AllViewTask
+    !!CE = !Task.Dbref()
+    delete TASK
+    if !!CE.Type.eq('LAYE').and(!!CE.Memb.Unset()) then
+      delete LAYE
+    endif
+  enddo
+
+-- Delete all layer apart from the title layer which we need to add a additional text
+-- to later
+
+  View
+  var !AllLayers coll all layer for ce
+  do !DeleteLayers values !AllLayers
+    !!ce = !DeleteLayers.dbref()
+    if !!ce.name.upcase().match('MDS_TITLE').eq(0) then
+      delete laye
+        handle ANY
+          unlock all
+            handle NONE
+              delete laye
+                handle ANY
+                endhandle
+            elsehandle ANY
+            endhandle
+        endhandle
+    endif
+  enddo
+
+
+-- then copy libraries and update references
+-- taggrule library
+
+  if !OrigTaglib.Badref().Not() then
+    if !TagLibRef.Badref() then
+      !!CE = !MainLib
+      new TRLB $!Taglib copy $!OrigTaglib rename $!OrigViewName $!NewViewName
+    else
+      !!CE = !TagLibRef
+      delete TRLB member
+      copy $!OrigTaglib rename $!OrigViewName $!NewViewName
+    endif
+    !NewTaglib = !!CE
+    do !Memb values !NewView.Memb
+      skip if !Memb.Type.neq('LAYE')
+      skip if !Memb.Trsf.Badref()
+      skip if !Memb.Trsf.Owne.neq(!OrigTagLib)
+      !TrsfPos = !Memb.Trsf.Sequ
+      !Memb.Trsf = !NewTaglib.Memb[!TrsfPos]
+    enddo
+  endif
+
+-- plane library
+  if !OrigPlaneLib.Badref().Not() then
+    if !PlaneLibRef.Badref() then
+      !!CE = !MainLib
+      new PLLB $!PlaneLib copy $!OrigPlaneLib rename $!OrigViewName $!NewViewName
+    else
+      !!CE = !PlaneLibRef
+      delete PLLB member
+      copy $!OrigPlaneLib rename $!OrigViewName $!NewViewName
+    endif
+    !NewPlaneLib = !!CE
+    do !Memb values !NewView.Memb
+      skip if !Memb.Type.neq('VSEC')
+      skip if !Memb.Plrf.Badref()
+      skip if !Memb.Plrf.Owne.neq(!OrigPlaneLib)
+      !PlrfPos = !Memb.Plrf.Sequ
+      !Memb.Plrf = !NewPlaneLib.Memb[!PlrfPos]
+    enddo
+  endif
+
+-- drawlist library
+  if !OrigDrawlib.Badref().Not() then
+    if !DrawLibRef.Badref() then
+      !!CE = !MainLib
+      new DLLB $!Drawlib copy $!OrigDrawlib rename $!OrigViewName $!NewViewName
+    else
+      !!CE = !DrawLibRef
+      delete DLLB member
+      copy $!OrigDrawLib rename $!OrigViewName $!NewViewName
+    endif
+    !NewDrawlib = !!CE
+    if !NewView.Idln.Badref().Not() then
+      if !NewView.Idln.Owne.eq(!OrigDrawlib) then
+        !IdliPos = !NewView.Idln.Sequ
+        !NewView.Idln = !NewDrawlib.Memb[!IdliPos]
+      endif
+    endif
+  endif
+
+-- remove items from drawlist that are not a part of support
+  do !Add values !NewView.Idln.Memb
+    !DesItem = !Add.Idna
+    if !DesItem.Name.Match(!SuppName).eq(0) then
+      if !DesItem.Type.eq('BRAN') then
+        var !AllAnc collect all ATTA with match(name,'$!SuppName') gt 0 for $!DesItem
+        skip if !AllAnc.Set()
+      endif
+      !!CE = !Add
+      delete $!!CE.Type
+    else
+      if !DesItem.Type.eq('SBFI') then
+        !!CE = !Add
+        delete $!!CE.Type
+      elseif !DesItem.Type.eq('FITT') then
+        !!CE = !Add
+        delete $!!CE.Type
+      endif
+    endif
+  enddo
+
+-- edit view title text
+  !TitleLayer = object DBREF(!NewView.Name + '/MDS_Title')
+    handle NONE
+      !!CE = texp 1 of vnot 1 of $!TitleLayer
+        handle NONE
+          just centre
+          !Btex = btex
+          btex '
+(Support shown in full detail for clarity)'
+        elsehandle ANY
+        endhandle
+    elsehandle ANY
+    endhandle
+
+--
+
+
+-- navigate to new view and update design
+  !!ce = !NewView
+  update design
+
+  !!FmSys.Refresh()
+
+endfunction
+
+-- End of Function - !!MdsCreOverView.pmlfnc

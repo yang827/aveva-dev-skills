@@ -1,0 +1,300 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  Author:          Undefined
+--------------------------------------------------------------------------------
+--
+-- File: Mdsslideft19.pmlfnc
+--   Type: Function Definition
+--   Group: Multi Discipline Supports Application
+--     Keyword: MDS
+--   Module: design
+--   Replaces: MSLIPS143
+--
+-- Author : Wayne Dodwell
+-- Created: Monday 15 September 1997
+--
+--
+-- Description:
+-- function to slide support frame to top or bottom of beam
+-- frame type configuration 4 only
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         STRING       Text string to determine TOP or BTM
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsSlideFt19(!side is STRING)
+
+-- Find current units and set the distance unit to metric
+
+    !currentunits = !!kGetSetUnits()
+
+  -- Initialise variables
+    !form     = !!mdsft19
+--<wd>17jan2008 -- Defect No. P-4407
+--    !strutype = 'SCTN'
+    !strutype = 'SCTN HSTIFF'
+--<wd>17jan2008 -- Defect No. P-4407
+    !support  = !!mdsft19.support
+    !name     = !support.stru.name
+    !frame    = !name & '/MAIN'
+    VAR !supportFrame  EXISTS $!frame
+
+  -- Check that the support configuration is of the correct type
+    if (!support.config.neq(4))then
+      !!alert.message('Not able to slide this frame configuration')
+      !!kRestoreUnits(!currentunits)
+      return
+    endif
+
+-- Can we move all components of the support
+
+  if !!mdsCheckAccess(!form,'DACMOD','POS').not() then
+    !!ce = !form.support.datum
+      handle none
+        !!kRestoreUnits(!currentunits)
+      elsehandle any
+      endhandle
+    return
+  endif
+
+  -- Check that support structure has been created
+    if (!supportFrame eq 'FALSEA')then
+      !!alert.message('Support structure has not been created')
+      !!kRestoreUnits(!currentunits)
+      return
+    endif
+
+  -- Only a vertical pipe with the V1 member not pointing u or d is allowed
+
+    !!ce = !support.datum
+    VAR !padir PA DIR WRT WORLD
+    VAR !pldir PL DIR WRT WORLD
+    if (|$!padir| NEQ |U| AND |$!pldir| NEQ |U|) then
+      !!alert.error('Can only slide if pipe is vertical')
+      !!kRestoreUnits(!currentunits)
+      return
+    endif
+
+    !!ce = $!<name>-V1
+    VAR !drns DRNS WRT WORLD
+    VAR !drne DRNE WRT WORLD
+    if (|$!drns| EQ |U| OR |$!drne| EQ |U|) then
+      !!alert.error('Can only slide horizontal supports')
+      !!kRestoreUnits(!currentunits)
+      return
+    endif
+
+-----------*** Connexions ***----------------------------------
+-- Check if the Default Connection Options and if the
+-- MDS framework has External Joints
+    !errormessage = STRING()
+    if(!!mdsCheckConns(!form, !errormessage).eq('UNJOINTED')) then
+-- Joints do NOT exist, therefore nothing to do,
+-- but to continue to SLIDE the Support etc...
+    elseif(!!mdsCheckConns(!form, !errormessage).eq('WARNING')) then
+      !continue = !!alert.confirm(!errormessage)
+      if(!continue.eq('NO')) then
+        !!kRestoreUnits(!currentunits)
+        return
+      else
+        !!mdsSelectJoints(!form,'DISCONNECT','')
+        !form.support.joints.clear()
+      endif
+    elseif(!!mdsCheckConns(!form, !errormessage).eq('ERROR')) then
+      !!alert.error(!errormessage)
+      !!kRestoreUnits(!currentunits)
+      return
+    else
+   -- continue
+      !!mdsSelectJoints(!form,'DISCONNECT','')
+      !form.support.joints.clear()
+    endif
+---------------------------------------------------------------
+
+  -- OK Slide
+    if (!side.upcase() eq |TOP|) then
+      !dir = D
+    else
+      !dir = U
+    endif
+
+    if (!support.connections[1].badref() or !support.connections[1].unset()) then
+-- Select section to slide to
+      PROMPT OFF
+      PROMPT LOAD ESCAPE |Identify section to slide to|
+      ID $!strutype @
+      handle (61,528)
+        prompt dismiss
+        prompt on
+        !!ce = !support.stru
+        !!kRestoreUnits(!currentunits)
+        return
+      endhandle
+      PROMPT DISMISS
+      PROMPT ON
+      !sctn = !!ce
+    else
+      !sctn = !support.connections[1]
+    endif
+
+    PIN 9 COPY PL OF $!support.datum
+    PIN 9 DIR $!dir
+    PIN 9 PLANE PIN 9 CLEAR 0 INF $!sctn
+    PIN 8 COPY PIN 9
+    PIN 8 PLANE PIN 8 CLEAR 0 BEH $!<name>-V1
+
+  -- Work out direction and distance to move everything
+
+    VAR !direction CONST DIR PIN 8 TO PIN 9
+    if (!direction eq '')then
+      !direction = 'D'
+    endif
+    !dist = !!kStrReal('CONST DIST PIN 9 TO PIN 8')
+
+    !!ce = !support.stru
+    MOVE $!direction WRT WORLD DIST $!dist
+
+    !!ce = !support.datum
+    MOVE $!direction WRT WORLD DIST $!dist
+
+    !!ce = $!<name>/SREF
+    POS AT $!support.datum
+
+    !pos = !!ce.pos.wrt(world)
+
+    $M/%PDMSUI%/DES/CLIB/GAIDTEXT 210 Datum $<$!pos$>
+
+    do !count from 1
+      $!<name>.$!count
+        handle any
+          break
+        endhandle
+
+      MOVE $!direction WRT WORLD DIST $!dist
+      !pos = !!ce.pos.wrt(world)
+      !num = 210 + !count
+
+      $M/%PDMSUI%/DES/CLIB/GAIDTEXT $!num $!count $<$!pos$>
+
+    enddo
+
+    !!ce = !support.datum
+
+    Call !!mdsDistance(!!mdsft19)
+
+-- MAKE ADJUSTMENT IF REQUIRED. TO ALLOW FOR CLEARANCE COMMAND ON SECTION. IT MIGHT
+-- NOT BE IN THE CORRECT PLACE
+
+  -- Get position to check against
+    !!ce = $!<name>-V1
+    !checkPos = !!ce.posend.wrt(world)
+
+    !testCe = !!mdsRelToDatum(!support.datum, !sctn, D, 1)
+
+    if (!testCe[1].upcase() eq 'BELOW')then
+      if (!side.upcase() eq |TOP|) then
+        !array = !!kClosestPline(!sctn, !checkPos, D)
+        !inter = !array[2]
+      else
+        !array = !!kFarPline(!sctn, !checkPos, D)
+        !inter = !array[2]
+      endif
+    elseif (!testCe[1].upcase() eq 'ABOVE')then
+      if (!side.upcase() eq |TOP|) then
+        !array = !!kFarPline(!sctn, !checkPos, D)
+        !inter = !array[2]
+      else
+        !array = !!kClosestPline(!sctn, !checkPos, D)
+        !inter = !array[2]
+      endif
+    elseif (!testCe[1].upcase() eq 'EQUAL')then
+      -- Selected section is at same elevation
+      !!alert.error('Identified Section is not suitable for this operation')
+      !!kRestoreUnits(!currentunits)
+      return
+    else
+      -- Selected section is unsuitable
+      !!alert.error('Identified Section is not suitable for this operation')
+      !!kRestoreUnits(!currentunits)
+      return
+    endif
+    PIN 1 AT $!inter
+
+    PIN 9 COPY PL OF $!support.datum
+    PIN 9 DIR $!dir
+    PIN 9 PLANE PIN 9 THRO PIN 1
+    PIN 1 OFF
+    PIN 8 COPY PIN 9
+    PIN 8 PLANE PIN 8 CLEAR 0 BEH $!<name>-V1
+
+  -- Work out direction and distance to move everything
+
+    VAR !direction CONST DIR PIN 8 TO PIN 9
+
+    if (!direction eq '')then
+    -- Reset pins
+      Call !!mdsResetPins(1,9)
+      !!kRestoreUnits(!currentunits)
+      return
+    endif
+
+    !dist = !!kStrReal('CONST DIST PIN 9 TO PIN 8')
+
+    if (!dist.eq(0))then
+    -- Reset pins
+      Call !!mdsResetPins(1,9)
+      !!kRestoreUnits(!currentunits)
+      return
+    endif
+
+    !!ce = !support.stru
+    MOVE $!direction WRT WORLD DIST $!dist
+
+    !!ce = !support.datum
+    MOVE $!direction WRT WORLD DIST $!dist
+
+    !!ce = $!<name>/SREF
+    POS AT $!support.datum
+
+    !pos = !!ce.pos.wrt(world)
+
+    $M/%PDMSUI%/DES/CLIB/GAIDTEXT 210 Datum $<$!pos$>
+
+    do !count from 1
+      $!<name>.$!count
+        handle any
+          break
+        endhandle
+
+      MOVE $!direction WRT WORLD DIST $!dist
+      !pos = !!ce.pos.wrt(world)
+      !num = 210 + !count
+
+      $M/%PDMSUI%/DES/CLIB/GAIDTEXT $!num $!count $<$!pos$>
+
+    enddo
+
+  !!ce = !support.datum
+
+  Call !!mdsDistance(!!mdsft19)
+
+  !!ce = !support.stru
+
+
+-- Reset Units
+
+   !!kRestoreUnits(!currentunits)
+
+-- End function
+endfunction
+-- End of function definition for !!mdsSlideFt19

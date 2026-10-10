@@ -1,0 +1,767 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            assybatch.pmlfrm
+--   Type:          Function Definition
+--   Group:         Assembly
+--     Keyword:     Drawing
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         13 Feb 2006
+--
+--
+-- Description:
+-- The main form for creating Assembly Planning deliverables
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  apply()                          -                   Create the batch macro
+--  assyBatch()                      -                   Constructor method
+--  browser()                        -                   Show standard browser
+--  buildBatch()                     -                   Create the batch file
+--  buildEvars()                     -                   Get environment setup
+--  buildMacro()                     -                   Build the macro
+--  cancel()                         -                   Cancel this form
+--  checkName()                      -                   Check the entered directory
+--  checkPass()                      -                   Action on confirm password entry
+--  checkUser()                      -                   Action on user name entry
+--  clear()                          -                   Clear the form members
+--  close()                          -                   Close the form
+--  fileNames()                      -                   Build output file names
+--  init()                           -                   Method to initialise the form
+--  modify()                         -                   Modify the macro contents
+--  setFolder(STRING)                -                   Set the passed directory
+--  settings(ARRAY)                  -                   Read in the application settings
+--  write()                          -                   Write the batch macro
+--
+------------------------------------------------------------------------
+setup form !!assyBatch
+
+  -- Form members
+  !this.formTitle     = 'Assembly Drawing Batch Macro'
+  !this.callback      = '!this.init()'
+  !this.cancelCall    = '!this.close()'
+  !this.quitCall      = '!this.close()'
+
+  -- Output location
+  para   .pLoc   at x0.5     ymax     text 'Create batch macros in this location'
+  text   .folder at xmin+0.5 ymax+0.1 tooltip 'In which Folder? ' width 44 scroll 90 STRING
+  button .browse at xmax+1   ymin     tooltip 'Browse Folders '   pixmap width 16 height 16
+  frame  .userFrame |Run As User| at xmin.folder ymax.folder+0.5 anchor top+left
+    text   .user   at xmin+0.5 ymax |User Name| tooltip 'User name ' width 15 STRING
+    text   .pass   at xmin ymax+0.1 |Password | tooltip 'Enter Password ' width 15 noecho STRING
+    text   .pass2  at xmin ymax+0.1 |Confirm  | tooltip 'Confirm Password ' width 15 noecho STRING
+  exit
+
+  -- Macro content
+  textPane .display at xmin.pLoc ymax+0.5 width 50 height 25
+
+  -- Action gadgets
+  button .apply  'Apply'  at xmin           ymax+0.2 tooltip 'Write the Batch Macro '
+  button .cancel 'Cancel' at xmax form-size ymin
+
+  -- Form members
+  member .title       is STRING
+
+  member .assemblies  is ARRAY
+  member .updates     is ARRAY
+
+  member .registry    is DBREF
+  member .drtmpl      is DBREF
+  member .partLiby    is DBREF
+
+  member .directory   is FILE
+  member .evarFile    is FILE
+  member .batchFile   is FILE
+  member .logFile     is FILE
+  member .macroFile   is FILE
+  member .plotFolder  is FILE
+  member .partFolder  is FILE
+
+  member .createDrwgs is BOOLEAN
+  member .createPdf   is BOOLEAN
+  member .createParts is BOOLEAN
+  member .outTxt      is BOOLEAN
+  member .outCsv      is BOOLEAN
+  member .outXls      is BOOLEAN
+
+  member .contents    is ARRAY
+  member .modified    is BOOLEAN
+
+exit
+
+------------------------------------------------------------------------
+--
+-- Method:      .assyBatch()
+--
+-- Description: Constructor method
+--
+-- Method Type: Constructor
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .assyBatch()
+
+  -- Pixmaps
+  !this.browse.addPixmap(!!pml.getPathName('ad_t_012.png'))
+
+  -- Form callbacks
+  !this.folder.callback  = '!this.checkName()'
+  !this.browse.callback  = '!this.browser()'
+  !this.display.callback = '!this.modify()'
+  !this.user.callback    = '!this.checkUser()'
+  !this.pass2.callback   = '!this.checkPass()'
+  !this.apply.callback   = '!this.apply()'
+  !this.cancel.callback  = '!this.cancel()'
+
+endmethod
+-- End of method definition for .assyBatch()
+
+-----------------------------------------------------------------------
+--
+-- Method:      init
+--
+-- Description: Method to initialise the form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .init()
+
+  -- Store form title
+  !this.title = !this.formTitle
+
+  -- Set directory gadget
+  !this.folder.val = !this.directory.name()
+
+  -- Set username
+  !session  = CURRENT SESSION
+  !username = !session.user().name
+  !this.user.val = !username
+
+  -- Clear passwords
+  !this.pass.val  = ||
+  !this.pass2.val = ||
+
+  -- Clear the contents
+  !this.contents.clear()
+
+  -- Build macro
+  !this.buildMacro()
+  !this.display.val = !this.contents
+
+  -- Mark form as unmodified
+  !this.modified = false
+
+endmethod
+-- End of method .init()
+
+-----------------------------------------------------------------------
+--
+-- Method:      .apply()
+--
+-- Description: Create the batch macro
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .apply()
+
+  if ( !this.user.val.trim() eq || ) then
+    !!alert.warning( 'User name has not been entered.' )
+
+  elseif ( !this.pass2.val.trim() eq || ) then
+    !!alert.warning( 'Password has not been entered and confirmed' )
+
+  elseif ( !this.folder.val.trim() eq || ) then
+    !!alert.warning( 'Output folder path has not been entered.' )
+
+  else
+
+    -- Build the output file names
+    !this.fileNames()
+
+    -- Write the files
+    !this.write()
+
+  endif
+
+endmethod
+-- End of method .apply()
+
+-----------------------------------------------------------------------
+--
+-- Method:      .browser()
+--
+-- Description: Show standard browser
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .browser()
+
+  import 'PMLFileBrowser'
+    handle any
+    endhandle
+
+  using namespace 'Aveva.Pdms.Presentation'
+
+  -- Initialise variables
+  !folderBrowser = object PMLFOLDERBROWSER()
+
+  -- Show the folder browser
+  !folderBrowser.show('Select Output Folder',true)
+
+  -- Use the selected folder
+  !this.setFolder(!folderBrowser.selectedPath())
+
+endmethod
+-- End of method .browser()
+
+-----------------------------------------------------------------------
+--
+-- Method:      .buildBatch()
+--
+-- Description: Create the batch file
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .buildBatch()
+
+  -- Initialise variables
+  !contents = ARRAY()
+
+  -- Build the contents
+ !contents.append('$@echo off')
+ !contents.append('rem Batch file to run Assembly Drawings')
+ !contents.append(' ')
+ !contents.append('setlocal')
+ !contents.append(' ')
+ !contents.append('rem Load environment variables')
+ !contents.append('call ' & '"' & !this.evarFile.fullname() & '"')
+ !contents.append(' ')
+ !contents.append('rem Run PDMS')
+ !contents.append('%monexe%\mon logfile ' & !this.logFile.name() & ' tty -macro="' & !this.macroFile  & '"')
+
+ -- Write the batch file
+ !this.batchFile.writefile('OVERWRITE',!contents)
+
+endmethod
+-- End of method .buildBatch()
+
+------------------------------------------------------------------------
+--
+-- Method:      .buildEvars()
+--
+-- Description: Get environment setup
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .buildEvars()
+
+  -- Import the evars addin
+  import 'pmlnetutilities'
+    handle (1000,0)
+      -- Assembly already loaded
+    endhandle
+
+  using namespace 'Aveva.Pdms.PmlNet'
+
+  -- Execute the addin
+  !evars = object PDMSEVARS()
+  !evars.writetofile(!this.evarFile.name())
+
+endmethod
+-- End of method definition for .buildEvars()
+
+-----------------------------------------------------------------------
+--
+-- Method:      .buildMacro()
+--
+-- Description: Build the macro
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .buildMacro()
+
+  -- Initialise variables
+  VAR !units UNITS
+  !session = CURRENT SESSION
+  !module  = object MODULE()
+  !this.display.clear()
+
+  -- Enter module
+  !this.contents.append(!session.mdb().name)
+  !this.contents.append(!module.appName)
+  !this.contents.append('TRACE OFF')
+
+  -- Prevent any exit
+  !this.contents.append(||)
+  !this.contents.append(|Onerror Continue|)
+
+  -- Units
+  !this.contents.append(||)
+  !this.contents.append(|-- Define Global variables for units|)
+  !this.contents.append(|UNITS $!units|)
+  !this.contents.append(|!!setGlobalFormats()|)
+
+  -- Load relevant Draft defaults files
+  !this.contents.append(||)
+  !this.contents.append(|-- Load Draft pen settings|)
+  !this.contents.append(|!!assyCallMacro('%PDMSDFLTS%/DRA-PENS')|)
+  !this.contents.append(|!!assyCallMacro('%PDMSDFLTS%/PDMS-COLOURS')|)
+  !this.contents.append(|!!assyCallMacro('%PDMSDFLTS%/DRA-GEN-LINDEF')|)
+
+  -- Prevent exiting on error
+  !this.contents.append(||)
+  !this.contents.append(|ONERROR CONTINUE|)
+
+  -- Start the application object
+  !this.contents.append(||)
+  !this.contents.append(|-- Create the application object|)
+  !this.contents.append(|!assyDrwgApp = object ASSYDRWGAPPLICATION()|)
+
+  -- Pass the main form settings
+  !this.contents.append(||)
+  !this.contents.append(|-- Run time settings|)
+  !this.contents.append(|!settings = ARRAY()|)
+  !this.contents.append(|!settings.append(| & !this.registry & |)|)
+  !this.contents.append(|!settings.append(| & !this.drtmpl & |)|)
+  !this.contents.append(|!settings.append(| & !this.createDrwgs & |)|)
+  !this.contents.append(|!settings.append(| & !this.createPdf & |)|)
+  !this.contents.append(|!settings.append(object FILE('| & !this.plotFolder & |'))|)
+  !this.contents.append(|!settings.append(| & !this.createParts & |)|)
+  !this.contents.append(|!settings.append(| & !this.partLiby & |)|)
+  !this.contents.append(|!settings.append(| & !this.outTxt & |)|)
+  !this.contents.append(|!settings.append(| & !this.outCsv & |)|)
+  !this.contents.append(|!settings.append(| & !this.outXls & |)|)
+  !this.contents.append(|!settings.append(object FILE('| & !this.partFolder & |'))|)
+
+  -- Pass the assembly list
+  !this.contents.append(||)
+  !this.contents.append(|-- Assembly list|)
+  !this.contents.append(|!assemblies = ARRAY()|)
+
+  do !asmbly val !this.assemblies
+    !this.contents.append(|!assemblies.append(| & !asmbly.refe &  |)|)
+  enddo
+
+  -- Pass the update type for each assembly
+  !this.contents.append(||)
+  !this.contents.append(|-- Update list|)
+  !this.contents.append(|!updates = ARRAY()|)
+
+  do !index ind !this.assemblies
+    !this.contents.append(|!updates.append(| & !this.updates[!index] &  |)|)
+  enddo
+
+  -- Start the batch run
+  !this.contents.append(||)
+  !this.contents.append(|-- Start the process|)
+  !this.contents.append(|!assyDrwgApp.batch(!assemblies, !settings, !updates)|)
+
+  -- Tidy up
+  !this.contents.append(||)
+  !this.contents.append(|SAVEWORK|)
+  !this.contents.append(||)
+  !this.contents.append(|FINISH|)
+
+endmethod
+-- End of method .buildMacro()
+
+-----------------------------------------------------------------------
+--
+-- Method:      .cancel()
+--
+-- Description: Cancel this form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .cancel()
+
+  if (!this.modified) then
+
+    !answer = !!alert.confirm('Are you sure you wish to cancel?')
+
+    if (!answer.eq('YES')) then
+      !this.hide()
+    endif
+
+  else
+    !this.hide()
+  endif
+
+endmethod
+-- End of method .cancel()
+
+------------------------------------------------------------------------
+--
+-- Method:      .checkName()
+--
+-- Description: Check the entered directory
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .checkName()
+
+  -- Initialise variables
+  !directory = object FILE(!this.folder.val.trim('LR'))
+
+  -- Test that the directory exists
+  if (!directory.exists.not()) then
+
+    -- Warn the user
+    !!alert.error('The pathname entered does not exist. Please try again.')
+    return
+
+  -- Store the existing .trim('LR')
+  else
+    !this.directory = !directory
+  endif
+
+endmethod
+-- End of method definition for .checkName()
+
+------------------------------------------------------------------------
+--
+-- Method:      .close()
+--
+-- Description: Close the form
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .close()
+
+  !this.hide()
+
+endmethod
+-- End of method definition for .close()
+
+------------------------------------------------------------------------
+--
+-- Method:      .clear()
+--
+-- Description: Clear the form members
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .clear()
+
+  !this.assemblies.clear()
+  !this.updates.clear()
+  !this.contents.clear()
+
+  !this.modified  = false
+
+endmethod
+-- End of method definition for .clear()
+
+-----------------------------------------------------------------------
+--
+-- Method:      .fileNames()
+--
+-- Description: Build output file names
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .fileNames()
+
+  -- Build date stamp
+  !dateStamp = !!assyDateStamp()
+
+  -- Test for existing output directory
+  if (!this.directory.exists().not()) then
+
+    -- Create the folder
+    !folderPath = !this.directory.directory().fullname() & '\' & !this.directory.entry()
+    SYSCOM 'mkdir "$!folderPath"'
+
+  endif
+
+  -- Batch file
+  !this.batchFile = object FILE(!this.directory & '\' & 'batch_' & !dateStamp & '.bat')
+
+  -- Environment
+  !this.evarFile  = object FILE(!this.directory.fullname() & '\' & 'evars_' & !dateStamp & '.bat')
+
+  -- Log
+  !this.logFile   = object FILE(!this.directory & '\' & 'batchLog_' & !dateStamp & '.txt')
+
+  -- Macro
+  !this.macroFile = object FILE(!this.directory & '\' & 'macro_' & !dateStamp & '.mac')
+
+endmethod
+-- End of method .fileNames()
+
+------------------------------------------------------------------------
+--
+-- Method:      .modify()
+--
+-- Description: Modify the macro contents
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .modify()
+
+  !this.modified  = true
+  !this.formTitle = !this.title & '*'
+  !this.contents  = !this.display.val
+
+endmethod
+-- End of method definition for .modify()
+
+------------------------------------------------------------------------
+--
+-- Method:      .settings()
+--
+-- Description: Read in the application settings
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       Application settings
+--                           [1]  The registry where to create drawings
+--                           [2]  The drawing template
+--                           [3]  Create Drawings?
+--                           [4]  Drawing PDF output?
+--                           [5]  Plot destination folder
+--                           [6]  Create Parts List?
+--                           [7]  The parts list type library
+--                           [8]  Output .txt file?
+--                           [9]  Output .csv file?
+--                           [10] Output .xls file?
+--                           [11] The Parts List destination folder
+--                           [12] The Batch file destination folder
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .settings(!array is ARRAY)
+
+  -- Store the passed settings for use in writing the batch macro
+  !this.registry    = !array[1]
+  !this.drtmpl      = !array[2]
+  !this.createDrwgs = !array[3]
+  !this.createPdf   = !array[4]
+  !this.plotFolder  = !array[5]
+  !this.createParts = !array[6]
+  !this.partLiby    = !array[7]
+  !this.outTxt      = !array[8]
+  !this.outCsv      = !array[9]
+  !this.outXls      = !array[10]
+  !this.partFolder  = !array[11]
+  !this.directory   = !array[12]
+
+endmethod
+-- End of method definition for .settings()
+
+------------------------------------------------------------------------
+--
+-- Method:      .setFolder(STRING)
+--
+-- Description: Set the passed directory
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Directory pathname returned from the browser
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setFolder(!directory is STRING)
+
+  -- Store the passed directory
+  !this.directory  = object FILE(!directory)
+  !this.folder.val = !this.directory.name()
+
+  -- Rebuild output file names
+  !this.fileNames()
+
+endmethod
+-- End of method definition for .setFolder(STRING)
+
+------------------------------------------------------------------------
+--
+-- Method:      .checkUser
+--
+-- Description: Action on user name entry - check user is valid
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .checkUser()
+  -- Chop off leading slash if present
+  if !this.user.val.subString(1,1).eq('/') then
+    !this.user.val = !this.user.val.after('/')
+  endif
+
+  -- Check user name is valid for this project
+  !unusedUser = object USER( !this.user.val )
+  handle any
+    !!alert.warning( 'User name is not valid. Please enter a known user name.' )
+    !this.user.val = ||
+    !this.user.setFocus()
+  endhandle
+endmethod
+-- End of method definition for .checkUser
+
+------------------------------------------------------------------------
+--
+-- Method:      .checkPass
+--
+-- Description: Action on confirm password entry - check passwords match
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .checkPass()
+  if ( !this.pass.val ne !this.pass2.val ) then
+    !!alert.warning( 'Passwords do not match. Please enter and confirm password.' )
+    !this.pass.val = ||
+    !this.pass2.val = ||
+    !this.pass.setFocus()
+  endif
+endmethod
+-- End of method definition for .checkPass
+
+------------------------------------------------------------------------
+--
+-- Method:      .write()
+--
+-- Description: Write the batch macro
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .write()
+
+  -- Create the evars file
+  !this.buildEvars()
+
+  -- Create the macro
+  !project  = CURRENT PROJECT
+  !projCode = !project.code()
+  !macroContents = ARRAY()
+  !macroContents.append( |PROJ | & !projCode )
+  !macroContents.append( |USER | & !this.user & |/| & !this.pass2 )
+  !macroContents.appendArray( !this.contents )
+  !this.macroFile.writefile('OVERWRITE',!macroContents)
+
+  -- Create the batch file
+  !this.buildBatch()
+
+  -- Close the form
+  !this.close()
+
+  -- Open Windows Explorer view of the directory containing the batch files
+  !command = 'explorer /root,"' & !this.directory.fullname() & '"'
+  SYSCOM '$!command'
+
+endmethod
+-- End of method definition for .write()

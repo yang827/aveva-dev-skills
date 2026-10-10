@@ -1,0 +1,311 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File: Mdsrestoreform.pmlfnc
+--   Type: Function Definition
+--   Group: Multi Discipline Supports Application
+--     Keyword: MDS
+--   Module: DESIGN
+--   Replaces:
+--
+-- Author: I.Osborne
+-- Created: Thu May 15
+--
+--
+-- Description:
+-- Restore support prior to modification
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R          FORM        Support Form to be restored
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsRestoreForm(!form is FORM)
+
+-- Find current units and set the distance unit to metric
+  !currentunits = !!kGetSetUnits()
+
+-- Check the support has not been deleted <<ak>>--------
+
+  if(!form.support.stru.badref()) then
+    !form.hide()
+    return
+  endif
+
+-- Initialise variables
+
+  !usrSuppName = !form.support.stru.namn
+
+-- Check Dimensions and distance gadget then whether spherical washers exist
+-- Test Decision but not if special
+  if (!form.support.type.neq('SPECIAL') and !form.support.type.neq('FT61')) then
+    if (!!alert.confirm(|Ok to cancel Support "$!usrSuppName". This will reset the support prior to modifying?|) eq 'NO')then
+      !!kRestoreUnits(!currentunits)
+      return
+    endif
+  endif
+
+-- Initialise existing variables before regenerating data
+  !actions     = !form.store
+  !existAttas  = !form.support.atta
+  !existAngle  = !form.support.rotated
+  !name        = !form.support.stru.name
+  !repack      = !form.ppack
+    handle ANY
+      !repack = ARRAY()
+    endhandle
+
+  !!mdsDacControl(true)
+
+  -- restore reference attas
+  do !attaRefIdx indices !form.support.attaRefPositionStore
+    !attaRef = !existAttas[!attaRefIdx]
+    -- restore position using index in attaRefPositionStore, which is the same as new reference atta in form.support.atta
+    !attaRef.pos = !form.support.attaRefPositionStore[!attaRefIdx]
+     handle any
+       -- error mean that found reference atta has been created before current modify session
+     elsehandle none
+       !existAttas.deleteFrom(!attaRefIdx, 1)
+       !!mdsRemSingleReferenceAtta(!attaRef, !form.support)
+     endhandle
+  enddo
+
+-- Loop through actions to do
+  do !i indices !actions
+    $!actions[$!i]
+    --<g.e.8/6/04 fix for Framatome i.e. no cap's
+    -- therefore the list gadget action is not req'd
+    handle (61,567)(47,15)
+    endhandle
+  enddo
+
+----------------------------- **** connexions **** -----------------------------
+   !haveJoints = FALSE
+
+  if(!form.support.joints.unset().not()) then
+    !joints     = !form.support.joints
+    !attributes = ARRAY()
+    !haveJoints = !!kRestoreJoints(!joints,!attributes,'SAVE','')
+-- Temporarily disconnect joints in case mirror has been used
+    do !jnts values !joints
+      !!ce = !jnts
+      cref nulref
+    enddo
+  endif
+
+  !attaRefPrelimStore = !form.support.attaRefPrelimStore
+
+-- Swap support object information
+  !form.support = !form.backup
+
+-- Initialise new variables
+  !currAttas = !form.support.atta
+  !diffAttas = !existAttas.difference(!currAttas)
+  !currAngle = !form.support.rotated
+
+  !!mdsDacControl(true)
+
+-- Check to see if supports have been added
+  if (!diffAttas.empty().not())then
+    do !v values !diffAttas
+      -- If compensation plates had been created, delete them
+      !!mdsCompplateDflts.deleteCompplate(!v)
+      -- delete association if any
+      !!ce = !v.dassos[1].owner
+      handle NONE
+        delete $!!ce.type
+      elsehandle ANY
+      endhandle
+
+      !!ce = !v
+      DELETE $!!<ce.type>
+    enddo
+  endif
+
+   --<kk>
+  do !preStoreActions values !attaRefPrelimStore
+    !!mdsDacControl(true)
+    !orig = !!ce
+    !!mdsDacControl(true)
+    -- First delete old instance if exists (because hierarchy could be changed too)
+    !oldRef = !preStoreActions[3].dbref()
+    handle ANY
+    elsehandle NONE
+      if (not badref(!oldRef)) then
+        !!ce = !oldRef
+        delete atta
+      endif
+    endhandle
+    -- Loop through ACTIONS
+    do !i indices !preStoreActions
+      $!preStoreActions[$!i]
+      handle any
+        skip
+      endhandle
+    enddo
+    !!ce = !orig
+    handle any
+    -- orig was the one deleted
+    endhandle
+    !!mdsDacControl(false)
+  enddo
+
+-- Replace atta references on cross-bars
+  do !i indices !form.support.bars
+    !references = ''
+    !list       = !form.support.bars[!i]
+-- Navigate to bar replace current references
+    !!ce = $!<name>-BAR-$!i
+    do !count indices !list
+      !ref = !list[!count].string()
+      !references = !references & ' ' & !ref
+      handle ANY
+        -- <tm> references may have been deleted
+      endhandle
+    enddo
+    :MDSAttaRef $!references
+    handle ANY
+    endhandle
+  enddo
+
+-- Check to see if the attas have been rotated
+  if (!currAngle ne !existAngle)then
+    !turn = 360 - (!existAngle - !currAngle)
+-- Set gadget with angle to rotate
+-- !form.rotan.val = !turn.string()
+   !form.rotated.val = !turn.string()
+-- GE 07/04/05 Fix for when the calling form does not have a rotate member
+-- continue to the label for correct restore
+    handle (2,759)
+     golabel /pass
+    endhandle
+    !function = !form.rotate.callback
+-- Run function
+    $!function
+-- Re-set angle gadget
+    !form.rotan.val = !currAngle.string()
+-- Make sure that the support.rotated member is reset for FT23
+-- as the function just run resets this member.....
+    !form.support.rotated = !form.backup.rotated
+    label /pass
+  endif
+
+-- Regenerate support but not if a special
+  --if (!form.support.type.neq('SPECIAL')) then
+  if (!form.support.type.neq('SPECIAL') and !form.support.type.neq('FT61') ) then
+    !function = !form.regen
+    !!cancellingForm = TRUE
+    $!function
+    !!cancellingForm = FALSE
+  endif
+
+---------------------------------------------------------------------------------------------------
+--<wd>aug2007<mds12>
+-- Regenerate and Update any MDS SNIPES(FITTINGS) for the MDS SUPPORT SCTNS where GTYP of CATREF is 'ANG'
+-- and the MDS SNIPE/FITTING element PURPOSE attribute is set to 'XGUI'
+-- ALL other MDS SNIPES are generated automatically or from the MDS TEMPLATE during the MDS STRUCTURE creation/modification.
+  !!mdsrestoresnipe(!form, 'CANCEL')
+--<wd>aug2007<mds12>
+
+  -- restore compensation
+  !!mdsRestoreCompensation(!form)
+---------------------------------------------------------------------------------------------------
+
+----------------------------***** connexions *****------------------
+  if(!haveJoints) then
+    !haveJoints = !!kRestoreJoints(!joints,!attributes,'RESTORE','CANCEL')
+    !connections = !form.support.connections
+    !!mdsReOwnJoints(!joints,!connections,!form.support)
+    !!mdsReConnect(!joints)
+  endif
+
+--------------------------------------------------------------------
+-- Collect and Delete All Packing Pieces after Original Support Regenerated
+  if (!form eq !!mdsft25) then
+    !ppacks  = !!kcollectallfor('SCTN', '((match(name, |-BAR-|) gt 0) and type of owner eq |FRMW|)', !form.support.stru)
+  else
+    !ppacks  = !!kcollectallfor('SCTN', '((match(name, |-PP-|) gt 0) and type of owner eq |FRMW|)', !form.support.stru)
+  endif
+
+  do !loop values !ppacks
+    !!ce = !loop
+    DELETE SCTN
+      handle any
+        skip
+      endhandle
+  enddo
+
+-- Regenerate Original Packing Pieces after Original Support Regenerated
+  do !indx index !repack
+    $!repack[$!indx]
+  enddo
+
+-- Check BedPlate references
+  if (!form.struBpref.size() gt 0)then
+    !bprefs  = !form.struBpref
+    !setting = !form.storeBpref
+    !bprefs.invert()
+    !setting.invert()
+    do !i indices !bprefs
+      !!ce = !bprefs[!i]
+      $!setting[$!i]
+    enddo
+  endif
+
+-- Save materials setting for later
+  !savedmaterials = !form.support.material
+
+-- Reset design representation if required
+  Call !!kActionCommands(!form.repre)
+
+-- Clear form gadgets
+  Call !!mdsClearGadgets(!form)
+
+-- Reactivate cancel button on modify form
+  if (!!mdsModifySupp.cancel.active.not())then
+    !!mdsModifySupp.cancel.active = true
+  endif
+
+-- For 'FT15' Need to reposition Cross bar and vertical(for Config '4') after
+-- Framework has been Regenerated by 'DIMENSION' after hitting 'Cancel' and 'Yes'
+-- Loop through actions to do
+  if (!form.name().upcase().string().eq('MDSFT15')) then
+    do !i indices !actions
+      $!actions[$!i]
+      handle any
+        skip
+      endhandle
+    enddo
+  endif
+
+-- Hide form
+  !form.hide()
+
+-- Hide field weld symbols
+  $M/%PDMSUI%/DES/CLIB/GAIDTEXT 300
+
+-- Restore material settings for cancelled form
+  !ce = !!ce
+  !!mdsResetMat(!savedmaterials)
+  !!ce = !ce
+
+-- Hide dimensions if shown
+  !!mdsClearDim()
+  !!mdsDacControl(false)
+
+-- Reset Units
+  !!kRestoreUnits(!currentunits)
+
+-- End function
+endfunction
+-- End of function definition for !!mdsRestoreForm

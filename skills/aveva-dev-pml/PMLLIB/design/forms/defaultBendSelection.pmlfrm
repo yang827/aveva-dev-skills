@@ -1,0 +1,693 @@
+-------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            defaultBendSelection.pmlfrm
+--  Author:          T.martin
+--  Created:         10/03/2015
+--  Type:            Form Definition
+--  Group:           Undefined
+--  Keyword:         Undefined
+--  Module:          Undefined
+--
+--  Description:  Form used to set the bend creation mechanism for quick pipe router.
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  defaultBendSelection()           -
+--  init()                           -                   Initialisation Method
+--  initialiseBendMachineValue()     -                   initialise the currently selected bend machine on initialisation of the form
+--  isBendingMachineValid(DBREF)     REAL                method to check whether the current bending machine set for the branch is valid
+--  isSetBySpecification()           BOOLEAN             Check whether the current bend will by created by specification, if not then return -1 else return the radius from the spec
+--  killCall()                       -                   Killing Call Method - Runs when the form is unloaded from PDMS
+--  okPressed()                      -
+--  quitCall()                       -                   Quit Call Method - Runs when a user closes the form with the red cross
+--  refreshBendingMachines()         -                   populate option gadget for bending machine reference
+--  setBendMachineValue()            -                   set the currently selected bend machine depending on the element chosen
+--  setBendValue()                   -                   method to calculate the radius and fill the radius display
+--  setStatus()                      -                   Display what the QPR will create at the moment
+--  setupSelection()                 -
+--
+layout form !!defaultBendSelection
+
+  !this.formTitle      = |Bend Radius Choice|
+  !this.initCall       = |!this.init()|
+  !this.quitCall       = |!this.quitCall()|
+  !this.killingCall    = |!this.killCall()|
+  member .cbObj is QPRSETRADIUSCALLBACK
+  !this.cbObj = object QPRSETRADIUSCALLBACK()
+  member .element is DBREF
+  member .branch is DBREF
+  member .arriveOD is REAL
+  member .mode is STRING
+  member .currentSelection is REAL
+  member .reset is BOOLEAN
+
+  path down
+
+  frame .status width 36
+    paragraph .pBranch text '' width 33
+    paragraph .pCurrentSelection text '' width 33
+  exit
+
+  frame .selection width 36
+    path right
+    rtoggle .useMC     'Bending Machine'
+    rtoggle .useFactor 'Default Radius'
+  exit
+
+  path down
+
+  -- Bending Machines
+  frame .fBendingMachine 'Bending Machine' at x0 ymax+0.5 width 36
+    paragraph .warning text 'Please select a bending machine' width 21
+    option .machines at x0 ymax width 25 tooltip 'Select bending machine'
+
+    path right
+
+    frame .setReference |Set Owner Reference| at x0 ymax width 25
+      rtoggle .setbranch   'Branch'
+      rtoggle .setpipe     'Pipe'
+      rtoggle .setZone     'Zone'
+    exit
+  exit
+
+  -- Radius
+  frame .fDefaultRadius 'Default Radius' at x0 ymax+0.5 width 36
+    option .bendRadiusOption 'Bend Radius Factor' at x1  ymax callback '!this.setupSelection()'  width 8
+    path down
+    halign right
+    text   .bendRadius       'Bend Radius       '           width 10 is REAL format !!distanceFmt
+  exit
+
+  vdist 1
+
+  button .cancel 'Cancel' at xmax form - size ymax+0.5 cancel
+  button .ok at xmin .cancel - 5  ymin  |OK| call |!this.okPressed()| OK
+
+exit
+
+-----------------------------------------------------------------------------------------------------
+--
+--  Method:      .okPressed
+--
+--  Description: method to set the result of the bend selection
+--
+-----------------------------------------------------------------------------------------------------
+define method .okPressed()
+
+  -- If the bend Radius is set by the specification, we don't want to do anyting
+  if (!this.pCurrentSelection.val.eq('Current Selection: Specification')) then
+    return
+  endif
+
+  -- Set radius by bend machine
+  if(!this.selection.val.eq(1)) then
+
+    !branch = !this.branch
+    !pipe = !branch.owner
+    !zone = !pipe.owner
+
+    -- Chosen to unset the bend radius at a particular level
+    if (!this.machines.selection('dtext').upCase().eq('(UNSET)')) then
+
+      !setSel = !this.setReference.val
+
+      if (!setSel.eq(1)) then
+        !branch.bendMacRef = nulref
+      elseif (!setSel.eq(2)) then
+        !pipe.bendMacRef = nulref
+      elseif (!setSel.eq(3)) then
+        !zone.bendMacRef = nulref
+      endif
+
+    else
+
+      -- Were setting a bending machine, so get the machine and the level to set it at
+      !bmDbref = !this.machines.selection('rtext').dbRef()
+      !setSel = !this.setReference.val
+
+      -- Check whether the bending machine selected can be used at the current bore of the branch that the bend will be created on
+      if (!this.isBendingMachineValid(!bmDbref).eq(-1)) then
+        if (!!alert.confirm('The reference is not usable at the current bore. Do you want to set it anyway?').boolean().not()) then
+          -- The reference was invalid, if the user decides not to set it, then set the form back to its previous selection
+          !this.selection.val = !this.currentSelection
+          return
+        endif
+      endif
+
+      if (!setSel.eq(1)) then
+
+        -- Set the bendMacRef at the branch
+        !branch.bendMacRef = !bmDbref
+
+      elseif (!setSel.eq(2)) then
+
+        -- Set the bendMacRef at the pipe
+        !pipe.bendMacRef = !bmDbref
+        if (!branch.bendMacRef.badRef().not()) then
+          -- If a bendMacRef is set at the branch, check whether it is different to what we're setting at the pipe
+          if (!branch.bendMacRef.neq(!bmDbref)) then
+            -- If it is different, ask the user if they wish to keep the bendMacRef at branch level
+            if (!!alert.confirm('The reference will be set at PIPE level. However a different reference is set at BRANCH level, would you like to remove the reference at BRANCH level?').boolean()) then
+              -- They don't want to keep it set, so set it to null so the machine set at pipe level can be used
+              !branch.bendMacRef = nulref
+            endif
+          endif
+        endif
+
+      elseif (!setSel.eq(3)) then
+
+        -- Set the bendMacRef at the zone
+        !zone.bendMacRef = !bmDbref
+        -- If a bendMacRef is set at the branch, check whether it is different to what we're setting at the zone
+        !branchSet = !branch.bendMacRef.badRef().not() AND !branch.bendMacRef.neq(!bmDbref)
+        -- If a bendMacRef is set at the pipe, check whether it is different to what we're setting at the zone
+        !pipeSet = !pipe.bendMacRef.badRef().not() AND !pipe.bendMacRef.neq(!bmDbref)
+
+        if (!branchSet and !pipeSet) then
+          -- The pipe and branch are set to a different reference, ask the user if they want to unset them
+          !message = 'The reference will be set at ZONE level. However a different reference is set at BRANCH and PIPE levels, would you like to remove the reference at BRANCH and PIPE levels?'
+          if (!!alert.confirm(!message).boolean()) then
+            -- The user selected yes, so unset them
+            !branch.bendMacRef = nulref
+            !pipe.bendMacRef = nulref
+          endif
+
+        elseif (!branchSet) then
+          -- The branch is set to a different reference, ask the user if they want to unset it
+          !message = 'The reference will be set at ZONE level. However a different reference is set at BRANCH level, would you like to remove the reference at BRANCH level?'
+          if (!!alert.confirm(!message).boolean()) then
+            -- The user selected yes, so unset it
+            !branch.bendMacRef = nulref
+          endif
+
+        elseif (!pipeSet) then
+          -- The pipe is set to a different reference, ask the user if they want to unset it
+          !message = 'The reference will be set at ZONE level. However a different reference is set at PIPE level, would you like to remove the reference at PIPE level?'
+          if (!!alert.confirm(!message).boolean()) then
+            -- The user selected yes, so unset it
+            !pipe.bendMacRef = nulref
+          endif
+        endif
+      endif
+
+    endif
+
+    -- Get the lowest level bending machine and send it to the Quick Pipe Router
+    if (!branch.bendMacRef.badRef().not()) then
+      !bmDbref = !branch.bendMacRef
+      !setSel = 1
+    elseif (!pipe.bendMacRef.badRef().not()) then
+      !bmDbref = !pipe.bendMacRef
+      !setSel = 2
+    elseif (!zone.bendMacRef.badRef().not()) then
+      !bmDbref = !zone.bendMacRef
+      !setSel = 3
+    else
+      !bmDbref = nulref
+      !setSel = 1
+    endif
+
+    !this.cbObj.setBendingMachineChoice(!bmDbref, !setSel)
+
+  else
+    -- Get the defined bend radius option
+    !res = !this.bendRadiusOption.selection()
+    if (!res.eq('Define')) then
+      -- It's user defined so send it to the quick pipe router
+      !resl = !this.bendRadius.val
+      !res = !resl.string()
+      !this.cbObj.setBendRadius(!res)
+    else
+      -- It's radius is set by a multiple, e.g. 2*OD, so send it to the quick pipe router
+      !res = !this.bendRadiusOption.selection()
+      !this.cbObj.setBendRadiusFactor(!res)
+    endif
+  endif
+endmethod
+
+-----------------------------------------------------------------------------------------------------
+--
+--  Method:      Constructor
+--
+--  Description: Constructor method
+--
+-----------------------------------------------------------------------------------------------------
+define method .defaultBendSelection()
+
+  !a[1] = '1 * OD'
+  !a[2] = '1.5 * OD'
+  !a[3] = '2 * OD'
+  !a[4] = '3 * OD'
+  !a[5] = '4 * OD'
+  !a[6] = '5 * OD'
+  !a[7] = 'Define'
+
+  !b[1] = '1'
+  !b[2] = '1.5'
+  !b[3] = '2'
+  !b[4] = '3'
+  !b[5] = '4'
+  !b[6] = '5'
+  !b[7] = 'Define'
+
+  -- text for define only
+  !c[1] = !a[7]
+  !d[1] = !b[7]
+
+  --Check if option is set to limit radius options, this is set in pdmsdflts des
+  if (defined(!!limitRadiusOptions)) then
+    if (!!limitRadiusOptions) then
+      !this.bendRadiusOption.dtext = !c
+      !this.bendRadiusOption.rtext = !d
+    else
+      !this.bendRadiusOption.dtext = !a
+      !this.bendRadiusOption.rtext = !b
+    endif
+  else
+    !this.bendRadiusOption.dtext = !a
+    !this.bendRadiusOption.rtext = !b
+  endif
+
+  !this.warning.visible = FALSE
+  !this.warning.background = 3
+
+  -- Fill the bending machine gadget with all the bending machines available
+  !this.refreshBendingMachines()
+
+  -- Set the default selection to use bending machines
+  !this.selection.val    = 1
+  !this.setReference.val = 1
+  !this.reset = FALSE
+
+  !this.selection.callBack = |!this.setupSelection()|
+  !this.setReference.callBack = |!this.setBendMachineValue()|
+  !this.cancel.callBack    = |!this.quitCall()|
+
+endmethod
+
+-----------------------------------------------------------------------------------------------------
+--
+-- Method:      .init
+--
+-- Description: Initialisation Method
+--
+-----------------------------------------------------------------------------------------------------
+define method .init()
+
+  -- If we need to reset the form to it's original state, then reset to bending machine and reset the defined radius dropdown
+  if (!this.reset) then
+    !this.selection.val = 1
+    !this.bendRadiusOption.val = 1
+  endif
+
+  -- Set the current selections at the top of the form
+  !this.setStatus()
+  -- Enable / Disable gadgets based on current selections
+  !this.setupSelection()
+  -- Get the available bending machines and add them to the gadget
+  !this.refreshBendingMachines()
+  -- Set the bending machine gadgets to the lowest level with a set bending machine
+  !this.initialiseBendMachineValue()
+  -- Set the define radius gadgets to the current options
+  !this.setBendValue()
+
+endmethod
+
+-----------------------------------------------------------------------------------------------------
+--
+-- Method:      .quitCall
+--
+-- Description: Quit Call Method - Runs when a user closes the form with the red cross
+--
+-----------------------------------------------------------------------------------------------------
+define method .quitCall()
+  !this.hide()
+endmethod
+
+-----------------------------------------------------------------------------------------------------
+--
+-- Method:      .killCall
+--
+-- Description: Killing Call Method - Runs when the form is unloaded from PDMS
+--
+-----------------------------------------------------------------------------------------------------
+define method .killCall()
+  !this.cbObj.setUserNoSelection()
+  !this.hide()
+endmethod
+
+
+-----------------------------------------------------------------------------------------------------
+--
+-- Method:      .setStatus
+--
+-- Description: Display what the QPR will currently create
+--
+-----------------------------------------------------------------------------------------------------
+define method .setStatus()
+  !ce = !!ce
+
+  !!ce = !this.element
+
+  -- Get the current branch
+  bran
+  handle ANY
+    !!ce = !ce
+    return
+  endhandle
+
+  !this.branch = !!ce
+
+  !!ce = !ce
+
+  -- Set the current branch on the form
+  !this.pBranch.val = 'Current Branch: ' + !this.branch.fullName
+
+  !this.currentSelection = !this.selection.val
+
+  if (!this.isSetBySpecification()) then
+    !this.pCurrentSelection.val = 'Current Selection: Specification'
+  else
+    !this.pCurrentSelection.val = ''
+  endif
+
+endmethod
+
+-----------------------------------------------------------------------------------------------------
+--
+-- Method:      .setupSelection
+--
+-- Description: Update the gadgets based on the current selection on the form
+--
+-----------------------------------------------------------------------------------------------------
+define method .setupSelection()
+
+  if (!this.pCurrentSelection.val.eq('Current Selection: Specification')) then
+    -- the bend is set by the specification so disable all elements of the form
+    !this.selection.active = FALSE
+    !this.fBendingMachine.active = FALSE
+    !this.fDefaultRadius.active = FALSE
+  elseif (!this.selection.val.eq(1)) then
+    -- we need to select a bending machine
+    !this.selection.active = TRUE
+    !this.fDefaultRadius.active = FALSE
+    !this.fBendingMachine.active = TRUE
+    !this.machines.active = TRUE
+    !this.setReference.active = TRUE
+    !this.bendRadiusOption.active = FALSE
+    !this.bendRadius.active = FALSE
+  else
+    -- we need to select a radius
+    !this.selection.active = TRUE
+    !this.fBendingMachine.active = FALSE
+    !this.fDefaultRadius.active = TRUE
+    !this.machines.active = FALSE
+    !this.setReference.active = FALSE
+    !this.bendRadiusOption.active = TRUE
+    !this.bendRadius.active = TRUE
+    !this.warning.visible = FALSE
+    !this.setBendValue()
+  endif
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      isSetBySpecification
+--
+-- Description: Check whether the current bend will by created by specification
+--
+--------------------------------------------------------------------------------
+define method .isSetBySpecification() is BOOLEAN
+
+  !ce = !!ce
+  -- Get the leave tube of the branch
+  !!ce = !this.branch.hstu
+  handle ANY
+    return FALSE
+  endhandle
+
+  -- Retrieve the spec used
+  SPEC
+  handle ANY
+    return FALSE
+  endhandle
+  !spec = !!ce
+  !!ce = !ce
+
+  -- Get the piping specifications
+  !pipingSpec = object SPECIFICATION(!spec)
+
+  -- Load the component table for the bend component type
+  !pipingSpec.loadTable('BEND')
+
+  -- Get the bend questions for the specification
+  !questions = !pipingSpec.questions('BEND')
+
+  do !a index !questions
+    -- If we find a radius question in the spec, it means the bend radius has been set in the specification
+    if (!questions[!a].match('RAD').eq(1)) then
+      return TRUE
+    endif
+  enddo
+
+  return FALSE
+
+endmethod
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      .refreshBendingMachines
+--
+-- Description: populate option gadget for bending machine reference
+--
+--------------------------------------------------------------------------------
+define method .refreshBendingMachines()
+
+  !dtext = object ARRAY()
+  !rtext = object ARRAY()
+
+  -- Collect bending machine worlds, groups and machines and put them into a hierarchical drop down box
+  !fmwlRefs = !!collectAllFor('FMWL', '', WORLD)
+  do !fmwlRef values !fmwlRefs
+    !dtext.append(!fmwlRef.namty)
+    !rtext.append(!fmwlRef.refNo.string())
+
+    !fmgrpRefs = !!collectAllFor('FMGRP', '', !fmwlRef)
+    do !fmgrpRef values !fmgrpRefs
+      !dtext.append('  ' + !fmgrpRef.namty)
+      !rtext.append(!fmgrpRef.refNo.string())
+
+      !fmbendRefs = !!collectAllFor('FMBEND', |ACTTYPE EQ 'FMBEND'|, !fmgrpRef)
+      do !fmbendRef values !fmbendRefs
+        !dtext.append('    ' + !fmbendRef.namty)
+        !rtext.append(!fmbendRef.refNo.string())
+      enddo
+    enddo
+  enddo
+
+  !dtext.append('(unset)')
+  !rtext.append('')
+
+  !this.machines.dtext = !dtext
+  !this.machines.rtext = !rtext
+
+endmethod
+
+-----------------------------------------------------------------------------------------------------
+--
+-- Method:     .setBendMachineValue
+--
+-- Description: set the currently selected bend machine depending on the element chosen
+--
+-----------------------------------------------------------------------------------------------------
+define method .setBendMachineValue()
+
+  -- Get the machine reference for the level chosen
+  if (!this.setReference.val.eq(1)) then
+    !macRef = !this.branch.bendMacRef
+  elseif (!this.setReference.val.eq(2)) then
+    !macRef = !this.branch.owner.bendMacRef
+  elseif (!this.setReference.val.eq(3)) then
+    !macRef = !this.branch.owner.owner.bendMacRef
+  endif
+
+  if (undefined(!macRef) or !macRef.badRef()) then
+    -- No machine set for the selected level, so set the gadget to (unset)
+    !this.machines.val = !this.machines.count
+  else
+    -- Set the gadget to the selected machine
+    do !i indices !this.machines.rtext
+      if (!this.machines.rtext[!i].dbRef().eq(!macRef)) then
+        !this.machines.val = !i
+        break
+      endif
+    enddo
+  endif
+
+endmethod
+
+-----------------------------------------------------------------------------------------------------
+--
+-- Method:     .initialiseBendMachineValue
+--
+-- Description: initialise the currently selected bend machine on initialisation of the form
+--
+-----------------------------------------------------------------------------------------------------
+define method .initialiseBendMachineValue()
+
+  !branch = !this.branch
+  !pipe = !branch.owner
+  !zone = !pipe.owner
+
+  -- Go through each level and the gadget to the lowest level with a bending machine
+  if (!branch.bendMacRef.badRef().not()) then
+    !this.setReference.val = 1
+    !macRef = !branch.bendMacRef
+  elseif (!pipe.bendMacRef.badRef().not()) then
+    !this.setReference.val = 2
+    !macRef = !pipe.bendMacRef
+  elseif (!zone.bendMacRef.badRef().not()) then
+    !this.setReference.val = 3
+    !macRef = !zone.bendMacRef
+  else
+    !this.setReference.val = 1
+  endif
+
+  if (undefined(!macRef)) then
+    -- No machine set for the selected level, so set the gadget to (unset)
+    !this.machines.val = !this.machines.count
+    !this.warning.visible = !this.machines.active
+  else
+    -- Set the gadget to the selected machine
+    do !i indices !this.machines.rtext
+      if (!this.machines.rtext[!i].dbRef().eq(!macRef)) then
+        !this.machines.val = !i
+        break
+      endif
+    enddo
+    !this.warning.visible = FALSE
+  endif
+
+endmethod
+
+-----------------------------------------------------------------------------------------------------
+--
+-- Method:     .setBendValue
+--
+-- Description: method to calculate the radius and fill the radius display
+--
+-----------------------------------------------------------------------------------------------------
+define method .setBendValue()
+
+  !res = !this.bendRadiusOption.selection()
+
+  if (!res.eq('Define')) then
+    -- we need to set the radius and calculate the factor
+    if (!this.bendRadius.val.unset()) then
+      !this.bendRadius.val = 0
+    endif
+    !this.bendRadius.active = TRUE
+  else
+    -- apply the factor
+    !radius = !this.arriveOD * !this.bendRadiusOption.selection().real()
+    !this.bendRadius.val = !radius
+    !this.bendRadius.active = FALSE
+  endif
+
+endmethod
+
+-----------------------------------------------------------------------------------------------------
+--
+-- Method:     .isBendingMachineValid
+--
+-- Description: method to check whether the current bending machine set for the branch is valid
+--
+-----------------------------------------------------------------------------------------------------
+define method .isBendingMachineValid(!macList is DBREF) is REAL
+
+  -- Retrieve the OD and the wall thickness based on the flow and the element type selected
+  if (!this.mode.upCase().eq('FORWARDS')) then
+    if (!this.element.type.eq('BRAN')) then
+      !tubeOD = !this.element.phod
+      !wallTH = !this.element.hwallt
+      handle ANY
+        !wallTH = 0
+      endhandle
+    else
+      !element = !this.element.owner.members[!this.element.order - 1]
+      handle ANY
+        !tubeOD = !this.branch.phod
+        !wallTH = !this.branch.hwallt
+        handle ANY
+          !wallTH = 0
+        endhandle
+      elsehandle NONE
+        !tubeOD = !element.lod
+        !wallTH = !element.lwallt
+        handle ANY
+          !wallTH = 0
+        endhandle
+      endhandle
+    endif
+  else
+    if (!this.element.type.eq('BRAN')) then
+      !tubeOD = !this.element.ptod
+      !wallTH = !this.element.twallt
+      handle ANY
+        !wallTH = 0
+      endhandle
+    else
+      !element = !this.element.owner.members[!this.element.order + 1]
+      handle ANY
+        !tubeOD = !this.branch.ptod
+        !wallTH = !this.branch.twallt
+        handle ANY
+          !wallTH = 0
+        endhandle
+      elsehandle NONE
+        !tubeOD = !element.aod
+        !wallTH = !element.awallt
+        handle ANY
+          !wallTH = 0
+        endhandle
+      endhandle
+    endif
+  endif
+
+  if (!macList.unset() or !macList.badRef()) then
+    return -1
+  else
+    var !machines collect all FMBDIM for $!macList
+    do !a values !machines
+      -- fix to add a tolerance to the outside diameters
+      !radiusDiff = abs(!a.dbRef().od - !tubeOD)
+      handle ANY
+        -- if any of the values are unset then its not a match
+        return -1
+      endhandle
+      !radiusTest = !radiusDiff.lt(1mm)
+      if (!radiusTest) then
+        if (!a.dbRef().wThickness.neq(0)) then
+          -- test the wall thickness
+          !wallDiff = abs(!a.dbRef().wThickness - !wallTH)
+          if (!wallDiff.lt(0.1mm)) then
+            return !a.dbRef().bradius * !tubeOD
+          endif
+        else
+          return !a.dbRef().bradius * !tubeOD
+        endif
+      endif
+    enddo
+  endif
+
+  return -1
+
+endmethod

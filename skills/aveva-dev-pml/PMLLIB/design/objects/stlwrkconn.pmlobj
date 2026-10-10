@@ -1,0 +1,525 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            stlwrkconn.pmlobj
+--   Type:          Object Definition
+--   Group:         Design structures
+--     Keyword:     Section connection
+--   Module:        Design
+--   Replaces:
+--
+-- Author:          neil.holmes
+-- Created:         Fri May 18 11:00:00 GMT 2007
+--
+-- Description:
+--    Steelwork connection control object
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  connectSections()                BOOLEAN             Utilise the connection object to connect the dominant
+--  connectSectionsUndo()            BOOLEAN             Implements UNDO for connect sections
+--  deleteJoint(DBREF)               BOOLEAN             Disconnect the picked ends of sections
+--  disconnectSections()             -                   Disconnect the picked ends of sections
+--  endPick(ANY)                     BOOLEAN             Pick and save ends of sections
+--  init()                           -                   Initialise the object and the EDG picks
+--  pickDisconnEnd()                 -                   Load the EDG packet for picking an end
+--  pickDominantSection()            -                   Load the EDG Pick for the Dominant section
+--  pickSubordinateSections()        -
+--  sectionSave(ANY,STRING)          BOOLEAN             Add the section to the dominant or subordinate list
+--  stlwrkConn()                     -
+--
+
+define object STLWRKCONN
+
+  -- Dominant or subordinate
+  member .state is STRING
+
+  -- List of dominants
+  member .doms is ARRAY
+
+  -- List of subordinates
+  member .subs is ARRAY
+
+  -- List of disconnect ends
+  member .dEnds is ARRAY
+
+  -- Packets for section selection
+  member .dpacket is EDGPACKET
+  member .spacket is EDGPACKET
+
+  -- Packet for section end disconnect
+  member .discPacket is EDGPACKET
+
+  -- Connection manager
+  member .manager is SECTIONCONNECTIONMANAGER
+
+  -- aid number for this object
+  member .aidNumber is REAL
+
+  -- keep track of enhanced elements
+  member .enhance is COMENHANCE
+
+endobject
+-- End of object definition
+
+--------------------------------------------------------------------
+--
+-- Method:      stlwrkConn
+--
+-- Description: Object constructor method
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--------------------------------------------------------------------
+define method .stlwrkConn()
+
+  !this.doms = ARRAY()
+  !this.subs = ARRAY()
+  !this.dEnds = ARRAY()
+  !this.aidNumber = !!aidNumbers.add('Steel work connection')
+  -- initialise enhance colour for this object
+  !this.enhance = object COMENHANCE()
+  -- This line of code should not be necessary, but there have been
+  -- problems with the object initialising itself correctly as an
+  -- object member variable - so leave this line in
+  !this.manager = object SECTIONCONNECTIONMANAGER()
+
+endmethod
+-- End of method definition
+
+--------------------------------------------------------------------
+--
+-- Method:      init
+--
+-- Description: Initialise the object and the EDG picks
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+--------------------------------------------------------------------
+define method .init()
+
+  !this.doms.clear()
+  !this.subs.clear()
+  !this.dEnds.clear()
+
+  !this.state = 'dominant'
+
+    -- Initialise variables for picking dominant section
+  !prompt                           = 'Identify section to be connected to'
+  !this.dpacket.pickpacket.stdGraphic(!prompt)
+  !this.dpacket.description         = 'Pick dominant section'
+  !this.dpacket.pickpacket.action   = '!!stlConnect.sectionSave(!this.return,|DOM|)'
+  !this.dpacket.escape              = '!!stlConnect.connectSectionsUndo()'
+  !this.dpacket.remove              = false
+  !this.dpacket.priority            = 0
+
+    -- Initialise variables for picking subordinate section
+  !prompt2                          = 'Identify section end to be connected'
+  !this.spacket.pickpacket.stdGraphic(!prompt2)
+  !this.spacket.description         = 'Pick subordinate section'
+  !this.spacket.pickpacket.action   = '!!stlConnect.sectionSave(!this.return,|SUB|)'
+  !this.spacket.action              = '!!edgCntrl.add(!!stlConnect.spacket)'
+  !this.spacket.remove              = false
+  !this.spacket.priority            = 1
+
+  -- Initialise variables for picking end to be disconnected
+  !prompt3                          = 'Identify section end to be disconnected'
+  !this.discPacket.pickpacket.stdGraphic(!prompt3)
+  !this.discPacket.description      = 'Pick section end'
+  !this.discPacket.action           = '!!stlConnect.endPick(!this.return)'
+  !this.discPacket.escape           = '!!stlConnect.disconnectSections()'
+  !this.discPacket.remove           = false
+
+endmethod
+-- End of method definition
+
+
+--------------------------------------------------------------------
+--
+-- Method:      pickDisconnEnd
+--
+-- Description: Load the EDG packet for picking an end
+--              to be disconnected
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+--------------------------------------------------------------------
+define method .pickDisconnEnd()
+  !!edgCntrl.add(!this.discPacket)
+endmethod
+-- End of method definition
+
+--------------------------------------------------------------------
+--
+-- Method:      disconnectSections
+--
+-- Description: Disconnect the picked ends of sections
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+--------------------------------------------------------------------
+define method .disconnectSections()
+
+  !undoDisconnectSections = object UNDOABLE()
+  !undoDisconnectSections.description('Disconnect Sections')
+  !undoDisconnectSections.add()
+
+  -- Loop through all the picked ends deleting the joint and connection
+  do !d indices !this.dEnds
+
+    !section   = !this.dEnds[!d][1]
+    !endString = !this.dEnds[!d][2]
+
+    -- first check this section to make sure that it can be modified
+    if( !!dbRefUpdate(!section) ) then
+
+      -- Second, delete joint first to make sure that joint can be modified
+      if (!endString.eq(|END|)) then
+        if( !this.deleteJoint(!section.joiend) ) then
+          !!ce = !section
+          -- finally, clear reference to delete joint
+          JOIEND unset
+        endif
+      elseif (!endString.eq(|START|)) then
+        if( !this.deleteJoint(!section.joistart) ) then
+          !!ce = !section
+          JOISTART unset
+        endif
+      endif
+
+    endif
+
+    !this.enhance.removeItem(!section)
+
+  enddo
+
+  !undoDisconnectSections.endUndoable()
+
+  !!aidNumbers.hide(!this.aidNumber)
+
+endmethod
+-- End of method definition
+
+--------------------------------------------------------------------
+--
+-- Method:      deleteJoint
+--
+-- Description: Disconnect the picked ends of sections
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Joint element to delete
+-- Return:
+--   [Data Type] [Description]
+--   BOOLEAN      TRUE is delete completed
+--
+--------------------------------------------------------------------
+define method .deleteJoint(!joint is DBREF) is BOOLEAN
+
+  if( badref(!joint) ) then
+    return false
+  endif
+
+  !!ce  = !joint
+  !type = !joint.hardtype
+  DELETE $!type
+  handle any
+    return false
+  endhandle
+  return true
+
+endmethod
+-- End of method definition
+
+--------------------------------------------------------------------
+--
+-- Method:      endPick
+--
+-- Description: Pick and save ends of sections
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     ANY         EDG Data
+--
+--------------------------------------------------------------------
+define method .endPick(!data is ANY) is BOOLEAN
+
+  !pickData     = !data.last()
+  !positionData = !pickData.positionData()
+  if(!positionData.line.set()) then
+    !position = !positionData.line.intersection(!positionData.pointVector)
+  elseif (!positionData.plane.set()) then
+    !position = !positionData.pointVector.intersection(!positionData.plane)
+  elseif (!positionData.position.set()) then
+    !position = !positionData.position.wrt( /* )
+  endif
+
+  -- Find appropriate end and check connected
+  !chkArray = !this.manager.checkConnected(!position, !pickData.item)
+  !bool     = !chkArray[1]
+  !end      = !chkArray[2]
+
+  if (!bool) then
+    !this.enhance.addItem(!pickData.item)
+
+    if (!end.eq(|START|)) then
+      aid text number $!this.aidNumber 'START' at $!<pickData.item.posstart>
+    elseif (!end.eq(|END|)) then
+      aid text number $!this.aidNumber 'END' at $!<pickData.item.posend>
+    endif
+
+    -- Item and end of item array
+    !pickArray     = ARRAY()
+    !pickArray.append(!pickData.item)
+    !pickArray.append(!end)
+
+    !this.dEnds.append(!pickArray)
+  endif
+
+endmethod
+-- End of method definition
+
+--------------------------------------------------------------------
+--
+-- Method:      pickDominantSection
+--
+-- Description: Load the EDG Pick for the Dominant section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+--------------------------------------------------------------------
+define method .pickDominantSection()
+  -- Add event to system
+  !!edgCntrl.add(!this.dpacket)
+endmethod
+-- End of method definition
+
+--------------------------------------------------------------------
+--
+-- Method:      sectionSave
+--
+-- Description: Add the section to the dominant or subordinate list
+--              of sections/ends
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+--------------------------------------------------------------------
+define method .sectionSave(!data is ANY,!cState is STRING) is BOOLEAN
+
+  !pickData     = !data.last()
+  !positionData = !pickData.positionData()
+  if(!positionData.line.set()) then
+    !position = !positionData.line.intersection(!positionData.pointVector)
+  elseif (!positionData.plane.set()) then
+    !position = !positionData.pointVector.intersection(!positionData.plane)
+  elseif (!positionData.position.set()) then
+    !position = !positionData.position.wrt( /* )
+  endif
+
+  if (!pickData.item.hardtype.neq('GENSEC') and !pickData.item.hardtype.neq('SCTN')) then
+    return TRUE
+  endif
+
+  if (!cState.eq(|DOM|)) then
+
+    --Add section to list of dominants
+    !this.doms.append(!pickData.item)
+    -- Remove already picked sections
+    !this.doms = !this.doms.unique()
+
+    -- clear highlight of previous set
+    !this.enhance.clear()
+    !this.enhance.addItem(!pickData.item)
+
+    -- Launch pick for subordinate sections
+    !this.pickSubordinateSections()
+
+    return TRUE
+
+  elseif (!cState.eq(|SUB|)) then
+
+    -- Find appropriate end and check connected
+    !chkArray = !this.manager.checkConnected(!position, !pickData.item)
+    !bool = !chkArray[1]
+    !end = !chkArray[2]
+
+    if (!bool) then
+      !continue = !!alert.confirm('Section end already connected, do you wish to continue?')
+      if (!continue.eq(|NO|)) then
+        return false
+      endif
+    endif
+
+    -- Item and end of item array
+    !pickArray     = ARRAY()
+    !pickArray.append(!pickData.item)
+    !pickArray.append(!end)
+
+    -- check connection tolerances
+    !localManager = object SECTIONCONNECTIONMANAGER()
+    !bool         = !localManager.checkConnectSections(!end, !pickData.item, !this.doms.last())
+    if( !bool.not() ) then
+      !errorReport = !localManager.errorText
+      if( !errorReport.set() ) then
+        !!alert.error(!errorReport)
+        return false
+      endif
+    endif
+
+    !this.enhance.addItem(!pickData.item)
+    if (!end.eq(|START|)) then
+      aid text number $!this.aidNumber 'START' at $!<pickData.item.posstart>
+    elseif (!end.eq(|END|)) then
+      aid text number $!this.aidNumber 'END' at $!<pickData.item.posend>
+    endif
+
+    -- Add section to list of subordinates
+    if (!this.subs.unset()) then
+      if (!pickData.item.neq(!this.doms.last())) then
+        !this.subs[!this.doms.size()].append(!pickArray)
+        handle (2,752)
+          !this.subs[!this.doms.size()] = ARRAY()
+          !this.subs[!this.doms.size()].append(!pickArray)
+        endhandle
+      else
+        !!alert.warning('Cannot connect section to itself')
+      endif
+    else
+      if (!pickData.item.neq(!this.doms.last())) then
+        !this.subs[!this.doms.size()].append(!pickArray)
+        -- Handle unset multi dimensional array
+        handle (2,752)
+          !this.subs[!this.doms.size()] = ARRAY()
+          !this.subs[!this.doms.size()].append(!pickArray)
+        endhandle
+        -- Remove already picked sections
+        !this.subs[!this.doms.size()] = !this.subs[!this.doms.size()].unique()
+      else
+        !!alert.warning('Cannot connect section to itself')
+      endif
+    endif
+
+  endif
+
+  return TRUE
+
+endmethod
+-- End of method definition
+
+--------------------------------------------------------------------
+--
+-- Method:      pickSubordinateSection
+--
+-- Description: Load the EDG Pick for the Subordinate section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+--------------------------------------------------------------------
+define method .pickSubordinateSections()
+  !!edgCntrl.add(!this.spacket)
+endmethod
+-- End of method definition
+
+--------------------------------------------------------------------
+--
+-- Method:      connectSectionsUndo
+--
+-- Description: Implements UNDO for connect sections
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     BOOLEAN     Connection successful?
+--
+--------------------------------------------------------------------
+define method .connectSectionsUndo() is BOOLEAN
+
+  !undoConnectSections = object UNDOABLE()
+  !undoConnectSections.description('Connect Sections')
+  !undoConnectSections.add()
+
+  !result   = !this.connectSections()
+  handle any
+    !result = false
+    !!alert.error(!!error.text)
+  endhandle
+
+  !undoConnectSections.endUndoable()
+
+  return !result
+
+endmethod
+-- End of method definition
+
+--------------------------------------------------------------------
+--
+-- Method:      connectSections
+--
+-- Description: Utilise the connection object to connect the dominant
+--              and subordinate sections
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     BOOLEAN     Connection successful?
+--
+--------------------------------------------------------------------
+define method .connectSections() is BOOLEAN
+
+  !bool = TRUE
+
+  !this.manager.anglePriority()
+
+  do !s indices !this.subs
+    do !x indices !this.subs[!s]
+--      !bool2 = !this.manager.checkCompatible(!this.doms[!s])
+      !bool = !this.manager.connectSections(!this.subs[!s][!x][2],!this.subs[!s][!x][1], !this.doms[!s])
+      if( !bool.not() ) then
+        !errorReport = !this.manager.errorText
+        if( !errorReport.set() ) then
+          !!alert.error(!errorReport)
+          break
+        endif
+     endif
+    enddo
+  enddo
+
+  do !dom values !this.doms
+    !this.enhance.removeItem(!dom)
+  enddo
+
+  do !sub values !this.subs
+    do !s values !sub
+      !this.enhance.removeItem(!s[1])
+    enddo
+  enddo
+
+  !!aidNumbers.hide(!this.aidNumber)
+
+  return !bool
+endmethod
+-- End of method definition

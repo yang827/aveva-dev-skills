@@ -1,0 +1,317 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+--   File:    mdstrimsctn.pmlobj
+--   Type:    Object Definition
+--   Group:   Multi Discipline Supports Application
+--   Keyword:   MDS
+--   Module:    design
+--   Replaces:
+--
+-- Author:    Tony Martin
+-- Created:   09/04/2005 10:53
+--
+--
+-- Description:
+-- Multi Discipline support object for cutting sctns back to plate surfaces
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  cutback(REAL)                    -
+--  edgentry()                       -
+--  getend(ARRAY)                    REAL
+--  mDSTrimSctn(FORM)                -
+--  pointvector(REAL)                POINTVECTOR
+--  reinstateApad(ARRAY)             -
+--  removeApad(DBREF,REAL)           ARRAY
+--  returnfromedg(ARRAY)             -
+--
+
+-- Define Object
+define object MDSTRIMSCTN
+
+  -- plane surface to be cut back to
+  member .plane is PLANE
+
+  -- Item picked by EDG to define the plane
+  member .item is DBREF
+
+  -- SCTN to be trimmed
+  member .sctn is DBREF
+
+  -- end of SCTN to be trimmed (defined by first pick)
+  member .end is REAL
+
+  -- form from which the object is called
+  member .form is FORM
+
+  -- End object
+endobject
+
+-- constructor method
+-- input parameter !form is required so that the edg pick result can cll the result function
+-----------------------------------------------------------------------------------
+define method .mDSTrimSctn(!form is FORM)
+
+  !this.form = !form
+  !this.edgentry()
+
+endmethod
+------------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------------
+-- method to kick off an EDG pick
+define method .edgentry()
+
+  -- first we use aconventional pick to get the section end we want to trim
+  -- identify a section end
+  prompt off
+  prompt load escape 'Identify Section end to be trimmed'
+  do
+    var !pick pick
+    handle ANY
+      return
+    endhandle
+    if !pick[1].dbref().type.eq('SCTN') then
+      break
+    endif
+  enddo
+  prompt on
+  -- go and identify which end the pick was nearest to 0 = start 1 = end
+  !this.end = !this.getend(!pick)
+  if !this.end.eq(-1) then
+    return
+  endif
+
+  -- now we have found the end to be extended we need an EDG pick to find the plane we want to align with
+  prompt  'Pick Surface To Connect To'
+
+  -- simulate a blocking form
+  !this.form.setactive(false)
+
+  -- Define event packet
+  !packet = object EDGPACKET()
+  !packet.description = 'setclear'
+
+  -- Remember the element when the packet was first placed in the event system
+  !packet.initialisation = '!this.input[1] = !!ce'
+
+  -- set the callback to be run when the packet has found a surface
+  !formname = '!!' & !this.form.string()
+  !packet.action = '$!<formname>.mDSTrimSctn.returnfromedg(!this.return)'
+
+  -- Set the close sequence to reactivate the calling form ( This is run if the user presses escape)
+  !packet.close = '$!<formname>.setactive(true)'
+
+  !packet.remove = true $* set packet so that it deletes itself when it finished
+  !pickpacket = object EDGPICKPACKET()
+  !pickpacket.stdgraphic('Pick a Surface to Align With')
+  -- add the new picktype to the edgpacket currently defined
+  !packet.pickpacket = !pickpacket
+
+  -- Add event packet to the system
+  !!edgCntrl.add(!packet)
+
+endmethod
+------------------------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------------------------
+-- method which deals with the return from the EDG event
+define method .returnfromedg(!input is ARRAY)
+
+  -- first of all, tidy up
+  !this.form.setactive(true)
+  prompt dismiss
+  -- this method is called when the EDG returns from a valid pick
+  -- first of all check to see if we have found a plane as a result of picking a surface
+  !this.plane = !input[1].positiondata().plane
+  if !this.plane.unset() then
+    !!alert.error('Please identify a Surface - Not an Edge or PPoint')
+    return
+  endif
+
+  -- remember the item
+  !this.item = !input[1].item
+
+  -- now go and set the cutback
+  !this.cutback(!this.end)
+
+endmethod
+---------------------------------------------------------------------------------------------------
+
+---------------------------------------------------------------------------------------------------
+-- method extends the current sctn and sets the enddirection to suit the identified plane
+define method .cutback(!end is REAL)
+
+  !pvstart = !this.pointvector(0)
+  -- !pvend   = !this.pointvector(1)
+  !planeposition = !pvstart.intersection(!this.plane)
+  handle ANY
+    !!alert.error(!!error.text)
+    return
+  endhandle
+  !cutdirection = !this.plane.direction()
+
+  --pin 5 at $!planeposition
+  !!ce = !this.sctn
+
+  --remove the cutback from any autopad joints if they are connected to the section end being modified
+  !reinstateApad = !this.removeApad(!this.sctn, !end)
+
+  if !end.eq(0) then   $* its the start
+    -- extend the start
+    extend start thro $!planeposition
+    drns $!cutdirection
+  else
+    !!ce = !this.sctn
+    -- extend the end
+    extend end thro $!planeposition
+    drne $!cutdirection
+  endif
+
+  -- now go and reset the form dimensions
+  !this.form.resetdims()
+
+  --now reset any rules that were turned off for the autopads
+  if !reinstateApad.set() then
+    !this.reinstateApad(!reinstateApad)
+  endif
+
+endmethod
+---------------------------------------------------------------------------------------------------
+
+
+---------------------------------------------------------------------------------------------------
+-- method to return a pointvector from poss to pose or from pose to poss of a sctn
+define method .pointvector(!end is REAL)is POINTVECTOR
+
+  if !end.eq(0) then
+    return !this.sctn.poss.wrt(/* ).line(!this.sctn.pose.wrt(/* )).pointvector()
+  else
+    return !this.sctn.pose.wrt(/* ).line(!this.sctn.poss.wrt(/* )).pointvector()
+  endif
+
+endmethod
+---------------------------------------------------------------------------------------------------
+
+---------------------------------------------------------------------------------------------------
+-- method to identify the appropriate end of a picked section using a conventional pick
+define method .getend(!pick is ARRAY) is REAL
+
+  !this.sctn = !pick[1].dbref()
+  if !this.sctn.owner.owner.neq(!this.form.support.stru) then
+    !!alert.error('Identified Section Does not belong to Current Support')
+    return -1
+  endif
+  !sctnline = object LINE()
+  !sctnline.startposition = !this.sctn.poss.wrt(/* )
+  !sctnline.endposition   = !this.sctn.pose.wrt(/* )
+
+  !line = object POINTVECTOR()
+  !line.direction = !pick[2].after('Line').before('Through').direction()
+  !line.position = !pick[2].after('Through').position()
+  -- pick format is
+  -- 'Line E 27 N 6.3 D Through E 46360.121093 N 7103.05371 U 13126.404296'
+  -- now check that the pointvector can pass through the line
+  !finalpos = !line.intersection(!sctnline)
+  if !finalpos.distance(!sctnline.startposition).leq(!finalpos.distance(!sctnline.endposition)) then
+    return 0
+  else
+    return 1
+  endif
+
+endmethod
+
+--define a method to capture the rules and cutbacks that exist on an autopad joint so that they can be removed
+--prior to trimming a section.
+--the method returns an array that contains the following
+--1) the name of the pjoint being captured
+--2) the npos rule that is stored for the owning PNOD
+--3) the cutback amount
+define method .removeApad(!sctn is DBREF, !end is REAL) is ARRAY
+
+  --if !end is 0 then it's start
+  --if !end is 1 then it's end
+  if !end.eq(0) then
+    !sctnEnd = 'START'
+  else
+    !sctnEnd = 'END'
+  endif
+
+  !returnArray = object ARRAY()
+  var !pjoi collect all pjoi where cref eq( $!sctn ) for own of $!sctn
+  do !i from 1 to !pjoi.size()
+    !tempArray = object ARRAY()
+    if !pjoi[!i].dbref().gtyp.eq('APAD') then
+      --first check that the end of the sctn being trimmed is the same as the one that the apad is located at
+      --get dist from node point to each end of the sctn
+      !pnodRef = !pjoi[!i].dbref().owner
+      !pnodPos = !pjoi[!i].dbref().position.wrt( /* )
+
+      var !pnodToStartDist const dist ppli NA start of $!sctn to $!pnodPos
+      var !pnodToEndDist const dist ppli NA end of $!sctn to $!pnodPos
+
+      if !pnodToStartDist.real().lt(!pnodToEndDist.real()) then
+        !pnodLocation = 'START'
+      else
+        !pnodLocation = 'END'
+      endif
+
+      --if the sctn end and pnodlocation match then perform the rule stripping operation
+      if !pnodLocation.match(!sctnEnd).gt(0) then
+        --now add details to the temparray
+        !tempArray.append(!pjoi[!i])
+        var !rule rule for $!pnodRef
+
+        !ce = !!ce
+        !!ce = !pnodRef
+        var !rule rule
+        !!ce = !ce
+
+        !tempArray.append(!rule)
+        var !cutb cutb of $!pjoi[$!i]
+        !tempArray.append(!cutb)
+        !returnArray.append(!tempArray)
+
+        --now set the cutback value to 0 so we can trim the sctn
+        !pjoi[!i].dbref().cutb = 0
+      else
+        skip
+      endif
+    endif
+  enddo
+
+  return !returnArray
+
+endmethod
+
+--define a method to reinstate the rules and cutbacks that were removed previously for autopad joints before a trim
+define method .reinstateApad(!actionsArray is ARRAY)
+  do !i from 1 to !actionsArray.size()
+    --navigate to the owning pnod and delete the rule set there
+    !!ce = !actionsArray[!i][1].dbref()
+    own
+    rule delete all
+
+    --now set the cutback on the pjoi
+    1
+    !!ce.cutb = !actionsArray[!i][3].real()
+    reconn
+
+    --finally reset the dynamic npos rule on the pnod
+    own
+
+    --this shouldn't happen because an npos rule should exist but if it does and !actionsArray[!i][2].eq('none') then skip the rule set stage
+    if !actionsArray[!i][2].trim().eq('none') then
+      skip
+    endif
+
+    rule set $!actionsArray[$!i][2]
+  enddo
+endmethod

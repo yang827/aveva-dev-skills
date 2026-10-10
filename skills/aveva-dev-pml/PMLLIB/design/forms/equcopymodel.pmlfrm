@@ -1,0 +1,653 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            equcopymodel.pmlfrm
+--    Type:          Form Definition
+--    Group:         Equipment
+--      Keyword:     MCAD
+--    Module:        Design
+--  Author:          M.Barlow
+--  Created:         Wed Apr  1 14:18:46 2009
+--
+--  Description:     Copy Equipment from Imported Model data area
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  autoName()                       -                   method to define an auto generated name
+--  close()                          -                   Close form down
+--  equCopyModel()                   -                   Constructor
+--  explorerPopUp(ARRAY)             -                   Explorer context menu callback
+--  explorerSelect(ARRAY)            -                   Explorer select event handler
+--  formApply()                      -                   OK callback triggers equipment positioning EDG
+--  getUserType()                    STRING              Returns UDET if a UDET has been selected
+--  initialiseForm()                 -                   Callback when form is shown
+--  madeSelection(DBREF)             -                   After selection made - update form
+--  nameCheck()                      -                   method when name typed in
+--  navigate(DBREF)                  -                   Navigate to current selection
+--  optionCallback()                 -
+--  populateModelStorage()           -                   Callback when form is shown
+--  popupMenus()                     -                   Setup popup menus
+--  positionDone(EDGPOSITIONDATA)    -                   Called by EDG to return pick data and create EQUI
+--  treeSelect(DBREF)                -                   Action for selection of model hierarchy in tree-view
+--
+------------------------------------------------------------------------
+--
+import 'ExplorerAddin'
+handle any
+endhandle
+
+-- Define form
+setup form !!equCopyModel dialog docking size 50 20
+
+
+  member .packetDesc          is STRING
+  -- 3D view
+--  member .drawlist            is REAL
+  -- Model Import world data
+  member .apdWorldCollection  is COLLECTION
+  member .appDataWorld        is DBREF
+  member .selectedItem        is DBREF
+  member .explorerSelected    is DBREF
+
+  -- Model import hierarchy explorer control
+  using namespace 'Aveva.Pdms.Presentation'
+  member .modelImportExplorer      is PMLEXPLORERCONTROL
+
+---------------------------------- FORM ------------------------------
+
+  option .autoName anchor left + top         at x0.5 ymin width 8
+  -- Element Name
+  text .name       anchor left + top + right at xmax+2.5 ymin   width 34  name
+
+  -- UDET Type
+  option .udets    anchor left + top 'User Defined Type'  at xmin.autoName ymax+0.2 tagwidth 14 width 20
+
+  option    .optApdWorld                'Model Import Storage Area'     anchor left+top+right    at xmin   ymax+0.5     callback '!this.optionCallback(' tagWidth 20 width 20
+  frame  .frSpecType panel anchor all    at x0 ymax    width 34
+
+    Container .explorerFrame PMLnetcontrol 'NET' anchor all  at xmin+0.5 ymax+0.5  width 50 hei 12
+
+  exit
+
+  line .cpLine        anchor left + right + bottom   at x0   ymax    horiz  width 50 heigh 0.5
+  para .description   anchor left + right + bottom   at x0.5 ymax           width 40 lines 1
+
+  path down
+
+  -- Bottom Line
+  button .cancel  anchor bottom + left  'Close' at xmin ymax    width 9 callback '!this.close()'
+  halign right
+  button .ok      anchor bottom + right 'Apply' at xmax form-size ymin      width 9
+
+-- End of form definition
+exit
+
+------------------------------------------------------------------------
+--
+-- Method:      .equCopyModel()
+--
+-- Description: Constructor
+--
+------------------------------------------------------------------------
+define method .equCopyModel()
+
+  !this.callback  = |!this.initialiseForm()|
+  !this.formTitle = 'Copy Model to Equipment'
+  !this.iconTitle = 'Model Equipment'
+
+  !dText[1] = 'Name'
+  !rText[1] = 'NAME'
+  !dText[2] = 'Autoname'
+  !rText[2] = 'AUTONAME'
+  !this.autoName.dText = !dText
+  !this.autoName.rText = !rText
+
+  !this.autoName.callback = '!this.autoName()'
+  !this.name.callback     = '!this.nameCheck()'
+
+  !this.ok.callback       = '!this.formApply()'
+  !this.cancelCall        = '!this.close()'
+
+  -- get user defined element types for EQUI
+  VAR !udets COLLECT ALL UDETS WITH ( BASETY EQ 'EQUI' )
+  !this.udets.active = !udets.empty().not()
+  !dText    = ARRAY()
+  !rText    = ARRAY()
+  !dText[1] = 'All types'
+  !rText[1] = 'ALLTYPES'
+  !dText[2] = 'Equipment'
+  !rText[2] = 'EQUI'
+  do !udet values !udets
+    !udetName = !udet.dbref().udname
+    handle any
+      skip
+    endhandle
+    !dText.append(!udetName)
+    !rText.append(!udetName)
+  enddo
+  !this.udets.dText = !dText
+  !this.udets.rText = !rText
+  !this.udets.val   = 1
+
+  -- initialise model import worlds
+
+  -- Collection definitions
+  !this.apdWorldCollection      = object COLLECTION()
+  !this.apdWorldCollection.addType('APPLDW')
+  !this.apdWorldCollection.filter(object EXPRESSION('PURP eq |MIMP|'))
+  -- Get all Model Import Application Data Area Worlds
+  !myCollection         = !this.apdWorldCollection.results()
+  if( !myCollection.empty() ) then
+    -- should not happen. This allows for all worlds to be removed while form is shown
+    return error 1 |Model Application Data World not found in this MDB|
+  endif
+
+  !this.populateModelStorage()
+  !this.appDataWorld      = !myCollection[1]
+
+  -- Create instance of explorer control
+  using namespace 'Aveva.Pdms.Presentation'
+  !this.modelImportExplorer   = object PMLEXPLORERCONTROL()
+  !this.explorerFrame.control = !this.modelImportExplorer.handle()
+
+  --Add event handlers
+  !this.modelImportExplorer.addeventhandler('OnSelectionChanged',!this, 'explorerSelect')
+  !this.modelImportExplorer.addeventhandler('OnPopUp', !this, 'explorerPopUp')
+  !this.modelImportExplorer.initialise('DESI', '/*')
+
+  -- initialise pop-up menus
+  !this.popupMenus()
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      popupMenus
+--
+-- Description: Setup popup menus
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .popupMenus()
+
+  -- define pop-up menus for tree-view
+  !popup = !this.newMenu('treeNavigate')
+  !popup.add('callback', 'Navigate To', '!this.navigate(!this.explorerSelected)',  'APPDNavigate')
+
+  !popup = !this.newMenu('equCopy')
+  !popup.add('callback', 'Copy Model',  '!this.formApply()', 'copyModel')
+  !popup.add('callback', 'NavigateTo',  '!this.navigate(!this.explorerSelected)',  'modelNavigate')
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      populateModelStorage
+--
+-- Description: Callback when form is shown
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .optionCallback(!gadget     is ANY, $
+                              !action     is STRING)
+
+   if (!action eq 'SELECT') then
+      if (!gadget eq !this.optApdWorld) then
+         !elementStr = !this.optApdWorld.selection()
+         !element    = !elementStr.dbref()
+         handle NONE
+            -- set root of tree to the selected world
+            !this.modelImportExplorer.resetRoot(!this.optApdWorld.selection())
+            !this.treeSelect(!this.appDataWorld)
+         elsehandle ANY
+            -- Selected element has been deleted repopulate the list
+            !this.populateModelStorage()
+         endhandle
+       endif
+   endif
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      populateModelStorage
+--
+-- Description: Callback when form is shown
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .populateModelStorage()
+
+  -- Load Application Data World list
+  !dText = ARRAY()
+  !rText = ARRAY()
+  !modelStorageWorlds = !this.apdWorldCollection.results()
+  do  !worlds values !modelStorageWorlds
+    !rText.append(!worlds.string())
+    !dText.append(!worlds.name)
+  enddo
+  !this.optApdWorld.clear()
+  !this.optApdWorld.dText = !dText
+  !this.optApdWorld.rText = !rText
+  if( !modelStorageWorlds.empty().not() ) then
+    !this.optApdWorld.val   = 1
+  endif
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      initialiseForm
+--
+-- Description: Callback when form is shown
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .initialiseForm()
+
+  !this.populateModelStorage()
+
+  -- Only enable "Apply" when on correctly selected item
+  !this.ok.active         = false
+
+  if( !this.optApdWorld.rText.empty() ) then
+    !this.description.val = 'Model Application Data not found in this MDB'
+    return
+  endif
+
+  -- set root of tree to the selected world
+  !this.modelImportExplorer.resetRoot(!this.optApdWorld.selection())
+  !this.treeSelect(!this.appDataWorld)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      explorerSelect
+--
+-- Description: Explorer select event handler
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .explorerSelect(!data is ARRAY)
+
+  !element = object DBREF(!data[0])
+  !this.treeSelect(!element)
+
+endmethod
+-- End of method
+
+-----------------------------------------------------------------------
+--
+-- Method:      treeSelect
+--
+-- Description: Action for selection of model hierarchy in tree-view
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element selected
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .treeSelect(!element is DBREF)
+
+  if( badref(!element) ) then
+    return
+  endif
+
+  -- Record actual selection
+  !this.explorerSelected = !element
+
+  !this.selectedItem    = object DBREF()
+  if( !element.hardType inset(|EQUI|,|VOLM|) ) then
+    -- selected a VOLM or EQUI
+    !this.madeSelection(!element)
+  else
+    -- check for member of EQUI or VOLM selected
+    !type[1]        = 'EQUI'
+    !type[2]        = 'VOLM'
+    !modelElement   = !!dtbOwnerOfTypes(!element,!type)
+    if( !modelElement.set() ) then
+      !this.madeSelection(!modelElement)
+    else
+      -- element selected is in the tree above EQUI or VOLM
+      !this.description.val = !element.description
+      !this.selectedItem    = !element
+    endif
+  endif
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      madeSelection
+--
+-- Description: After selection made - update form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Reference to selected item
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .madeSelection(!selectedItem is DBREF)
+
+  !this.selectedItem      = !selectedItem
+  !this.ok.active         = true
+
+  if( defined(!selectedItem.description)) then
+    !description = !selectedItem.description
+  else
+    !description = ''
+  endif
+
+  !this.description.val   = 'Copy model ' + !selectedItem.fullName + ': ' + !description
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      navigate
+--
+-- Description: Navigate to current selection
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element to navigate to in the design explorer
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .navigate(!elementToNavigateTo is DBREF)
+
+  !!ce = !elementToNavigateTo
+  handle any
+  endhandle
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      explorerPopUp
+--
+-- Description: Explorer context menu callback
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       Popup position and reference(s) of selected element(s)
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .explorerPopUp(!data is ARRAY)
+
+  !element     = !data[2].dbref()
+  !elementType = !element.type
+  !selectableComponent = ( !elementType inset('EQUI','VOLM') )
+  if( !selectableComponent ) then
+    !this.explorerFrame.popup = !this.equCopy
+    !this.explorerFrame.showPopup(!data[0], !data[1])
+    return
+  else
+    -- check for child of EQUI or VOLM
+    !type[1]    = 'EQUI'
+    !type[2]    = 'VOLM'
+    !selectable = !!dtbOwnerOfTypes(!element,!type)
+    if( !selectable.set() ) then
+      !this.explorerFrame.popup = !this.equCopy
+      !this.explorerFrame.showPopup(!data[0], !data[1])
+      return
+    endif
+  endif
+
+  !this.explorerFrame.popup = !this.treeNavigate
+  !this.explorerFrame.showPopup(!data[0], !data[1])
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      .autoName()
+--
+-- Description: method to define an auto generated name
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .autoName()
+
+  if (!this.autoName.selection() eq 'AUTONAME') then
+    !this.name.active = false
+  else
+    !this.name.active = true
+  endif
+
+endmethod
+-- End of method definition for .autoName()
+
+------------------------------------------------------------------------
+--
+-- Method:      .nameCheck()
+--
+-- Description: method when name typed in
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .nameCheck()
+
+  !!nameGadget(!this.name, 'NEW')
+
+endmethod
+-- End of method definition for .nameCheck()
+
+------------------------------------------------------------------------
+--
+-- Method:      .close()
+--
+-- Description: Close form down
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .close()
+
+  !!edgCntrl.remove('Position Equipment Origin')
+  !this.hide()
+
+endmethod
+-- End of method definition for .close()
+
+------------------------------------------------------------------------
+--
+-- Method:      .formApply()
+--
+-- Description: OK callback triggers equipment positioning EDG
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .formApply()
+
+  if ((!this.selectedItem.hardType ne 'EQUI') and $
+      (!this.selectedItem.hardType ne 'VOLM')) then
+     return
+  endif
+
+  -- Initialise Variables
+  !packet = object EDGPACKET()
+
+  !packet.definePosition('Position Equipment Origin')
+  !packet.description = 'Position Equipment Origin'
+  !packet.action      = '!!equCopyModel.positionDone(!this.return[1])'
+  !packet.close       = ''
+  !packet.type        = 'Positioning'
+  !packet.key         = 'EquipmentPosition'
+
+  !this.packetDesc = !packet.description
+
+  !!edgCntrl.add(!packet)
+
+  !this.description.val = 'Pick position of new Equipment origin'
+
+endmethod
+-- End of method definition for .formApply()
+
+------------------------------------------------------------------------
+--
+-- Method:      .positionDone()
+--
+-- Description: Called by EDG to return pick data and create EQUI
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--    1   R     EDGPOSITIONDATA    returned from EDG pick
+--
+------------------------------------------------------------------------
+define method .positionDone(!pickedData is EDGPOSITIONDATA)
+
+  if( !this.selectedItem.badref() ) then
+    !this.description.val = ''
+  else
+    !this.description.val = !this.selectedItem.description
+  endif
+  -- initialise undo
+  !undoCreate = object UNDOABLE()
+  !undoCreate.description('Copy Model Equipment')
+  !undoCreate.add()
+
+  !success = true
+  if( !this.selectedItem.hardType eq 'EQUI' ) then
+    -- create an EQUI element
+    NEW EQUI COPY $!<this.selectedItem>
+    handle any
+      !!alert.error(!!error.text)
+      !success = false
+    endhandle
+  elseif( !this.selectedItem.hardType eq 'VOLM' ) then
+    -- create an EQUI element
+    NEW EQUI COPY MEMBERS OF $!<this.selectedItem>
+    handle any
+      !!alert.error(!!error.text)
+      !success = false
+    endhandle
+  else
+    !!alert.error('Model data element not found')
+    !success = false
+  endif
+
+  if( !success ) then
+     -- set equipment attributes
+    !equipment = !!ce
+
+    -- set UDET if set
+    !userType = !this.getUserType()
+    if( !userType neq 'EQUI' and !userType neq 'ALLTYPES' ) then
+      -- A UDET has been selected
+      CHANGETYPE TO :$!<userType>
+      handle any
+      endhandle
+    endif
+
+    if (!this.autoName.selection() eq 'AUTONAME') then
+      !autoName = !!namOpt.nameString(!equipment, '', false, false)
+      if (!autoName.set()) then
+        NAME /$!<autoName>
+        handle any
+        endhandle
+      endif
+    else
+      NAME $!<this.name>
+      handle any
+      endhandle
+    endif
+
+    !this.name.val = ''
+
+    POS $!<pickedData.position>
+
+  endif
+
+  !undoCreate.endUndoable()
+
+  !!edgCntrl.remove(!this.packetDesc)
+
+endmethod
+-- End of method definition for .positionDone(EDGPOSITIONDATA)
+
+------------------------------------------------------------------------
+--
+-- Method:      getUserType
+--
+-- Description: Returns UDET if a UDET has been selected
+--              Returns 'ALLTYPES' if a UDET is not selected
+--
+-- Method Type: Function/Procedure
+--
+------------------------------------------------------------------------
+define method .getUserType() is STRING
+
+  !return = 'ALLTYPES'
+
+  -- set UDET if set
+  if( !this.udets.active ) then
+    if( !this.udets.val gt 1 ) then
+      -- A UDET or EQUI has been selected
+      !return = !this.udets.selection()
+    endif
+  endif
+
+  return !return
+
+endmethod
+-- End of method definition

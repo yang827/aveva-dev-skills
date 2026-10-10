@@ -1,0 +1,1006 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            equipreport.pmlfrm
+--   Type:          Form Definition
+--   Group:         Equipment Application
+--     Keyword:     EQUIP
+--   Module:        Design
+--   Replaces:
+--
+-- Author:          M Ward
+-- Created:         Feb 2007
+--
+--
+-- Description:
+--   Create an equipment report
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  addToView()                      -                   Add selected element to 3D view
+--  displayAttributes()              -                   Load columns with attributes
+--  displaySelected()                -                   Rebuild selected table from selected RTEXT
+--  equipReport()                    -
+--  exportToExcel()                  -                   Export to Excel and all file to be opened in Excel
+--  getAttributes(STRING)            BOOLEAN             Get attributes for a report and cache them
+--  initialise()                     -                   Load columns with attributes
+--  moveColumns(STRING,STRING)       -                   Moves selected items one list to another
+--  moveRows(STRING,STRING)          -                   Moves selected items one list to another
+--  navigate()                       -                   Navigate to selected element
+--  open()                           -                   open file in excel
+--  popupCallback(ARRAY)             -                   Callback on dataGrid popup
+--  process(GADGET,STRING)           -                   Process columns
+--  prune(ARRAY,DBREF)               ARRAY               Remove attributes that should not be reported
+--
+
+import 'GridControl'
+handle any
+endhandle
+Import 'pmlfilebrowser'
+handle any
+endhandle
+
+setup form !!equipReport resize
+
+  -- Tab set for main components of form
+  frame .tabs tabset anchor all at x0 y0
+
+    -- Component Selection Frame
+    frame .columnsFrame 'Columns'   anchor all  at xmin ymin
+
+      path right
+      -- report type
+      option .reportType    anchor left + top 'Report Type' at x1     y0.4 tagwidth 9 width 16
+      option .reportScope   anchor left + top 'Scope'       at xmax+4 ymin            width 12
+
+      list .availColumns 'Available Attributes' anchor all  at xmin.reportType ymax+0.2 columns multiple height 20 width 44
+      button .moveRightSel  at xmax+1 ymin+5   anchor right pixmap width 16 height 16
+      button .moveRightAll  at xmin ymax+0.1   anchor right pixmap width 16 height 16
+      button .moveLeftSel   at xmin ymax+0.1   anchor right pixmap width 16 height 16
+      button .moveLeftAll   at xmin ymax+0.1   anchor right pixmap width 16 height 16
+
+      list .selectedColumns 'Chosen Attributes'  at xmax+1 ymin.availColumns anchor r+t+b columns multiple height 20 width 46
+      button .moveUpAll   at xmax+1 ymin+5   anchor right pixmap width 16 height 16
+      button .moveUpSel   at xmin ymax+0.1   anchor right pixmap width 16 height 16
+      button .moveDownSel at xmin ymax+0.1   anchor right pixmap width 16 height 16
+      button .moveDownAll at xmin ymax+0.1   anchor right pixmap width 16 height 16
+      toggle .pseudo 'Pseudo Attributes' at xmin.availColumns+1 ymax.availColumns+0.1 anchor l+b
+    exit
+
+    -- Component Selection Frame
+    frame .outputFrame 'Output' anchor all at xmin ymin
+      -- define PML Container to host my .Net control
+      container .netFrame pmlNetControl 'NET' dock fill
+      list .output anchor all  at x0.5 y0.5  columns height 20 width 50
+
+      frame .buttonPanel panel dock bottom
+      	path right
+	      button .open 'Open in Excel' anchor l+t
+	      button .save 'Export to Excel' anchor l+t
+      exit
+    exit
+
+  exit
+
+  button .dismiss 'Dismiss' anchor r+b at xmax-9 ymax width 8 cancel
+
+  -- This line exists to cause a scroll bar to appear if resized too small
+  line .scrollLine    at x75      y8    horiz  width 0.1 heigh 0.1
+
+  -- Form members
+
+  -- Column headings
+  member .columnHeadings    is ARRAY
+
+  -- Attribute Table
+  member .attributeTable    is ARRAY
+
+  -- File
+  member .file              is STRING
+
+  -- my .Net control
+  using namespace 'Aveva.Pdms.Presentation'
+  member .dbCtrl is NETGRIDCONTROL
+
+  -- The following members are a cache of attributes for each report type
+  -- report types
+  member .reportIdentifier        is ARRAY
+  member .reportTypeName          is ARRAY
+  -- array of (array of) attributes for each report type
+  member .reportAttributes        is ARRAY
+  -- Array of (array of) BOOLEAN to mark whether attribute is selected for reporting or not
+  member .selected                is ARRAY
+  -- Array of (array of) BOOLEAN to mark whether attribute is a pseudo attribute or not
+  member .isPseudo                is ARRAY
+  -- current report index into these arrays
+  member .reportIndex             is REAL
+  -- current selected attributes table
+  member .selectedTable           is ARRAY
+  member .selectedRepText         is ARRAY
+
+exit
+-- End of form definition
+
+------------------------------------------------------------------------
+--
+-- Method:      equipreport
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .equipReport()
+
+  !this.formTitle      = 'Equipment Report'
+  !this.iconTitle      = 'EQUIREP'
+  !this.initcall       = '!this.initialise()'
+  !this.cancelCall     = ''
+
+  -- Initialise Variables
+  !this.output.visible = false
+  !this.pseudo.active  = true
+  !this.pseudo.val     = false
+
+  -- report types
+  !this.reportTypeName[1]   = 'Equipment'
+  !this.reportTypeName[2]   = 'Nozzles'
+  !this.reportTypeName[3]   = 'Electrical Component'
+  !this.reportIdentifier[1] = 'EQUI'
+  !this.reportIdentifier[2] = 'NOZZ'
+  !this.reportIdentifier[3] = 'ELCONN'
+  !this.reportType.dText    = !this.reportTypeName
+  !this.reportType.rText    = !this.reportIdentifier
+  !this.reportType.val      = 1
+
+  -- report scope
+  !dText    = ARRAY()
+  !rText    = ARRAY()
+  !dText[1] = 'All'
+  !dText[2] = 'Current Element'
+  !rText[1] = 'ALL'
+  !rText[2] = 'CE'
+  !this.reportScope.dText = !dText
+  !this.reportScope.rText = !rText
+  !this.reportScope.val   = 1
+
+  -- create instance of .Net control
+  using namespace 'Aveva.Pdms.Presentation'
+  !this.dbCtrl = object NETGRIDCONTROL()
+
+  -- Add .Net controls to PML containers
+  !this.netFrame.control = !this.dbCtrl.handle()
+
+  -- add PML event handlers to .Net control
+  !this.dbCtrl.addeventhandler('OnPopup', !this, 'popupCallback')
+
+  -- define pop up menu for output page
+  !popup = !this.newMenu('popupOutputPage')
+  !popup.add('callback', 'Navigate To',    '!this.navigate()', 'outputNavigate')
+  !popup.add('callback', 'Add to 3D View', '!this.addToView()','outputAdd')
+  !popup.add( 'separator' )
+  !popup.add( 'callback', 'Export to Excel...', '!this.exportToExcel()' )
+  !popup.add( 'callback', 'Print Preview...', '!this.dbCtrl.printpreview()' )
+  !this.netFrame.popup = !popup
+
+  -- configure .Net control
+  !this.dbCtrl.columnExcelFilter(true)
+  !this.dbCtrl.outlookGroupStyle(false)
+  !this.dbCtrl.fixedHeaders(true)
+  !this.dbCtrl.fixedRows(false)
+
+  -- Icons
+  !this.moveRightSel.addPixmap(!!pml.getPathName('rightarrow16.png'))
+  !this.moveRightAll.addPixmap(!!pml.getPathName('rightrightarrow16.png'))
+  !this.moveLeftSel.addPixmap(!!pml.getPathName('leftarrow16.png'))
+  !this.moveLeftAll.addPixmap(!!pml.getPathName('leftleftarrow16.png'))
+  !this.moveUpSel.addPixmap(!!pml.getPathName('uparrow16.png'))
+  !this.moveDownSel.addPixmap(!!pml.getPathName('downarrow16.png'))
+  !this.moveUpAll.addPixmap(!!pml.getPathName('upuparrow16.png'))
+  !this.moveDownAll.addPixmap(!!pml.getPathName('downdownarrow16.png'))
+
+  -- Tooltips
+  !this.moveRightSel.setToolTip('Add Selected Attributes to the Chosen Attributes List')
+  !this.moveRightAll.setToolTip('Add all Attributes to the Chosen Attributes List')
+  !this.moveLeftSel.setToolTip('Remove Selected Attributes from the Chosen Attributes List')
+  !this.moveLeftAll.setToolTip('Remove all Attributes from the Chosen Attributes List')
+  !this.moveUpSel.setToolTip('Move Selected attributes up in the list')
+  !this.moveDownSel.setToolTip('Move Selected attributes down in the list')
+  !this.moveUpAll.setToolTip('Move Selected attributes to the top of the list')
+  !this.moveDownAll.setToolTip('Move Selected attributes to the bottom of the list')
+
+  -- Callbacks
+  !this.pseudo.callback = '!this.displayAttributes()'
+  !this.moveRightSel.callback = |!this.moveColumns('R','SEL')|
+  !this.moveRightAll.callback = |!this.moveColumns('R','ALL')|
+  !this.moveLeftSel.callback = |!this.moveColumns('L','SEL')|
+  !this.moveLeftAll.callback = |!this.moveColumns('L','ALL')|
+  !this.columnsFrame.callback = '!this.process('
+  !this.outputFrame.callback = '!this.process('
+  !this.save.callback = '!this.exportToExcel()'
+  !this.open.callback = '!this.open()'
+  !this.moveUpSel.callback = |!this.moveRows('U','SEL')|
+  !this.moveDownSel.callback = |!this.moveRows('D','SEL')|
+  !this.moveUpAll.callback = |!this.moveRows('U','ALL')|
+  !this.moveDownAll.callback = |!this.moveRows('D','ALL')|
+  !this.reportType.callback  = |!this.initialise()|
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+-- Method:      process
+--
+-- Description: Process columns
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .process(!gadget is GADGET, !action is STRING)
+
+  if (!action eq 'SHOWN' and !gadget eq !this.outputFrame) then
+
+    !this.dbCtrl.clearGrid()
+    -- Initialise Variables
+    !attributes     = ARRAY()
+    !dataTypes      = ARRAY()
+    !headings       = ARRAY()
+
+    !this.dbCtrl.columnExcelFilter(true)
+    !this.dbCtrl.outlookGroupStyle(false)
+    !this.dbCtrl.fixedHeaders(true)
+    !this.dbCtrl.fixedRows(true)
+
+    -- Define headings
+    !attributes = !this.selectedTable[1]
+
+    !type = !this.reportIdentifier[!this.reportIndex]
+    if( !this.reportScope.selection() eq 'CE' ) then
+      VAR !dbNames COLLECT ALL $!<type> FOR CE
+    else
+      -- Define collection (all of element type in MDB with SITE as an ancestor)
+      -- This avoids getting elements in application data areas and template definitions
+      -- Using old collection command because of WITH statement
+      VAR !dbNames COLLECT ALL $!<type> WITH ( NOT BADREF(SITE) )
+    endif
+
+    !title = 'Attributes'
+    using namespace 'Aveva.Pdms.Presentation'
+    !nds = object NETDATASOURCE(!title, !this.selectedTable[1], !this.selectedTable[4], !dbNames)
+    !this.dbCtrl.bindToDataSource(!nds)
+
+    !this.dbCtrl.columnExcelFilter(true)
+    !this.dbCtrl.outlookGroupStyle(false)
+    !this.dbCtrl.fixedHeaders(true)
+    !this.dbCtrl.fixedRows(true)
+    !this.dbCtrl.outlookGroupStyle(true)
+    !this.dbCtrl.gridHeight(1000.0)
+
+    !this.open.active = false
+
+  endif
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      initialise
+--
+-- Description: initialise form, loading attributes & columns
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .initialise()
+
+  -- Load attributes for the selected report type
+  !reportOn = !this.reportType.selection()
+
+  -- Initialise Variables
+  !headings[1]          = 'Attribute'
+  !headings[2]          = 'Description'
+  !headings[3]          = 'Data Type'
+  !headings[4]          = 'Report Header'
+  !this.columnHeadings  = !headings
+  !this.selectedColumns.setHeadings(!this.columnHeadings)
+
+  -- initialise four columns in selected attributes table
+  !this.selectedTable[1]      = ARRAY()
+  !this.selectedTable[2]      = ARRAY()
+  !this.selectedTable[3]      = ARRAY()
+  !this.selectedTable[4]      = ARRAY()
+  !this.selectedColumns.setColumns(!this.selectedTable)
+  !this.selectedColumns.rText = ARRAY()
+  !this.selectedRepText       = ARRAY()
+
+  -- find report identifier
+  !index = !this.reportIdentifier.findFirst(!reportOn)
+  if( !index.unset() ) then
+    -- should not be possible to get this error
+    return error 2 |Unknown report type $!<reportOn>|
+  endif
+
+  -- pointer to table of report properties
+  !this.reportIndex      = !index
+
+  -- Load attributes if not already loaded
+  !success = !this.getAttributes(!reportOn)
+  handle any
+    !!alert.error(!!error.text)
+    !this.reportType.val = 1
+    !this.reportIndex    = 1
+    return
+  endhandle
+
+  if(!success.not()) then
+    --revert to EQUI if failed to load report attributes
+    !this.reportType.val = 1
+    !this.reportIndex    = 1
+  endif
+
+  !this.dbCtrl.clearGrid()
+
+  -- clear selected list
+  do !i indices !this.selected[!this.reportIndex]
+    !this.selected[!this.reportIndex][!i] = false
+  enddo
+
+  -- prepare for display
+  !this.displayAttributes()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      displayAttributes
+--
+-- Description: Load columns with attributes
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .displayAttributes()
+
+  -- prepare for display
+  -- Sort into order
+  !sortedIndices = !this.reportAttributes[!this.reportIndex][1].sortedIndices()
+
+  -- Create display list
+  !displayedAttributes    = ARRAY()
+  !displayedAttributes[1] = ARRAY()
+  !displayedAttributes[2] = ARRAY()
+  !displayedAttributes[3] = ARRAY()
+  !displayedAttributes[4] = ARRAY()
+  !displayIndex           = ARRAY()
+
+  do !index values !sortedIndices
+    -- Does not go in the attribute list if already selected
+    skip if( !this.selected[!this.reportIndex][!index] )
+    -- ignore pseudo attributes if not selected
+    skip if( !this.pseudo.val.not() and !this.isPseudo[!this.reportIndex][!index] )
+    -- get attribute data: three indices are [report type][column][row]
+    -- Attribute
+    !displayedAttributes[1].append(!this.reportAttributes[!this.reportIndex][1][!index])
+    -- Description
+    !displayedAttributes[2].append(!this.reportAttributes[!this.reportIndex][2][!index])
+    -- Data type
+    !displayedAttributes[3].append(!this.reportAttributes[!this.reportIndex][3][!index])
+    -- Header
+    !displayedAttributes[4].append(!this.reportAttributes[!this.reportIndex][4][!index])
+    !displayIndex.append(!index.string())
+  enddo
+
+  -- Populate attribute column list
+  !this.availColumns.setHeadings(!this.columnHeadings)
+  !this.availColumns.setColumns(!displayedAttributes)
+  !this.availColumns.rText   = !displayIndex
+
+  !this.outputFrame.active   = !this.selectedColumns.rText.empty().not()
+  !this.open.active          = false
+  !this.columnsFrame.visible = true
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      moveColumns
+--
+-- Description: Moves selected items one list to another
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--                STRING
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .moveColumns(!option1 is STRING, !option2 is STRING)
+
+  !selectIndices = ARRAY()
+
+  if (!option1 eq 'R') then
+
+    -- select attributes
+    if (!option2 eq 'ALL') then
+      do !strIndex values !this.availColumns.rText
+        !this.selected[!this.reportIndex][!strIndex.real()] = true
+        !selectIndices.append(!strIndex.real())
+      enddo
+    elseif(!option2 eq 'SEL') then
+      do !strIndex values !this.availColumns.selection()
+        !this.selected[!this.reportIndex][!strIndex.real()] = true
+        !selectIndices.append(!strIndex.real())
+      enddo
+    endif
+    -- append selected to the end of the selected table
+    do !index values !selectIndices
+      !this.selectedRepText.append(!index.string())
+    enddo
+
+  elseif (!option1 eq 'L') then
+
+    -- de-select attributes
+    if (!option2 eq 'ALL') then
+      do !strIndex values !this.selectedColumns.rText
+        !this.selected[!this.reportIndex][!strIndex.real()] = false
+      enddo
+      -- empty selected table
+      !this.selectedRepText  = ARRAY()
+    elseif(!option2 eq 'SEL') then
+      do !strIndex values !this.selectedColumns.selection()
+        !this.selected[!this.reportIndex][!strIndex.real()] = false
+        -- get position in selected items table
+        !tableIndex = !this.selectedRepText.findFirst(!strIndex)
+        skip if(!tableIndex.unset())
+        -- remove from selection
+        !this.selectedRepText.deleteFrom(!tableIndex,1)
+      enddo
+      -- compress sparse arrays
+      !this.selectedRepText.compress()
+    endif
+
+  endif
+
+  -- Make sure that list is unique
+  !this.selectedRepText.unique()
+
+  -- update attribute display
+  !this.displayAttributes()
+  !this.displaySelected()
+
+  -- update selected display
+  !this.selectedColumns.setColumns(!this.selectedTable)
+  !this.selectedColumns.rText = !this.selectedRepText
+
+  !this.outputFrame.active = !this.selectedColumns.rText.empty().not()
+
+endmethod
+
+-- End of method moveColumns()
+
+------------------------------------------------------------------------
+--
+-- Method:      moveRows
+--
+-- Description: Change selected columns order
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--                STRING
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .moveRows(!option1 is STRING, !option2 is STRING)
+
+  -- get selected rows
+  !selectedRows = !this.selectedColumns.selection()
+  -- selected columns
+  !selected = !this.selectedColumns.val
+  if(!selected.empty()) then
+    -- nothing selected so nothing to do
+    return
+  endif
+  !selected.sort()
+  !tempRepText  = ARRAY()
+
+  if( !option2 eq 'ALL' ) then
+
+    -- Move select columns to top or bottom of the selected list
+    do !index values !selected
+      -- temporarily remove from table if selected
+      !tempRepText.append(!this.selectedRepText[!index])
+      !this.selectedRepText.deleteFrom(!index,1)
+    enddo
+    -- compress sparse array
+    !this.selectedRepText.compress()
+    if( !option1 eq 'U' ) then
+      -- put selected at the start of the list
+      !tempRepText.appendArray(!this.selectedRepText)
+      !this.selectedRepText  = !tempRepText
+    else
+      -- put selected at the end of the list
+      !this.selectedRepText.appendArray(!tempRepText)
+    endif
+
+  else
+
+    -- Move selected columns up or down one of the selected list
+    if( !selected.size() gt 1 ) then
+      -- check that range is contiguous
+      do !i from 2 to !selected.size()
+        if( !selected[!i] neq !selected[!i - 1] + 1 ) then
+          !!alert.error('Selection must be continuous (no gaps) for this operation')
+          return
+        endif
+      enddo
+    endif
+    !before = !selected[1] - 1
+    !after  = !selected.last() + 1
+    if (!option1 eq 'U') then
+      -- Move up the list
+      if (!before eq 0) then
+        -- nothing to do Selection is at the top of the list
+        return
+      else
+        !temp = !this.selectedRepText.deleteFrom(!before,1)
+        !this.selectedRepText.insert(!after,!temp[1])
+      endif
+    else
+      -- Move down the list
+      if (!after gt !this.selectedRepText.size()) then
+        -- nothing to do Selection is at the bottom of the list
+        return
+      else
+        !temp = !this.selectedRepText.deleteFrom(!after,1)
+        !this.selectedRepText.insert(!selected[1],!temp[1])
+      endif
+    endif
+    !this.selectedRepText.compress()
+
+  endif
+
+  -- Rebuild selected table from selected RTEXT
+  !this.displaySelected()
+  !this.selectedColumns.select('RTEXT', !selectedRows)
+
+endmethod
+
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      displaySelected
+--
+-- Description: Rebuild selected table from selected RTEXT
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .displaySelected()
+
+  -- empty selected table
+  !this.selectedTable[1] = ARRAY()
+  !this.selectedTable[2] = ARRAY()
+  !this.selectedTable[3] = ARRAY()
+  !this.selectedTable[4] = ARRAY()
+  -- loop through modified rText to rebuild the list
+  do !index indices !this.selectedRepText
+    -- get index into attribute list
+    !attIndex = !this.selectedRepText[!index].real()
+    -- Attribute
+    !this.selectedTable[1][!index] = !this.reportAttributes[!this.reportIndex][1][!attIndex]
+    -- Description
+    !this.selectedTable[2][!index] = !this.reportAttributes[!this.reportIndex][2][!attIndex]
+    -- Data type
+    !this.selectedTable[3][!index] = !this.reportAttributes[!this.reportIndex][3][!attIndex]
+    -- Header
+    !this.selectedTable[4][!index] = !this.reportAttributes[!this.reportIndex][4][!attIndex]
+  enddo
+
+  -- re-populate the table and reselect original selection
+  !this.selectedColumns.clear()
+  !this.selectedColumns.setColumns(!this.selectedTable)
+  !this.selectedColumns.rText = !this.selectedRepText
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      open
+--
+-- Description: open file in excel
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .open()
+
+  !syscomString = |"$!this.file" &|
+  SYSCOM '$!syscomString'
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      getAttributes
+--
+-- Description: Get attributes for a report and cache them
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .getAttributes(!reportType is STRING) is BOOLEAN
+
+  if( defined(!this.reportAttributes[!this.reportIndex][1]) ) then
+    -- already loaded attributes for this type
+    if( !this.reportAttributes[!this.reportIndex][1].empty().not() ) then
+      return true
+    endif
+  endif
+
+  -- Have not yet loaded attributes for this type
+  -- To load the available attributes we need to find an element in the database
+  var !tempColl coll all $!<reportType>
+  if (!tempColl.size() eq 0 ) then
+    -- Allow the system to revert back to EQUI if no elements of required type
+    if( !reportType eq 'EQUI' ) then
+      -- error if no equipment found
+      return error 1 'No Equipment items available'
+    else
+      !!alert.warning('No ' + !reportType + ' elements to report on')
+      return false
+    endif
+  endif
+
+  !element = !tempColl[1].dbref()
+
+  -- Elements attributes
+  !this.reportAttributes[!this.reportIndex]   = !this.prune(!element.attributes(),!element)
+  !this.selected[!this.reportIndex]           = ARRAY()
+  !this.isPseudo[!this.reportIndex]           = ARRAY()
+  do !index indices !this.reportAttributes[!this.reportIndex][1]
+    !this.selected[!this.reportIndex][!index] = false
+    !this.isPseudo[!this.reportIndex][!index] = false
+  enddo
+
+  -- Pseudo attributes
+  !reportPseudoAttributes = ARRAY()
+  !tempSelected           = ARRAY()
+  !tempIsPseudo           = ARRAY()
+   var !pseudoAtts split PSATTS OF $!<element>
+  !reportPseudoAttributes = !this.prune(!pseudoAtts,!element)
+  do !index indices !reportPseudoAttributes[1]
+    !tempSelected[!index] = false
+    !tempIsPseudo[!index] = true
+  enddo
+  !this.reportAttributes[!this.reportIndex][1].appendArray(!reportPseudoAttributes[1])
+  !this.reportAttributes[!this.reportIndex][2].appendArray(!reportPseudoAttributes[2])
+  !this.reportAttributes[!this.reportIndex][3].appendArray(!reportPseudoAttributes[3])
+  !this.reportAttributes[!this.reportIndex][4].appendArray(!reportPseudoAttributes[4])
+  !this.selected[!this.reportIndex].appendArray(!tempSelected)
+  !this.isPseudo[!this.reportIndex].appendArray(!tempIsPseudo)
+
+  -- add special expressions
+  if( !reportType inset('NOZZ','ELCONN') ) then
+    !this.reportAttributes[!this.reportIndex][1].append('Name of Equi')
+    !this.reportAttributes[!this.reportIndex][2].append('Name of Equipment')
+    !this.reportAttributes[!this.reportIndex][3].append('STRING')
+    !this.reportAttributes[!this.reportIndex][4].append('Equipment')
+    !this.selected[!this.reportIndex].append(false)
+    !this.isPseudo[!this.reportIndex].append(false)
+    !this.reportAttributes[!this.reportIndex][1].append('Position in Zone')
+    !this.reportAttributes[!this.reportIndex][2].append('Position in Zone')
+    !this.reportAttributes[!this.reportIndex][3].append('POSITION')
+    !this.reportAttributes[!this.reportIndex][4].append('Position in Zone')
+    !this.selected[!this.reportIndex].append(false)
+    !this.isPseudo[!this.reportIndex].append(false)
+    !this.reportAttributes[!this.reportIndex][1].append('Orientation in Zone')
+    !this.reportAttributes[!this.reportIndex][2].append('Orientation in Zone')
+    !this.reportAttributes[!this.reportIndex][3].append('ORIENTATION')
+    !this.reportAttributes[!this.reportIndex][4].append('Orientation in Zone')
+    !this.selected[!this.reportIndex].append(false)
+    !this.isPseudo[!this.reportIndex].append(false)
+  endif
+  if( !reportType eq 'NOZZ' ) then
+    !this.reportAttributes[!this.reportIndex][1].append('P1 Bore')
+    !this.reportAttributes[!this.reportIndex][2].append('P1 Bore')
+    !this.reportAttributes[!this.reportIndex][3].append('STRING')
+    !this.reportAttributes[!this.reportIndex][4].append('Bore')
+    !this.selected[!this.reportIndex].append(false)
+    !this.isPseudo[!this.reportIndex].append(false)
+    !this.reportAttributes[!this.reportIndex][1].append('P1 CONN')
+    !this.reportAttributes[!this.reportIndex][2].append('P1 Connection')
+    !this.reportAttributes[!this.reportIndex][3].append('STRING')
+    !this.reportAttributes[!this.reportIndex][4].append('Connection')
+    !this.selected[!this.reportIndex].append(false)
+    !this.isPseudo[!this.reportIndex].append(false)
+  endif
+  !this.reportAttributes[!this.reportIndex][1].append('Name of Site')
+  !this.reportAttributes[!this.reportIndex][2].append('Name of Site')
+  !this.reportAttributes[!this.reportIndex][3].append('STRING')
+  !this.reportAttributes[!this.reportIndex][4].append('Site')
+  !this.selected[!this.reportIndex].append(false)
+  !this.isPseudo[!this.reportIndex].append(false)
+  !this.reportAttributes[!this.reportIndex][1].append('Position in World')
+  !this.reportAttributes[!this.reportIndex][2].append('Position in World')
+  !this.reportAttributes[!this.reportIndex][3].append('POSITION')
+  !this.reportAttributes[!this.reportIndex][4].append('Position in World')
+  !this.selected[!this.reportIndex].append(false)
+  !this.isPseudo[!this.reportIndex].append(false)
+  !this.reportAttributes[!this.reportIndex][1].append('Orientation in World')
+  !this.reportAttributes[!this.reportIndex][2].append('Orientation in World')
+  !this.reportAttributes[!this.reportIndex][3].append('ORIENTATION')
+  !this.reportAttributes[!this.reportIndex][4].append('Orientation in World')
+  !this.selected[!this.reportIndex].append(false)
+  !this.isPseudo[!this.reportIndex].append(false)
+  !this.reportAttributes[!this.reportIndex][1].append('Position in Site')
+  !this.reportAttributes[!this.reportIndex][2].append('Position in Site')
+  !this.reportAttributes[!this.reportIndex][3].append('POSITION')
+  !this.reportAttributes[!this.reportIndex][4].append('Position in Site')
+  !this.selected[!this.reportIndex].append(false)
+  !this.isPseudo[!this.reportIndex].append(false)
+  !this.reportAttributes[!this.reportIndex][1].append('Orientation in Site')
+  !this.reportAttributes[!this.reportIndex][2].append('Orientation in Site')
+  !this.reportAttributes[!this.reportIndex][3].append('ORIENTATION')
+  !this.reportAttributes[!this.reportIndex][4].append('Orientation in Site')
+  !this.selected[!this.reportIndex].append(false)
+  !this.isPseudo[!this.reportIndex].append(false)
+
+  return true
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      prune
+--
+-- Description: Remove attributes that should not be reported
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .prune(!attributeList is ARRAY, !element is DBREF) is ARRAY
+
+  !prunedAttributeList = ARRAY()
+  !attributes          = ARRAY()
+  !descriptions        = ARRAY()
+  !dataTypes           = ARRAY()
+  !columnHeaders       = ARRAY()
+
+  -- Loop through attributes and get the data
+  do !attribute values !attributeList
+    !attrib = !attribute.upcase()
+
+    -- Exclusions - using attribute name - system attributes and attributes unlikely to be of interest to the general user
+    skip if(!attrib inset('MEMBERS','ORRF','INVFARRAY','QUAN','NAMETY','PRIMTY','CRINFO','STMF','TEMPEL','TEMPLI'))
+    skip if(!attrib inset('BRCON','BRLEG'))
+    skip if(!attrib inset('ATTLIS','AHLIST','HLIS','LLIS','OLIS','LIST','OWNLST','OHTYPE'))
+    skip if(!attrib inset('PPLS','PPVI','PPCOU','PLREFS','DDES','WDES'))
+    skip if(!attrib inset('TRANS','WTRANS','GMOF','NMOF','EVOL','LVOL','WVOL'))
+    skip if(!attrib inset('DRPS','TOPF','SEQU','TYSEQU','UDETCH','DDEP','RCOU','SIGNIF','DPCOU','NUMCOR','MAXD'))
+    skip if(!attrib.substring(1,3) inset('SES') and !attrib.length() le 6)
+    skip if(!attrib.substring(1,3) inset('EXT','ELE','EXH','EXM','EXC','EXP','EXN','LCL','DAC') and !attrib.length() le 6)
+    skip if(!attrib.substring(1,3) inset('OKC','OKD','OKR') and !attrib.length() le 6)
+    skip if(!attrib.substring(1,2) eq 'DB' and !attrib ne 'DBNA')
+    skip if(!attrib.substring(1,2) eq 'HU')
+
+    -- Exclusions - based on description of attribute
+    var !definition attdef $!<attrib> destex rptx qtxt
+    handle ANY
+      skip
+    endhandle
+    if(!definition[1] neq  ' ' ) then
+      !description            = !definition[1]
+    else
+      !description            = !attribute
+    endif
+
+    -- Removes attribute with OLD at the beginning
+    skip if(!description.substring(1,3) eq 'OLD')
+
+    if(!definition[2].trim().empty().not()) then
+      !heading                = !definition[2]
+    else
+      !heading                = !attribute
+    endif
+    !heading                  = !heading.substring(1,1).upcase() & !heading.substring(2).lowcase()
+
+    -- Get Attribute Data
+    !data                     = !element.attribute(!attribute)
+    -- Handle any problem trying to get the attribute information
+    handle ANY
+      skip
+    endhandle
+    !dataType                 = !data.objectType()
+
+    -- delete temporary data element because type changes
+    !data.delete()
+    -- Ignore arrays for this example
+    skip if(!dataType eq 'ARRAY')
+
+    -- Define arrays
+    !attributes.append(!attribute)
+    !descriptions.append(!description)
+    !dataTypes.append(!dataType)
+    !columnHeaders.append(!heading)
+
+  -- End of looping through attributes
+  enddo
+
+  -- return arrays for this attribute list
+  !prunedAttributeList[1] = !attributes
+  !prunedAttributeList[2] = !descriptions
+  !prunedAttributeList[3] = !dataTypes
+  !prunedAttributeList[4] = !columnHeaders
+
+  return !prunedAttributeList
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:   popupCallback
+--
+-- Description: Callback on dataGrid popup
+--
+-- Method Type: Procedure
+-- [#] [R/RW] [Data Type] [Description]
+-- Return:
+-- [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .popupCallback(!a is ARRAY)
+
+  !this.netFrame.showPopup(!a[0], !a[1])
+
+endmethod
+-- End of method definition
+
+-------------------------------------------------------------------
+--
+-- Method:      navigate
+--
+-- Description: Navigate to selected element
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .navigate()
+
+  -- get selected elements from the grid
+  !selectedElements = !this.dbCtrl.getSelectedRowTags()
+  if( !selectedElements.size() lt 1 ) then
+    return
+  endif
+  -- navigate to the element
+  !ref = !selectedElements[1]
+  !!ce = !ref.dbref()
+  handle any
+  endhandle
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      addToView
+--
+-- Description: Add selected element to 3D view
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .addToView()
+
+  -- get selected elements from the grid
+  !selectedElements = !this.dbCtrl.getSelectedRowTags()
+  if( !selectedElements.size() lt 1 ) then
+    return
+  endif
+  -- navigate to the element
+  ADD ALL FROM !selectedElements
+  handle any
+  endhandle
+
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      exportToExcel
+--
+-- Description: Export to Excel and all file to be opened in Excel
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .exportToExcel()
+
+	if(!this.dbCtrl.getNumberRows() eq 0) then
+    !!alert.warning('No data to export.')
+  else
+    Using namespace 'Aveva.Pdms.Presentation'
+    !browser = object PMLFILEBROWSER('SAVE')
+    !browser.show('', |EquipmentReport.xls|, |Save As|, false, 'Microsoft Excel Files (*.xls)|*.xls',1)
+    -- Test for no returned filename (i.e. if cancel button is used)
+    if (!browser.file().neq('')) then
+      !this.open.active = true
+      !this.file = !browser.file()
+      !this.dbCtrl.saveGridToExcel(!browser.file())
+      handle (1000, 0)
+        !!alert.warning('Unable to write to file.  File is in use.')
+      endhandle
+    endif
+  endif
+
+endmethod
+-- End of method

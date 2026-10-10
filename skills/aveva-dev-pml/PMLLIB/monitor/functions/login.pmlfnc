@@ -1,0 +1,287 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            login.pmlfnc
+--   Type:          Function Definition
+--   Group:         General Application
+--     Keyword:     GEN
+--   Module:        monitor
+--   Replaces:
+--
+-- Author:          E.conba
+-- Created:         Thu Mar 13 10:03:05 GMT 1997
+--
+--
+-- Description:
+-- Function to start the PDMS monitor appware on entry to the
+-- PDMS project
+--
+------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Command line argument - Project
+--    2   R      STRING      Command line argument - User/Pass
+--    3   R      STRING      Command line argument - Mdb
+--    4   R      STRING      Command line argument - Module
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     Flag to indicate successful login
+--
+------------------------------------------------------------------------
+
+-- Define function
+define function !!login(!project is STRING, !userPass is STRING, !mdb is STRING, !module is STRING) is BOOLEAN
+
+  -- set arguments to local variables as they may be written to
+  !localProject = !project
+  !localUserPass = !userPass
+  !localMdb = !mdb
+  !localModule = !module
+
+  -- Check for graphics
+  !tty = ISTTY
+  if (!tty) then
+
+    !moduleSwitch = false
+
+    -- No appware required
+    $P Non Graphics Device (Appware will not be loaded).
+
+    -- Try to login to the project
+    if (!localProject.empty().not()) then
+      PROJECT $!<localProject>
+      if (!localUserPass.empty().not()) then
+        USER $!<localUserPass>
+        handle ANY
+          -- Try with quotes
+          USER '$!<localUserPass>'
+          handle ANY
+            -- Try quoting username part only
+            !userPassSplit = !localUserPass.split('/')
+            USER |$!<userPassSplit[1]>|/$!<userPassSplit[2]>
+          endhandle
+        endhandle
+        if (!localMdb.empty().not()) then
+          $!<localMdb>
+          !moduleSwitch = true
+        endif
+      endif
+    endif
+
+    return !moduleSwitch
+
+  endif
+
+  -- Initialise variables
+  !projectFlag      = false
+  !userFlag         = false
+  !mdbFlag          = false
+
+  if (undefined(!!sessionSettings)) then
+
+    -- initialise global variable
+    !!sessionSettings = object PDMSSETTINGS()
+
+    -- load the users session file
+    !!sessionSettings.load()
+
+  endif
+
+  if (undefined(!!currentProject)) then
+    !!currentProject = ''
+  endif
+
+  -- replace empty arguments with session file settings
+  if (!localProject.empty()) then
+    !localProject = !!sessionSettings.project
+  endif
+
+  if (!localMdb.empty()) then
+    !localMdb = !!sessionSettings.mdb
+  endif
+
+  if (!localModule.empty()) then
+    !localModule = !!sessionSettings.module
+  endif
+
+  -- Try to set current project setting using command line args
+  -- or the data in the session file. Display the form depending
+  -- upon which proves true
+
+  -- Try to set the project
+  if (!localProject.empty().not()) then
+
+    if (!localProject ne !!currentProject) then
+      PROJECT $!<localProject>
+      handle (43,252) (43,260) (43,9) (43,253)
+        -- this is a bit nasty, but...
+        -- if all the arguments are empty, then we can assume this is the first time
+        -- this function has been run, and the user does not want errors to be displayed
+        if (!project.empty() and !userPass.empty() and !mdb.empty()) then
+          !!sessionSettings.project = ||
+        else
+          !error = !!error.text.after(|)|)
+          !!alert.error(!error)
+          !!sessionSettings.project = ||
+        endif
+
+      elsehandle any
+        -- same thing here...!!
+        if (!project.empty() and !userPass.empty() and !mdb.empty()) then
+          !!sessionSettings.project = ||
+        else
+          !!alert.error(!!messageFile.messageString(150, 41, !localProject))
+          !!sessionSettings.project = ||
+        endif
+
+      elsehandle none
+        !projectFlag = true
+        !!currentProject = !localProject
+        !!sessionSettings.project = !localProject
+
+      endhandle
+    else
+      !projectFlag = true
+      !!sessionSettings.project = !localProject
+    endif
+  endif
+
+  -- If the project flag was set, try to set the user
+  if (!projectFlag) then
+
+    -- Was there a command line argument for USER/PASS
+    if (!localUserPass.empty().not()) then
+      USER '$!<localUserPass>'
+      handle (43,258)
+        -- Try without the quotes
+        USER $!<localUserPass>
+        handle ANY
+          -- Try quoting username part only
+          !userPassSplit = !localUserPass.split('/')
+          USER |$!<userPassSplit[1]>|/$!<userPassSplit[2]>
+
+          handle ANY
+            !!messageFile.error(43,258)
+
+          elsehandle NONE
+            !userFlag = true
+
+          endhandle
+
+        elsehandle NONE
+          !userFlag = true
+
+        endhandle
+
+      elsehandle (98,204) (98,205)
+        !error     = !!error.text.after(|)|)
+        !!alert.error(!error)
+
+      elsehandle any
+        !!messageFile.warning(150, 21)
+
+      elsehandle none
+        !userFlag = true
+
+      endhandle
+    endif
+
+    if (!userFlag) then
+      if(!localUserPass.occurs('|').geq(1))then
+        !!sessionSettings.user = !localUserPass.after('|').before('|')
+      else
+        !!sessionSettings.user = !localUserPass.before(|/|)
+      endif
+    endif
+
+    -- If we have a successful command line USER/PASS and the !mdb arg
+    -- is not UNSET then try and set the mdb
+    if (!userFlag and !localMdb.unset().not()) then
+
+      if (!localMdb.empty().not()) then
+        $!<localMdb>
+        handle any
+          -- Bad MDB on command line
+          !!messageFile.warning(150, 1, !localMdb.subString(2))
+          !!sessionSettings.mdb = ||
+
+        elsehandle none
+          -- Got a good MDB from command line
+          !!sessionSettings.mdb = !localMdb
+          !mdbFlag = true
+
+        endhandle
+      endif
+    endif
+  endif
+
+  if (!localModule.empty().not() and !localModule ne 'MACRO') then
+    !!sessionSettings.module = !localModule
+  endif
+
+  if (defined(!!pdmsLogin)) then
+    !!sessionSettings.restore = !!pdmsLogin.restore.val
+  endif
+
+  -- at this point the project, user and mdb may have been set
+  -- the decision to accept the login is based on the following logic
+
+  --   LOGIN      PROJECT          USER         MDB           MODULE
+  --   ==============================================================
+  --   false      false            ignored      ignored       ignored
+  --   false      true             false        ignored       ignored
+  --   false      true             true         false         ignored
+  --   false      true             true         empty         not MONITOR
+  --   true       true             true         empty         MONITOR
+  --   true       true             true         true          set
+
+  !showLoginForm = true
+
+  if (!projectFlag and !userFlag and !localModule ne 'MACRO') then
+
+    -- get the module data
+    !nextModule = !!getModuleData(!localModule)
+    -- Get information about current user
+    !sessionData     = CURRENT SESSION
+
+    -- check user has access if going into a restricted module
+    if (!nextModule.restricted and !sessionData.user().access.upcase() ne 'FREE') then
+        !!alert.error(!nextModule.dText + ' module is only available to users with FREE access.')
+
+    elseif (!localMdb.empty() and (!localModule.upcase() eq 'MONITOR' or !localModule.upcase() eq 'ADMIN')) then
+      !showLoginForm = false
+
+    elseif (!mdbFlag) then
+      !showLoginForm = false
+
+    elseif (!localMdb.empty()) then
+      !!alert.error('MDB must be set')
+    endif
+
+  elseif (!localModule eq 'MACRO') then
+    !showLoginForm = false
+  endif
+
+  if (!showLoginForm) then
+    if (undefined(!!pdmsLogin)) then
+      pml load form !!pdmsLogin
+    endif
+    --swap main !!pdmsLogin
+    --show !!pdmsLogin
+    !!alert.warning('PML login form no longer available')
+    if (defined(!!monitor)) then
+      hide !!monitor
+    endif
+    !returnFlag = false
+  else
+    call !!writeSessionFile()
+    !returnFlag = true
+  endif
+
+  return !returnFlag
+
+endfunction
+-- End of function definition for !!login

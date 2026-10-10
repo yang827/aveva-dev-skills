@@ -1,0 +1,1057 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            hmutility.pmlfrm
+--    Type:          Form Definition
+--    Group:         Undefined
+--      Keyword:     Undefined
+--    Module:        Undefined
+--  Author:          Undefined
+--  Created:         Fri Jun 25 15:20:47 2010
+--
+-- Description:
+--   GUI for Hole Management system utility functions
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  addPenetrated(EDGPICKDATA)       -                   pick event handler for penetrated element
+--  addPenetrating(EDGPICKDATA)      -                   pick event handler for penetrating element
+--  autoCreateHoles(DBREF)           -                   Automatically create holes for given structure element
+--  createSinglePenetration(DBREF,DBREF) -
+--  edgAddPenetrated()               -                   pick event handler for show panel around branch
+--  edgAddPenetrating()              -                   pick event handler for show branch around panel
+--  edgPickDelete()                  -                   Setup EDG mode to pick holes to delete
+--  edgPickMerge()                   -                   Setup EDG mode to pick holes to merge
+--  edgPickPenetrated()              -                   Setup EDG mode to pick panel for quick hole create
+--  edgPickPenetrating()             -                   Setup EDG mode to pick branch for quick hole create
+--  getHolesFor(DBREF)               ARRAY               Get holes for the given element
+--  hmUtility()                      -                   Constructor
+--  initHMAUTOPENETRATE()            -                   initialise the auto penetration engine
+--  initialise()                     -                   Initialisation - executed each time the form is shown
+--  initialiseMerge()                -                   Initialise hole merge
+--  isCableTray(DBREF)               BOOLEAN             Return true for cable tray, false for pipe
+--  merge()                          -                   Merge selected penetrations
+--  mergeAbort()                     -                   Tidy up after merge operation
+--  pickDelete(EDGPICKDATA)          -                   event handler for delete element pick
+--  pickMerge(EDGPICKDATA)           -                   event handler for merge element pick
+--  pickPenetrated(EDGPICKDATA)      -                   pick event handler for quick hole penetrated element
+--  pickPenetrating(EDGPICKDATA)     -                   pick event handler for penetrating element
+--  progressUpdate(STRING,REAL)      -                   Open callback for progress message (for AutoPenetrate code)
+--  showErrorLog(COMPROPERROR)       -                   show contents of error log
+--  showMainForm(BOOLEAN,ARRAY)      -                   show the main hole management form
+--  showMainForm(BOOLEAN,DBREF)      -                   show the main hole management form
+--  tidy()                           -                   cleanUp any created items when the form is dismissed
+--
+------------------------------------------------------------------------
+--- form definition
+setup form !!hmUtility dialog dock right
+
+  hdist 0.5
+  halign left
+  vdist 0.3
+  path down
+
+  -- Frame for create functions
+  frame  .frmCreate   'Create Holes'      anchor l+r+t
+    text .clearance   'Clearance'         anchor l+r+t tagwidth 8 width 8 is REAL format !!distanceFmt
+    -- add toggle to auto request
+    button .btnAutoCE 'Auto Penetrate CE' anchor r+l+t width 15
+    button .btnQuick  'Create Hole'       anchor r+l+t width 15
+    paragraph .progressMessage anchor l+r+t  width 15 lines 2
+  exit
+
+  -- Frame for merge functions
+  frame  .frmMerge      'Merge Holes'     anchor l+r+t
+    button .btnMerge     'Pick Holes'     anchor r+l+t width 15
+    button .btnMergeStop 'Merge Holes'    anchor r+l+t width 15
+  exit
+
+  -- Frame for modify functions
+  frame  .frmModify   'Modify Holes'      anchor l+r+t
+    button .btnModify 'Modify CE'         anchor r+l+t width 15
+    button .btnManage 'Manage Holes'      anchor r+l+t width 15
+    button .btnDelete 'Delete Hole'       anchor r+l+t width 15
+  exit
+
+  -- Frame for view functions
+  frame  .frmView     'Utilities'              anchor l+r+t
+    button .btnAddPenetrated  'Add Structure'  anchor r+l+t  width 15
+    button .btnAddPenetrating 'Add Pipe/HVAC'  anchor r+l+t  width 15
+    button .btnReport         'Hole Report'    anchor r+l+t  width 15
+  exit
+
+-- End of FORM definition
+
+  -- undo objects for various functions
+  member .undoAutoPenetrate  is UNDOABLE
+  member .undoMerge          is UNDOABLE
+
+  -- true if running in marine environment
+--  member .marine            is BOOLEAN
+  -- array element 1 contains auto penetration object (HMAUTOPENETRATE)
+  member .autoPenetrate      is ARRAY
+
+  -- penetrating and penetrated elements for 2 pick case
+  member .penetrated         is DBREF
+  member .penetrating        is DBREF
+  -- description of current active EDG operation
+  member .edgDescription     is STRING
+  -- list of holes selected in merge operation
+  member .mergeList          is ARRAY
+  -- list of colour enhanced elements
+  member .enhanced           is COMENHANCE
+
+exit
+------------------------------------------------------------------------
+-- Method:      hmUtility
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .hmUtility()
+
+  -- Define titles and initialisation call
+  !this.formtitle  = 'Managed Hole Utility'
+  !this.icontitle  = 'HMUTIL'
+
+  -- set up callbacks
+  !this.initcall                   = |!this.initialise()|
+  !this.cancelcall                 = |!this.tidy()|
+  !this.btnAutoCE.callback         = |!this.autoCreateHoles(!!ce)|
+  !this.btnQuick.callback          = |!this.edgPickPenetrated()|
+  !this.btnModify.callback         = |!!hmModify()|
+  !this.btnMerge.callback          = |!this.initialiseMerge()|
+  !this.btnMergeStop.callback      = |!this.merge()|
+  !this.btnManage.callback         = |!this.showMainForm(true, !!ce)|
+  !this.btnDelete.callback         = |!this.edgPickDelete()|
+  !this.btnAddPenetrated.callback  = |!this.edgAddPenetrated()|
+  !this.btnAddPenetrating.callback = |!this.edgAddPenetrating()|
+  !this.btnReport.callback         = |show !!hmReport|
+
+  -- initialise members
+  !this.clearance.val  = 0mm
+  !this.edgDescription = ''
+
+  -- Initialise create button undo
+  !this.undoAutoPenetrate.description('Automatic Managed Hole Create')
+  !this.btnAutoCE.setUndoable(!this.undoAutoPenetrate)
+  !this.undoMerge.description('Merge Hole')
+  !this.btnMergeStop.setUndoable(!this.undoMerge)
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+-- Method:      initialise
+--
+-- Description: Initialisation - executed each time the form is shown
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .initialise()
+
+  -- initialise the auto penetration engine
+  !this.initHMAUTOPENETRATE()
+
+  if( !!isThisHmProj().not() ) then
+    !!alert.error('This project is not configured to use Hole Management functions')
+    return
+  endif
+
+  -- initialise members
+  !this.btnMergeStop.active = false
+  !this.enhanced.clear()
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+-- Method:      autoCreateHoles()
+--
+-- Description: Automatically create holes for given structure element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       Structure to penetrate
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .autoCreateHoles(!selectedStructure is DBREF)
+
+  -- climb to appropriate structure
+  if (!selectedStructure.type eq 'WORL') then
+    !!alert.message('You cannot Auto Penetrate WORLD ')
+    return
+  elseif ( !selectedStructure.owner.hardtype inset('PANE', 'HPANEL') ) then
+    !structure = !selectedStructure.owner
+  else
+    !structure = !selectedStructure
+  endif
+
+  -- initialise the auto penetration engine
+  !this.initHMAUTOPENETRATE()
+  !this.autoPenetrate[1].setClearance(!this.clearance.val)
+  -- create penetration elements for given structural hierarchy
+  !this.autoPenetrate[1].createPenetrations(!structure)
+
+  -- reset progress bar and message
+  !this.progressMessage.val = ' '
+  !!fmsys.setProgress(0)
+
+  -- get details of holes just created
+  !numberHoles      = !this.autoPenetrate[1].getNumberOfHoles()
+  !holeList         = !this.autoPenetrate[1].getHoleList()
+  !penetrated       = !this.autoPenetrate[1].getPenetrated()
+  !numberPenetrated = !penetrated.size()
+  !errorLog         = !this.autoPenetrate[1].getErrorList()
+
+  -- show hole management form with new holes
+  if (!numberPenetrated eq 0 or !numberHoles eq 0) then
+    !!alert.message('No new penetrations were found. Note that automatic penetrations are not supported for Section, Wall and Bent Panel elements.')
+  elseif (!numberPenetrated eq 1) then
+    !this.showMainForm(true, !holeList)
+  elseif (!numberPenetrated gt 1) then
+    -- hole management form can be slow so ask user if many holes created
+  	if (!numberHoles le 30) then
+  		!this.showMainForm(true, !holeList)
+    else
+  	  !answer = !!alert.confirm('Created ' & !numberHoles & ' holes though ' & !numberPenetrated & ' obstructions. Do you want to view all these holes in the HM form')
+      if (!answer.boolean()) then
+        !this.showMainForm(true, !holeList)
+      endif
+    endif
+  endif
+
+  -- show error log if any errors reported
+  !this.showErrorLog(!errorLog)
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      initialiseMerge
+--
+-- Description: Initialise hole merge
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .initialiseMerge()
+
+  -- empty previous merge data
+  !this.mergeList.clear()
+  -- configure EDG to pick managed hole (virtual hole)
+  !this.edgPickMerge()
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      edgPickMerge
+--
+-- Description: Setup EDG mode to pick holes to merge
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .edgPickMerge()
+
+  -- check that no other EDG operation is active
+  if( not !this.edgDescription inset('HM merge penetration', '') ) then
+    -- abort active EDG operation if it is not merge
+    !this.tidy()
+  endif
+
+  -- Define edg packet for picking elements
+  !packet              = object EDGPACKET()
+  !packet.elementPick('Pick penetration to merge')
+  !this.edgDescription = 'HM merge penetration'
+  !packet.description  = !this.edgDescription
+
+   -- Add filter to pick only hole management fixings
+  !packet.pickPacket.picks[1].pick.input[3]   = |( ( TYPE INSET('FIXING','EXTR') AND PURP OF STRU INSET('HOLE','HMCM') ) OR ( TYPE EQ 'COUP' AND NOT UNSET( ASSOS ) ) )|
+  !packet.pickPacket.picks[1].pick.modifiable = FALSE
+  -- continuous pick until merge stop key pressed (or abandon merge operation)
+  !packet.action       =   '!!hmUtility.pickMerge(!this.return[1])'
+  !packet.escape       =   '!!hmUtility.mergeAbort()'
+  !packet.priority     =   1
+  !packet.remove       =   false
+
+  !!edgCntrl.add(!packet)
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+-- Method:      pickMerge()
+--
+-- Description: event handler for merge element pick
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA Data returned by EDG pick
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .pickMerge(!pickData is EDGPICKDATA)
+
+  !this.mergeList.append(!pickData.item)
+
+  -- remove duplicate selection
+  !this.mergeList.unique()
+
+  -- highlight picked item
+  !this.enhanced.addItem(!pickData.item)
+
+  -- must be at least two holes to merge
+  !this.btnMergeStop.active = !this.mergeList.size() gt 1
+
+  -- next pick
+  !this.edgPickMerge()
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+-- Method:      merge()
+-- Description: Merge selected penetrations
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .merge()
+
+  -- stop the merge pick sequence
+  !!edgCntrl.remove('HM merge penetration')
+
+  if( !this.mergeList.size() lt 2 ) then
+    !!alert.error('At least two penetrations must be selected to merge')
+  else
+    -- perform merge operation
+    !mergeTool = object HMMERGEHOLES()
+    if( !mergeTool.mergeHoles(!this.mergeList) ) then
+      -- do merge
+      !mergeTool.createMergedhole()
+    endif
+  endif
+
+  -- tidy up after merge (not cancelling the merge)
+  !this.mergeAbort()
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+-- Method:      mergeAbort()
+--
+-- Description: Tidy up if merge cancelled or after merge operation
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .mergeAbort()
+
+  -- indicate that we are out of merge EDG mode
+  !this.edgDescription = ''
+  -- clear highlight
+  !this.enhanced.clear()
+
+  !this.mergeList.clear()
+  !this.btnMergeStop.active = false
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      edgPickPenetrated
+--
+-- Description: Setup EDG mode to pick panel for quick hole create
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .edgPickPenetrated()
+
+  -- initialise the auto penetration engine
+  !this.autoPenetrate[1] = object HMAUTOPENETRATE()
+
+  -- check that no other EDG operation is active
+  if( !this.edgDescription.empty().not() ) then
+    -- abort active EDG operation if it is not merge
+    !this.tidy()
+  endif
+
+  -- Clean the object members
+  !this.penetrated     = object DBREF()
+  !this.penetrating    = object DBREF()
+
+  -- Define EDG packet for picking elements
+  !packet              =   object EDGPACKET()
+  !packet.elementPick('Pick Panel to penetrate')
+  !this.edgDescription = 'HM quick pipe penetrate: Pick Panel'
+  !packet.description  = !this.edgDescription
+
+   -- Add filter for Pick
+  !packet.pickPacket.picks[1].pick.input[3]   = |( HARDTYPE inset('PANE', 'HPLATE','SCTN','GENSEC') )|
+  !packet.pickPacket.picks[1].pick.modifiable = FALSE
+  !packet.action       =   '!!hmUtility.pickPenetrated(!this.return[1])'
+
+  !packet.priority     =   1
+  !packet.remove       =   false
+
+  !!edgCntrl.add(!packet)
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      edgPickPenetrating
+--
+-- Description: Setup EDG mode to pick branch for quick hole create
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .edgPickPenetrating()
+
+  -- Define EDG packet for picking elements
+  !packet = object EDGPACKET()
+  !packet.elementPick('Pick penetrating item')
+  !this.edgDescription = 'HM quick pipe penetrate: Pick penetrating'
+  !packet.description  = !this.edgDescription
+
+   -- Add filter for Pick
+  !packet.pickPacket.picks[1].pick.input[3]   = |( TYPE eq 'BRAN' or TYPE OF OWNER eq 'BRAN' )|
+  !packet.pickPacket.picks[1].pick.modifiable = FALSE
+  !packet.action          = '!!hmUtility.pickPenetrating(!this.return[1])'
+  !packet.escape          = '!!hmUtility.tidy()'
+  !packet.priority        = 1
+  !packet.remove          = false
+
+  !!edgCntrl.add(!packet)
+
+endmethod
+------------------------------------------------------------------------
+-- Method:      pickPenetrated
+--
+-- Description: pick event handler for quick hole penetrated element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA data returned from EDG pick
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .pickPenetrated(!pickData is EDGPICKDATA)
+
+  !this.penetrated = !pickData.item
+  -- check type because we cannot stop implied tube being picked
+  if( not !this.penetrated.hardtype inset('PANE','HPLATE','SCTN','GENSEC') ) then
+    !!alert.error('Please pick penetrated structure')
+    !!edgCntrl.remove(!this.edgDescription)
+    !this.edgDescription = ''
+    return
+  endif
+  -- highlight the penetrated
+  !this.enhanced.addItem(!this.penetrated)
+  -- invoke penetrating pick
+  !this.edgPickPenetrating()
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+-- Method:      pickPenetrating()
+--
+-- Description: pick event handler for penetrating element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA data returned from EDG pick
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .pickPenetrating(!pickData is EDGPICKDATA)
+
+  !this.penetrating = !pickData.item
+  -- clear penetrated highlight
+  !this.enhanced.clear()
+  -- create penetration
+  !undoQuickPenetrate = object UNDOABLE()
+  !undoQuickPenetrate.description('Quick Managed Hole Create')
+  !undoQuickPenetrate.add()
+  !this.createSinglePenetration(!this.penetrated, !this.penetrating)
+  !undoQuickPenetrate.endUndoable()
+  -- Remove EDG
+  !!edgCntrl.remove(!this.edgDescription)
+  !this.edgDescription = ''
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+-- Method:      createSinglePenetration
+--
+-- Description: Create hole from given penetrated and penetrating items
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1     R     DBREF      Penetrated
+--    2     R     DBREF      Penetrating
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .createSinglePenetration(!penetrated is DBREF, !penetrating is DBREF)
+
+  -- use auto penetration object to calculate the penetration
+  -- could be more than one if penetrating and penetrated cross more than once
+  -- could be no penetrations if penetrating and penetrated do not clash, or hole already created
+  !holeType          = 'PIPE'
+  !penetratingType   = !penetrating.owner.type
+  !penetratingBranch = !penetrating
+  if( !penetratingType eq 'BRAN' ) then
+    !penetratingType = !penetrating.owner.owner.type
+    !penetratingBranch = !penetrating.owner
+  endif
+  if( !penetratingType eq 'HVAC' ) then
+    !holeType        = 'HVACADV'
+  elseif(!this.isCableTray(!penetratingBranch)) then
+    -- automatic penetration not supported for cable tray
+    !!alert.error('This function does not support cable tray penetrations')
+    !this.progressMessage.val = ' '
+    !!fmsys.setProgress(0)
+    return
+  endif
+  -- initialise for penetrating object type
+  !this.autoPenetrate[1].initialise(!holeType)
+  !this.autoPenetrate[1].setClearance(!this.clearance.val)
+  !this.autoPenetrate[1].createPenetrations(!penetrated, !penetrating)
+  handle any
+    !!alert.error(!!error.text)
+  endhandle
+  -- show error log
+  !errorLog = !this.autoPenetrate[1].getErrorList()
+  !this.showErrorLog(!errorLog)
+
+  !this.progressMessage.val = ' '
+  !!fmsys.setProgress(0)
+
+  if( !this.autoPenetrate[1].getHoleList().empty() ) then
+    !!alert.message('No hole was created. A hole already exists in this position, or an error was found when creating the hole')
+  endif
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+-- Method:      edgAddPenetrated()
+--
+-- Description: pick event handler for show panel around branch
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .edgAddPenetrated()
+
+  -- Define EDG packet for picking elements
+  !packet = object EDGPACKET()
+  !packet.elementPick('Pick penetrating item')
+  !this.edgDescription = 'HM add structure for selected branch'
+  !packet.description  = !this.edgDescription
+
+   -- Add filter for Pick
+  !packet.pickPacket.picks[1].pick.input[3]   = |( TYPE eq 'BRAN' or TYPE OF OWNER eq 'BRAN' )|
+  !packet.pickPacket.picks[1].pick.modifiable = FALSE
+  !packet.action          = '!!hmUtility.addPenetrated(!this.return[1])'
+  !packet.priority        = 2
+  !packet.remove          = true
+
+  !!edgCntrl.add(!packet)
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+-- Method:      edgAddPenetrating()
+--
+-- Description: pick event handler for show branch around panel
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .edgAddPenetrating()
+
+  -- Define EDG packet for picking elements
+  !packet = object EDGPACKET()
+  !packet.elementPick('Pick Panel')
+  !this.edgDescription = 'HM add branch for selected Panel'
+  !packet.description  = !this.edgDescription
+
+   -- Add filter for Pick
+  !packet.pickPacket.picks[1].pick.input[3]   = |( HARDTYPE inset('PANE', 'HPLATE','SCTN','GENSEC') )|
+  !packet.pickPacket.picks[1].pick.modifiable = FALSE
+  !packet.action          = '!!hmUtility.addPenetrating(!this.return[1])'
+  !packet.priority        = 2
+  !packet.remove          = true
+
+  !!edgCntrl.add(!packet)
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+-- Method:      addPenetrated()
+--
+-- Description: pick event handler for penetrated element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA data returned from EDG pick
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .addPenetrated(!pickData is EDGPICKDATA)
+
+  !element = !pickData.item
+  ADD ALL ( HPANEL PANEL SCTN GENSEC STWALL WALL) WITH (AHLIS[1] neq 'APPLDW') WITHIN VOLUME BRANCH OF $!element
+  handle any
+  endhandle
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+-- Method:      addPenetrating()
+--
+-- Description: pick event handler for penetrating element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA data returned from EDG pick
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .addPenetrating(!pickData is EDGPICKDATA)
+
+  !element = !pickData.item
+  if( !element.owner.hardtype eq 'HPANEL' ) then
+    !element = !element.owner
+  endif
+  ADD ALL BRAN WITH (AHLIS[1] neq 'APPLDW') WITHIN VOLUME $!element
+  handle any
+  endhandle
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      edgPickDelete
+--
+-- Description: Setup EDG mode to pick holes to delete
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .edgPickDelete()
+
+  -- check that no other EDG operation is active
+  if( !this.edgDescription.empty().not() ) then
+    -- abort active EDG operation if it is not delete
+    !this.tidy()
+  endif
+
+  -- Define edg packet for picking elements
+  !packet              = object EDGPACKET()
+  !packet.elementPick('Pick penetration to delete')
+  !this.edgDescription = 'HM delete penetration'
+  !packet.description  = !this.edgDescription
+
+   -- Add filter to pick only hole management fixings
+  !packet.pickPacket.picks[1].pick.input[3]   = |( ( TYPE INSET('FIXING','EXTR') AND PURP OF STRU INSET('HOLE','HMCM') ) OR ( TYPE EQ 'ATTA' AND ATTYPE EQ 'PENI' ) OR ( TYPE EQ 'COUP' AND NOT UNSET( ASSOS ) ) )|
+  !packet.pickPacket.picks[1].pick.modifiable = FALSE
+  -- continuous pick until merge stop key pressed (or abandon merge operation)
+  !packet.action       =   '!!hmUtility.pickDelete(!this.return[1])'
+  !packet.priority     =   1
+  !packet.remove       =   true
+
+  !!edgCntrl.add(!packet)
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+-- Method:      pickDelete
+--
+-- Description: event handler for delete element pick
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA Data returned by EDG pick
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .pickDelete(!pickData is EDGPICKDATA)
+
+  !element = !pickData.item
+
+  -- check for pick on tubing
+  if( !pickData.type eq 'TUBING' ) then
+    -- calculate intersection between pick vector and tubing
+    !tubingIntersection = object PIPEINTERSECTION()
+    !pv                 = !tubingIntersection.impliedTubeIntersection(!element,!pickData.pickLine)
+    handle any
+      -- if this is not a pipe or there is a problem with the data use the EDG tubing line
+      !pv = object POINTVECTOR()
+    endhandle
+    if( !pv.unset() ) then
+      -- try nearest intersection on the EDG tube line
+      !edgPositionData = !pickData.positionData()
+      !edgPositionData.line()
+      !tubeLine        = !edgPositionData.line
+      if( !tubeLine.unset() ) then
+        !!alert.error('Delete aborted: Could not find nearest penetration to this pick. Please pick the penetration')
+        return
+      endif
+      !pickPosition = !tubeLine.intersection(!pickData.pickLine)
+    else
+      !pickPosition = !pv.position
+    endif
+    -- allow for branch with no components
+    if( !element.hardtype eq 'BRAN' ) then
+      !branch     = !element
+      !branchPick = true
+    else
+      !branch     = !element.owner
+      !branchPick = false
+    endif
+    -- find nearest penetration to the pick
+    !penetrations       = !!collectAllFor('ATTA', '( ATTYPE EQ |PENI| )', !branch)
+    !nearestPenetration = object DBREF()
+    !minDistance        = 999999mm
+    do !penetration values !penetrations
+      -- BRLEG empty test for branches with no components
+      if( !branchPick.not() ) then
+        -- skip if this ATTA is not on the same leg as the tubing component
+        skip if( !penetration.brLeg.findFirst(!element).unset())
+        -- compare direction to make sure that we are on the same leg
+        skip if( !penetration.lDir.isParallel(!element.lDir).not() )
+      endif
+      !distance = !penetration.position.distance(!pickPosition)
+      if( !distance lt !minDistance ) then
+        !nearestPenetration = !penetration
+        !minDistance    = !distance
+      endif
+    enddo
+    if( !nearestPenetration.unset() ) then
+      !!alert.error('Delete aborted: Could not find nearest penetration to this pick. Please pick the penetration')
+      return
+    endif
+    !element = !nearestPenetration
+  endif
+
+  -- Get list of holes from given DBREF
+  !penetrationList = !this.getHolesFor(!element)
+
+  -- validate delete
+  do !hole values !penetrationList
+    !hmHole = object HMHOLE( !hole )
+    if(!!dbrefUpdate(!hmHole.element).not()) then
+      !!alert.error('Delete aborted: You do not have access to delete ' + !hmHole.element.fullName)
+      return
+    endif
+    !holeFramework = !hmHole.getVirtualHole().owner
+    if(!!dbrefUpdate(!holeFramework).not()) then
+      !!alert.error('Delete aborted: You do not have access to delete ' + !holeFramework.fullName)
+      return
+    endif
+  enddo
+
+  -- undo
+  !undoDelete = object UNDOABLE()
+  !undoDelete.description('HM managed hole delete')
+  !undoDelete.add()
+  -- delete the managed hole data
+  !hmControl = object HMCONTROL()
+  do !hole values !penetrationList
+    !hmHole  = object HMHOLE( !hole )
+    !status  = !hmHole.getFullStatus()
+    if( !status eq 'REQUESTED' ) then
+      -- Prompt to confirm delete for requested hole
+      !answer = !!alert.confirm('OK to remove selected managed hole with status REQUESTED?')
+      skip if ( !answer.boolean().not() )
+    endif
+    !hmControl.removeManagedHole(!hmHole)
+    handle any
+      !!alert.error(!!error.text)
+    endhandle
+  enddo
+  !undoDelete.endUndoable()
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+--
+-- Method:      getHolesFor
+--
+-- Description: Get holes for the given element
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       reference of item
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Array of string hole Assoc References
+--
+------------------------------------------------------------------------
+define method .getHolesFor(!item is DBREF) is ARRAY
+
+  !searchItem = !item
+  if( !item.type eq 'EXTR' ) then
+    if( !item.owner.owner.type eq 'FIXING' ) then
+      !searchItem = !item.owner.owner
+    endif
+  endif
+  !holeFinder = object HMHOLEFINDER(!searchItem)
+  !holeArray  = !holeFinder.search()
+
+  return !holeArray
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+-- Method:      progressUpdate()
+--
+-- Description: Open callback for progress message (for AutoPenetrate code)
+--              NOTE: MUST SUPPORT THIS INTERFACE
+--                    .progressUpdate(STRING, REAL)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING     Progress message to output on this form
+--    2   R      REAL       Progress bar counter range 0>100
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .progressUpdate(!message is STRING, !progress is REAL)
+
+  !this.progressMessage.val = !message
+  !this.progressMessage.refresh()
+  !!fmsys.setProgress(!progress)
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+-- Method:      tidy()
+--
+-- Description: cleanUp any created items when the form is dismissed
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .tidy()
+
+  if( !this.edgDescription.empty().not() ) then
+    !!edgCntrl.remove(!this.edgDescription)
+  endif
+  -- clear any highlighting
+  !this.enhanced.clear()
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+-- Method:      initHMAUTOPENETRATE()
+--
+-- Description: initialise the auto penetration engine
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .initHMAUTOPENETRATE()
+
+  -- initialise the auto penetration engine
+  !this.autoPenetrate[1] = object HMAUTOPENETRATE()
+  !this.autoPenetrate[1].initialise()
+  -- set open callback for progress update
+  !this.autoPenetrate[1].messageCallback('!!hmUtility.progressUpdate(')
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+-- Method:      showMainForm()
+--
+-- Description: show the main hole management form for list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      BOOLEAN     true to show form
+--    2   R      DBREF       array of items (DBREF or HMHOLE) to show
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .showMainForm(!show is BOOLEAN, !penetratedList is ARRAY)
+
+  if( !show.not() or !penetratedList.empty() ) then
+    return
+  endif
+
+  if (defined(!!holeManMain)) then
+    -- do not change form content if already shown
+  	if (!!holeManMain.shown()) then
+  		return
+  	endif
+  endif
+
+  show !!holeManMain
+  !!holeManMain.selectElements(!penetratedList)
+  -- filter on all disciplines, all status, all claim states, do not validate (too slow)
+  !!holeManMain.setFilter('LIST', 'All', 'All', 'All', 'Not Checked')
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+-- Method:      showMainForm()
+--
+-- Description: show the main hole management form for given element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      BOOLEAN     true to show form
+--    2   R      DBREF       reference of item to show
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .showMainForm(!show is BOOLEAN, !penetrated is DBREF)
+
+  if (defined(!!holeManMain)) then
+  	if (!!holeManMain.shown()) then
+  		return
+  	endif
+  endif
+
+  !penetratedList[1] = !penetrated
+
+  show !!holeManMain
+  !!holeManMain.selectElements(!penetratedList)
+  -- For CE, filter on all disciplines, all status, all claim states, do not validate (too slow)
+  !!holeManMain.setFilter('CE', 'All', 'All', 'All', 'Not Checked')
+
+endmethod
+-- End of method definition
+------------------------------------------------------------------------
+-- Method:      showErrorLog()
+--
+-- Description: show contents of error log
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      COMPROPERROR  Error object containing log
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .showErrorLog(!errorLog is COMPROPERROR)
+  -- show error log if any errors reported
+  if( !errorLog.hasErrors() ) then
+    !errorList = ARRAY()
+    do !error indices !errorLog.errorSeverity
+      !errorList.append(!error.string() + ' ' + !errorLog.errorSeverity[!error] + ': ' + !errorLog.errorText[!error])
+    enddo
+    -- need to change error display for common mechanism at 12.1
+    if( not defined(!!isdPreviewMessages) ) then
+      pml load form !!isdPreviewMessages
+    endif
+    !!isdPreviewMessages.message.dtext = !errorList
+    !!isdPreviewMessages.formtitle = 'Automatic Hole Management Error Log'
+    show !!isdPreviewMessages
+  endif
+
+endmethod
+-- End of method definition
+
+----------------------------------------------------------------------
+--
+-- Method:      isCableTray
+--
+-- Description: Return true for cable tray, false for pipe
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True for cable tray, false for pipe
+--
+------------------------------------------------------------------------
+define method .isCableTray(!penetrating is DBREF) is BOOLEAN
+
+  if (!this.penetrating.type eq 'BRAN') then
+    !penetratingBranch = !this.penetrating
+  else
+    !penetratingBranch = !this.penetrating.owner
+  endif
+
+  -- Create Pipe penetrating marker
+  !block  = object BLOCK('STEXT OF TEXT 1 OF PSPEC OF ' + !penetratingBranch.string())
+  !return = !block.evaluate().upcase().eq('TRAY')
+  handle ANY
+    return false
+  endhandle
+
+  return !return
+
+endmethod
+-- End of function definition

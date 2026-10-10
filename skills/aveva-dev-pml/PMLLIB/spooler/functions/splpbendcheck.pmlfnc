@@ -1,0 +1,183 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            splpbendcheck.pmlfnc
+--    Type:          Function Definition
+--    Group:         General Application
+--      Keyword:     GEN
+--    Module:        spooler
+--  Author:          Steve Wilson
+--  Created:         Fri Apr  1 11:56:12 2005
+
+--
+--
+--  Description:     Determine whether the contiguous length of tube
+--  in a spool which contains pulled bends requires a part number update.
+--  After a PARTNO CREATE <gid> PBEND all tubes containing pulled bends
+--  are given the same part number when part of a contiguous section.
+--  PARTNO CHECK <gid> does not currently check that duplicate numbers
+--  are correct when using the PBEND option.
+--
+----------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     Whether the part numbers require an update
+--
+------------------------------------------------------------------------
+-- Define function
+define function !!splPBendCheck() is BOOLEAN
+
+  -- Initialise variables
+  !update   = false
+  !breakOut = false
+
+  -- At SPLDRG looking for spool elements
+  do !elemRefe val !!ce.mem
+
+    if (!elemRefe.type.eq('SPOOL')) then
+
+      -- Initialise variables
+      !partNumb   = REAL()
+
+      -- Look for elements type BEND
+      do !index ind !elemRefe.splMem
+
+        -- Initialise variables
+        !compRefe = !elemRefe.splMem[!index]
+        !pulledBend = false
+
+        skip if (!compRefe.type.neq('BEND'))
+
+        -- Test for a bad spref
+        if (!compRefe.spref.badref()) then
+          !pulledBend = false
+        endif
+
+        -- Test for bad detref
+        if (!compRefe.spref.detref.badref()) then
+          !pulledBend = false
+        endif
+
+        -- Get skey bits
+        !skey = !compRefe.spref.detref.skey
+        !bitA = !skey.substring(1,2)
+        !bitB = !skey.substring(4,1)
+
+        -- Test skey for pulled bend
+        if (!bitA.eq('PB') and !bitB.eq('D')) then
+          !pulledBend = true
+        elseif (!bitA.eq('BU') and !bitB.eq('D')) then
+          !pulledBend = true
+        elseif (!bitA.eq('TB') and !bitB.eq('D')) then
+          !pulledBend = true
+        endif
+
+        -- Test for pulled bend
+        if (!pulledBend) then
+
+          -- Test for pulled bend zero partnumber
+          if (!compRefe.partNumber.unset() or !compRefe.partNumber.eq(0)) then
+
+            -- An update is required
+            !update = TRUE
+
+          endif
+
+          -- Test for Loffline flag false
+          -- This affects the mtbe and mten methods in that only the bend is the start and end of the tube
+
+          -- Get tube start and end component
+          !startRefe = !compRefe.mtbe
+          !endRefe   = !compRefe.mten
+
+          -- Test for bend within the same piece of tube as a previous found bend
+          if (defined(!firstRefe)) then
+            skip if (!startRefe.eq(!firstRefe) and !endRefe.eq(!lastRefe))
+          endif
+
+          -- Store start and end components
+          !firstRefe = !startRefe
+          !lastRefe  = !endRefe
+
+            -- Get branch and start sequence
+            if (!startRefe.type.eq('BRAN')) then
+              !branRefe = !startRefe
+              !startSeq = 1
+            else
+              !branRefe = !startRefe.owne
+              !startSeq = !startRefe.seq + 1
+            endif
+
+            -- End tube is owned by the previous component to the end component
+            -- Take account that the end component may be the branch
+            if (!endRefe.type.eq('BRAN')) then
+              !endRefe = !endRefe.mem[!endRefe.mem.size()]
+            else
+              !endRefe  = !endRefe.owne.mem[!endRefe.seq - 1]
+            endif
+
+            -- Run through components from start component to end component testing all tubes in between
+            do !seq from !startSeq to !endRefe.seq
+
+              -- Get component tube
+              !tubeOwne = !branRefe.mem[!seq]
+              !tube     = ILeave tube of $!tubeOwne
+                handle (2,121)
+                  -- Implied tube does not exist (length < 1mm ) for this component
+                  skip
+                endhandle
+
+            -- Look for unset part number
+            skip if !tube.partNumber.unset()
+
+            -- Test for zero length tube
+            -- We need to do this because it appears that we CAN sometimes access tube that is zero length if it appears in the SPOOL table
+            -- Also, have to check for something other than zero in case not positioned exactly, whilst considering UNITS
+            -- Lets use 1mm or 1/25th of an inch or 1/300th of a foot
+            skip if (!tube.itle.lt(1mm))
+
+            -- Check part number being zero
+            if (!tube.partNumber.eq(0)) then
+
+              -- An update is required
+              !update = true
+
+            endif
+
+            -- Record the first part number
+            if (!partNumb.unset()) then
+              !partNumb = !tube.partNumber
+            endif
+
+              -- Test tube against the first tube
+              if (!tube.partNumber.neq(!partNumb)) then
+
+                -- An update is required
+                !update = true
+
+              endif
+
+            enddo
+
+        endif
+
+      enddo
+
+    endif
+
+    if (!breakOut) then
+      break
+    endif
+
+  enddo
+
+  -- Return the update
+  return !update
+
+endfunction

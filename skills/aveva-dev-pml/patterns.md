@@ -20,7 +20,7 @@ Production-tested design patterns for AVEVA Marine (Marine 12) and AVEVA PDMS ma
 **How**:
 1. Create a transaction checkpoint: `MARK 'BEFORE_MUTATION'`.
 2. Verify hierarchy prerequisites before issuing commands (e.g. check `!!CE.type` or navigate to a known valid parent).
-3. Attach a structured `HANDLE` block immediately after the mutation command.
+3. Attach a structured `HANDLE` block immediately after the mutation command — the mutation command stays BEFORE the trap; only recovery code goes inside `HANDLE ... ENDHANDLE` (never wrap the mutation inside it).
 4. Catch known error codes specifically (`HANDLE (41, 8)` for wrong hierarchy level, `(41, 12)` for duplicate names).
 5. Catch-all `ELSEHANDLE ANY` rolls back the transaction via `UNDO` and reports the error via `return error ... noalert`.
 6. Confirm execution in `ELSEHANDLE NONE`.
@@ -57,7 +57,7 @@ Production-tested design patterns for AVEVA Marine (Marine 12) and AVEVA PDMS ma
 ## Pattern 5: Marine Drafting Interactive Request & Button Check Pattern
 **When to use**: Requesting user decisions, strings, numbers, or planar points in AVEVA Marine Drafting (TM-2401).
 **How**:
-1. Import `marapi` inside `handle (1000, 0)` and instantiate `!marUi = object MarUi()`, `!marUtil = object MarUtil()`.
+1. Issue `import 'marapi'`, immediately followed by `handle (1000, 0) endhandle` (import stays outside the trap), and instantiate `!marUi = object MarUi()`, `!marUtil = object MarUtil()`.
 2. For questions: Use `!res = !marUi.AnswerReqPML('Title', 'Prompt')`.
 3. Always test against `!marUtil` button methods:
    `if (!res eq !marUtil.YesPML()) then ... elseif (!res eq !marUtil.NoPML()) then ... endif`
@@ -95,7 +95,7 @@ Production-tested design patterns for AVEVA Marine (Marine 12) and AVEVA PDMS ma
 ## Pattern 8: Marine Drafting Single-Drawing Lifecycle Guard
 **When to use**: Opening, generating, or processing drawings in AVEVA Marine Drafting (TM-2401).
 **How**:
-1. Import `marapi` wrapped in `handle (1000, 0)`.
+1. Issue `import 'marapi'` followed immediately by `handle (1000, 0) endhandle` (the import stays outside the trap).
 2. Instantiate `!marDraft = object MarDrafting()`.
 3. Check drawing status: `if (!marDraft.DwgCurrent()) then`.
 4. Prompt user to save or close the active sheet before opening a new document:

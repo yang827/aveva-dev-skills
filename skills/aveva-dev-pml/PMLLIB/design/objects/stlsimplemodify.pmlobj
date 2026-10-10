@@ -1,0 +1,1626 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:             stlsimplemodify.pmlobj
+--    Type:          Object Definition
+--    Group:         Steelwork Application
+--      Keyword:     STEEL
+--    Module:        design
+--  Author:          Daniel(Jaehun Choi)
+--  Created:         23 July 2010
+--
+--  Description:     Modifying Utilities For Steel Work
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  changeSpec(EDGPICKDATA)          -                   change element specification
+--  checkSectionGtype()              BOOLEAN
+--  checkSelectedElements()          BOOLEAN             get selected model on 3d view
+--  copyFromOtherPart(EDGPICKDATA,BOOLEAN) -                   copy element(s) from picked element
+--  createPanelUsingSCTN()           -                   create panel using existing sctn
+--  createSctnUsingPanel(EDGPOSITIONDATA) -                   create sctn using existing panel
+--  deleteEndcut(EDGPICKDATA)        -                   delete end-cut
+--  deleteJoint(EDGPICKDATA)         -                   delete joint
+--  getNearPos(ARRAY)                -                   get near position about one sctn
+--  getNearPosForSCTN(DBREF,POSITION) -                   get near position about one sctn
+--  insertJointWithAdjacencyElem(EDGPOSITIONDATA) -                   insert joint with adjacent element
+--  insertJointWithSelectedItems(EDGPOSITIONDATA) -                   insert joint with selected element(s)
+--  selectJoint(STRING,STRING,STRING,STRING) DBREF               Select joint matching GTYPE, JLIN and POSL criteria
+--  setEDGPICKDATA(DBREF,LINE,POSITION) EDGPICKDATA
+--  setPanelDefaultSpec()            -                   Set Panel Default Spec
+--  sfindJointSelector(DBREF,STRING) DBREF
+--  simpleSctnMitre()                -                   simple sctn mitre
+--  simpleSctnMitre(DBREF,DBREF)     -                   simple sctn mitre
+--  stlSimpleModify()                -                   constructor
+--  trimSection(DBREF,DBREF,EDGPOSITIONDATA,REAL) STRING              insert end-cut on picked element
+--  trimSectionOnGraphics(DBREF,EDGPOSITIONDATA,REAL) STRING              insert end-cut on graphic aids
+--  trimSelectedSections(EDGPOSITIONDATA,BOOLEAN) -                   insert end-cut on picked element
+--  trimTo()                         -                   Trim SCTNs to selected panels
+--  validateConditionOfProfiles(DBREF,DBREF,DIRECTION) BOOLEAN
+--
+------------------------------------------------------------------------
+
+define object STLSIMPLEMODIFY
+  member .cuttingPlaneDesc is STRING
+  member .undo             is UNDOABLE
+  member .selectedElements is ARRAY
+  -- array of SPEC elements for automatic joint selection
+  member .jointSpecs       is ARRAY
+endobject
+-- End of object definition for STLMIRROR
+
+
+------------------------------------------------------------------------
+--
+-- Method:      stlSimpleModify
+--
+-- Description: constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .stlSimpleModify()
+
+  !this.cuttingPlaneDesc = '__tmp_cutting_plate__'
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      checkSelectedElements
+--
+-- Description: get selected model on 3d view
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .checkSelectedElements() is BOOLEAN
+  !selection = object SELECTION()
+  !selection.getCurrent()
+
+  !members = !selection.getSelection()
+  if (!members.unset()) then
+    !!alert.warning('Please select structure elements')
+    return false
+  endif
+
+  !selectedElements = object ARRAY()
+  do !entry values !members
+
+    skip if (!entry.ahlist.findfirst('STRU').unset())
+    !selectedElements.append(!entry)
+  enddo
+
+  if (!selectedElements.unset()) then
+    !!alert.warning('Please select structure elements')
+    return false
+  endif
+
+  !this.selectedElements = !selectedElements
+
+  return true
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      trimTo
+--
+-- Description: Trim SCTNs to selected panels
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPOSITIONDATA  EDG pick data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .trimTo()
+
+  -- one panel must be selected
+  !oSelection = object SELECTION()
+  !oSelection.getCurrent()
+  !selected   = !oSelection.getSelection()
+  if( !selected.size() eq 1 ) then
+    -- check that selected item is valid
+    !validSelection = !selected[1].hardType inset(|PANE|,|HPLATE|)
+  else
+    !validSelection = false
+  endif
+
+  if( !validSelection.not() ) then
+    !!alert.error('One planar panel must be selected for the Trim To function')
+    return
+  endif
+
+  -- has to be a global instance for EDG callbacks. Construction creates !!stlProfMitre variable
+  !unusedTemp = object STLPROFMITRE()
+  -- continuous mode mitre
+  !!stlProfMitre.trimToPanel(!selected[1])
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      trimSelectedSections
+--
+-- Description: insert end-cut on picked element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPOSITIONDATA  EDG pick data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .trimSelectedSections(!data is EDGPOSITIONDATA, !offsetFlag is BOOLEAN)
+
+  !pickedItem = !data.item
+
+  -- check picked element
+  if (!data.originaltype.eq('3D_LINE')) then
+    !!alert.warning(|You cannot use 3D lines for this functionality. Please check the positioning control.|)
+    return
+  endif
+
+  -- remove owner element if it is in the selected elements list
+  !this.selectedElements.remove(!this.selectedElements.findfirst(!pickedItem))
+  handle any
+  endhandle
+
+  -- extend with offset value
+  if (!offsetFlag) then
+    !inputValue = !!alert.input('Input offset value', '0')
+    !test       = !inputValue.real(!!distanceFmt)
+    handle ANY
+      !inputValue.delete()
+      !inputValue = !!alert.input('Invalid input; Input offset value', '0')
+      !test       = !inputValue.real(!!distanceFmt)
+      handle ANY
+        !inputValue.delete()
+        !!alert.error('Invalid input again, value taken as 0')
+        !inputValue = '0'
+      endhandle
+    endhandle
+    !offset = !inputValue.real(!!distanceFmt)
+  else
+    !offset = 0
+  endif
+
+  !mem      = !!ce
+
+  -- Define UNDO Information
+  !this.undo.description('insert end cut')
+  !this.undo.add()
+
+  -- trim/extend each selected element
+  !errorCountParallel  = 0
+  !errorCountConnected = 0
+  !errorCountCondition = 0
+  !number     = !this.selectedElements.size()
+
+  if (!data.originaltype inset('ELEMENT', 'PLINE')) then
+    do !entry values !this.selectedElements
+
+      -- make sure only SCTN selected
+      skip if( !entry.hardType neq 'SCTN' )
+      -- process each selected element
+      !errorCode = !this.trimSection(!pickedItem, !entry, !data, !offset)
+      if( !errorCode eq 'PARALLEL' ) then
+        !errorCountParallel  = !errorCountParallel + 1
+        skip
+      elseif( !errorCode eq 'CONNECTED' ) then
+        !errorCountConnected = !errorCountConnected + 1
+        skip
+      elseif( !errorCode.empty().not() ) then
+        !errorCountCondition = !errorCountCondition + 1
+        skip
+      endif
+
+    enddo
+
+    if (!pickedItem.type eq 'RPLA' and !pickedItem.desc eq !this.cuttingPlaneDesc) then
+      !!ce = !pickedItem
+      DELETE RPLA
+    endif
+
+  else
+    do !entry values !this.selectedElements
+      -- process each selected element
+      !errorCode = !this.trimSectionOnGraphics(!entry, !data, !offset)
+      if( !errorCode eq 'PARALLEL' ) then
+        !errorCountParallel  = !errorCountParallel + 1
+        skip
+      elseif( !errorCode eq 'CONNECTED' ) then
+        !errorCountConnected = !errorCountConnected + 1
+        skip
+      elseif( !errorCode.empty().not() ) then
+        !errorCountCondition = !errorCountCondition + 1
+        skip
+      endif
+    enddo
+  endif
+
+
+  -- Mark end of Undo
+  !this.undo.endUndoable()
+
+  -- report errors
+  !errorCount = !errorCountParallel + !errorCountConnected +  !errorCountCondition
+  if( !errorCount gt 0 ) then
+    !details = ''
+    if( !errorCountParallel gt 0 ) then
+      !details = !details + !errorCountParallel.string() + ' parallel to target; '
+    endif
+    if( !errorCountConnected gt 0 ) then
+      !details = !details + !errorCountConnected.string() + ' already connected; '
+    endif
+    if( !errorCountCondition gt 0 ) then
+      !details = !details + !errorCountCondition.string() + ' cannot trim'
+    endif
+    if( !details.empty().not() ) then
+      !details = '[' + !details + ']'
+    endif
+    !!alert.warning(!errorCount.string() + ' of ' + !number.string() + ' trim operations failed ' + !details)
+  endif
+
+  !!ce = !mem
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      trimSection
+--
+-- Description: insert end-cut on picked element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Owner item
+--    2   R      DBREF       Item to trim/extend
+--    3   R      EDGPOSITIONDATA  Pick data
+--    4   R      REAL        Offset to apply to trim length
+-- Return:
+--   [Data Type] [Description]
+--    STRING      Error code
+--
+------------------------------------------------------------------------
+define method .trimSection(!pickedItem is DBREF, !entry is DBREF, !data is EDGPOSITIONDATA, !offset is REAL) is STRING
+
+  !return = ''
+
+  -- construct line representing this SCTN
+  !entryLine = object LINE(!entry.poss, !entry.pose)
+
+  -- get intersection position and picked plane
+  if (!data.plane.set()) then
+
+    -- user has picked a surface
+    !pickPlane       = !data.plane
+    !intersectionPos = !pickPlane.intersection(!entryLine)
+    handle any
+      -- picked plane is parallel to element direction
+      return 'PARALLEL'
+    endhandle
+    !pickDir         = !pickPlane.orientation.zdir()
+
+  elseif (!data.pline.set() and !data.pline.trim().neq('') ) then
+    -- user has picked a P-Line
+    !pline = !data.pline
+    !pickedLine = object LINE(!pickedItem.plStart.attribute(!pline), !pickedItem.plEnd.attribute(!pline))
+    if (!pickedLine.direction().isParallel(!entryLine.direction())) then
+      return 'PARALLEL'
+    endif
+    !pickPlane       = object PLANE(!pickedLine.startPosition,!pickedItem.plor.attribute(!pline))
+    !intersectionPos = !pickPlane.intersection(!entryLine)
+    handle any
+      -- picked p-line plane is parallel to element direction
+      !pv            = !pickPlane.pointVector()
+      !pv.direction  = !pickedItem.plor.attribute(!pline).xdir()
+      !pickPlane     = !pv.plane()
+      !intersectionPos = !pickPlane.intersection(!entryLine)
+    endhandle
+    !pickDir         = !pickPlane.orientation.zdir()
+
+  else
+
+    if (!data.line.unset()) then
+      -- element pick
+      if (!pickedItem.type inset ('SCTN','GENSEC')) then
+        !pickedLine = object LINE(!pickedItem.plst.toax, !pickedItem.plen.toax)
+        handle any
+          -- allow for sections that are not GTYP ANG
+          !pickedLine = object LINE(!pickedItem.poss, !pickedItem.pose)
+        endhandle
+      else
+        return 'TYPE'
+      endif
+    else
+      -- user has picked a line object
+      !pickedLine = !data.line
+    endif
+
+    if (!pickedLine.direction().isParallel(!entryLine.direction())) then
+      return 'PARALLEL'
+    endif
+
+    !intersectionPos = !pickedLine.intersection(!entryLine)
+    !pickDir         = !pickedItem.orientation.xdir()
+
+  endif
+
+  !pickPart = !this.getNearPosForSCTN(!entry, !intersectionPos)
+
+  if( !pickPart eq 'START' ) then
+    !endAttribute = 'JOIS'
+  else
+    !endAttribute = 'JOIE'
+  endif
+
+  if( not badref(!entry.attribute(!endAttribute)) ) then
+    return 'CONNECTED'
+  endif
+
+  !!ce = !entry
+
+  -- extend section to intersection position
+  EXTEND $!pickPart thro $!intersectionPos for $!entry
+  DRN$!pickPart $!pickDir
+  if( !offset neq 0 ) then
+    -- extend with offset value
+    EXTEND $!pickPart $!offset
+  endif
+
+  return !return
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      trimSectionOnGraphics
+--
+-- Description: insert end-cut on graphic aids
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Item to trim/extend
+--    2   R      EDGPOSITIONDATA  Pick data
+--    3   R      REAL        Offset to apply to trim length
+-- Return:
+--   [Data Type] [Description]
+--    STRING      Error code
+--
+------------------------------------------------------------------------
+define method .trimSectionOnGraphics(!entry is DBREF, !data is EDGPOSITIONDATA, !offset is REAL) is STRING
+
+  !return = ''
+
+  -- construct line representing this SCTN
+  !entryLine = object LINE(!entry.poss, !entry.pose)
+
+  -- get intersection position and picked plane
+  if (!data.plane.set()) then
+
+    -- user has picked a surface
+    !pickPlane       = !data.plane
+    !intersectionPos = !pickPlane.intersection(!entryLine)
+    handle any
+      -- picked plane is parallel to element direction
+      return 'PARALLEL'
+    endhandle
+    !pickDir         = !pickPlane.orientation.zdir()
+
+  elseif (!data.line.set()) then
+    -- user has picked a surface
+    !pickLine       = !data.line
+    !intersectionPos = !pickLine.intersection(!entryLine)
+    handle any
+      -- picked plane is parallel to element direction
+      return 'PARALLEL'
+    endhandle
+
+    !pickDir         = !data.line.plane().orientation.ydir()
+
+  elseif (!data.type.eq('DESIGNAID') ) then
+    !aidPlane =  !!aidnumbers.numbers[!data.ppoint]
+    !intersectionPos = !aidPlane.plane.intersection(!entryLine)
+    handle any
+      -- picked plane is parallel to element direction
+      return 'PARALLEL'
+    endhandle
+
+    !pickDir         = !aidPlane.plane.orientation.zdir()
+  endif
+
+
+  !pickPart = !this.getNearPosForSCTN(!entry, !intersectionPos)
+
+  if( !pickPart eq 'START' ) then
+    !endAttribute = 'JOIS'
+  else
+    !endAttribute = 'JOIE'
+  endif
+
+  if( not badref(!entry.attribute(!endAttribute)) ) then
+    return 'CONNECTED'
+  endif
+
+  !!ce = !entry
+
+  -- extend section to intersection position
+  EXTEND $!pickPart thro $!intersectionPos for $!entry
+  DRN$!pickPart $!pickDir
+  if( !offset neq 0 ) then
+    -- extend with offset value
+    EXTEND $!pickPart $!offset
+  endif
+
+  return !return
+
+endmethod
+
+
+
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      checkSectionGtype
+--
+-- Description: Check GTYP is ANG for all selected elements
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     False if all selected elements are wrong GTYP
+--
+------------------------------------------------------------------------
+
+define method .checkSectionGtype() is BOOLEAN
+  !angleElements = object ARRAY()
+
+  do !entry values !this.selectedElements
+    !gtype = !entry.gtype
+    skip if (!gtype ne 'ANG')
+    !angleElements.append(!entry)
+  enddo
+
+  if (!angleElements.unset()) then
+    !!alert.error('No Angle type elements selected - this function works only with Angle type')
+    return false
+  endif
+
+  !this.selectedElements = !angleElements
+  return true
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      insertJointWithSelectedItems
+--
+-- Description: insert joint with selected element(s)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPOSITIONDATA  EDG pick data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .insertJointWithSelectedItems(!data is EDGPOSITIONDATA)
+
+  -- check gtype of sctn
+  if (!data.item.gtype ne 'ANG') then
+    !!alert.error('No Angle type elements selected - this function works only with Angle type')
+    return
+  endif
+
+  !mem        = !!ce
+  !jointOwner = !data.item
+  !pickLine   = object LINE(!jointOwner.plst.toax.wrt( /* ), !jointOwner.plen.toax.wrt( /* ))
+
+  -- error log
+  !errorCountParallel  = 0
+  !errorCountConnected = 0
+  !errorCountCondition = 0
+  !errorCountBounds    = 0
+  !number     = !this.selectedElements.size()
+
+  -- Define UNDO Information
+  !this.undo.description('insert joint with selected items')
+  !this.undo.add()
+
+  !localManager = object SECTIONCONNECTIONMANAGER()
+  !localManager.setPlineRulePriority(|subString(pkey,1,2) eq 'NA' and CCON eq 'ANY'|)
+  !localManager.anglePriority()
+
+  -- for each attached element, make a connection to the owner
+  do !entry values !this.selectedElements
+
+    !!ce = !entry
+
+    -- get intersection position
+    !entryLine = object LINE(!entry.plst.toax.wrt( /* ), !entry.plen.toax.wrt( /* ))
+    handle any
+      -- just skip sections that are not GTYP ANG
+      skip
+    endhandle
+    !intersectionPos = !pickLine.intersection(!entryLine)
+    handle any
+      !errorCountParallel  = !errorCountParallel + 1
+      skip
+    endhandle
+
+    -- check for connection on owner
+    if( !pickLine.onProjected(!intersectionPos).not() ) then
+      -- joint not within bounds of owning section
+      !errorCountBounds = !errorCountBounds + 1
+      skip
+    endif
+
+    -- get base position
+    !entryPart = !this.getNearPosForSCTN(!entry, !intersectionPos)
+    if (!entryPart eq 'START') then
+      !checkLine = object LINE(!entry.plen.toax.wrt( /* ), !intersectionPos)
+    else
+      !checkLine = object LINE(!entry.plst.toax.wrt( /* ), !intersectionPos)
+    endif
+
+    -- check whether two profiles are on same plane
+    if (abs(!entry.orientation.zdir().dot(!checkLine.direction()).abs() - 1) gt 0.0001) then
+      !errorCountCondition = !errorCountCondition + 1
+      skip
+    endif
+
+    -- check connection tolerances
+    !bool          = !localManager.checkConnectSections(!entryPart, !entry, !jointOwner)
+    if( !bool.not() ) then
+      !errorCountCondition = !errorCountCondition + 1
+      skip
+--      !errorReport = !localManager.errorText
+--      if( !errorReport.set() ) then
+--        !!alert.error(!errorReport)
+--        return false
+--      endif
+    endif
+    !bool = !localManager.connectSections(!entryPart, !entry, !jointOwner)
+    -- save reference to new joint
+    !newJoint = !localManager.getLastConnection()
+
+    -- select a joint from the catalogue based on JLIN and POSL
+    !jointSpecComponent = !this.selectJoint(!jointOwner.gtype, !entry.gtype, !entry.jLine, !newJoint.posLine)
+
+    if( !jointSpecComponent.set() ) then
+      !newJoint.spref = !jointSpecComponent
+    else
+      -- handle situation where the new catalogue is not loaded, and only the legacy catalogue is available
+      if( !this.jointSpecs.empty() ) then
+        -- only try to use the old joint if the original conditions for this joint are met
+        if( !jointOwner.gtype eq 'ANG' and !entry.gtype eq 'ANG' and !entry.jLine eq 'NA' and !newJoint.posLine inset('NAR','TOAX') ) then
+          -- no new specs loaded - try to find old hard coded joint
+          !jointSpecComponent = object DBREF('/ENDCUTS/ANGLE/JOIN')
+          handle any
+            -- old joint not found - so just make a connection without JOINT SPREF
+          elsehandle none
+            -- set old spref and force TOAX POSL
+            !newJoint.posl  = 'TOAX'
+            !newJoint.spref = !jointSpecComponent
+          endhandle
+        endif
+      endif
+    endif
+
+  enddo
+
+    -- Mark end of Undo
+  !this.undo.endUndoable()
+
+  -- report errors
+  !errorCount = !errorCountParallel + !errorCountConnected +  !errorCountCondition + !errorCountBounds
+  if( !errorCount gt 0 ) then
+    !details = ''
+    if( !errorCountParallel gt 0 ) then
+      !details = !details + !errorCountParallel.string() + ' parallel to owner; '
+    endif
+    if( !errorCountConnected gt 0 ) then
+      !details = !details + !errorCountConnected.string() + ' already connected; '
+    endif
+    if( !errorCountBounds gt 0 ) then
+      !details = !details + !errorCountBounds.string() + ' out of bounds; '
+    endif
+    if( !errorCountCondition gt 0 ) then
+      !details = !details + !errorCountCondition.string() + ' cannot connect'
+    endif
+    if( !details.empty().not() ) then
+      !details = '[' + !details + ']'
+    endif
+    !!alert.warning(!errorCount.string() + ' of ' + !number.string() + ' connections failed ' + !details)
+  endif
+
+  !!ce = !mem
+  handle any
+  endhandle
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      selectJoint
+--
+-- Description: Select joint matching GTYPE, JLIN and POSL criteria
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       SPCO matching the criteria or unset if no match
+--
+------------------------------------------------------------------------
+define method .selectJoint(!ownerType is STRING, !attachedType is STRING, !jLine is STRING, !posLine is STRING) is DBREF
+
+  if( !this.jointSpecs.empty() ) then
+    -- load automatic joint specs - same as joint spec but with MATPURP = AUTJ
+    !autoJointSpec        = object COLLECTION()
+    !autoJointSpec.filter(object EXPRESSION( |PURP eq 'JOIN' and MATPURP eq 'AUTJ' and PURP OF OWNER eq 'STL'|))
+    !autoJointSpec.type('SPEC')
+    !this.jointSpecs      = !autoJointSpec.results()
+  endif
+
+  -- assume SPEC question is OTYP. Allows for more than one SPEC.
+  -- Find first level SELE that matches owner GTYP
+  !specComponent          = object DBREF()
+  do !spec values !this.jointSpecs
+
+    do !selector values !spec.members
+      if( !selector.tAnswer eq !ownerType ) then
+        !attachedSelector = !this.sfindJointSelector(!selector, !attachedType)
+        !jLineSelector    = !this.sfindJointSelector(!attachedSelector, !jLine)
+        !specComponent    = !this.sfindJointSelector(!jLineSelector, !posLine)
+        break
+      endif
+    enddo
+
+  enddo
+
+  return !specComponent
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      findJointSelector
+--
+-- Description: Select joint matching GTYPE, JLIN and POSL criteria
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       SELE asking the question
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       SELE or SPCO giving the answer or unset if no match
+--
+------------------------------------------------------------------------
+define method .sfindJointSelector(!selector is DBREF, !answer is STRING ) is DBREF
+
+  if( badref(!selector) ) then
+    return object DBREF()
+  endif
+
+  -- Find selector with given answer
+  !selected = object DBREF()
+  do !nextSelector values !selector.members
+    if( !nextSelector.tAnswer eq !answer ) then
+      !selected = !nextSelector
+      break
+    endif
+  enddo
+
+  return !selected
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      validateConditionOfProfiles
+--
+-- Description: Check that orientation of SCTN's is OK
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .validateConditionOfProfiles(!destProfile is DBREF, !sourceProfile is DBREF, !intersectionDir is DIRECTION) is BOOLEAN
+  -- get TOAX and TOAY direction of destination and source profile.
+  var !destTOAX   ppline toax dir of $!destProfile   wrt /*
+  var !destTOAY   ppline toay dir of $!destProfile   wrt /*
+
+  var !sourceTOAX ppline toax dir of $!sourceProfile wrt /*
+  var !sourceTOAY ppline toay dir of $!sourceProfile wrt /*
+
+  !destToaxDir   = object DIRECTION(!destTOAX)
+  !destToayDir   = object DIRECTION(!destTOAY)
+
+  !sourceToaxDir = object DIRECTION(!sourceTOAX)
+  !sourceToayDir = object DIRECTION(!sourceTOAY)
+
+  -- get web and flange direction from destination profile
+  if (!intersectionDir.dot(!destToaxDir) eq 0) then
+    !destWebDir    = !destToaxDir
+    !destFlangeDir = !destToayDir
+  elseif (!intersectionDir.dot(!destToayDir) eq 0) then
+    !destWebDir    = !destToayDir
+    !destFlangeDir = !destToaxDir
+  else
+    return false
+  endif
+
+  -- check whether there is same web direction between destination and source profile
+  if (!destWebDir ne !sourceToaxDir and !destWebDir ne !sourceToayDir) then
+    return false
+  endif
+
+  !angle = !destFlangeDir.dot(!intersectionDir)
+  -- check whether flange direction of destination profile is opposite or not with intersection direction.
+  if (!angle lt 0 or !angle gt 1.0) then
+    return false
+  endif
+
+
+  return true
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      insertJointWithAdjacencyElem
+--
+-- Description: insert joint with adjacent element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPOSITIONDATA  EDG pick data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .insertJointWithAdjacencyElem(!data is EDGPOSITIONDATA)
+  -- check gtype of sctn
+  if (!data.item.type.neq('SCTN')) then
+    !!alert.error('Please select SCTN elements.')
+    return
+  elseif (!data.item.gtype.neq('ANG')) then
+    !!alert.error('No Angle type elements selected - this function works only with Angle type')
+    return
+  endif
+
+  var !adjacencyMember coll all sctn within vol $!data.item
+
+  if (!adjacencyMember.unset()) then
+    return
+  endif
+
+  !adjacencyMember.remove(!adjacencyMember.findfirst(!data.item.ref.string()))
+
+  -- get adjacency elements
+  !selection = object SELECTION()
+  do !entry values !adjacencyMember
+    --skip if the gtype is not 'ANG'
+    skip if (!entry.dbref().gtype neq 'ANG')
+    !selection.add(!entry.dbref())
+  enddo
+  !selection.setcurrent()
+
+  !selectedElements = !selection.getSelection()
+  if (!selectedElements.unset()) then
+    !!alert.warning('Failed to find adjacent sections')
+    return
+  endif
+
+  !this.selectedElements = !selectedElements
+
+  -- get rid of elements without GTYPE ANG members
+  if( !this.checkSectionGtype().not() ) then
+    return
+  endif
+
+  !this.insertJointWithSelectedItems(!data)
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      deleteJoint
+--
+-- Description: delete joint
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA  EDG pick data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .deleteJoint(!data is EDGPICKDATA)
+  !type = !data.item.type
+  !mem  = !!ce
+
+  if (!type neq 'SNOD') then
+    return
+  endif
+
+  !mem = !!ce
+  !element = !data.item
+
+  -- Define UNDO Information
+  !this.undo.description('delete joint')
+  !this.undo.add()
+
+  !!ce = !element
+  DELETE $!type
+  handle any
+    !!alert.error(!!error.text)
+  endhandle
+
+  -- Mark end of Undo
+  !this.undo.endUndoable()
+
+  !!ce = !mem
+  handle any
+    -- undefined reference
+  endhandle
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      deleteEndcut
+--
+-- Description: delete end-cut
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA  EDG pick data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .deleteEndcut(!data is EDGPICKDATA)
+  !entry = !data.item
+  if (!entry.badref()) then
+    return
+  endif
+
+  !mem = !!ce
+  !isValid = !entry.type inset ('SCTN','GENSEC')
+  if (!isValid.not()) then
+    return
+  endif
+
+  -- find which end is picked
+  !line        = object LINE( !entry.poss, !entry.pose )
+  !pointOnLine = !line.intersection(!data.pickLine)
+  !pickPart = !this.getNearPosForSCTN(!entry, !pointOnLine)
+  if( !pickPart eq 'START' ) then
+    !endAttribute = 'JOIS'
+  else
+    !endAttribute = 'JOIE'
+  endif
+
+  if( not badref(!entry.attribute(!endAttribute)) ) then
+    !!alert.error( 'You cannot delete the end cut on a connected Section')
+    return
+  endif
+
+  -- Define UNDO Information
+  !this.undo.description('delete endcut')
+  !this.undo.add()
+
+  !!ce = !entry
+  DRN$!pickPart PERP
+
+  -- Mark end of Undo
+  !this.undo.endUndoable()
+  !mem = !!ce
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      copyFromOtherPart
+--
+-- Description: copy element(s) from picked element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA  EDG pick data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .copyFromOtherPart(!data is EDGPICKDATA, !insertFlag is BOOLEAN)
+
+  --Check if the element stored in EDG data is valid structure elements.
+  !checkOwnerType = !!dtbFindOwnerOfType(!data.item, |STRU|,true)
+  if(!checkOwnerType.unset()) then
+    return
+  endif
+
+  if (!this.checkSelectedElements().not()) then
+    return
+  endif
+
+  !mem = !!ce
+
+  !destinationOwner = !data.item.owner
+  !sourceOwner    = !this.selectedElements[1].owner
+
+  !checkDBWrite = object COMCHECKDBWRITE()
+  !checkDBWrite.showAlert = true
+
+  if (!checkDBWrite.checkDBWrite(!destinationOwner).not()) then
+    return
+  endif
+
+  if (!checkDBWrite.checkDBWrite(!sourceOwner).not()) then
+    return
+  endif
+
+  -- Define UNDO Information
+  !this.undo.description('copy from other part')
+
+  !selection = object SELECTION()
+  !this.undo.add()
+
+  if (!insertFlag) then
+
+    -- move (include)
+    !newSelection = ARRAY()
+    do !entry values !this.selectedElements
+      if( !newSelection.empty() ) then
+        !locationCommand = ''
+      else
+        !locationCommand = ' AFTER ' & !newSelection.last()
+      endif
+      !type = !entry.type
+      !!ce = !destinationOwner
+      NEW $!type $!locationCommand COPY $!entry
+      handle any
+        !!alert.error('Check DB claimed or locked')
+        return
+      endhandle
+      !newSelection.append(!!ce)
+    enddo
+
+    do !entry values !this.selectedElements
+      !!ce = !entry
+      !entryType = !entry.type
+      DELETE $!entryType
+      handle any
+        !!alert.error('Check DB claimed or locked')
+        return
+      endhandle
+    enddo
+
+    frmw
+    if (!!ce.mcount eq 0) then
+      DELETE FRMW
+      handle any
+        !!alert.error('Check DB claimed or locked')
+        return
+      endhandle
+    endif
+
+    stru
+    if (!!ce.mcount eq 0) then
+      DELETE STRU
+      handle any
+        !!alert.error('Check DB claimed or locked')
+        return
+      endhandle
+    endif
+
+    do !newEntry values !newSelection
+      !selection.add(!newEntry)
+    enddo
+
+  else
+
+    -- copy
+    !newSelection = ARRAY()
+    do !entry values !this.selectedElements
+      !targetOwner = !entry.owner
+      if (!targetOwner eq !destinationOwner) then
+        skip
+      endif
+
+      if( !newSelection.empty() ) then
+        !locationCommand = ''
+      else
+        !locationCommand = ' AFTER ' & !newSelection.last()
+      endif
+      !type = !entry.type
+      !!ce = !destinationOwner
+      NEW $!type $!locationCommand COPY $!entry
+      handle any
+        !!alert.error('Check DB claimed or locked')
+        return
+      endhandle
+      !newSelection.append(!!ce)
+      !selection.add(!!ce)
+    enddo
+  endif
+
+  -- Mark end of Undo
+  !this.undo.endUndoable()
+
+  !!edgCntrl.escape()
+
+  !selection.setcurrent()
+
+  -- invoke model editor on copies in current selection
+  !modelEditor = object STATE()
+  !modelEditor.modifymode(true)
+
+  !!ce = !mem
+  handle any
+  endhandle
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      changeSpec
+--
+-- Description: change element specification
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA  EDG pick data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .changeSpec(!data is EDGPICKDATA)
+
+  if (!data.item.type.neq('SCTN')) then
+    return
+  endif
+
+  !mem   = !!ce
+  !spref = !data.item.spref
+
+  -- Define UNDO Information
+  !this.undo.description('changeSpec')
+  !this.undo.add()
+
+  do !entry values !this.selectedElements
+    !!ce = !entry
+    SPREF $!spref
+    handle any
+      skip
+    endhandle
+  enddo
+
+  -- Mark end of Undo
+  !this.undo.endUndoable()
+
+  !!ce = !mem
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      getNearPos
+--
+-- Description: get near position about one sctn
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getNearPos(!pickData is ARRAY) iS STRING
+  !entry = !pickData[1]
+  !dir   = !pickData[2]
+  !pos   = !pickData[3]
+
+  if (!entry.type eq 'SCTN') then
+    !pointVector  = object POINTVECTOR(!pos, !dir)
+    !sctnLine     = object LINE(!entry.poss, !entry.pose)
+    !intersection = !pointVector.intersection(!sctnLine)
+
+    !diffStart = !entry.poss.distance(!intersection)
+    !diffEnd   = !entry.pose.distance(!intersection)
+
+    if (abs(!diffStart) lt abs(!diffEnd)) then
+      !pickPart = 'START'
+    else
+      !pickPart = 'END'
+    endif
+  endif
+
+  return !pickPart
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      getNearPosForSCTN
+--
+-- Description: get near position about one sctn
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getNearPosForSCTN(!element is DBREF, !pickPos is POSITION) IS STRING
+  if (!element.type ne 'SCTN') then
+    return ''
+  endif
+
+  !elementLine = object LINE(!element.poss , !element.pose)
+
+  !nearPos   = !elementLine.near(!pickPos)
+  !diffStart = !element.poss.distance(!nearPos)
+  !diffEnd   = !element.pose.distance(!nearPos)
+
+  if (abs(!diffStart) lt abs(!diffEnd)) then
+    !pickPart = 'START'
+  else
+    !pickPart = 'END'
+  endif
+
+  return !pickPart
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      createSctnUsingPanel
+--
+-- Description: create sctn using existing panel
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPOSITIONDATA  EDG pick data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createSctnUsingPanel(!data is EDGPOSITIONDATA)
+
+  !element = !data.item
+
+  !!edgCntrl.escape()
+
+  -- get specification of SCTN from the default specification field
+  !defaultSpec = !!appDesMain.spre.val
+
+  if (!element.hardType neq 'PANE') then
+    return error 1 |You must pick a PANEL for this function|
+  endif
+
+  if(!element.mcount('PLOOP') lt 1) then
+    return error 2 |Selected PANEL has no boundary defined|
+  endif
+
+  if( !element.purpose eq 'BPLT') then
+    return error 3 |This function cannot be used with bent plate|
+  endif
+
+
+  -- only trace outer boundary
+  !loopElement = !element.evaluate(object BLOCK('PLOOP 1'))
+  !paveList    = !!collectAllFor('PAVE','',!loopElement)
+  if (!paveList.empty()) then
+    return error 2 |Selected PANEL has no boundary defined|
+  endif
+
+  if( !loopElement.sJust.match('BOT') gt 0 ) then
+    !panelDirection = !paveList[1].pDir[3]
+  else
+    !panelDirection = !paveList[3].pDir[1]
+  endif
+
+  !owningStructure = !element.evaluate(object BLOCK('STRU'))
+  handle any
+    return error 3 |Panel must be in a structural hierarchy (owned by a STRU)|
+  endhandle
+
+  -- get vertex positions, eliminating coincident points
+  !posList = object ARRAY()
+  do !i indices !paveList
+    !vertexPos = !paveList[!i].position
+    if( !posList.size() gt 0 ) then
+      skip if( !vertexPos.distance(!posList.last()) eq 0 )
+    endif
+    !posList.append(!vertexPos)
+  enddo
+
+  -- check for coincident first and last points
+  if( !posList[1].distance(!posList.last()) eq 0 ) then
+    !posList.removeLast()
+  endif
+
+  if( !posList.size() lt 2 ) then
+    return error 4 |Selected Panel must contain at least two non-coincident vertices|
+  endif
+
+  !stlDefault = !defaultSpec.after('(').before(')').split('/')
+  !spref      =  '/' + !!appDesMain.spre.val.before('(')
+  !justLine   = !stlDefault[1]
+  !memberLine = !stlDefault[2]
+  !jointLine  = !stlDefault[3]
+
+  -- get existing SCTN elements in STRU so that they can be replaced if duplicated
+  !existingSctnList   = !!collectAllFor('SCTN','',!owningStructure)
+
+  -- Define UNDO Information
+  !this.undo.description('createSctnUsingPanel')
+  !this.undo.add()
+
+  !mem = !!ce
+  !!ce = !owningStructure
+  NEW FRMW
+  handle any
+    -- Mark end of Undo
+    !this.undo.endUndoable()
+    return error 1 |Unable to write this db. Please check your data access rights|
+  endhandle
+
+  !frmwElement = !!ce
+
+  -- create SCTN for each straight edge
+  !sctnList = object ARRAY()
+  do !i indices !posList
+
+    !fromIndex = !i
+    if( !i eq !posList.size() ) then
+      -- close last vertex to first vertex
+      !toIndex   = 1
+    else
+      !toIndex   = !i + 1
+    endif
+
+    !fromPos = !posList[!fromIndex]
+    !toPos   = !posList[!toIndex]
+
+    NEW SCTN
+    SPREF $!spref
+    !sctnList.append(!!ce)
+
+    JUSLINE $!justLine
+    MEMLINE $!memberLine
+    JLINE   $!jointLine
+
+    !gtype = gtype of catref
+
+    GTYPE $!gtype
+    POSS $!fromPos
+    POSE $!toPos
+
+    ROTATE ABOUT Z WRT CE AND PPLINE $!justLine IS $!panelDirection
+
+  enddo
+
+  -- mitre each pair of SCTN elements
+  do !i indices !sctnList
+    if (!i eq 1) then
+      !fromIndex = !sctnList.size()
+      !toIndex   = 1
+    else
+      !fromIndex = !i - 1
+      !toIndex   = !i
+    endif
+
+    !fromSctn = !sctnList[!fromIndex]
+    !toSctn   = !sctnList[!toIndex]
+
+    !this.simpleSctnMitre(!fromSctn, !toSctn)
+    handle any
+    endhandle
+  enddo
+
+  -- remove new SCTN elements that match existing elements
+  !deleteList = ARRAY()
+  do !i indices !sctnList
+    do !existingIndex indices !existingSctnList
+      skip if( !sctnList[!i].poss.near(!existingSctnList[!existingIndex].poss,0.1mm).not())
+      skip if( !sctnList[!i].pose.near(!existingSctnList[!existingIndex].pose,0.1mm).not())
+      !deleteList.append(!sctnList[!i])
+    enddo
+  enddo
+
+  -- delete new duplicate elements
+  !deleteList.unique()
+  do !deleteElement values !deleteList
+    !!ce = !deleteElement
+    DELETE SCTN
+    handle any
+    endhandle
+  enddo
+
+  if (!frmwElement.mcount() eq 0) then
+    !!ce = !frmwElement
+    DELETE FRMW
+    handle any
+    endhandle
+  endif
+
+  -- Mark end of Undo
+  !this.undo.endUndoable()
+
+  !!ce = !mem
+  handle any
+  endhandle
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      simpleSctnMitre
+--
+-- Description: simple sctn mitre
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .simpleSctnMitre(!fromSctn is DBREF, !toSctn is DBREF)
+
+  !line1               = object LINE(!fromSctn.poss, !fromSctn.pose)
+  !line2               = object LINE(!toSctn.poss, !toSctn.pose)
+  !intersection        = !line1.intersection(!line2)
+  !line1.endPosition   = !intersection
+  !line2.startPosition = !intersection
+  if(!line1.direction().isParallel(!line2.direction())) then
+    !saveCE = !!ce
+    !!ce    = !fromSctn
+    DRNE PERP
+    !!ce    = !toSctn
+    DRNS PERP
+    !!ce    = !saveCE
+  else
+    !bisector               = !line1.direction().bisect(!line2.direction())
+    -- Calculate and store the angle to be cut
+    !cutDir                 = !bisector
+    !!ddd = !!ddd + 1
+    handle any
+      !!ddd = 1
+    endhandle
+    -- set mitre
+    !fromSctn.attribute('POSE') = !intersection
+    !fromSctn.attribute('DRNE') = !cutDir
+    !toSctn.attribute('POSS')   = !intersection
+    !toSctn.attribute('DRNS')   = !cutDir.opposite()
+  endif
+
+  endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      setEDGPICKDATA
+--
+-- Description: set edg pick data
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setEDGPICKDATA(!profile is DBREF, !targetLine is LINE, !intersection is POSITION) is EDGPICKDATA
+  if (!targetLine.startPosition.distance(!intersection) lt !targetLine.endPosition.distance(!intersection)) then
+    !tmpPosition = !targetLine.endPosition
+  else
+    !tmpPosition = !targetLine.startPosition
+  endif
+
+  !pointVector           = object POINTVECTOR()
+  !pointVector.position  = !tmpPosition
+  !pointVector.direction = !!stlProfMitre.ydir(!profile)
+
+  !result          = object EDGPICKDATA()
+  !result.item     = !profile
+  !result.position = !pointVector.position
+  !result.pickLine = !pointVector
+
+  return !result
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      createSctnUsingPanel
+--
+-- Description: create panel using existing sctn
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .createPanelUsingSCTN()
+  !!edgCntrl.escape()
+
+  !sctnList = object ARRAY()
+  do !i indices !this.selectedElements
+    !isValidType = !this.selectedElements[!i].type inset ('SCTN', 'GENSEC')
+
+    if (!isValidType.not()) then
+      skip
+    endif
+
+    !sctnList.append(!this.selectedElements[!i])
+  enddo
+
+  if (!sctnList.size() lt 2) then
+    !!alert.message('At least two SCTN elements are required for this function')
+    return
+  endif
+
+  if (undefine(!!stlCreatePanelUsingSCTN)) then
+    pml reload form !!stlCreatePanelUsingSCTN
+  endif
+
+  !!stlCreatePanelUsingSCTN.sourceSctnList = !sctnList
+
+  show !!stlCreatePanelUsingSCTN
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      simpleSctnMitre
+--
+-- Description: simple sctn mitre
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .simpleSctnMitre()
+  -- has to be a global instance for EDG callbacks - created in constructor
+  !unusedTemp = object STLPROFMITRE()
+  -- continuous mode mitre
+  !!stlProfMitre.pickProfiles(true)
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      setPanelDefaultSpec
+--
+-- Description: Set Panel Default Spec
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setPanelDefaultSpec()
+
+  !rememberMe = !!ce
+
+  -- Get selected
+  !selection = object SELECTION()
+  !selection.getCurrent()
+  !arraySelected = !selection.getSelection()
+
+  -- Get the default SPEC and thickness
+  -- Check if spec defaults have been loaded
+  if(undefined(!!spcDefaults)) then
+    call !!comDefineGlobal(object SPCDEFAULTS())
+  endif
+
+  -- Get Spec Defaults
+  !default = !!spcDefaults.get('default-STL-PLT')
+  if(!default.attributesData.set()) then
+    !specDefault  = !default.component
+    !thickness    = !default.attributesData[1]
+  else
+    !!alert.message('Default Panel Spec is not set')
+    return
+  endif
+
+  -- Define UNDO Information
+  !this.undo.description('Set Selected to Default Panel Spec')
+  !this.undo.add()
+
+  !count = 0
+  !fails = 0
+  do !element values !arraySelected
+    if (!element.hardType.eq('PANE')) then
+      !element.spref = !specDefault
+      handle ANY
+        !fails = !fails + 1
+        skip
+      elsehandle NONE
+        !!ce = !element
+        PLOO 1
+        handle ANY
+          !fails = !fails + 1
+          skip
+        elsehandle NONE
+          !!ce.height = !thickness
+          handle ANY
+            !fails = !fails + 1
+            skip
+          elsehandle NONE
+            !count = !count + 1
+          endhandle
+        endhandle
+      endhandle
+    endif
+  enddo
+
+  !!ce = !rememberMe
+
+  if (!count gt 0 or !fails gt 0) then
+    !!alert.message(!count.string() & ' successful Default Panel Spec settings (' & !fails.string() & ' failures)')
+  endif
+
+    -- Mark end of Undo
+  !this.undo.endUndoable()
+
+endmethod
+-- End of method

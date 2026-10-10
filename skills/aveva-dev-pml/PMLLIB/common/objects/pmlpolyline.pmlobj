@@ -1,0 +1,554 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+------------------------------------------------------------------------
+--
+-- File:            pmlpolyline.pmlobj
+--   Type:          object Definition
+--   Group:         Common
+--     Keyword:     GENERAL
+--   Module:        design
+--   Replaces:
+--
+-- Author:          Neil Holmes
+-- Created:         Wed Apr 16 2008
+--
+--
+-- Description:
+--   PML implementation of a 3D poly line
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  draw(REAL,REAL,REAL)             -                   Draw poly line
+--  near(POINTVECTOR)                POSITION            Returns the nearest point on the path from the passed point vector
+--  near(POSITION)                   POSITION            Returns the nearest point on the path from the passed point
+--  pmlPolyline()                    -                   Constructor
+--  pmlPolyline(DBREF)               -                   Constructor
+--  pointElement()                   DBREF               Returns the reference element for the current segment
+--  pointElement(REAL)               DBREF               Returns the reference element for the given segment
+--  pointSegments()                  ARRAY               Returns the all the associated segments for the current segment, i.e. ones sharing same point
+--  pointSegments(REAL)              ARRAY               Returns the all the associated segments for the given segment, i.e. ones sharing same point
+--  rpathData(DBREF)                 -                   Extract RPATH data
+--
+------------------------------------------------------------------------
+
+define object PMLPOLYLINE
+
+  -- Position
+  member .position        is POSITION
+
+  -- Orientation
+  member .orientation     is ORIENTATION
+
+  -- List of segments of poly line (lines & arcs)
+  member .segments        is ARRAY
+
+  -- Segment identified by near/intersection methods
+  member .segment         is REAL
+
+  -- Private Members
+  --   Path elements (Array of DBREFs)
+  member .points          is ARRAY
+  --   Edge to point relationship (should really be at a higher level)
+  --   Paired with points 2dimension
+  member .pointSegments   is ARRAY
+
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:      pmlPolyline
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .pmlPolyline()
+
+  -- Initialise Variables
+  !this.position    = object POSITION()
+  !this.orientation = object ORIENTATION()
+  !this.segments.clear()
+  !this.points.clear()
+  !this.pointSegments.clear()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      pmlPolyline
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element type which can be decomposed into a polyline
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .pmlPolyline(!path is DBREF)
+
+  -- Initialise Variables
+  !this.pmlPolyline()
+
+  -- Check element can be converted into a polyLine (RPATH)
+  if(!path.fullType.neq('RPATH')) then
+    return
+  endif
+
+  -- Get location information
+  !this.position    = !path.owner.position
+  !this.orientation = !path.owner.orientation
+
+  -- Get RPATH information (if expanded to more elements, then we
+  -- need extract mechanism to extract the path information
+  !this.rpathData(!path)
+
+  return
+  aid clear all
+  !this.draw(1,2,4)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      rpathData
+--
+-- Description: Extract RPATH data
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element type which can be decomposed into a polyline
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .rpathData(!path is DBREF)
+
+  -- Initialise Variables
+  !this.segments.clear()
+  !this.points.clear()
+  !this.pointSegments.clear()
+  -- First Point
+  !previousElement  = !path.members[1]
+  !lastPoint        = !path.members[1].position
+  !segmentList      = ARRAY()
+
+  -- Decompose the path into lines and arc
+  do !i from 2 to !path.mcount
+
+    -- RPATH point/curve
+    !element        = !path.members[!i]
+
+    -- Interpret Point
+    -- Ppoint of POINTR
+    -- p1 & P6  Start of fillet curve
+    -- p2 & p7  End of fillet curve
+    -- p3 & p8  Centre of fillet
+    -- p4       Point on arc between centre and origin
+    -- p5       Origin of point
+    if(!element.fullType.eq('POINTR')) then
+
+      -- Preceding line
+      !line         = object LINE(!lastPoint, !element.pPosition[1])
+      if(!line.length().gt(0)) then
+        !this.segments.append(!line)
+        !this.pointSegments.append(!this.points.size() + 1)
+      endif
+
+      -- Arc
+      if(!element.fRadius.gt(0).and(!element.sequence.neq(!element.owner.mcount))) then
+        !arc        = !element.pPosition[1].arcThru(!element.pPosition[4], !element.pPosition[2], !element.pDirection[3])
+        !arc.sense  = true
+        !this.segments.append(!arc)
+        !this.pointSegments.append(!this.points.size() + 2)
+      endif
+
+      -- Define reference point and the segments relative to it
+      !this.points.append(!previousElement)
+      --#!this.pointSegments.append(!segmentList)
+
+      -- Initialise segment list
+      !segmentList      = ARRAY()
+
+      -- Previous element and last point
+      !previousElement  = !element
+      !lastPoint    = !element.pPosition[2]
+
+    -- Interpret Curve
+    -- Ppoint of CURVE
+    -- p1       Start of arrive tangent line
+    -- p2       End of leave tangent line
+    -- p3       End of arrive tangent line
+    -- p4       Start of leave tangent line
+    -- p5       Centre of curve
+    -- p6       Intersection of arrive/leave tangent lines
+    -- p7       Point on arc between centre and P6
+    -- p8       CPOSITION
+    elseif (!element.fullType.eq('CURVE')) then
+
+      -- Preceding line
+      !line         = object LINE(!element.pPosition[1], !element.pPosition[3])
+      if(!line.length().gt(0)) then
+        !this.segments.append(!line)
+        !this.pointSegments.append(!this.points.size() + 1)
+      endif
+
+      -- Curve
+      !arc          = !element.pPosition[3].arcThru(!element.pPosition[7], !element.pPosition[4], !element.pDirection[5])
+      !arc.sense    = false
+      !this.segments.append(!arc)
+      !this.pointSegments.append(!this.points.size() + 1)
+
+      -- Leave line
+      !line         = object LINE(!element.pPosition[4], !element.pPosition[2])
+      if(!line.length().gt(0)) then
+        !this.segments.append(!line)
+        !this.pointSegments.append(!this.points.size() + 1)
+      endif
+
+      -- Last point
+      !lastPoint    = !element.pPosition[2]
+
+    endif
+
+  enddo
+
+  -- handle closed walls
+  !type    = !path.owner.type
+  if(!type.eq('CTWALL')) then
+    !closed    = !path.owner.closef
+    if ( !closed ) then
+      !firstPoint        = !path.members[1].position
+      !line         = object LINE(!lastPoint, !firstPoint)
+      if(!line.length().gt(0)) then
+        !this.segments.append(!line)
+        !this.pointSegments.append(!this.points.size() + 1)
+        !this.points.append(!element)
+      endif
+    endif
+  endif
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      near
+--
+-- Description: Returns the nearest point on the path from the passed point
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      POSITION    Position to map onto polyline
+
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    Position on path
+--
+------------------------------------------------------------------------
+define method .near(!position is POSITION) is POSITION
+
+  -- Initialise Variables
+  !this.segment = REAL()
+  !minDistance  = 1000000m
+  !seg = object REAL()
+  !segPosition = object POSITION()
+
+  -- Loop through segments to determine which one the point is nearest to
+  do !i indices !this.segments
+    !type         = !this.segments[!i].objectType()
+
+   -- Handle Lines
+    if(!type.eq('LINE')) then
+      !nearPosition = !this.segments[!i].near(!position)
+
+      -- Check if point is on line (.onProjected returns true is on bounded line)
+      if(!this.segments[!i].onProjected(!nearPosition)) then
+        !distance = !position.distance(!nearPosition)
+        if(!distance.lt(!minDistance)) then
+          !minDistance = !distance
+          !seg = !i
+          !segPosition = !position
+        endif
+      endif
+
+    -- Handle Arcs
+    else
+      -- Get distances from point to segment
+      if(!this.segments[!i].onProjected(!position)) then
+        !angle        = !this.segments[!i].near(!position)
+        !nearPosition = !this.segments[!i].anglePosition(!angle)
+        !distance = !position.distance(!nearPosition)
+        if(!distance.lt(!minDistance)) then
+          !minDistance = !distance
+          !seg = !i
+          !segPosition = !position
+        endif
+      endif
+    endif
+
+  enddo
+
+  -- Determine point with shortest distance to path as being the "nearest" point
+
+ !this.segment = !seg
+
+  -- Return
+  return !segPosition
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      near
+--
+-- Description: Returns the nearest point on the path from the passed point vector
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      POINTVECTOR  Point vector
+
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    Position on path
+--
+------------------------------------------------------------------------
+define method .near(!pointVector is POINTVECTOR) is POSITION
+
+  -- Initialise Variables
+  !this.segment = REAL()
+  !minDistance  = 1000000m
+  !seg = object REAL()
+  !segPosition = object POSITION()
+  !line        = !pointVector.line(10000)
+
+  -- Loop through segments to determine which one the point is nearest to
+  do !i indices !this.segments
+    !type         = !this.segments[!i].objectType()
+
+   -- Handle Lines
+    if(!type.eq('LINE')) then
+      !nearPosition = !this.segments[!i].intersection(!line)
+
+      -- Check if point is on line (.onProjected returns true is on bounded line)
+      if(!this.segments[!i].onProjected(!nearPosition)) then
+
+        -- Map new position back to line
+        !position = !line.near(!nearPosition)
+
+        !distance = !position.distance(!nearPosition)
+        if(!distance.lt(!minDistance)) then
+          !minDistance = !distance
+          !seg = !i
+          !segPosition = !position
+        endif
+
+      endif
+
+    -- Handle Arcs
+    else
+
+      -- Get intersections of line on arc
+      !iPoints    = !this.segments[!i].intersections(!line)
+
+      -- Loop through intersection points and determine if they are in the arc bounds
+      if(!iPoints.set()) then
+
+        -- Loop through
+        do !j indices !iPoints
+          -- Get position
+          !nearPosition  = !this.segments[!i].anglePosition(!iPoints[!j])
+          -- Is point on bounded arc
+          if(!this.segments[!i].onProjected(!nearPosition)) then
+            !position = !line.near(!nearPosition)
+            !distance = !position.distance(!nearPosition)
+            if(!distance.lt(!minDistance)) then
+              !minDistance = !distance
+              !seg = !i
+              !segPosition = !position
+            endif
+
+          endif
+
+        enddo
+      endif
+    endif
+  enddo
+
+
+  !this.segment = !seg
+
+  -- Return
+  return !segPosition
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      pointSegments
+--
+-- Description: Returns the all the associated segments for the current segment, i.e. ones sharing same point
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Segments (lines/arcs) for passed point
+--
+------------------------------------------------------------------------
+
+define method .pointSegments() is ARRAY
+  return !this.pointSegments(!this.segment)
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      pointSegments
+--
+-- Description: Returns the all the associated segments for the given segment, i.e. ones sharing same point
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      REAL        Point index
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Segments (lines/arcs) for passed point
+--
+------------------------------------------------------------------------
+
+define method .pointSegments(!sIndex is REAL) is ARRAY
+
+  -- Initialise Variables
+  !return     = ARRAY()
+  !pointIndex = !this.pointSegments[!sIndex]
+
+  -- Get associated segments
+  do !index values !this.pointSegments.find(!pointIndex)
+    !return.append(!this.segments[!index])
+  enddo
+
+  -- Return
+  return !return
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      pointElement
+--
+-- Description: Returns the reference element for the current segment
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       Reference point for segment
+--
+------------------------------------------------------------------------
+
+define method .pointElement() is DBREF
+  return !this.pointElement(!this.segment)
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      pointElement
+--
+-- Description: Returns the reference element for the given segment
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      REAL        Point index
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       Reference point for segment
+--
+------------------------------------------------------------------------
+
+define method .pointElement(!sIndex is REAL) is DBREF
+
+  -- Initialise Variables
+  !pointIndex = !this.pointSegments[!sIndex]
+
+  -- Get point
+  return !this.points[!pointIndex]
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      draw
+--
+-- Description: Draw poly line
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      REAL        Segment number (aid number)
+--    2   R      REAL        Line Style number
+--    3   R      REAL        Colour number
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .draw(!aidNumber is REAL, !lineStyle is REAL, !colour is REAL)
+aid clear all $!aidNumber
+handle ANY
+endhandle
+  -- Loop through edges
+  do !i indices !this.segments
+    !this.segments[!i].draw(!aidNumber, !lineStyle, !colour)
+
+    if(!this.segments[!i].objectType().eq('ARC')) then
+    --  !pos = !segment.anglePosition(!segment.startAngle)
+      !pos = !this.segments[!i].position
+      AID TEXT number $!aidNumber 'Centre' At $!pos
+    else
+      !midPoint = !this.segments[!i].proportion(0.5)
+      AID TEXT number $!aidNumber '[$!i]' at $!midPoint
+    endif
+
+  enddo
+
+aid clear all
+  do !i indices !this.pointSegments
+    aid text number $!i '$!i' at $!this.points[$!i].position
+    do !j indices !this.pointSegments[!i]
+      !this.pointSegments[!i][!j].draw(!i,2,!i)
+    enddo
+  enddo
+endmethod
+-- End of method

@@ -1,0 +1,421 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+------------------------------------------------------------------------
+--
+--
+-- File:            abamisslabel.pmlfnc
+--   Type:          Function Definition
+--   Group:         <group>
+--     Keyword:     <keyword>
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         14 May 1999
+--
+--
+-- Description:
+-- Create any labels missed by the autotagging functionality
+--
+-- LIMITATIONS:
+-- If an element origin is outside the limits box then the points of
+-- the members will be scanned.
+-- If there are no ppoints inside then the label will be deleted.
+--
+-- NOTE:
+-- Care must be taken with any intelligent text used in templates
+-- e.g. for an equi name do not use NAME use EQUI
+--
+------------------------------------------------------------------------
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     DBREF       view
+--
+------------------------------------------------------------------------
+define function !!abaMissLabel(!view is DBREF)
+
+   -- remember the current units
+   !units = object COMUNITS(TRUE)
+   units mm dist
+-- Initialise variables
+   !ce = !!ce
+   WORLD
+   !world = !!ce
+
+-- Access view
+   !!ce = !view
+
+-- Get view limits
+-- This is intentionally as a string, since saves formatting into sequence
+-- suitable for the collect command
+   !idli = !view.idln
+   var !limits limits of $!idli
+   !limits = !limits.after('From ')
+
+-- Get box limits for position testing
+-- Cannot use VSIDE since have to cope with iso views
+-- In an iso view, positions once outside the orthog view may now be inside the
+   !boxLimits = !idli.limits
+   !min = object POSITION('E' & !boxLimits[1].value() & ' N' & !boxLimits[2].value() & ' U' & !boxLimits[3].value())
+   !max = object POSITION('E' & !boxLimits[4].value() & ' N' & !boxLimits[5].value() & ' U' & !boxLimits[6].value())
+
+-- Get all tagrules
+   var !tagLaye coll all laye with SpPURP eq 'TAGA' for $!view
+   !trsf = !tagLaye[1].dbref().trsf
+   var !tagrule coll all tagr for $!trsf
+   handle(47,15)
+    !units.restoreSavedBoreDist()
+    return
+   endhandle
+
+-- For each layer
+   do !laye val !tagLaye
+
+     -- Clean out any labels with unset sorf
+     var !allLabels coll all (glab slab) wi sorf eq =0/0 for $!laye
+     do !label val !allLabels
+
+       -- Access label & delete it
+       !!ce = !label.dbref()
+       !labelType = !label.dbref().type
+       delete $!labelType
+
+     enddo
+
+     -- For each tag rule
+     do !tagr val !tagrule
+
+       -- Initialise variables
+       !elem = ARRAY()
+       !labelList = ARRAY()
+
+       -- Read criteria as string to retain format
+       var !criteria criteria of $!tagr
+
+       -- Determine type of label
+       !tempRefe = !tagr.dbref().tmrf
+         skip if (!tempRefe.badref())
+       !tempType = !tempRefe.type.upCase()
+       if (!tempType.eq('GLAB')) then
+         !labelType = 'GLAB'
+       else
+         !labelType = 'SLAB'
+       endif
+
+       -- Get all rule defined elements
+       var !defElem VSCAN FOR $!criteria within $!limits
+       do !string val !defElem
+         !bits = !string.split()
+         !elem.append(!bits[2])
+       enddo
+
+       -- Get all autotagging created labels
+       var !exist eval refe of ddnm for all (glab slab) wi sorf eq $!tagr for $!tagLaye[1]
+
+       -- Get missing labels
+       !labelList = !elem.difference(!exist)
+
+       -- Tag missing labels
+       if (not !labelList.empty()) then
+
+         -- Access laye
+         !!ce = !laye.dbref()
+
+         -- Create labels
+         do !ddnm val !labelList
+
+           -- Create label
+           if (!labelType.eq('GLAB')) then
+
+             NEW GLAB ON $!ddnm COPY $!tempRefe
+
+           else
+
+             NEW SLAB
+              TPEN TEMP  LFPEN TEMP  CHEI TEMP
+              DDNM $!ddnm
+              TMRF $!tempRefe
+
+           endif
+
+           -- Test the label for particular design elements
+           !elemType = !ddnm.dbref().type.upCase()
+
+           if (!elemType.eq('SCTN') or !elemType.eq('STWALL')) then
+
+             -- Test for label origin outside the view limits
+             OSET TRUE
+               handle any
+               endhandle
+             var !xypo xypo
+             XYPO 0 0
+             OSET FALSE
+               handle any
+               endhandle
+
+             -- Get label 3D position by deliberately using the old var syntax
+             -- to get xypo as string and not as a position
+             var !xypoString xypo
+             !xypoReal = !!ce.xypo
+             var !threeDPos enupos of $!xypoString
+             !pos = object POSITION(!threeDPos)
+             !lessThanMin = (!pos.east.lt(!min.east) or !pos.north.lt(!min.north) or !pos.up.lt(!min.up))
+             !moreThanMax = (!pos.east.gt(!max.east) or !pos.north.gt(!max.north) or !pos.up.gt(!max.up))
+
+             -- Reset label position
+             OSET TRUE
+               handle any
+               endhandle
+             XYPO $!xypo
+             OSET FALSE
+               handle any
+               endhandle
+
+             if (!lessThanMin or !moreThanMax) then
+
+               -- Test start position
+               !posS = !ddnm.dbref().posS.wrt(!world)
+               !lessThanMin = (!posS.east.lt(!min.east) or !posS.north.lt(!min.north) or !posS.up.lt(!min.up))
+               !moreThanMax = (!posS.east.gt(!max.east) or !posS.north.gt(!max.north) or !posS.up.gt(!max.up))
+
+               if (!lessThanMin or !moreThanMax) then
+
+                 -- Test end position
+                 !posE = !ddnm.dbref().posE.wrt(!world)
+                 !lessThanMin = (!posE.east.lt(!min.east) or !posE.north.lt(!min.north) or !posE.up.lt(!min.up))
+                 !moreThanMax = (!posE.east.gt(!max.east) or !posE.north.gt(!max.north) or !posE.up.gt(!max.up))
+
+                 if (!lessThanMin or !moreThanMax) then
+
+                   -- Test the centreline for intersection with the view limits
+                   !centreLine = object LINE(!posS, !posE)
+                   !intersect = !!abaViewLineInt(!boxLimits, !centreLine)
+
+                   -- Move leaderline to intersection point
+                   if (!intersect[1]) then
+
+                     -- Calculate & set apoff
+                     !xDist = !intersect[2] - !xypoReal.east
+                     !yDist = !intersect[3] - !xypoReal.north
+                     APOF $!xDist $!yDist
+
+                     !pkDist = 0.5
+
+                   else
+
+                     delete SLAB
+
+                   endif
+
+                 else
+
+                   -- Set leaderline to posE
+                   !pkDist = 1
+
+                 endif
+
+               else
+
+                 -- Set leaderline to posS
+                 !pkDist = 0
+
+               endif
+
+               -- Set pkdist
+               PKDI $!pkDist
+
+             endif
+
+           elseif (!elemType.eq('PANE') or !elemType.eq('FLOOR') or !elemType.eq('SCREED') or !elemType.eq('GWALL')) then
+
+             -- Test for label origin outside the view limits
+             !pos = !ddnm.dbref().pos.wrt(!world)
+             !lessThanMin = (!pos.east.lt(!min.east) or !pos.north.lt(!min.north) or !pos.up.lt(!min.up))
+             !moreThanMax = (!pos.east.gt(!max.east) or !pos.north.gt(!max.north) or !pos.up.gt(!max.up))
+
+             if (!lessThanMin or !moreThanMax) then
+
+               -- Get label position on page
+               !threeD = !pos.string().before(' WRT')
+               var !labelPos shpos of $!threeD
+
+               -- Test for pave inside the view limits
+               !inside = false
+               var !allPave coll all pave for $!ddnm
+               do !pave val !allPave
+
+                 -- Test pave position
+                 !pos = !pave.dbref().pos.wrt(!world)
+                 !lessThanMin = (!pos.east.lt(!min.east) or !pos.north.lt(!min.north) or !pos.up.lt(!min.up))
+                 !moreThanMax = (!pos.east.gt(!max.east) or !pos.north.gt(!max.north) or !pos.up.gt(!max.up))
+                 skip if (!lessThanMin or !moreThanMax)
+
+                 -- To get here the pave is within the view limits
+                 !inside = true
+                 !threeD = !pos.string().before(' WRT')
+                 var !newPos shpos of $!threeD
+
+               enddo
+
+               -- For no paves inside test for primitive members
+               if (not !inside) then
+
+                 -- Get all pave members and test for inside
+                 var !allMembers coll mem of $!ddnm
+
+                 -- For any members
+                 do !member val !allMembers
+
+                   -- Initialise variables
+                   !inside = false
+
+                   -- Test for drawn
+                   var !found FIND $!member
+                   skip if (!found.upCase().eq('MISSING'))
+
+                   -- Test for ppoints inside
+                   !inside = !!abaPpoint(!member.dbref(),!world,!boxLimits)
+                   if (!inside) then
+
+                     if (!!ce.nppt.neq(-1)) then
+                       !pos = !!ce.ddnm.ppos[!!ce.nppt].wrt(!world)
+                       !threeD = !pos.string().before(' WRT')
+                       var !newPos shpos of $!threeD
+                     endif
+
+                     -- Reset attached element
+                     ON $!ddnm
+
+                     -- Done
+                     break
+
+                   endif
+
+                 enddo
+
+               endif
+
+               if (!inside) then
+
+                 -- Calculate & set apoff
+
+                 !xDist = !newPos.split()[2].real() - !labelPos.split()[2].real()
+                 !yDist = !newPos.split()[4].real() - !labelPos.split()[4].real()
+                 APOF $!xDist $!yDist
+
+               else
+
+                 delete SLAB
+
+               endif
+
+             endif
+
+           elseif (!elemType.eq('BRAN')) then
+
+             -- Test for label origin outside the view limits
+             !pos = !ddnm.dbref().hpos.wrt(!world)
+             !lessThanMin = (!pos.east.lt(!min.east) or !pos.north.lt(!min.north) or !pos.up.lt(!min.up))
+             !moreThanMax = (!pos.east.gt(!max.east) or !pos.north.gt(!max.north) or !pos.up.gt(!max.up))
+
+             if (!lessThanMin or !moreThanMax) then
+
+               -- Cycle through members and find the first inside the limits
+               var !allMembers coll mem of $!ddnm
+
+               -- For any members
+               do !member val !allMembers
+
+                 -- Initialise variables
+                 !inside = false
+
+                 -- Test for drawn
+                 var !found FIND $!member
+                 skip if (!found.upCase().eq('MISSING'))
+
+                 -- Test for ppoints inside
+                 !inside = !!abaPpoint(!member.dbref(),!world,!boxLimits)
+                 break if (!inside)
+
+               enddo
+
+               -- Test for no ppoints inside
+               if (not !inside) then
+                 delete SLAB
+               endif
+
+             endif
+
+           else
+
+             -- Test for label origin outside the view limits
+             !pos = !ddnm.dbref().pos.wrt(!world)
+             !lessThanMin = (!pos.east.lt(!min.east) or !pos.north.lt(!min.north) or !pos.up.lt(!min.up))
+             !moreThanMax = (!pos.east.gt(!max.east) or !pos.north.gt(!max.north) or !pos.up.gt(!max.up))
+
+             if (!lessThanMin or !moreThanMax) then
+
+               -- Cycle through members and find the first ppoint inside the limits
+               var !allMembers coll mem of $!ddnm
+
+               -- For no members
+               if (!allMembers.size().eq(0)) then
+
+                 -- Initialise variables
+                 !inside = false
+
+                 -- Test for drawn
+                 var !found FIND $!ddnm
+                 skip if (!found.upCase().eq('MISSING'))
+
+                 -- Test for ppoints inside
+                 !inside = !!abaPpoint(!ddnm.dbref(),!world,!boxLimits)
+
+               endif
+
+               -- For any members
+               do !member val !allMembers
+
+                 -- Initialise variables
+                 !inside = false
+
+                 -- Test for drawn
+                 var !found FIND $!member
+                 skip if (!found.upCase().eq('MISSING'))
+
+                 -- Test for ppoints inside
+                 !inside = !!abaPpoint(!member.dbref(),!world,!boxLimits)
+                 break if (!inside)
+
+               enddo
+
+               -- Test for no ppoints inside
+               if (not !inside) then
+                 delete SLAB
+               endif
+
+             endif
+
+           endif
+
+         enddo
+
+       endif
+
+     enddo
+
+   enddo
+
+  -- reset the units
+   !units.restoreSavedBoreDist()
+
+-- Return to hierarchal position
+   !!ce = !ce
+   handle any
+   endhandle
+
+endfunction
+-- End of function definition

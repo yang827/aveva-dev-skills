@@ -1,0 +1,1861 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File: MdsHang.pmlobj
+--   Type: Object Definition
+--   Group: Multi Discipline Supports Application
+--     Keyword: MDS
+--   Module: design
+--   Replaces:
+--
+-- Author: A.boudjnah
+-- Created: Tue May 14th 2002
+--
+--
+-- Description:
+-- Multi Discipline Support hanger object.
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  changeRodSize()                  -
+--  create(MDSREST,FORM,REAL,REAL)   -
+--  finalize(STRING,REAL,REAL)       -
+--  getAvailableReselectBores()      ARRAY
+--  setHangSteel(DBREF,STRING,DBREF,DBREF,REAL) STRING
+--  updateBeamRefArray(REAL,BOOLEAN) -
+--
+
+-- Define Object
+
+define object MDSHANG
+
+  -- member. list of hanger members (PCLA, VSPR, HROD etc.)
+  member .hangmem is ARRAY
+
+  -- Name of hanger
+  member .name is STRING
+
+  -- Ref of hanger
+  member .ref    is DBREF
+
+  -- Head data
+  -- hpos
+  member .hpos is POSITION
+
+  -- hdir
+  member .hdir  is DIRECTION
+
+  -- hbor
+  member .hbor is BORE
+
+  -- hconn
+  member .hcon is STRING
+
+  -- href
+  member .href is DBREF
+
+  -- Tail data
+  -- tpos
+  member .tpos is POSITION
+
+  -- tdir
+  member .tdir  is DIRECTION
+
+  -- tbor
+  member .tbor is BORE
+
+  -- tconn
+  member .tcon is STRING
+
+  -- tref
+  member .tref is DBREF
+
+  -- hsrod
+  member .hsrod is DBREF
+
+  -- fitting
+  member .fitt is MDSFITT
+
+  -- func (information about SCTN p-line or PANE face (BOTT or TOP) or BOX face (p-point number) stored when no fitting)
+  member .func is STRING
+
+  -- owner
+  member .rest is MDSREST
+
+  -- hanger rods array
+  member .rods is ARRAY
+  member .reversedBeamArray is BOOLEAN
+
+  -- hanger form
+  member .form is FORM
+
+  -- End object
+endobject
+
+define method .create(!oRest is MDSREST, !form is FORM, !hangerno is REAL, !numOfHangers is REAL)
+
+  -- Find current units and set the distance unit to metric
+
+  if(defined(!!mdsDebug)) then
+    !!mdsDebug.traceIn(1, '$!this' + '.create($!oRest is MDSREST, $!form is FORM, $!hangerno is REAL, $!numOfHangers is REAL)')
+  endif
+
+  !this.rest = !oRest
+  !this.form = !form
+  !currentUnits = !!kgetsetunits()
+  mm bore mm dist
+
+  -- Initialise variables
+
+  !datum       = !oRest.attaRef
+  !unusedname        = !form.name.val
+  !alias       = !oRest.attaRef.styp
+  !unusedcecomp      = !!ce
+  !unusedformname    = '!!' & !form
+  !this.reversedBeamArray = FALSE
+
+  --------------------------------------------------------------------------------
+  -- Make atta current element
+
+  !ce = !!ce
+  !!ce = !datum
+  !attaName = !this.rest.ref.name.before('/REST')
+  !attaRef = !attaName.dbref()
+  !bore = pl bore
+  if(!this.rest.beamRefArray.unset() or (!this.rest.beamRefArray.size() eq 0)) then
+    !this.rest.initBeamRef()
+  endif
+  !beamRefArray = !this.rest.beamRefArray
+
+  label /RESTART
+
+  -- gets the hangtype object for the given hanger type (e.g. 'VH12', 'FH24')
+
+  !oHangerType = !!mdsAllHangertypes.gethangertype(!this.rest.styp)
+  !hangType = !oHangerType.styp
+  handle ANY
+  endhandle
+  !group = !oHangerType.group
+  handle ANY
+  endhandle
+
+  if (!group eq 18 or !group eq 19 or !group eq 20 or !group eq 25) then
+    !steelPrompt = 'Identify civils to connect hanger to'
+  else
+    !steelPrompt = 'Identify steelwork to connect hanger to'
+  endif
+
+  !subGroup = !group
+  if(!group gt 10) then
+    !subGroup = !group.string().substring(2,1).real()
+  endif
+
+  if(!subGroup eq !!mdsAllHangertypes.doubleChannelGroupNo or $
+    !group eq !!mdsAllHangertypes.doubleHangerGroupNoDoubleChannel or $
+    (!group eq !!mdsAllHangertypes.doubleHangerGroupNoCombined and !hangerno eq 1)) then
+
+    -- This a double channel connection hanger
+    !steelPrompt = 'Identify first channel beam to connect hanger no.$!hangerno to'
+
+  elseif (!subGroup eq !!mdsAllHangertypes.bottomSupportedGroupNo ) then
+    -- hanger supports the pipe from below. No steelwork fittings
+    golabel /FINALIZE
+  endif
+
+  -- The beam ref array holds two place of each hanger
+  if(!hangerno leq 2) then
+    --Points to the first hanger beam ref
+    !beamRefIndex = 0
+  else
+    --Points to the second hanger beam ref
+    -- !beamRefIndex = 2
+    -- This was set to 2? which gave an error
+    !beamRefIndex = 2
+    if (!group eq !!mdsAllHangertypes.civilplatedoublehanger) then
+      !beamRefIndex = 1
+    endif
+  endif
+
+  if (!group eq !!mdsAllHangertypes.civilplatedoublehanger) then
+    -- Set the array to the civil id as there is only one
+    !beamRefArray[2] = !beamRefArray[1]
+    !beamRefArray[3] = !beamRefArray[1]
+  endif
+
+  label /SECONDCHANNEL
+
+  !beamRefArray = !this.rest.beamRefArray
+  !!mdsDacControl(TRUE)
+  !beamRefIndex = !beamRefIndex + 1
+
+  -- Create the fitting to the steel
+  !fittRef = object DBREF()
+  if(defined(!!mdsDebug)) then
+    !!mdsDebug.trace(2, 'Pointing to beam array index no. $!beamRefIndex')
+  endif
+  !newFittName = !this.setHangSteel(!attaRef, !steelPrompt, !fittRef, !beamRefArray[!beamRefIndex],!hangerno)
+  handle 1
+    -- READ ONLY Access to the Section
+    !!ce = !attaName.dbref()
+    !!ce = !ce
+    handle ANY
+    endhandle
+    !!kRestoreUnits(!currentUnits)
+    if(defined(!!mdsDebug)) then
+      !!mdsDebug.traceError('$!this' + '.create($!oRest is MDSREST, $!form is FORM, $!hangerno is REAL, $!numOfHangers is REAL)')
+    endif
+    return error 1 'Read only element' noalert
+  elsehandle 2
+    -- WRITE Access to the Section, BUT it is LOCKED
+    !!ce = !attaName.dbref()
+    !!ce = !ce
+    handle ANY
+    endhandle
+    !!kRestoreUnits(!currentUnits)
+    if(defined(!!mdsDebug)) then
+      !!mdsDebug.traceError('$!this' + '.create($!oRest is MDSREST, $!form is FORM, $!hangerno is REAL, $!numOfHangers is REAL)')
+    endif
+    return error 2 'The Identified element is locked.' noalert
+  elsehandle 99
+
+    -- User has clicked the Escape key
+
+    !!ce = !firstFittRef
+    handle ANY
+    endhandle
+    !!ce = !secondFittRef
+    handle ANY
+    endhandle
+    !!ce = !attaName.dbref()
+    !!ce = !ce
+    handle ANY
+    endhandle
+    !!kRestoreUnits(!currentUnits)
+    if(defined(!!mdsDebug)) then
+      !!mdsDebug.traceError('$!this' + '.create($!oRest is MDSREST, $!form is FORM, $!hangerno is REAL, $!numOfHangers is REAL)')
+    endif
+    return error 99 'user exit' noalert
+  endhandle
+
+  !this.rest.beamRefArray[!beamRefIndex] = !newFittName.dbref().owner
+
+  -- handle hangers with double channel beam connection
+
+  if(!subGroup eq !!mdsAllHangertypes.doubleChannelGroupNo or $
+    !group eq !!mdsAllHangertypes.doubleHangerGroupNoDoubleChannel or $
+    (!group eq !!mdsAllHangertypes.doubleHangerGroupNoCombined and !hangerno eq 1)) then
+
+    if(defined(!!mdsDebug))then
+      !!mdsDebug.trace(2, 'Hanger of type $!alias is a group $!!mdsAllHangertypes.doubleChannelGroupNo hanger')
+    endif
+
+    -- Hanger is connected to a double channel beam
+
+    if(undefined(!firstFittRef)) then
+      -- This is the first channel
+
+      !firstFittRef = !newFittName.dbref()
+      !firstName = !firstFittRef.name + '/FIRST'
+      !firstFittRef.name = !firstName
+      handle ANY
+        if(!!ce.name.eq(!firstName))then
+          -- the current fitting is the one with the required name
+          -- no need to rename it
+
+        else
+          -- name already exist some how...but it is another fitting
+          -- we can delete the other fitting
+
+          !cetemp = !!ce
+          !!ce = !firstName.dbref()
+          delete fitt
+          handle ANY
+            !!alert.message('Deleting fitting $!firstName$n. ' + !!error.text  + ' ' + !!error.line.before(|***|))
+          endhandle
+
+          if(defined(!!mdsDebug))then
+            !!mdsDebug.trace(2,'Deleted existing fitting to $!firstName')
+          endif
+
+          !!ce = !cetemp
+          !firstFittRef.name = !firstName
+        endif
+      endhandle
+
+      enhance $!firstFittRef
+
+      -- Go & Identify second channel
+
+      !steelPrompt = 'Identify second channel beam to connect hanger no. $!hangerno to'
+
+      golabel /SECONDCHANNEL
+
+    else
+      -- This is the second channel
+
+      !secondFittRef = !newFittName.dbref()
+      -- Set the :MDSConnect array reference first member to point to the
+      -- the reference of the first section
+
+      !connections = object ARRAY()
+      !connections.append(!firstFittRef.owner)
+      !secondFittRef.:MDSConnect = !connections
+      !secondFittRef.:MDSConnectN = !firstFittRef.owner.fullname
+      !firstBeamRef = !firstFittRef.owner
+      !secondBeamRef = !secondFittRef.owner
+      !!mdsFh01.validChannels(!bore.real(), !firstBeamRef, !secondBeamRef)
+      handle ANY
+        -- identified beams are not a valid double channel beam
+        -- Start again from first beam
+        if(!hangerno eq 1) then
+          !errtext = '$!!error.text'
+        else
+          !errtext = 'Hanger no. ' + STRING(!hangerno - 1) + ' $!!error.text'
+        endif
+
+        --<RM 28/09/09> this used to just goto the restart label and ask you if you wanted to accept the hanger if the space between the
+        --two channels was too great. if you did this the hanger wouldn't connect and the mdsfhanger form would freeze.
+        --the problem is that you need to be asked if you want to accept here otherwise the connect code will not run and the above
+        --errors will occur
+        --the questionAsked variable is there to prevent the same question being asked further down if the user picks no
+        !questionAsked = FALSE
+        if !errtext.match('The distance between the channels').gt(0) then
+          if(!!alert.confirm(!errtext + '. Do you want to accept it?').eq('NO')) then
+            !questionAsked = TRUE
+            golabel /INITandRESTART
+          endif
+        else
+          golabel /INITandRESTART
+        endif
+        --<RM 28/09/09> end of fix
+
+      endhandle
+      !!ce = !secondFittRef
+      !delpos = !form.getMiddleDelPos(!firstFittRef , !secondFittRef)
+      delpos $!delpos
+
+      !!ce = !firstFittRef
+      delete fitt
+      if(!hangerno le 2) then
+        -- move the atta to be just below the middle distance between the channels
+        !!ce = !secondFittRef.owner
+        !!ce = !attaName.dbref()
+        !stypToCheck = !this.rest.styp
+        -- !stypToCheck inset$!!mdsAllHangertypes.riserClamp or
+        if(!stypToCheck inset$!!mdsAllHangertypes.weldedelboworpipelug or $
+          !stypToCheck inset$!!mdsAllHangertypes.weldedelbowtrunion or $
+          !!mdsAllHangertypes.riserClamp.find(!stypToCheck).size().gt(0) or $
+          !stypToCheck inset$!!mdsAllHangertypes.bm1Spring or $
+          !stypToCheck inset$!!mdsAllHangertypes.bm2Spring or $
+          !stypToCheck inset$!!mdsAllHangertypes.dsSpring or $
+          !stypToCheck inset$!!mdsAllHangertypes.channelAssembly or $
+          !stypToCheck inset$!!mdsAllHangertypes.doublebm1Spring) then
+
+          -- Hanger is connected to a welded elbow, pipe lug, a welded elbow trunnion of a vertical shear lugs
+          -- we can't move the atta
+
+
+          -----------------------------
+          --<wd>22jul2004
+          -- CHECK for Manufacturers Interface - * STYP = 'MH01' * stored in the <MDSREST> object member '!this.styp' and
+          -- CHECK if the <MDSREST> object member value of '!this.pldir' is 'UP or DOWN wrt /*' - i.e. a VERTICAL PIPE
+        elseif (!!mdsVendor.hangerseltype.val inset ('2V','31V','32V')) then
+          -- Pipe is VERTICAL - so do NOTHING to MOVE the ATTA
+          --<wd>22jul2004
+          -----------------------------
+        else
+          -- An atta was created. we need to move it
+          if ( !!mdsVendor.hangerseltype.val inset ('2H')) then
+            -- dtf feb05
+            $!secondFittRef
+            !xtpos = pos wrt /*
+            pin 4 at $!xtpos
+            pin 4 dir d
+            !!ce = !attaName.dbref()
+            pin 4 plane d thro $!!ce
+            through pin 4
+            !!mdsResetPins(4,4)
+          else
+            through $!secondFittRef
+            handle ANY
+              plan n through $!secondFittRef
+              handle ANY
+                plan e through $!secondFittRef
+              endhandle
+            endhandle
+          endif
+          $!attaName/H1
+          conn hh to $!attaName
+          tref $!attaName/SBFI/H1
+          handle ANY
+          endhandle
+          !boreReal = !!ce.hbore.real()
+
+          hcon ATT
+
+          !ceMem = !!ce.mem
+          -- reconnect the hanger 1 members
+          do !memI indices !ceMem
+            !!ce = !ceMem[!memI]
+
+            if (!!ce.type eq 'VSPR' ) then
+              desp num 30 $!boreReal
+            endif
+
+            if(defined(!!mdsDebug)) then
+              !!mdsDebug.trace(1, 'Connecting member $!memI$n: $!!ce.type $!!ce.name Bore $!boreReal')
+            endif
+
+            if ((!!ce.order.eq(1) ) and (!!ce.type inset ('PCLA')) ) then
+              !attldir = ldir of $!attaName wrt /*
+              !udir    = down wrt /*
+              !odir = !attldir.orthogonal(!udir)
+              conn and pl is $!odir
+            else
+              !ldir = !!ce.ldir
+
+              conn and pl is $!ldir
+              handle (61,34) $* handle degenerate ori
+              elsehandle ANY
+                -- 12/2002 <ab>
+
+                ------------------------------------------------------------------------------------------------------------
+                --<wd>14jun2004 -- Code to get the LDIR of the PCLA on the PIPE
+                --fconn
+                -- Get the PLEAVE direction of the PCLA - First hanger Component
+                if ((!!ce.order.eq(1) ) and (!!ce.type inset ('PCLA')) ) then
+                  !attldir = ldir of $!attaName wrt /*
+                  !udir    = down wrt /*
+                  !odir = !attldir.orthogonal(!udir)
+                  conn and pl is $!odir
+                else
+                  fconn
+                endif
+                --<wd>14jun2004 -- Code to get the LDIR of the PCLA on the PIPE
+                ------------------------------------------------------------------------------------------------------------
+
+                -- $P Force connected member $!memI$n: $!!ce.type $!!ce.name Bore $!boreReal spref $!!ce.spref
+                --                   !connCE = pa conn
+                !connPrev = pl conn of prev
+                handle ANY
+                  !connPrev = ''
+                endhandle
+                -- $P Arrive connection type is: $!connCE
+                -- $P Leave connection type of prev is: $!connPrev
+                -- $P Possible problem: Same STYP for different connection types
+              endhandle
+            endif
+
+          enddo
+          end
+          !tref = tref
+          conn ht to last mem
+          tref $!tref
+        endif
+      endif
+    endif
+  endif
+  -- end of double channel beam hangers
+  !this.fitt = object MDSFITT(!newFittName.dbref())
+  --> added by <ab> 25/06/02
+  -- in case the beamRefArray  is empty update it with the fitting owner.
+  -- hanger no. 2 uses the same !beamRefIndex as hanger 1 so the user will not be prompt to identify
+  -- the beam again
+  --> 01/08/02
+  --    !this.rest.beamRefArray[!beamRefIndex] = !this.fitt.ref.owner
+  --< 01/08/02
+  !!ce = !attaName.dbref()
+
+  label /FINALIZE
+  --  $r101 /trace over
+  !errtext = ''
+  !this.finalize(!attaName, !hangerno, !numOfHangers)
+  handle 1 9 51
+    -- hanger is not vertical
+    -- Unset the beamref so the user will be able to identify another beam
+    if(!hangerno eq 1) then
+      !errtext = '$!!error.text'
+    else
+      !errtext = 'Hanger no. ' + STRING(!hangerno - 1) + ' $!!error.text'
+    endif
+    golabel /INITandRESTART
+  elsehandle ANY
+    !!kRestoreUnits(!currentUnits)
+    return error 90 |$!!error.text|
+  endhandle
+
+
+  !!mdsDacControl(FALSE)
+
+  if(defined(!!mdsDebug)) then
+    !!mdsDebug.traceOut(1, '$!this' + '.create($!oRest is MDSREST, $!form is FORM, $!hangerno is REAL, $!numOfHangers is REAL)')
+  endif
+  !!kRestoreUnits(!currentUnits)
+  return
+
+  label /INITandRESTART
+  --!stypToCheck = !this.rest.styp
+  --if (!!mdsAllHangertypes.m5Constant.find(!stypToCheck).size().gt(0) ) then
+  --  if(!hangerno eq 1) then
+  --Points to the first hanger beam ref
+  --    !beamRefIndex = 1
+  -- else
+  --Points to the second hanger beam ref
+  --    !beamRefIndex = 2
+  --  endif
+
+  --else
+  if(!hangerno leq 2) then
+    --Points to the first hanger beam ref
+    !beamRefIndex = 1
+  else
+    --Points to the second hanger beam ref
+    !beamRefIndex = 3
+  endif
+  --endif
+  -- Trying to reverse the beamrefarray and check again it the hanger will be vertical
+  -- if not vertical after reversing it we unset it and issue an error message
+  -- Unset the beamref so the user will be able to identify another beam
+  if(!this.reversedBeamArray) then
+    -- array was reversed
+    -- unset the beamref array for this hanger no.
+    !this.updateBeamRefArray(!beamRefIndex, FALSE)
+    ---- 12/2002 <ab>        !!alert.message(!errtext)
+    if(!!alert.confirm(!errtext + '. Do you want to accept it?').eq('YES')) then
+      golabel /exit
+    endif
+  else
+    --<RM> 14/10/09 -- P25771 added additional checks to ensure that the questionAsked variable is set before testing against it
+    -- if not just run the old method
+    if defined(!questionAsked) then
+      if !errtext.neq('') and !questionAsked.eq(FALSE) then
+        if(!!alert.confirm(!errtext + '. Do you want to accept it?').eq('YES')) then
+          golabel /exit
+        endif
+      endif
+    else
+      if !errtext.neq('') then
+        if(!!alert.confirm(!errtext + '. Do you want to accept it?').eq('YES')) then
+          golabel /exit
+        endif
+      endif
+    endif
+    --<RM> 14/10/09 -- end of fix
+    -- array was not reversed
+    -- reverse the array only if it is a double-hanger hanger
+    -- if it is a single-hanger hanger it will unset the beam ref array
+    -- and try again with same beams
+    !this.updateBeamRefArray(!beamRefIndex, TRUE)
+  endif
+
+  !beamRefArray = !this.rest.beamRefArray
+  var !firstFittRef delete
+  golabel /RESTART
+
+  label /exit
+  refresh
+  !!kRestoreUnits(!currentUnits)
+  if(defined(!!mdsDebug)) then
+    !!mdsDebug.traceOut(1, '$!this' + '.create($!attaName is STRING, $!hangerno is REAL, $!numOfHangers is REAL)')
+  endif
+  return
+
+endmethod
+
+define method .finalize(!attaName is STRING, !hangerno is REAL, !numOfHangers is REAL)
+
+  if(defined(!!mdsDebug)) then
+    !!mdsDebug.traceIn(1, '$!this' + '.finalize($!attaName is STRING, $!hangerno is REAL, $!numOfHangers is REAL)')
+  endif
+  !currentUnits = !!kgetsetunits()
+  mm bore mm dist
+  !!ce = !this.rest.ref
+  hang $!hangerno
+  !hangRef = !!ce
+  !this.ref = !!ce
+  if(!hangerno eq 1 and (not !this.rest.styp inset$!!mdsAllHangertypes.doublebm1Spring)) then
+    -- Only first hanger is connected to the atta
+    -- DAC's fix for HP0021504 GE 03/02/04
+    !!mdsDacControl(TRUE)
+    !this.rest.attaRef.cref = !hangRef
+    !!mdsDacControl(FALSE)
+  endif
+  -- Set the fittref to unset for bottom supported hangers (no steelwork connections)
+  !fittRef = object DBREF()
+  if(!this.fitt.set() and !this.fitt.ref.set()) then
+    !fittRef = !this.fitt.ref
+  endif
+  !this.form.resizeHanger(!hangRef, !fittRef)
+  handle 1
+    -- hanger is not vertical
+    !!kRestoreUnits(!currentUnits)
+    if(defined(!!mdsDebug)) then
+      !!mdsDebug.trace(1, !!error.text)
+      !!mdsDebug.traceOut(1, '$!this' + '.finalize($!attaName is STRING, $!hangerno is REAL, $!numOfHangers is REAL)')
+    endif
+    return error 1 |$!!error.text|
+  elsehandle 2
+    -- double channel distance
+    !!kRestoreUnits(!currentUnits)
+    if(defined(!!mdsDebug)) then
+      !!mdsDebug.trace(1, !!error.text)
+      !!mdsDebug.traceOut(1, '$!this' + '.finalize($!attaName is STRING, $!hangerno is REAL, $!numOfHangers is REAL)')
+    endif
+    return error 1 |$!!error.text|
+  elsehandle 9
+    -- beam and pipe too close or too far
+    !!kRestoreUnits(!currentUnits)
+    if(defined(!!mdsDebug)) then
+      !!mdsDebug.trace(1, !!error.text)
+      !!mdsDebug.traceOut(1, '$!this' + '.finalize($!attaName is STRING, $!hangerno is REAL, $!numOfHangers is REAL)')
+    endif
+    return error 9 |$!!error.text|
+  elsehandle 51
+    -- hanger is not vertical
+    !!kRestoreUnits(!currentUnits)
+    if(defined(!!mdsDebug)) then
+      !!mdsDebug.trace(1, !!error.text)
+      !!mdsDebug.traceOut(1, '$!this' + '.finalize($!attaName is STRING, $!hangerno is REAL, $!numOfHangers is REAL)')
+    endif
+    return error 51 |$!!error.text|
+  elsehandle ANY
+    !!kRestoreUnits(!currentUnits)
+    if(defined(!!mdsDebug)) then
+      !!mdsDebug.trace(1, !!error.text)
+      !!mdsDebug.traceOut(1, '$!this' + '.finalize($!attaName is STRING, $!hangerno is REAL, $!numOfHangers is REAL)')
+    endif
+    !err = !!error.text + ' ' + !!error.line.before('***')
+    return error 90 |$!err|
+  endhandle
+  if(!hangerno eq 1 and !numOfHangers gt 1) then
+    -- delete the fittings for the first hanger in a multi hanger rest
+    !!ce = !hangRef
+    if(!this.rest.styp inset$!!mdsAllHangertypes.doublebm1Spring or !!mdsAllHangertypes.m5Constant.find(!this.rest.styp).size().gt(0)) then
+      -- List exhausted
+      -- hanger does not have members (eg. First hanger of doublebm1Spring)
+    else
+      !tref = tref
+      conn ht to last mem
+      tref $!tref
+    endif
+  else
+    if !!mdsAllHangertypes.m5Constant.find(!this.rest.styp).size().gt(0) then
+      pos ht at last mem
+    endif
+  endif
+
+  label /exit
+  refresh
+  !!kRestoreUnits(!currentUnits)
+  if(defined(!!mdsDebug)) then
+    !!mdsDebug.traceOut(1, '$!this' + '.finalize($!attaName is STRING, $!hangerno is REAL, $!numOfHangers is REAL)')
+  endif
+  return
+
+  label /ERROR
+  refresh
+  !!kRestoreUnits(!currentUnits)
+  if(defined(!!mdsDebug)) then
+    !!mdsDebug.traceError('$!this' + '.finalize($!attaName is STRING, $!hangerno is REAL,$!numOfHangers is REAL)')
+  endif
+  return error 1 '$!!error.text' noalert
+
+endmethod
+-- End method
+
+
+define method .setHangSteel(!attaRef is DBREF, !steelPrompt is STRING, !fittRef is DBREF, !beamRef is DBREF,!hangerno is REAL) is STRING
+
+  -- Identify/get a beam, check beam validity and create the appropriate fitting and position it in place
+  --- TODO split this function to separate functions as follows:
+  -- 1. Identify beam
+  -- 2. Check beam validity.
+  -- 3. Create the fitting and position it
+
+  if(defined(!!mdsDebug)) then
+    !!mdsDebug.traceIn(1, '$!this' + '.setHangSteel($!attaRef is DBREF, $!steelPrompt is STRING, $!fittRef is DBREF, $!beamRef is DBREF,$!hangerno is REAL) is STRING')
+  endif
+
+  !currentUnits = !!kgetsetunits()
+  mm bore mm dist
+  !attaName = !attaRef.name
+
+  -- Find current units and set the distance unit to metric
+
+  !hangType = !this.rest.styp
+
+  -- Save current DB position
+
+  !element = !!ce
+  !modifyFitting = FALSE
+  !beamGiven = FALSE
+
+  if(set(!fittRef)) then
+    -- Fitting exists. No need to create a new one.
+    -- We will modify the existing one
+    !modifyFitting = TRUE
+  elseif(set(!beamRef)) then
+    -- Beam was identified in a previous stage (e.g. by !!mdsfhanger)
+    -- we will skip the identify stage. and use the given beam ref.
+    !beamGiven = TRUE
+  endif
+
+  !oHangerType = !!mdsAllHangertypes.gethangertype(!hangType.upcase())
+  !group = !oHangerType.group
+
+  if (!group eq !!mdsAllHangertypes.civilplatedoublehanger) then
+    -- Set the beam given so we don't have to id another PANE
+    !beamGiven = TRUE
+    if (!!mdsFh01.shown() and !hangerno eq 2) then
+      !beamGiven = FALSE
+    endif
+  endif
+
+  label /IDENTIFY
+
+  if(!modifyFitting) then
+    -- Fitting exists
+    -- Go to owning SCTN
+    !!ce = !fittRef.owner
+  elseif(!beamGiven) then
+    !!ce = !beamRef
+    handle ANY
+      -- Navigate to the panel from the atta as beamRef is unset
+      -- for a civils panel
+      !x = !!ce.name
+      !z = !x & '/CMPF'
+      !fittRef = !z.dbref()
+      !!ce = !fittRef.owner
+    endhandle
+  else
+    -- We need to create a new fitting
+    -- If user requires to id steel then identify it and put pin 8 at the tos
+    prompt off
+    if(!steelPrompt.eq('')) then
+      -- Default prompt for one beam hangers
+      prompt load escape 'Identify steelwork to connect hanger to'
+    else
+      -- Specific prompt (e.g. for double channel hangers)
+      prompt load escape '$!steelPrompt'
+    endif
+
+    --<wd>oct2007<mds12> -- Defect No. P-120 and P-4407
+    --ID BOX SCTN FLOOR WALL GWALL STWALL SCREED CFLOOR CSCREED CWALL PANE @
+    ID BOX SCTN FLOOR WALL GWALL STWALL SCREED CFLOOR CSCREED CWALL PANE HSTIFF HPLATE @
+    --<wd>oct2007<mds12> -- Defect No. P-120 and P-4407
+    handle (61,528)
+      -- User exited by hitting the escape key
+      prompt on
+      golabel /ReturnError99
+    endhandle
+  endif
+
+  !steelref = !!ce
+  !beamPurpose = !steelref.gtype
+  handle ANY
+  endhandle
+
+  if (!!ce.type eq 'CMPF') then
+    own
+    !steelref = !!ce
+    !beamPurpose = !steelref.gtype
+    handle ANY
+    endhandle
+  endif
+
+  -- Set the purpose to the hard type
+  if (!!ce.hardtype.eq('PANE')) then
+    !beamPurpose = 'PANE'
+  endif
+
+  !oHangerType = !!mdsAllHangertypes.gethangertype(!hangType.upcase())
+  !group = !oHangerType.group
+  handle ANY
+  endhandle
+
+  !subGroup = !group
+  if(!group gt 10) then
+    -- double hangers. we have a subgroup for each hanger
+    !subGroup = !group.string().substring(2,1).real()
+  endif
+
+
+  -- check also that the beam can be a part of a double channel beam
+  -- e.g. BSC-BSC
+  !doubleBeamPurpose = !beamPurpose + '-' + !beamPurpose
+  if(!beamPurpose inset$!!mdsAllHangertypes.groupBeamTypes[$!group] or $
+    !doubleBeamPurpose inset$!!mdsAllHangertypes.groupBeamTypes[$!group]) then
+    -- beam type is suitable
+  else
+    !!alert.message('Beam of type $!beamPurpose is not suitable for this type of hanger')
+    !beamGiven = FALSE
+    !modifyFitting = FALSE
+    golabel /IDENTIFY
+  endif
+  --> add this in grinnel check
+
+  --  Check if we can write to the section and add a fitting
+
+  !write = STRING()
+  !lock  = STRING()
+  if (!!kcheckwrite(!!ce, !lock , !write).not()) then
+    if (!write.eq('R')) then
+      -- READ ONLY Access to the PIPE
+      -- The Identified element is in a read only database.
+      golabel /ReturnError1
+    elseif (!lock.eq('Locked')) then
+      -- WRITE Access to the PIPE, BUT it is LOCKED
+      -- The Identified element is locked.
+      golabel /ReturnError2
+    endif
+  endif
+
+
+  -- Checking direction of beam.
+  -- if beam is parallel to the pipe the hanger's atta will be connected to the prev element
+  -- if the beam is perpendicular or angled to the pipe direction, the hanger's atta will be located
+  -- in the intersection of the beam and the pipe.
+  -- Saves the pins
+  !!mdspushpin(3)
+  !!mdspushpin(7)
+  !!mdspushpin(8)
+  !!mdspushpin(9)
+  !!ce = !attaName.dbref()
+  -- saves atta position in case we need to restore it
+  !attaPos = pos wrt /*
+  -- $P----------
+  -- q var !attaName
+  pin 8 copy pl of $!attaName
+  !parallel = FALSE
+
+  if (!group eq !!mdsAllHangertypes.civilplatedoublehanger or $
+    !group eq !!mdsAllHangertypes.civilplategroupno) then
+    !beamPurpose = 'PANE'
+  endif
+
+
+  if (!beamPurpose neq 'PANE') then
+
+
+    if(not !!mdsistubeparallel2sctn(!attaName.dbref(), !steelref )) then
+      -- Beam is NOT parallel with the pipe
+      -- pin 7 is perpendicular to the beam axis
+      var !tailPositionOfHang tpos of $!attaName/H1 wrt /*
+      var !tailDirection tdir of $!attaName/H1 wrt /*
+      --<dtf>27sep2006 if we connect to a lug p9 will not be correct
+      var !attap9dir dir p9 of $!attaName
+      if (!attaName.dbref().styp inset$!!mdsAllHangertypes.weldedelboworpipelug) or $
+        !attaName.dbref().styp inset$!!mdsAllHangertypes.weldedelbowtrunion then
+        !opTdir = !tailDirection.direction().opposite()
+      else
+        !opTdir = !attap9dir.direction().opposite()
+      endif
+      !nearestPline = !!kclosestpline(!steelref,!tailPositionOfHang.position(),!opTdir)
+      handle ANY
+        !ppline = 'NA'
+        !pline = 'NA'
+        pin 7 dir ppline $!ppline of $!steelref X dir
+        -- dtf see if steel orthogonal
+        var !steeltempdir  dir ppline $!ppline of $!steelref z dir
+        !steelsplit = !steeltempdir.string().before(' WRT').split(' ')
+        if !steelsplit.size().eq(5) then
+          !steelOrtho = FALSE
+        elseif !steelsplit.size().eq(3) then
+          !steelOrtho = FALSE
+        else
+          !steelOrtho = TRUE
+        endif
+      elsehandle NONE
+        -- We only need the pline that can be connected to, these are
+        -- TOS, BOS, TOC, BOC, LEFT, RIGH
+        do !getPlineNumber from 1 to !nearestPline.size() by 2
+          if !nearestPline[$!getPlineNumber].pkey inset ('TOS','BOS','TOC','BOC','LEFT','RIGH') then
+            !plineNumber = !getPlineNumber
+            break
+          endif
+        enddo
+        !pline = pkey of $!nearestPline[$!plineNumber]
+        --<wd>20sep2006-->
+        -- REMOVED the "wrt /*" as it causes a (47,15) Syntax Error
+        --pin 7 dir ppline $!pline of $!steelref x dir wrt /*
+        pin 7 dir ppline $!pline of $!steelref x dir
+        --<wd>20sep2006--<
+        -- dtf see if steel orthogonal
+        --        var !natoplinedir construct dir ppline NA start to ppline $!pline start
+        var !steeltempdir dir ppline $!pline of $!steelref z dir wrt /*
+        !steelsplit = !steeltempdir.string().before(' WRT').split(' ')
+        if !steelsplit.size().eq(5) then
+          !steelOrtho = FALSE
+        elseif !steelsplit.size().eq(3) then
+          !steelOrtho = FALSE
+        else
+          !steelOrtho = TRUE
+        endif
+
+        $!attaName
+        !tempdir = !!ce.ldir
+        !split = !tempdir.string().before(' WRT').split(' ')
+        if !split.size().eq(5) then
+          !ldir = !split[1] & !split[2] & !split[3]
+        elseif !split.size().eq(3) then
+          !ldir = !split[1] & !split[2] & !split[3]
+        else
+          !ldir = !split[1]
+        endif
+        pin 7 dir $!ldir
+      endhandle
+      var !pin7dir pin7 dir
+      if(!pin7dir inset('U','D','Z','-Z'))then
+        -- beam web is horizontal (normally the web is vertical and the flanges are horizontal)
+        var !xtempdir dir ppline $!pline of $!steelref z dir wrt /*
+        pin 7 dir $!xtempdir
+      endif
+
+      -- was 26/06/02
+      --      if(!group eq !!mdsAllHangertypes.doubleChannelGroupNo or $
+      --         !subGroup eq !!mdsAllHangertypes.doubleChannelGroupNo) then
+      -- was 26/06/02
+
+      if(!subGroup eq !!mdsAllHangertypes.doubleChannelGroupNo or $
+        !group eq !!mdsAllHangertypes.doubleHangerGroupNoDoubleChannel or $
+        (!group eq !!mdsAllHangertypes.doubleHangerGroupNoCombined and !hangerno eq 1)) then
+        -- Connect Hanger to two channels.
+        -- Move pin8 along the pipe axis to be just below the left edge of the SCTN
+        pin 8 plan pin7 thro pplin LTOC of $!steelref
+
+      elseif !group eq !!mdsAllHangertypes.doubleHangerGroupNoSingleBeam then
+        -- dtf 31.1.06 added this to stop the atta moving upto steel with 31 V
+      else
+
+        -- Move pin8 along the pipe axis to be just below the NA ppline of the SCTN
+        --if !steelOrtho then
+        --  pin 8 plan pin7 thro $!steelref
+        --else
+        if !!mdsgradient(!attaName.dbref()) then
+          -- dtf pipe on greater slope than standard and therefore mdsremovegrad returns actual slope
+          -- therefore we intersect with line created from NA to nearest pline
+          !ppline = 'NA'
+          !plst = !steelref.plst.$!<ppline>.wrt(/* )
+          !plen = !steelref.plst.$!<pline>.wrt(/* )
+        else
+          -- steel may cross pipe at angle to pipe need to find intersection point
+          !ppline = 'NA'
+          !plst = !steelref.plst.$!<ppline>.wrt(/* )
+          !plen = !steelref.plen.$!<ppline>.wrt(/* )
+        endif
+
+        !size1 = !steelref.cpara[1]
+        -- if we have a large gradient then we construct a plane
+        -- that will intersect with the pipe to be supported, [RM,25/09/06]
+        if !!mdsgradient(!attaName.dbref()) then
+          !a = object LINE(!plst,!plen)
+          var !nas ppli na start of $!steelref
+          var !nae ppli na end of $!steelref
+          !b = object LINE($!nas,$!nae)
+          !crossdir = !a.direction().cross(!b.direction())
+          !tempplanea = object POINTVECTOR(!plst,!crossdir)
+          !planea = !tempplanea.plane()
+        else
+          var !linea construct line join $!plst to $!plen
+        endif
+        !testce = !!ce
+        $!attaName
+        !oripos = !!ce.position.wrt( /* )
+        !dirs = !!mdsremovegrad(!!ce)
+        !dirLeave = !dirs[1].string()
+        pin 10 copy pl of $!attaName
+        --pin 10 dir $!pin7dir
+        pin 10 dir $!dirLeave
+        pin 6 copy pin 10
+        pin 10 plane pin 10 dist 20000
+        var !lineb construct line pin 6 to pin 10
+        if !!mdsgradient(!attaName.dbref()) then
+          -- we need to create the steel/pipe intersection point from
+          -- a plane and a point vector, Richard Martin [18/09/06]
+          !pva = object POINTVECTOR(!oripos,!dirLeave.direction())
+          !inter = !planea.intersection(!pva)
+          handle ANY
+            pin 8 plan pin7 thro $!steelref
+            pin 10 at pin 8
+          elsehandle NONE
+            pin 10 at $!inter
+          endhandle
+        else
+          var !inter construct pos int $!lineb $!linea  wrt /*
+          --<wd>26sep2006
+          -- REMOVED the "wrt /*" as it causes a (47,15) Syntax Error
+          --pin 10 at $!inter wrt /*
+          --pin 10 at $!inter
+          --<dtf>27sep2006
+          -- Syntax error cause by null string value for inter or inter already has 'WRT /*'
+          if !inter.neq('') then
+            !inter = !inter.upcase().before(' WRT /*')
+            pin 10 at $!inter wrt /*
+          else
+            --<dtf> This is generally when we attach to elbo or pipe lugs
+            pin 8 plan pin7 thro $!steelref
+            pin 10 at pin 8
+          endif
+          --<dtf>27sep2006
+          --<wd>26sep2006
+        endif
+        pin 10 dir $!pin7dir
+        var !pin10pos pin 10 pos wrt /*
+        !pospin10 = !pin10pos.position()
+        pin 8 plan pin7 thro $!pospin10
+        --- dtf >> if steel above vertical pipe (riser type support)
+        pin 5 at $!plst
+        var !pin5dir zdir of $!steelref
+        pin 5 dir $!pin5dir
+        pin 5 plane pin 5 thro $!pospin10
+        var !howfarapart constr dist pin 5 to pin 10
+        if !howfarapart.real().gt(!size1) then
+          thro $!pospin10
+        else
+          thro $!oripos
+        endif
+
+        !!ce = !testce
+        --!!mdsResetPins(5,5)
+        -- dtf <<
+        --!!mdsResetPins(10,10)
+
+        --endif
+      endif
+    else
+      --<wd>04jun2004 -- BEAM and PIPE are PARALLEL
+      -- CHECK HERE ? - to LOCATE HANGER when IDENTIFIED BRANCH HS/LSTUBE EXTENDS UNDER
+      --                the POSS/POSE of the IDENTIFIED SCTN
+      --<wd>04jun2004
+
+      !parallel = TRUE
+      -- beam is parallel to the pipe
+      pin 7 dir ppline na of $!steelref y dir
+      -- Move pin8 along pipe axis clea 0 infront of beam
+      -- 12/2002 pin8 plan pin7 clea 0 infr $!steelref
+      pin8 thro $!attaName
+    endif
+
+    -- Check if the identified beam is intersecting with or just above with the tube
+    -- Pin 9 is pointing Up and is positioned above the atta on the SCTN axis (NA or LTOC)
+    -- in the same level as the SCTN NA ppline
+    pin9 copy pin8
+    -- dtf hanger may not point up if constant
+    if !attaName.dbref().ldir.up.eq(1) or !attaName.dbref().ldir.up.eq(-1) then
+      var !p9dirtemp  p9dir of $!attaName
+      !p9dir = !p9dirtemp.direction().opposite()
+      pin9 dir $!p9dir
+    else
+      pin9 dir u
+    endif
+    pin9 plane pin 9 throu $!steelref
+    pin9 dir pplin na of $!steelref y dir
+    --q pin 9
+    -- Distance from pin9 which is located on the beam axis to the beam START
+    --    var !disttobeamstart const dist pin9 to pplin na of $!steelref start
+    var !disttobeamstart const dist  pplin na of $!steelref start to plane pin9
+    -- Distance from pin9 which is located on the beam axis to the beam END
+    --    var !disttobeamend const dist pin9 to pplin na of $!steelref end
+    var !disttobeamend const dist  pplin na of $!steelref end to plane pin 9
+
+    -- Length of beam
+    !beamlen = deri len of $!steelref
+
+    -- Total Distance = BEAM START to ATTA + BEAM END to ATTA
+    --    !totalDist = !disttobeamstart.real() + !disttobeamend.real()
+
+    -- Preliminary validity check that the beam is in the area above the tube
+    if(!beamPurpose.eq('BSC') and  (!subGroup eq !!mdsAllHangertypes.doubleChannelGroupNo or $
+      !group eq !!mdsAllHangertypes.doubleHangerGroupNoDoubleChannel or $
+      !group eq !!mdsAllHangertypes.doubleHangerGroupNoCombined)) then
+
+      -- allow an horizontal offset of the beam from the atta not more than the beam width as
+      -- a first estimate. Later in the Mdsfh01 form's resizehanger() method
+      -- the hanger is allowed a given delta angle deviation from the
+      -- vertical line. Check is done for a double channel connection
+      !beamoffsetTolerance = !steelref.para[2]
+      -- If this errors then the beam selected could be a design parameter driven section
+      -- Use the design parameter 2 instead
+      handle ANY
+        !beamoffsetTolerance = !steelref.despar[2] / 2
+      endhandle
+    else
+      -- check is done for a single beam connection.
+      -- Allowed tolerance is half the beam width
+      !beamoffsetTolerance = !steelref.para[2] / 2
+      -- If this errors then the beam selected could be a design parameter driven section
+      -- Use the design parameter 2 instead
+      handle ANY
+        !beamoffsetTolerance = !steelref.despar[2] / 2
+      endhandle
+    endif
+
+    !beamoffset = !disttobeamstart.real() + !disttobeamend.real() - !beamlen
+    --$P========= !beamoffset is:
+    --q var !beamoffset
+
+    -----------------------------------------------------------------
+    --<wd>07jun04
+    -- PREVIOUS !isWithinBeam - Existing Code CHECK -- Commented OUT
+    --!isWithinBeam = !beamoffset lt !beamoffsetTolerance
+
+    -- Check HS/LSTUBE is UNDER the Identified PARALLEL Element,(SCTN etc...)
+
+
+
+    if (!parallel) then
+      !xce = !!ce
+      !!ce = !attaName.dbref()
+      -- Get the available Tube Length from the HANGER ATTA
+      next
+      handle NONE
+        !tubeLen = !!kstrreal('cons dist pa to plane pin 8')
+      elsehandle ANY
+        -- Use Pipe Tail
+        !tubeLen = !!kstrreal('cons dist pt to plane pin 8')
+      endhandle
+      !!ce = !xce
+
+      -- Get the Shortest Distance from the Pipe CE to the NEAREST end on the identified BEAM
+      !minDist =  ( min (!disttobeamstart.real(), !disttobeamend.real()) )
+      !shortDistToBeam = !minDist + !beamoffsetTolerance
+      -- Test to see if Hanger is to Be Created
+      -- FIRST - Check if ATTA is UNDER the BEAM within 1 millimetre
+      --      if (!beamoffset.between(0,1)) then
+      if (!beamoffset.between(-1,1)) then
+        !isWithinBeam = TRUE
+        pin 8 plane pin 8 thro $!attaName
+      elseif (!tubeLen.gt(!shortDistToBeam)) then
+        -- SECOND Check if the Identified TUBE exists ANYWHERE between BEAM Start and Beam END
+        !isWithinBeam = TRUE
+        -- Reposition Pin 8 to Relocate the DATUM ATTA and HANGER location
+        pin 8 dist $!shortDistToBeam
+        ---------------------------------------------------------------------------------------------------
+        --<wd>08aug2008 - HPD0038021 - Additional Check Added
+      elseif (!tubeLen.gt(!minDist)) and (!tubeLen.geq(!shortDistToBeam))then
+        -- THIRD Check if the Identified TUBE exists ANYWHERE between the NEXT Branch Element/Pipe Tail and the BEAM Start/End(whichever is NEAREST)
+        !isWithinBeam = TRUE
+
+        -- Determine the distance from the PA of the NEXT Branch Element and the BEAM Start/End
+        !minTubeLength = !tubeLen - !minDist
+        -- Get Half of the available Tube Length value plus a 10mm tolerance and Deduct it from the value of the
+        -- variable !shortDistToBeam to position PIN 8 and the NEW DATUM ATTA
+        !newMinTubeLength   = !minTubeLength / 2 + 10
+        !newshortDistToBeam = !shortDistToBeam - !newMinTubeLength
+        -- Reposition Pin 8 to Relocate the DATUM ATTA and HANGER location
+        pin 8 dist $!newshortDistToBeam
+        --<wd>08aug2008 - HPD0038021 - Additional Check Added
+        ---------------------------------------------------------------------------------------------------
+      else
+        -- try and do a final plane intersection test using p11 of the atta intersecting with a line through the na of the beam
+        -- then if we have an intersection we check if it lies along the na of the beam, if it does then !isWithinBeam = true
+        -- Otherwise REJECT the Identified BEAM
+        ---------------------------------------------------------------------
+        --<wd>07aug2008 - HPD0038021 - MDS TEMPLATE ATTAS do NOT have a P10 or P11
+        --
+        -- Therefore to create the PLANE in the CORRECT direction for the setting of the
+        -- INTERSECTION variable "!pin234inter" below. A PLANE has to be created via
+        -- the CROSS product of the P2 and P9 directions of the MDS HANGER DATUM ATTA
+        -- The MDS HANGER TEMPLATE DATUM ATTA P3 direction is the same as the P2(PLEAVE) direction,
+        -- so use the P9 to get the CROSS product
+        --
+        --        var !pospin2 pos p11 of $!attaName wrt /*
+        --        var !dirpin2 dir p11 of $!attaName wrt /*
+
+        var !pospin2 pos p11 of $!attaName wrt /*
+        handle ANY
+
+          var !pospin2 pos p3 of $!attaName wrt /*
+          !attadbref = !attaName.dbref()
+          !p2dir = !attadbref.pdir[2].wrt(/* )
+          !p9dir = !attadbref.pdir[9].wrt(/* )
+          !cross = !p2dir.cross(!p9dir)
+          -- Convert to STRING variables to suit existing code below
+          !dirpin2 = !cross.string()
+
+        elsehandle NONE
+          var !dirpin2 dir p11 of $!attaName wrt /*
+        endhandle
+        --
+        --<wd>07aug2008 - HPD0038021 - MDS TEMPLATE ATTAS do NOT have a P10 or P11
+        ---------------------------------------------------------------------
+        var !pospin3 pos ppli na start of $!steelref wrt /*
+        var !pospin4 pos ppli na end of $!steelref  wrt /*
+
+
+        !pvpin2 = object POINTVECTOR(!pospin2.position(),!dirpin2.direction())
+        !linepin3topin4 = object LINE(!pospin3.position(),!pospin4.position())
+
+        !pin234inter = !pvpin2.plane().intersection(!linepin3topin4)
+        handle ANY
+          !isWithinBeam = FALSE
+        elsehandle NONE
+
+          if !linepin3topin4.on(!pin234inter) then
+            !isWithinBeam = TRUE
+          else
+            !isWithinBeam = FALSE
+          endif
+
+        endhandle
+      endif
+
+      ---------------------------------------------------------------------------------------------------
+      --<wd>08aug2008 - HPD0038306 - MOVE the NEW MDS HANGER DATUM ATTA through the NEW PIN 8 Position
+      if (!isWithinBeam) then
+        !existing = !!ce
+        !!ce = !attaRef
+        !attaDirection = !!ce.ldir.wrt(/* )
+        plane $!attaDirection thro pin 8
+        --$P***q name type pos wrt /* and q var !isWithinBeam >>>>>>>>>>>>>**********
+        --q name type pos wrt /*
+        --q var !isWithinBeam
+        --$P***<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<**********
+        !!ce = !existing
+
+      else
+        -- The HS/LSTUBE of the IDENTIFIED Branch Tube is NOT UNDER the Identified PARALLEL Element,(SCTN etc...)
+        !!alert.error('Beam is not positioned above the selected tube. Please try again')
+        -- Restore atta original position
+        golabel /TRYAGAIN
+
+      endif
+      --<wd>08aug2008 - HPD0038306 - MOVE the NEW MDS HANGER ATTA through the NEW PIN 8 Position
+      ---------------------------------------------------------------------------------------------------
+    else
+      -- Original !isWithinBeam Beam Check
+      -- For Hangers when PIPE and BEAM are NOT PARALLEL  i.e. !parallel = false
+      -- try and do a final plane intersection test using p11 of the atta intersecting with a line through the na of the beam
+      -- then if we have an intersection we check if it lies along the na of the beam, if it does then !isWithinBeam = true
+      -- Otherwise REJECT the Identified BEAM
+      ---------------------------------------------------------------------
+      --<wd>25jun2008 - HPD0038021 - MDS TEMPLATE ATTAS do NOT have a P10 or P11
+      --
+      --        var !pospin2 pos p11 of $!attaName wrt /*
+      --        var !dirpin2 dir p11 of $!attaName wrt /*
+
+      var !pospin2 pos p11 of $!attaName wrt /*
+      handle ANY
+
+        -- Therefore to create the PLANE in the CORRECT direction for the setting of the
+        -- INTERSECTION variable "!pin234inter", @ approx. line 1262 below. A PLANE has to be
+        -- created via the CROSS product of the P2 and P9 directions of the MDS HANGER DATUM ATTA
+        -- The MDS HANGER TEMPLATE DATUM ATTA P3 direction is the same as the P2(PLEAVE) direction,
+        -- so use the P9 to get the CROSS product
+        --
+        var !pospin2 pos p3 of $!attaName wrt /*
+        !attadbref = !attaName.dbref()
+        !p2dir = !attadbref.pdir[2].wrt(/* )
+        !p9dir = !attadbref.pdir[9].wrt(/* )
+        !cross = !p2dir.cross(!p9dir)
+        -- Convert to STRING variables to suit existing code below
+        !dirpin2 = !cross.string()
+
+      elsehandle NONE
+        var !dirpin2 dir p11 of $!attaName wrt /*
+      endhandle
+      --
+      --<wd>25jun2008 - HPD0038021 - MDS TEMPLATE ATTAS do NOT have a P10 or P11
+      ---------------------------------------------------------------------
+      var !pospin3 pos ppli na start of $!steelref wrt /*
+      var !pospin4 pos ppli na end of $!steelref  wrt /*
+
+      !pvpin2 = object POINTVECTOR(!pospin2.position(), !dirpin2.direction())
+      pin 1 at $!pospin2 wrt /*
+      pin 3 at $!pospin3 wrt /*
+      pin 4 at $!pospin4 wrt /*
+      !linepin3topin4 = object LINE(!pospin3.position(),!pospin4.position())
+
+      !pin234inter = !pvpin2.plane().intersection(!linepin3topin4)
+      handle ANY
+        -- check whether or not we are using a welded lug
+        !lugtypes = !!mdsAllHangertypes.weldedelboworpipelugstd + !!mdsAllHangertypes.weldedelboworpipelug
+        !lugtypesarray = !lugtypes.split(|'|).unique()
+        !weldedtrunniontypes = !!mdsAllHangertypes.weldedelbowtrunionstd + !!mdsAllHangertypes.weldedelbowtrunion
+        !weldedtrunniontypesarray = !weldedtrunniontypes.split(|'|).unique()
+        var !attastype stype of $!attaName
+        handle ANY
+          !isWithinBeam = FALSE
+        elsehandle NONE
+          !lug = FALSE
+          !trunnion = FALSE
+
+          do !lugs from 1 to !lugtypesarray.size()
+            if !lugtypesarray[!lugs].eq(!attastype) then
+              !lug = TRUE
+            endif
+          enddo
+
+          do !trun from 1 to !weldedtrunniontypesarray.size()
+            if !weldedtrunniontypesarray[!trun].eq(!attastype) then
+              !trunnion = TRUE
+            endif
+          enddo
+
+          if !lug then
+            -- do a different test for a welded lug as the atta direction is defined differently
+            !lugref = !this.rest.attaconnref
+            var !pospin2 pos p3 of $!lugref wrt /*
+            var !dirpin2 dir p3 of $!lugref wrt /*
+            !pvpin2 = object POINTVECTOR(!pospin2.position(), !dirpin2.direction())
+            !pin234inter = !pvpin2.plane().intersection(!linepin3topin4)
+            handle ANY
+              !attldir = ldir of $!attaName wrt /*
+              !pvpin2dir = !dirpin2.direction().cross(!attldir)
+              !pvpin2 = object POINTVECTOR(!pospin2.position(), !pvpin2dir)
+              !pin234inter = !pvpin2.plane().intersection(!linepin3topin4)
+              handle ANY
+                !isWithinBeam = FALSE
+              elsehandle NONE
+                if !linepin3topin4.on(!pin234inter) then
+                  !isWithinBeam = TRUE
+                else
+                  !isWithinBeam = FALSE
+                endif
+              endhandle
+            elsehandle NONE
+              if !linepin3topin4.on(!pin234inter) then
+                !isWithinBeam = TRUE
+              else
+                !isWithinBeam = FALSE
+              endif
+            endhandle
+          elseif !trunnion then
+            -- do a different test for a trunnion as the atta direction is defined differently
+            !trunnionref = !this.rest.attaconnref
+            var !a coll all plat for own of $!trunnionref
+            !trunnionref = !a[1].dbref()
+            var !pospin2 pos p4 of $!trunnionref wrt /*
+            var !dirpin2 dir p4 of $!trunnionref wrt /*
+            !pvpin2 = object POINTVECTOR(!pospin2.position(), !dirpin2.direction())
+            !pin234inter = !pvpin2.plane().intersection(!linepin3topin4)
+            handle ANY
+              !attldir = ldir of $!attaName wrt /*
+              !pvpin2dir = !dirpin2.direction().cross(!attldir)
+              !pvpin2 = object POINTVECTOR(!pospin2.position(), !pvpin2dir)
+              !pin234inter = !pvpin2.plane().intersection(!linepin3topin4)
+              handle ANY
+                !isWithinBeam = FALSE
+              elsehandle NONE
+                if !linepin3topin4.on(!pin234inter) then
+                  !isWithinBeam = TRUE
+                else
+                  !isWithinBeam = FALSE
+                endif
+              endhandle
+            elsehandle NONE
+              if !linepin3topin4.on(!pin234inter) then
+                !isWithinBeam = TRUE
+              else
+                !isWithinBeam = FALSE
+              endif
+            endhandle
+          else
+            !isWithinBeam = !beamoffset lt !beamoffsetTolerance
+          endif
+        endhandle
+      elsehandle NONE
+
+        if !linepin3topin4.on(!pin234inter) then
+          !isWithinBeam = TRUE
+        else
+          !isWithinBeam = FALSE
+        endif
+
+      endhandle
+
+    endif
+    --<wd>07jun04
+    -----------------------------------------------------------------
+
+
+    if (not !isWithinBeam ) then
+      !!alert.message('Beam is not positioned above the selected tube. Please try again')
+      -- Restore atta original position
+      golabel /TRYAGAIN
+    endif
+  endif
+
+  !!ce = !attaName.dbref()
+  if(!hangerno eq 1) then
+    -- The atta is moved only for the first hanger
+    -- The other hangers direction and validity is checked using this atta position
+    -- moves the atta to be directly below pin8
+    -- pin7 is perpendicular to the beam axis
+    --      !stypToCheck = !!ce.styp.substring(1, !!ce.styp.length() - 1)
+    !stypToCheck = !this.rest.styp
+    -- !stypToCheck inset$!!mdsAllHangertypes.riserClamp or
+    if(!stypToCheck inset$!!mdsAllHangertypes.weldedelboworpipelug or $
+      !stypToCheck inset$!!mdsAllHangertypes.weldedelbowtrunion or $
+      !!mdsAllHangertypes.riserClamp.find(!stypToCheck).size().gt(0) or $
+      !stypToCheck inset$!!mdsAllHangertypes.bm1Spring or $
+      !stypToCheck inset$!!mdsAllHangertypes.bm2Spring or $
+      !stypToCheck inset$!!mdsAllHangertypes.doublebm1Spring) then
+      -- Hanger is connected to a welded elbow or pipe lug
+      -- we can't move the atta
+    else
+      -- Hanger is connected to an dedicated inline atta
+      --plan pin7 thro pin8
+    endif
+    pin9 copy pl
+  else
+    -- copy pl of atta
+    pin9 copy pl
+    var !href href of $!attaName/H$!hangerno
+
+    if(!href.set() and (not !href.dbref().badref()) and !href.dbref().type inset('VSPR','HELE')  ) then
+      !oHang = object MDSHANGMEM(!href.dbref())
+      !ppointNum = !oHang.getCrfaPPointNum()
+
+
+      pin9 at p$!ppointNum of $!href
+    elseif(!href.set() and (not !href.dbref().badref()) and !href.dbref().type.eq('PCLA')) then
+      !oHang = object MDSHANGMEM(!href.dbref())
+      !ppointNum = !oHang.getCrfaPPointNum()
+      pin9 at p$!ppointNum of $!href
+    else
+      pin9 at ht of $!attaName/H1
+    endif
+    -- move pin9 to be inline with the beam connection point
+    pin9 plan pin7 throu pin8
+    !!ce = !attaName.dbref()
+
+  endif
+
+  -- Reorder atta
+  !ceatta = !!ce
+  !stypToCheck = !this.rest.styp
+
+  ------    if(!stypToCheck inset$!!mdsAllHangertypes.weldedelboworpipelug or $
+  ---          !stypToCheck inset$!!mdsAllHangertypes.weldedelbowtrunion or $
+  --          !stypToCheck inset$!!mdsAllHangertypes.riserClamp) then
+  -- Hanger is connected to a welded elbow or pipe lug
+  -- we can't reorder the atta
+  --    else
+  !!mdsreoatta(!!ce.own)
+  --    endif
+  !!ce = !ceatta
+
+  -- Check that the atta is properly positioned in the pipe path
+  -- Skip check for civil
+  --<wd>17jan2008 -- Defect No. P-120 and P-4407
+  --   if !steelref.hardtype.eq('SCTN') then
+  if !steelref.hardtype.eq('SCTN') or !steelref.hardtype.eq('HSTIFF')then
+    --<wd>17jan2008 -- Defect No. P-120 and P-4407
+
+    if !group.eq(17) or !group.eq(20) then
+      !isWithinTube = TRUE
+    else
+      !isWithinTube = !!mdsiswithintube(!attaName.dbref())
+    endif
+  else
+    !isWithinTube = TRUE
+  endif
+
+
+  if (not !isWithinTube ) then
+
+    if(!parallel) then
+      -- beam is parallel to tube
+      -- try to move the atta along the beam with small increments
+      -- until it is within the tube
+
+      !beamlen = der leng of $!steelref
+
+      !distToMove = min(100, 0.1 * !beamlen)
+      do !i from  !distToMove to !beamlen by !distToMove
+        $!i
+        move along pin9 dist $!i from ce
+        !!mdsreoatta(!!ce.own)
+        !!ce = !ceatta
+        pin9 thro ce
+        !isWithinTube = !!mdsiswithintube(!attaName.dbref())
+        if (!isWithinTube ) then
+
+          break
+        endif
+      enddo
+    endif
+    if (not !isWithinTube ) then
+      !!alert.message('Support is not positioned within the selected tube. Please try again')
+      -- Restore atta original position
+      golabel /TRYAGAIN
+    endif
+  endif
+
+  --was 14/june/02   pin 8 copy pl
+  pin 8 copy pin9
+  pin 8 dir d wrt /*
+
+  if(!subGroup eq !!mdsAllHangertypes.doubleChannelGroupNo or $
+    !group eq !!mdsAllHangertypes.doubleHangerGroupNoDoubleChannel or $
+    !group eq !!mdsAllHangertypes.doubleHangerGroupNoCombined) then
+    -- Move pin8 to be at the top of the beam
+    pin8 clea0 infront $!steelref
+    --$P+++++++++++ line 1013
+    --q pin 8
+
+  else
+    -- Move pin8 to be at bos of beam
+    pin8 clea0 behi $!steelref
+  endif
+
+  -- set pin3 to the p3 of the atta
+  pin3 copy p3 of $!attaName
+  -- Atta position
+
+  -- If group is 20, dynamic can be connected to walls/floor and ceilings so do not check for
+  -- element being below pipe
+
+  var !tp3u pin 3 pos wrt /*
+  var !tp8u pin 8 pos wrt /*
+  !p3u = !tp3u.position()
+  !p8u = !tp8u.position()
+  --   q var !group
+  --   q var !!mdsVendor.type
+
+  if not !group inset(17,20,21,25,31,19) then
+    if !group.eq(6) then
+      if !!mdsVendor.type.neq('V') then
+        if !p8u.up.lt(!p3u.up) then
+          -- remove after testing
+          !!alert.message('Identified element is below the pipe')
+          golabel /TRYAGAIN
+        endif
+      endif
+    endif
+  endif
+
+  -- create the fitting
+  !!ce = !steelref
+  if (!beamPurpose neq 'PANE') then
+    !beamlen = derived length
+
+    if(!subGroup eq !!mdsAllHangertypes.doubleChannelGroupNo or $
+      !group eq !!mdsAllHangertypes.doubleHangerGroupNoDoubleChannel or $
+      !group eq !!mdsAllHangertypes.doubleHangerGroupNoCombined) then
+      -- Connect Hanger to two channels
+      pin1 at ppline LTOC of $!steelref start
+    else
+      pin1 at ppline na start
+    endif
+    pin1 dir d
+    pin1 plane pin 1 throu pin8
+    -- pin1 direction parallel to beam axis
+    pin1 dir pplin NA y dir
+    -- calculate the offset the fitting along the beam axis from its start
+    var !zdist const dist pin8 to plan pin1
+    if (!zdist.real() gt !beamlen) then
+        -- connection of the hanger to the beam is outside of the beam
+        !!alert.message('Hanger can not be connected to the selected beam. Beam is not above pipe support point')
+        -- Restore atta original position
+        golabel /TRYAGAIN
+      endif
+
+    -- calculates the vertical offset of the fitting from the neutral beam's axis
+    !offset = !!mdsFh01.getFittOffset(!steelref, !hangType)
+    -- Lock down offset to n0 and use the posl to position the fitt
+  endif
+
+
+  if(!modifyFitting) then
+    !!ce = !fittRef
+  else
+    new fitt
+    handle ANY
+      $!attaName/CMPF
+      handle (2,109)
+        $!steelref
+        new cmpf
+        name $!attaName/CMPF
+        MOVE N wrt /* thro $!attaName
+        MOVE E wrt /* thro $!attaName
+      elsehandle NONE
+        $!attaName/CMPF
+        delete cmpf
+        $!steelref
+        new cmpf
+        name $!attaName/CMPF
+        MOVE N wrt /* thro $!attaName
+        MOVE E wrt /* thro $!attaName
+      endhandle
+      new sbfi
+      name $!attaName/SBFI/H1
+      handle ANY
+      endhandle
+      spref /MDS/LUG-HANG
+      new sbfi
+      name $!attaName/SBFI/H2
+      handle ANY
+      endhandle
+      spref /MDS/LUG-HANG
+      new sbfi
+      name $!attaName/SBFI/H3
+      handle ANY
+      endhandle
+      spref /MDS/LUG-HANG
+      $!attaName/SBFI/H3
+    endhandle
+
+    --$R0
+    -- new fitt to continue
+    if (!!ce.type eq 'FITT') then
+      name $!attaName/FITT/H$!hangerno
+      handle ANY
+        do !i
+          -- in case of several trials of reconnecting the hanger
+          -- we want to assure that the newly created fittings are named sequentially.
+          name $!attaName$n/FITT/H$!hangerno$n/$!i
+          handle ANY
+            skip
+          endhandle
+          break
+        enddo
+      endhandle
+      spref /MDS/LUG-HANG
+      zdist $!zdist
+      if !group.eq(17) then
+        zdist thro $!attaName
+        delp n0
+        delpos $!offset
+      else
+        delpos $!offset
+      endif
+    endif
+  endif
+
+  !fittName = !!ce
+
+  !!kRestoreUnits(!currentUnits)
+  -- Restores the pins
+  !!mdspoppin(1)
+  !!mdspoppin(3)
+  !!mdspoppin(7)
+  !!mdspoppin(8)
+  !!mdspoppin(9)
+
+  !!ce = !element
+  !!kRestoreUnits(!currentUnits)
+  if(defined(!!mdsDebug)) then
+    !!mdsDebug.traceOut(1, '$!this' + '.setHangSteel($!attaRef is DBREF, $!steelPrompt is STRING, $!fittRef is DBREF, $!beamRef is DBREF,$!hangerno is REAL) is STRING')
+  endif
+
+  -- Set form parallel object
+
+  if !parallel then
+    !!mdsFh01.parallel = TRUE
+  else
+    !!mdsFh01.parallel = FALSE
+  endif
+
+  return !fittName.string()
+  label /TRYAGAIN
+  !!ce = !attaName.dbref()
+  at $!attaPos
+  -- Restores the pins
+  !!mdspoppin(1)
+  !!mdspoppin(3)
+  !!mdspoppin(7)
+  !!mdspoppin(8)
+  !!mdspoppin(9)
+  !beamGiven = FALSE
+  !modifyFitting = FALSE
+  golabel /IDENTIFY
+
+  label /ReturnError1
+  -- Restores the pins
+  !!mdspoppin(1)
+  !!mdspoppin(3)
+  !!mdspoppin(7)
+  !!mdspoppin(8)
+  !!mdspoppin(9)
+  !!kRestoreUnits(!currentUnits)
+  if(defined(!!mdsDebug)) then
+    !!mdsDebug.traceError('$!this' + '.setHangSteel($!attaRef is DBREF, $!steelPrompt is STRING, $!fittRef is DBREF, $!beamRef is DBREF,$!hangerno is REAL) is STRING')
+  endif
+  return error 1
+
+  label /ReturnError2
+  -- Restores the pins
+  !!mdspoppin(1)
+  !!mdspoppin(3)
+  !!mdspoppin(7)
+  !!mdspoppin(8)
+  !!mdspoppin(9)
+  !!kRestoreUnits(!currentUnits)
+  if(defined(!!mdsDebug)) then
+    !!mdsDebug.traceError('$!this' + '.setHangSteel($!attaRef is DBREF, $!steelPrompt is STRING, $!fittRef is DBREF, $!beamRef is DBREF,$!hangerno is REAL) is STRING')
+  endif
+  return error 2
+
+  label /ReturnError99
+  -- Restores the pins
+  !!mdspoppin(1)
+  !!mdspoppin(3)
+  !!mdspoppin(7)
+  !!mdspoppin(8)
+  !!mdspoppin(9)
+  !!kRestoreUnits(!currentUnits)
+  if(defined(!!mdsDebug)) then
+    !!mdsDebug.traceError('$!this' + '.setHangSteel($!attaRef is DBREF, $!steelPrompt is STRING, $!fittRef is DBREF, $!beamRef is DBREF,$!hangerno is REAL) is STRING')
+  endif
+  return error 99 noalert
+
+
+endmethod
+
+-- End method
+
+
+define method .updateBeamRefArray(!beamRefIndex is REAL, !reverse is BOOLEAN)
+  -- if it's a double hangers hanger, and the beam connection for the current hanger
+  -- gives an non-vertical hanger, we try to swap the beams and try again.
+  -- if the beams have been swapped then we issue an error message and force a prompt for
+  -- the user to select another beam
+  !currentUnits = !!kgetsetunits()
+  mm bore mm dist
+  !oHangTyp = !!mdsAllHangertypes.gethangertype(!this.rest.styp)
+  if(!oHangTyp.group eq !!mdsAllHangertypes.doubleHangerGroupNoSingleBeam or $
+    !oHangTyp.group eq !!mdsAllHangertypes.doubleHangerGroupNoDoubleChannel or $
+    !oHangTyp.group eq !!mdsAllHangertypes.doubleHangerGroupNoCombined) then
+    -- it's a double hangers hanger
+    if((not !reverse)) then
+      -- beam ref array has been reversed
+      -- or we don't want to reverse it (in some other error states)
+      -- unset it so the user will be able to identify another beam
+      !this.rest.beamRefArray[!beamRefIndex] = object DBREF()
+      !this.rest.beamRefArray[!beamRefIndex + 1] = object DBREF()
+
+    else
+      -- beam has NOT been reversed
+      -- reverse it
+      !newbeamRefArray = ARRAY()
+      !newbeamRefArray[1] = !this.rest.beamRefArray[3]
+      !newbeamRefArray[2] = !this.rest.beamRefArray[4]
+      !newbeamRefArray[3] = !this.rest.beamRefArray[1]
+      !newbeamRefArray[4] = !this.rest.beamRefArray[2]
+      !this.rest.beamRefArray = !newbeamRefArray
+      -- set the flag to reversed
+      !this.reversedBeamArray = TRUE
+    endif
+  else
+    -- it's NOT a double hangers hanger
+    -- unset it so the user will be able to identify another beam
+    !this.rest.beamRefArray[!beamRefIndex] = object DBREF()
+    !this.rest.beamRefArray[!beamRefIndex + 1] = object DBREF()
+
+  endif
+  !!kRestoreUnits(!currentUnits)
+
+endmethod
+
+
+define method .changeRodSize()
+  if(defined(!!mdsDebug)) then
+    !!mdsDebug.traceIn(1, '$!this' + '.changeRodSize()')
+  endif
+  !currentUnits = !!kgetsetunits()
+  mm bore mm dist
+  !ce = !!ce
+  !!ce = !this.ref
+  !newRodSize = !this.rest.newRodSize
+  !!mdsDacControl(TRUE)
+  tbor $!newRodSize
+  if(!!ce.order gt 1) then
+    -- Only first hanger has the hbor set to the pipe size
+    hbor $!newRodSize
+    !href = !!ce.href
+    if(!href.type.eq('HANG')) then
+      pos hh at ht of $!href
+    elseif(!href.type.neq('ATTA')) then
+      !oHang = object MDSHANGMEM(!href)
+      !ppointNum = !oHang.getCrfaPPointNum()
+      pos hh at p$!ppointNum of $!href
+    endif
+  endif
+  handle ANY
+    !err = 'Reference not set for $!this'
+    !errNo = 1
+    golabel /ERROR
+  endhandle
+  !hangmem = !this.hangmem
+  do !hm indices !hangmem
+
+    !oHangMem = !hangmem[!hm]
+    -- update the reference to the owning hang object
+
+    !oHangMem.newRodSize = !newRodSize
+    !oHangMem.changeRodSize()
+    handle ANY
+      !err = !!error.text
+      !errNo = 1
+      golabel /ERROR
+    endhandle
+    !hangmem[!hm] = !oHangMem
+  enddo
+
+  !this.hangmem = !hangmem
+  !!ce = !this.ref
+  pos ht at pl of last mem
+  !!ce = !ce
+  !!kRestoreUnits(!currentUnits)
+  if(defined(!!mdsDebug)) then
+    !!mdsDebug.traceOut(1, '$!this' + '.changeRodSize()')
+  endif
+  return
+  label /ERROR
+  !!ce = !ce
+  !!kRestoreUnits(!currentUnits)
+  if(defined(!!mdsDebug)) then
+    !!mdsDebug.trace(1, '$!errNo - $!err')
+    !!mdsDebug.traceError('$!this' + '.changeRodSize()')
+  endif
+  return error $!errNo |$!err|
+endmethod
+
+define method .getAvailableReselectBores() is ARRAY
+  if(defined(!!mdsDebug)) then
+    !!mdsDebug.traceIn(1, '$!this' + '.getAvailableReselectBores()')
+  endif
+  !currentUnits = !!kgetsetunits()
+  mm bore mm dist
+
+  !availableSizes = ARRAY()
+  !hangmem = !this.hangmem
+  do !hm indices !hangmem
+    !oHangMem = !hangmem[!hm]
+    prompt 'Creating list of available rod sizes for $!oHangMem.ref.fullname'
+    -- Pipe clamp has a fixed leave bor for each pipe size
+    -- we are not reselecting it. Also the pipe clamp is selected by the pipe size and not by the rod size.
+    skip if(!oHangMem.ref.type.eq('PCLA'))
+    skip if(!oHangMem.ref.styp.eq('PIPE CLAMP ADAPTER'))
+    !hmAvailableSizes = !oHangMem.getAvailableReselectBores()
+    !size = !hmAvailableSizes.size()
+    if(!hmAvailableSizes.empty()) then
+      !!kRestoreUnits(!currentUnits)
+      return error 1 '$!oHangMem.ref.fullname - No available bores'
+    endif
+
+    if(!availableSizes.empty()) then
+      !availableSizes = !hmAvailableSizes
+    else
+      if(!hmAvailableSizes.size() gt 1) then
+        !availableSizes = !availableSizes.intersect(!hmAvailableSizes)
+      endif
+    endif
+  enddo
+  prompt ''
+  !!kRestoreUnits(!currentUnits)
+  if(defined(!!mdsDebug)) then
+    !!mdsDebug.trace(1, 'Available Sizes Array has ' + STRING(!availableSizes.size() + ' elements'))
+    !!mdsDebug.traceOut(1, '$!this' + '.getAvailableReselectBores()')
+  endif
+  return !availableSizes
+endmethod

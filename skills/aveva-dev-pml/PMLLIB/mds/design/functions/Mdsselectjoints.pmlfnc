@@ -1,0 +1,555 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-------------------------------------------------------------------------------
+--
+-- File:    Mdsselectjoints.pmlfnc
+--   Type:    Function Definition
+--   Group:   Multi Discipline Supports Application
+--     Keyword:   MDS
+--   Module:    design
+--   Replaces:
+--
+-- Author:    Andrew Kirkland
+-- Created:   Thu 18th June 1998
+--
+--
+-- Description:
+-- Function to
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         FORM        [Form called from]
+--     2     R         String      [option CONNECT,MODIFY,DISCONNECT]
+--     3     R         String      [string to switch error on]
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsSelectJoints(!form is FORM, !option is STRING, !error is STRING)
+
+  !refe = !!ce
+  -- Find current units and set the distance unit to metric
+  !currentUnits = !!kGetSetUnits()
+
+  --<tm> different connection regime for fr9 and 10
+  if !form inset(!!mdsFR04,!!mdsFR10,!!mdsFR09 ) then
+    -- $p mdsselectjoint
+    !!mdsFRAsaveconns(!form,'READ')
+    return
+  endif
+  --<tm>
+
+
+  --<tm> inserted for FR series supports
+  if !option.eq('IGNORE') then
+    return
+  endif
+
+  -- Has the frame been created
+  -- q var !form.support.stru
+  if(!form.support.stru.mcount.eq(0)) then
+    if(!error.eq('ERROR')) then
+      !!alert.error('A MDS Framework has to exist before Joints can be Created.')
+    endif
+    !!kRestoreUnits(!currentUnits)
+    !!ce = !refe
+    return
+  elseif(!form.support.connections.set().not()) then
+    if (!error.neq('CANCEL')) then
+      !!alert.error('Unable to Create/Modify Joints as the MDS Framework is NOT associated with Steelwork SCTN(s). Recreate the MDS Framework by either ''Cursor'' or by ''Clearance''.')
+    endif
+    !!kRestoreUnits(!currentUnits)
+    !!ce = !refe
+    return
+  endif
+
+  -- Can we move all components of the support
+  if !!mdsCheckAccess(!form,'DACMOD','POS').not() then
+    !!ce = !form.support.datum
+    handle ANY
+    endhandle
+    return
+  endif
+
+  -- Can only modify the joints if we can write to it
+  if !!mdsComClaimDac(!form.support.stru,'DACMOD','POS').not() then
+    !!alert.error('Unable to modify the joints as write access is not available')
+    return
+  endif
+
+  -- Initialise variables
+  !lock = ''
+  !writeable = ''
+
+  -- get mainstl references and names (max array size of two)
+  do !ind indices !form.support.connections
+    !connect[!ind] = !form.support.connections[!ind]
+    !connectName[!ind] = !connect[!ind].string()
+  enddo
+
+  -- Find out whether mainstl connections have read/write access
+  do !check indices !form.support.connections
+    --<wd>july2001
+    skip if !form.support.connections[!check].unset()
+    --<wd>july2001
+    !rW[!check] = !!kCheckWrite(!form.support.connections[!check],!lock,!writeable)
+
+    if(!rW[!check].not()) then
+      if(!writeable.eq('R')) then
+        !!alert.error('Connecting Element ' & !form.support.connections[!check].string() & ' does not have write access')
+        !!kRestoreUnits(!currentUnits)
+        !!ce = !refe
+        return
+      elseif(!lock.eq('Locked')) then
+        !!alert.error('Connecting Element ' & !form.support.connections[!check].string() & ' is Locked')
+        !!kRestoreUnits(!currentUnits)
+        !!ce = !refe
+        return
+      endif
+    endif
+
+    -- Check for Claim and DACS
+    if (!!mdsComClaimDac(!form.support.connections[!check],'DACCRE','SNOD').not()) then
+      -- Removed because the user may gain access to the beam and try to reconnect it
+      -- !form.connect.active = false
+      -- !form.modify.active = false
+      -- !form.forcecon.active = false
+      -- !form.disconn.active = false
+      !!alert.error('$!!error.text')
+      !!kRestoreUnits(!currentUnits)
+      return
+    endif
+  enddo
+
+  -- All OK then make connections to the steel using the connections object and the vertical members (by name)
+  -- get sctns from stru that are related to mainstl via the uda :MDSConn (there will only be ONE, TWO for clearance)
+  if (!form.support.type.eq('FT15') and !form.support.config.neq(4)) then
+    !vert[1] = !!kCollectAllFor('SCTN',':MDSConn eq $!connectName[1]',!form.support.stru)
+    !vert[2] = !!kCollectAllFor('SCTN',':MDSXConn eq $!connectName[2]',!form.support.stru)
+    --    elseif (!form.support.type.eq('FT28')) then
+    --      !vert[1] = !!kCollectAllFor('SCTN',':MDSConn eq $!connectName[1]',!form.support.stru)
+    --      !vert[2] = !!kCollectAllFor('SCTN',':MDSXConn eq $!connectName[2]',!form.support.stru)
+    --      !vert[3] = !!kCollectAllFor('SCTN',':MDSConn eq $!connectName[3]',!form.support.stru)
+    --      !vert[4] = !!kCollectAllFor('SCTN',':MDSXConn eq $!connectName[4]',!form.support.stru)
+
+  else
+
+    do !array indices !connectName
+      !vert[!array] = !!kCollectAllFor('SCTN',':MDSConn eq $!connectName[$!array]',!form.support.stru)
+    enddo
+  endif
+
+  -- When !vert array is unset -- dimensions have been used and connections cannot be made (some supports are OK some not)
+  if(!vert.unset()) then
+    !!alert.error('Unable to Create/Modify Joints as the MDS Framework is NOT associated with Steelwork SCTN(s).
+    Recreate the MDS Framework by either ''Cursor'' or by ''Clearance''.')
+    !!kRestoreUnits(!currentUnits)
+    !!ce = !refe
+    return
+  endif
+
+  -- Reset Units
+  !!kRestoreUnits(!currentUnits)
+
+  -- Connect the sctns together (if defaults allow) or disconnect
+  if(!option.eq('CONNECT') or !option.eq('MODIFY')) then
+    -------------------------------------------------------------------------
+    if(!option.eq('CONNECT')) then
+      !form.connect.active = FALSE
+      !form.disconn.active = TRUE
+      if(!form.support.joints.unset().not()) then
+        !!alert.error('Support ' & !form.name.val & ' is already connected.')
+        !!kRestoreUnits(!currentUnits)
+        return
+      endif
+
+      !ft28joints = ARRAY()
+      if(!!mdsOptions.createCons.selection().real().neq(1)) then
+        do !i indices !connect
+          -- clearance (same beam for both verticals will give 2 elements in the array)
+          if(!vert[!i].size().gt(1)) then
+            !dummy = object DBREF()
+            !dummyA = ARRAY()
+            do !a indices !vert[!i]
+
+              --<kp>mar07
+              -- check if there is a snipe
+              !test = object MDSSNIPE(!vert[!i][!a],!connect[!i])
+              handle NONE
+                if !test.snipe.badref().not() then
+                  -- snipe exists therefore no connection is gonna be made
+                  skip
+                endif
+              elsehandle ANY
+              endhandle
+
+              !form.support.joints[!a] =  !!mdsCreateJoint(!connect[!i],!vert[!i][!a],!dummy,!dummyA)
+              if (!form.support.type.eq('FT28')) then
+                !ft28joints.append(!form.support.joints[!a])
+              endif
+            enddo
+
+            --only do it for one (clearance)
+            -- break
+
+          else
+
+            !!dummy = object DBREF()
+            !!dummyA = ARRAY()
+
+            --<kp>mar07
+            -- check if there is a snipe
+            !test = object MDSSNIPE(!vert[!i][1],!connect[!i])
+            handle NONE
+              if !test.snipe.badref().not() then
+                -- snipe exists therefore no connection is gonna be made
+                skip
+              endif
+            elsehandle ANY
+            endhandle
+
+            !form.support.joints[!i] = !!mdsCreateJoint(!connect[!i],!vert[!i][1],!!dummy,!!dummyA)
+            handle ANY
+              -- if sctns are not close to the connecting sctns this will error
+              !!alert.error('Not able to determine support connections, reposition and regenerate support before connecting.')
+              !!kRestoreUnits(!currentUnits)
+              !form.connect.active = TRUE
+              return
+            endhandle
+          endif
+        enddo
+
+        if (!form.support.type.eq('FT28')) then
+          !xft28joints = ARRAY()
+          do !indx index !ft28joints
+            if (!ft28joints[!indx].badref().not()) then
+              !xft28joints.append(!ft28joints[!indx])
+            endif
+          enddo
+          !form.support.joints = !xft28joints
+        endif
+      endif
+      -- When a trimmer has been selected we need to reset the uda to false as joints are now created
+      !!ce = !form.support.stru
+      :MDSTrimmer FALSE
+      same
+      !!mdsJointSpec.mode = 'CREATE'
+
+      --<kp>mar07
+      -- display message and exit if no joint has been created due to snipe(s)
+      if !form.support.joints.unset() then
+        !form.connect.active = TRUE
+        !!alert.error('Unable to create joints when snipes are already created!')
+        return
+      endif
+
+    else
+
+      if(!form.support.joints.unset()) then
+        !!alert.error('Support connections have not yet been created.')
+        !!kRestoreUnits(!currentUnits)
+        return
+      endif
+      !!mdsJointSpec.mode = 'MODIFY'
+    endif
+
+    -- see if geometry is required
+    if(!!mdsOptions.createCons.selection().real().eq(3)) then
+      -- display geometry form (passing control)
+      !!ce = !refe
+      !!mdsIJointspec(!form)
+      Show !!mdsJointSpec
+    endif
+
+    -- Deactivate dimension gadget
+    !form.createbydim.active = FALSE
+
+  elseif(!option.eq('DISCONNECT')) then
+    --------------------------------------------------------------------------------------------------
+    -- disconnect support from main steel (this may need further work when snode has more than one sjoi)
+    -- block to check if connected (only give message if connected)---------
+    -- GE 26/08/04 If the support has no joints (sjoi) then just return for Framatome Templates i.e. FANP01
+    -- as these templates use pjoi's with Design Rules for positioning
+    if (!form.support.joints.unset()) then
+      return
+    endif
+    -- GE 26/08/04
+
+    if(!!mdsIsSuppConn(!vert)) then
+      if(!error.eq('ERROR')) then
+        !confirm = !!alert.confirm('Are you sure you want to DELETE the Joints?.
+        *** NOTE ***
+        When you DELETE the Joints they will NOT be RESTORED if you click the ''Cancel'' button to EXIT the support form titled ''$!form.formtitle''')
+        if(!confirm.eq('NO')) then
+          !!ce = !refe
+          !!kRestoreUnits(!currentUnits)
+          return
+        endif
+      endif
+      -- Activate dimension gadget
+      !form.createbydim.active = TRUE
+    endif
+
+    -- Get Posline of FT03/FT04, FT13, FT18/19 Config 4, i.e.'TOS' or 'BOS',
+    -- or FT15 Config 2 (Joint2 only) and Configs 3 or 4 (Both Joints) if Joint is to be DELETED
+    if (!form.support.type inset ('FT03', 'FT04', 'FT18' , 'FT19') and !form.support.config.eq(4)) then
+      !jposl = !form.support.joints[1].posl
+    elseif (!form.support.type.eq('FT15') or !form.support.type.eq( 'FT14')) then
+      !jnum = 1
+      if (!form.support.type.eq('FT15') and !form.support.config.neq(1)) then
+        !jnum = 2
+      elseif (!form.support.type.eq( 'FT14') and !form.support.config.eq(5)) then
+        !jnum = 1
+      endif
+      -- Determine Existing Joint Plate Thickness from its Dataset
+      !spref = !form.support.joints[!jnum].spref.unset()
+      !badrf = !form.support.joints[!jnum].spref.badref()
+
+      if (!spref.not() or !badrf.not()) then
+        !dtref = !form.support.joints[!jnum].dtref
+        !data = !!kCollectAllFor('DATA', 'DKEY eq |THKN|' , !dtref )
+        !dkey = object BLOCK('!data[!evalindex].dkey')
+        !dval = !data.evaluate(!dkey)
+        !purp = object BLOCK('!data[!evalindex].purp')
+        !pval = !data.evaluate(!purp)
+        !numb = object BLOCK('!data[!evalindex].numb')
+        !nval = !data.evaluate(!numb)
+        !!ce  = !form.support.joints[1]
+        !thkn = $!pval[1] number $!nval[1]
+      else
+        !thkn[1] = 0
+      endif
+    endif
+
+    !jName = ARRAY()
+    do !indx indices !vert
+      do !v indices !vert[!indx]
+        !!ce = !vert[!indx][!v]
+        Goto JOIS
+        handle ANY
+        elsehandle NONE
+          !jName[!indx][!v][1] = !!ce.name
+          !owner = name of stru
+          !dbOwn = !owner.dbref()
+          -- only delete joints outside the structure
+          if (!dbOwn.neq(!form.support.stru)) then
+            SNODE
+            delete SNODE
+          endif
+          -------------------------------------------------------remove when graphics works----------------
+          !tempString = !!mdsRedraw(!!ce)
+          $!tempString
+        endhandle
+
+        !!ce = !vert[!indx][!v]
+        Goto JOIE
+        handle ANY
+        elsehandle NONE
+          !jName[!indx][!v][2] = !!ce.name
+          !owner = name of stru
+          !dbOwn = !owner.dbref()
+          -- only delete joints outside the structure
+          if (!dbOwn.neq(!form.support.stru)) then
+            SNODE
+            delete SNODE
+          endif
+          -------------------------------------------------------remove when graphics works----------------
+          !tempString = !!mdsRedraw(!!ce)
+          $!tempString
+        endhandle
+        --!!ce = !vert[!indx][!v]
+        --JOIE NULREF
+        --JOIS NULREF
+      enddo
+    enddo
+
+    !form.support.joints.clear()
+    !!kAidClear('1001','ALL')
+    !!mdsJointSpec.hide()
+    !form.connect.active = TRUE
+    !form.disconn.active = FALSE
+    !!mdsJointSpec.support.joints.clear()
+
+    --Reset FT03/FT04, FT18/19, Config 4 to 'TOS' or 'BOS' if Joint is to be DELETED
+    if (!form.support.type inset ('FT03', 'FT04', 'FT18' , 'FT19') and !form.support.config.eq(4)) then
+      if (!jposl.eq('TOS')) then
+        !slide = 'TOP'
+      elseif (!jposl.eq('BOS')) then
+        !slide = 'BTM'
+      endif
+      !func = '!!mdsslide' & !form.support.type
+      $!func(!slide)
+
+      -- Reset FT13 configs 4 and 5
+    elseif (!form.support.type.eq('FT13') and !form.support.config.eq(4) or !form.support.type.eq('FT13') and !form.support.config.eq(5))  then
+      if (!form.support.config.eq(4)) then
+        !slide = 'FRONT'
+      elseif (!form.support.config.eq(5)) then
+        !slide = 'BACK'
+      endif
+      !func = '!!mdsslide' & !form.support.type
+      $!func(!slide, !form.support.connections[1])
+
+      -- Reset FT13 configs 2 and 3
+    elseif (!form.support.type.eq('FT14') and !form.support.config.eq(2) or !form.support.type.eq('FT14') and !form.support.config.eq(3)) then
+      if (!form.support.config.eq(3)) then
+        !slide = 'FRONT'
+      elseif (!form.support.config.eq(2)) then
+        !slide = 'BACK'
+      endif
+      !func = '!!mdsslide' & !form.support.type
+      $!func(!slide, !form.support.connections[1])
+
+      -- Reset FT14 configs 4 and 5
+    elseif (!form.support.type.eq('FT14') and !form.support.config.eq(4) or !form.support.type.eq('FT14') and !form.support.config.eq(5)) then
+
+      -- Navigate to BOX 1 of the SUBS of the MDS STRUCTURE and ResetSize Attributes when Joint is DELETED
+      !subs = !form.support.stru.name & '/SUBS1'
+      !!ce  = !subs.dbref()
+      !!ce  = box 1
+      -- Get Existing Data and Reset at the Stiffener
+      xlen  $!form.oldstiffener[1]
+      ylen  $!form.oldstiffener[2]
+      zlen  $!form.oldstiffener[3]
+
+      -- Move STRU to underside of supporting BEAM
+      if (!form.support.config.eq(5)) then
+        !!ce = !form.support.stru
+        move up dist $!thkn[1]
+      endif
+
+      -- Reset FT15 configs 2, 3 and 4
+    elseif (!form.support.type.eq('FT15')) then
+      if (!form.support.config.eq(2) or !form.support.config.eq(3) or !form.support.config.eq(4)) then
+        -- Move STRU to underside of supporting BEAM
+        !!ce = !form.support.stru
+        move up dist $!thkn[1]
+      endif
+    endif
+
+    -- clear store form member, in case the cancel button is used.( these loops will be necessary when supports get complex)
+    do !ji indices !jName
+      do !jj indices !jName[!ji]
+        do !jk indices !jName[!ji][!jj]
+          !index = !form.store.findfirst(!jName[!ji][!jj][!jk])
+          !form.store.remove(!index)
+          handle ANY
+            -- in case !name is not in the store
+          elsehandle NONE
+            do from 1 to 7
+              -- remove attributes of !name from the store (this will need changing if the support store is changed)
+              !form.store.remove(!index)
+            enddo
+          endhandle
+        enddo
+      enddo
+    enddo
+
+    --------------
+    --<wd23nov2001 - Need to TEST the MDS3.0.0 FRAMEWORKS Appware to ensure the CODE below
+    --               does NOT cause problems with the rest of the APPLICATION
+    -- This CODE has been ADDED so that the NEW Frameworks 'TRIMMER' option button can function CORRECTLY!!!!
+    -- Set the  SCTN - UDAs :MDSConn and :MDSXConn to default
+    do !indx indices !vert
+      -- <GE> HPD0030636 added additional do loop to unset all the vertical sctns
+      do !v indices !vert[!indx]
+        !!ce = !vert[!indx][!v]
+        handle ANY
+          skip
+        endhandle
+        :MDSConn def
+        :MDSXConn def
+      enddo
+    enddo
+    -- Also Unset the Support Object member .connections
+    !form.support.connections.clear()
+    --<wd23nov2001 - Need to TEST the MDS Appware to ensure the CODE above does NOT cause problems with the FRAMEWORKS
+    --------------
+
+  else
+    ----------------------------------------------------------------------------------------------
+    -- force connect to a pline (if the wrong pline has been calculated).
+
+    label /repick
+
+    prompt off
+    prompt load escape 'Identify Pline to force connect to..'
+    var !pick pick pline
+    handle (61,528)
+      prompt on
+      !!kRestoreUnits(!currentUnits)
+      return
+    endhandle
+    prompt on
+    !pline = !pick[1].upcase().after('PLINE ').before(' OF')
+
+    if (!form.support.type.eq('FT28')) then
+      !pJoint = !!mdspickjoint()
+      !!ce = !pJoint
+      POSL $!pline
+      var !plindir ppline $!pline of sctn dir wrt worl
+      CUTP $!plindir wrt worl
+      RECONN RECALC
+      handle ANY
+        -- in case bad geometry is in error because wrong pline is picked
+        !query = !!alert.confirm('Pline chosen is not valid. Do you wish to choose another?')
+        if(!query.eq('NO')) then
+          !!ce = !refe
+          !!kRestoreUnits(!currentUnits)
+          return
+        else
+          golabel /repick
+        endif
+      endhandle
+    else
+      if(defined(!form.support.connections[2]) and !form.support.connections[1].eq(!form.support.connections[2])) then
+        do !jnts values !form.support.joints
+          !!ce = !jnts
+          POSL $!pline
+          var !plindir ppline $!pline of sctn dir wrt worl
+          CUTP $!plindir wrt worl
+          RECONN RECALC
+          handle ANY
+          endhandle
+        enddo
+      else
+        !pJoint = !!mdspickjoint()
+        !!ce = !pJoint
+        POSL $!pline
+        var !plindir ppline $!pline of sctn dir wrt worl
+        CUTP $!plindir wrt worl
+        RECONN RECALC
+        handle ANY
+          -- in case bad geometry is errorred because wrong pline is picked
+          !query = !!alert.confirm('Pline chosen is not valid. Do you wish to choose another?')
+          if(!query.eq('NO')) then
+            !!ce = !refe
+            !!kRestoreUnits(!currentUnits)
+            return
+          else
+            golabel /repick
+          endif
+        endhandle
+      endif
+    endif
+    -------------------------------------------------------------------------------------------------
+  endif
+
+  !!ce = !refe
+  handle ANY
+    -- just incase we were at the deleted SNODE
+  endhandle
+
+  !!kRestoreUnits(!currentUnits)
+  !!mdsDacControl(FALSE)
+
+  -- End function
+endfunction

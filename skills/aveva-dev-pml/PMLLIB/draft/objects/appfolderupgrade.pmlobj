@@ -1,0 +1,1414 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            appfolderupgrade.pmlobj
+--   Type:          Object Definition
+--   Group:         Reconfiguration
+--     Keyword:     Picture Files
+--   Module:        DRAFT
+--
+-- Author:          Tomasz Lisowski
+-- Created:         8/12/2006
+--
+-- Description: The object performing the upgrade of the project folder structure
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  addPath(STRING,STRING,STRING)    -                   Adds a path to process
+--  addStdPaths()                    -                   Adds standard paths to process for the CURRENT project (area 0)
+--  addStdPaths(REAL)                -                   Adds standard paths to process for the CURRENT project
+--  addStdPaths(STRING)              -                   Adds standard paths to process for the GIVEN project (area 0)
+--  addStdPaths(STRING,REAL)         -                   Adds standard paths to process for the given project
+--  appFolderUpgrade(ARRAY,STRING,STRING) -                   Default constructor providing data about paths to process
+--  appFolderUpgrade(STRING,STRING)  -                   Alternate constructor with an empty list of paths to process
+--  checkDB0JUNK0Single(STRING)      REAL                Checks the single DB0JUNK0 file
+--  clear()                          -                   Clears the processing data before the next task
+--  collectFiles(STRING,ARRAY,STRING,REAL) REAL                Checks the files in the folders !top\!subFolders[n],
+--  createFolders(FILE,ARRAY)        REAL                Checks/creates the given subfolders
+--  distributeFiles(STRING,STRING,ARRAY,REAL,REAL) REAL                Checks the files in the folder !from, moving them to the appropriate
+--  doLog(STRING)                    -                   Builds a log string by adding the current time, and writes it to the log file
+--  doLogWithTime(STRING)            -                   As doLog, but makes sure, that the time prefix is always output
+--  errorMsg(ARRAY)                  ARRAY               Returns the array of error message strings corresponding to the given integer status codes
+--  executeBatch(REAL)               REAL                Executes the batch file and reads the result code
+--  handleOutFile(REAL,BOOLEAN)      -                   Common code handling the .out file
+--  isOK(ARRAY)                      BOOLEAN             Returns TRUE, if all status codes indicate success
+--  openLog()                        BOOLEAN             If log level is non-zero, creates a log file in PDMSUSER folder
+--  process(STRING,STRING,STRING)    REAL                General driver method for upgrading a single folder structure
+--  removeFolders(FILE,ARRAY)        REAL                Removes the given subfolders and its contents
+--  restore()                        ARRAY               Restores the folder structure to the old format
+--  restoreDWG(FILE,REAL)            REAL                Prepares the code to restore the upgraded DWG-type folder to the old format
+--  restorePIC(FILE,REAL)            REAL                Prepares the code to restore the upgraded PIC-type folder to the old format
+--  subFolderID(FILE)                REAL                Derives the subFolder ID from the file name matching the ?nn-mm-kk-ll.* syntax
+--  upgrade(STRING)                  ARRAY               Performs the upgrade process according to the mode provided
+--  upgradeDWG(FILE,REAL)            REAL                Dedicated upgrade method for the DWG folders (DWG files)
+--  upgradePIC(FILE,REAL)            REAL                Dedicated upgrade method for the folder with just the 00..31 subFolders
+--  validData(STRING,ARRAY)          BOOLEAN             Performs the initial validation of the processing data
+--
+define object APPFOLDERUPGRADE
+  member .processingData is ARRAY
+  member .subFolderCount is REAL
+  member .doCorrectFolders is BOOLEAN
+  member .batLines is ARRAY
+  member .logLevel is REAL
+  member .logFile is FILE
+  member .logFPath is STRING
+  member .useCL is BOOLEAN
+  member .useTimeStamp is BOOLEAN
+  member .num2 is STRING
+  member .lastTime is REAL
+  member .lastMode is STRING
+  member .projects is ARRAY
+  member .tempFileName is STRING
+endobject
+
+------------------------------------------------------------------------
+--
+-- Method:      appFolderUpgrade
+--
+-- Description: Default constructor providing data about paths to process
+--
+-- Each item in the !upgradeData array should be a string containing
+-- elements separated by the '|' character. The elements are as follows:
+--   Path to the main folder
+--   Dedicated upgrade method name
+--   Way of handling matching files in the FULL mode (MOVE or DELETE)
+-- The third element can be omitted, defaulting to MOVE
+--
+-- Example:
+-- ('%BASPIC%|upgradePIC|DELETE', '%BASDWG%|upgradeDWG')
+--
+-- Method Type: Constructor
+-- Arguments:
+--    1   R   ARRAY   Array of Strings of the form 'Path|method|MOVE or DELETE'
+--    2   R   STRING  Options string (see .processOptions method)
+--    3   R   STRING  Log file name path (if empty - a default path will be chosen)
+-- Return:
+--
+------------------------------------------------------------------------
+define method .appFolderUpgrade(!upgradeData is ARRAY, !options is STRING, !logFName is STRING)
+  !this.appFolderUpgrade(!options, !logFName)
+  !this.processingData = !upgradeData
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      appFolderUpgrade
+--
+-- Description: Alternate constructor with an empty list of paths to process
+--
+-- Method Type: Constructor
+-- Arguments:
+--    1   R   STRING  Options string (see .processOptions method)
+--    2   R   STRING  Log file name path (if empty - a default path will be chosen)
+-- Return:
+--
+------------------------------------------------------------------------
+define method .appFolderUpgrade(!options is STRING, !logFName is STRING)
+  !this.processingData = ARRAY()
+  -- It has been agreed to fix the number of subFolders to 32
+  !this.subFolderCount = 32
+  !this.batLines = ARRAY()
+  var !temp evar 'TEMP'
+  !this.tempFileName = !temp & '\AFU'
+
+  -- set defaults
+  !this.logLevel = 0
+  !this.useCL = false
+  !this.useTimeStamp = false
+
+  -- parse the options string
+  !tokens = !options.split(',')
+  do !token values !tokens
+    !ind = !token.match('=')
+    skip if( !ind.eq(0) )
+    !name = !token.subString(1, !ind - 1).trim().upCase()
+    !value = !token.subString(!ind + 1).trim()
+    if( !name.eq('LOG') ) then
+      if( !value.eq('1') or !value.eq('2') ) then
+        !this.logLevel = !value.real()
+      endif
+    elseif( !name.eq('CMD') ) then
+      if( !value.eq('1') ) then
+        !this.useCL = true
+      endif
+    elseif( !name.eq('TIM') ) then
+      if( !value.eq('1') ) then
+        !this.useTimeStamp = true
+      endif
+    else
+      !!alert.warning('Option $!name is not recognised!')
+    endif
+  enddo
+
+  !this.num2 = '000102030405060708091011121314151617181920212223242526272829' & $
+               '303132333435363738394041424344454647484950515253545556575859' & $
+               '606162636465666768697071727374757677787980818283848586878889' & $
+               '90919293949596979899'
+
+  !this.lastTime = -1
+  !this.projects = PROJECTS
+  !this.logFPath = !logFName
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      addPath
+--
+-- Description: Adds a path to process
+--
+-- Method Type: Procedure
+-- Arguments:
+--    1   R   STRING  The path to process (e.g. '%BASPIC%')
+--    2   R   STRING  The name of the dedicated upgrade method (e.g. 'upgradePIC')
+--    3   R   STRING  The action to perform (either 'MOVE' or 'DELETE')
+-- Return:
+--
+------------------------------------------------------------------------
+define method .addPath(!path is STRING, !upgradeMethod is STRING, !action is STRING)
+  !data = !path & '|' & !upgradeMethod & '|' & !action
+  !this.processingData.append(!data)
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      addStdPaths
+--
+-- Description: Adds standard paths to process for the given project
+--
+-- <project>PIC, <project>_Pnnn is added unconditionally
+-- <project>DWG, <project>_Dnnn is added only if Final Designer check is
+--                              positive for the current session
+-- <project>DRG, <project>_Wnnn is added only if at least one database in
+--                              the current project has a subtype of 'MARINE'
+--
+-- Method Type: Procedure
+-- Arguments:
+--    1   R   STRING  Project code
+--    2   R   REAL    Database area (usually it would be ZERO!)
+-- Return:
+--
+------------------------------------------------------------------------
+define method .addStdPaths(!project is STRING, !dbArea is REAL)
+  !found = false
+  do !projObj values !this.projects
+    if( !projObj.code().eq(!project) ) then
+      !found = true
+      break
+    endif
+  enddo
+  if( not !found ) then
+    return
+  endif
+
+  if( !dbArea.lt(10) ) then
+    !dba = '00' & !dbArea
+  elseif( !dbArea.lt(100) ) then
+    !dba = '0' & !dbArea
+  else
+    !dba = !dbArea.string()
+  endif
+
+-- DRAFT Picture files
+  if( !dbArea.eq(0) ) then
+    !path = '%' & !project & 'PIC%'
+  else
+    !path = '%' & !project & '_P' & !dba & '%'
+  endif
+  !this.addPath(!path, 'upgradePIC', 'MOVE')
+
+-- PDMS DWG picture files
+  if( !dbArea.eq(0) ) then
+    !evName = !project & 'DWG'
+  else
+    !evName = !project & '_D' & !dba
+  endif
+  var !evVal evar $!evName
+  if( not !evVal.empty() ) then
+    !path = '%' & !evName & '%'
+    !this.addPath(!path, 'upgradeDWG', 'MOVE')
+  endif
+
+-- Marine Drawing objects
+  if( !dbArea.eq(0) ) then
+    !evName = !project & 'DRG'
+  else
+    !evName = !project & '_W' & !dba
+  endif
+  var !evVal evar $!evName
+  if( not !evVal.empty() ) then
+    !path = '%' & !evName & '%'
+    !this.addPath(!path, 'upgradePIC', 'MOVE')
+  endif
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      addStdPaths
+--
+-- Description: Adds standard paths to process for the CURRENT project
+--
+-- Method Type: Procedure
+-- Arguments:
+--    1   R   REAL    Database area (usually it would be ZERO!)
+-- Return:
+--
+------------------------------------------------------------------------
+define method .addStdPaths(!dbArea is REAL)
+  !project = CURRENT PROJECT
+  !projCode = !project.code()
+  !this.addStdPaths(!projCode, !dbArea)
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      addStdPaths
+--
+-- Description: Adds standard paths to process for the GIVEN project (area 0)
+--
+-- Method Type: Procedure
+-- Arguments:
+--    1   R   STRING  Project code
+-- Return:
+--
+------------------------------------------------------------------------
+define method .addStdPaths(!project is STRING)
+  !this.addStdPaths(!project, 0)
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      addStdPaths
+--
+-- Description: Adds standard paths to process for the CURRENT project (area 0)
+--
+-- Method Type: Procedure
+-- Arguments:
+-- Return:
+--
+------------------------------------------------------------------------
+define method .addStdPaths()
+  !project = CURRENT PROJECT
+  !projCode = !project.code()
+  !this.addStdPaths(!projCode, 0)
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      clear
+--
+-- Description: Clears the processing data before the next task
+--
+-- Method Type: Procedure
+-- Arguments:
+-- Return:
+--
+------------------------------------------------------------------------
+define method .clear()
+  !this.processingData.clear()
+  !this.batLines.clear()
+  !this.lastTime = -1
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      openLog
+--
+-- Description: If log level is non-zero, creates a log file
+--
+-- Method Type: function
+-- Arguments:
+-- Return:
+--    BOOLEAN    True, if the file has been successfully opened (or log level is zero)
+--
+------------------------------------------------------------------------
+define method .openLog() is BOOLEAN
+  !res = True
+  if( !this.logLevel.neq(0) ) then
+    if( !this.logFPath.empty() ) then
+      !now = object DATETIME()
+      !year = !now.year()
+      !year = !year - 100 * INT( !year / 100 )
+      !fName = !this.num2.subString(2 * !year + 1, 2) & '-' & $
+               !this.num2.subString(2 * !now.month() + 1, 2) & '-' & $
+               !this.num2.subString(2 * !now.date() + 1, 2) & '_' & $
+               !this.num2.subString(2 * !now.hour() + 1, 2) & '-' & $
+               !this.num2.subString(2 * !now.minute() + 1, 2) & '-' & $
+               !this.num2.subString(2 * !now.second() + 1, 2)
+      !fName = '%PDMSUSER%\folder_upgrade_' & !fName & '.log'
+      !this.logFPath = !fName
+    else
+      !fName = !this.logFPath
+    endif
+
+    !this.logFile = object FILE(!fName)
+    !this.logFile.open('OVERWRITE')
+    handle ANY
+      !res = False
+      if( !this.useCL ) then
+        Write 'Folder upgrade error!'
+        Write 'Could not open the log file! $!fName'
+        Write 'Turning off logging and continuing ...'
+      endif
+    elsehandle None
+      if( !this.useCL ) then
+        Write 'Log file: $!fName'
+      endif
+    endhandle
+  endif
+  return !res
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      doLog
+--
+-- Description: Builds a log string by adding the current time, and writes it to the log file
+--
+-- The time prefix is added only, if it differs at least by one second
+-- from the time of the previously logged message. This reduces
+-- the amount of output, and improves performance
+-- Setting the .useTimeStamp to false prevents adding the time prefix
+--
+-- Method Type: procedure
+-- Arguments:
+--    1   STRING   Message to output to the log file
+-- Return:
+--
+------------------------------------------------------------------------
+define method .doLog(!msg is STRING)
+  if( !this.useTimeStamp ) then
+    !now = object DATETIME()
+    !sec  = !now.second()
+    !min  = !now.minute()
+    !hour = !now.hour()
+    !cTime = (!hour * 60 + !min) * 60 + !sec
+    if( !cTime.eq(!this.lastTime) ) then
+      !time = ''
+    else
+      !time = !this.num2.subString(2 * !hour + 1, 2) & ':' & $
+              !this.num2.subString(2 * !min + 1, 2) & ':' & $
+              !this.num2.subString(2 * !sec + 1, 2) & ' '
+      !this.lastTime = !cTime
+    endif
+  else
+    !time = ''
+  endif
+
+  !out = !time & !msg
+  !this.logFile.writeRecord(!out)
+  handle ANY
+    if( !this.useCL ) then
+      Write 'Error writing to the log file!'
+    endif
+  endhandle
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      doLogWithTime
+--
+-- Description: As doLog, but makes sure, that the time prefix is always output
+--
+-- Method Type: procedure
+-- Arguments:
+--    1   STRING   Message to output to the log file
+-- Return:
+--
+------------------------------------------------------------------------
+define method .doLogWithTime(!msg is STRING)
+  !this.lastTime = -1
+  !this.doLog(!msg)
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      upgrade
+--
+-- Description: Performs the upgrade process according to the mode provided
+-- Accepted mode values:
+--   CHECKONLY - verifies, if the folder structure is correct, without trying
+--               to correct it (does not check files!)
+--   FULL      - verifies, and updates if necessary, the folder structure
+--               and moves the files to the correct locations
+--   BASIC     - same as FULL (left for compatibility)
+--
+-- Method Type: function
+-- Arguments:
+--    1   R     STRING      operating mode (CHECKONLY, BASIC, FULL)
+-- Return:
+--    ARRAY     List of status codes for the folders processed in order: PIC, DWG, ...
+--
+-- Status values:
+--    1 - folder structure correct (or corrected successfully), and files successfully
+--        moved to the appropriate locations (it this has been done)
+--    0 - not processed (not requested: path was empty!)
+--   -1 - non-existing main folder (or existing as a file, not folder)
+--   -2 - operating mode not recognised
+--   -3 - dedicated folder upgrade method not found
+--   -4 - invalid processing data
+--  -11 - incorrect folder structure (CHECKONLY mode)
+--  -12 - error while correcting the folder structure (file exists instead!)
+--  -13 - error while correcting the folder structure (other error)
+--  -14 - error creating the DB0JUNK0 file
+--  -21 - error while correcting the file location (moving)
+--  -22 - error while removing a file
+-- Additional status values for restore operation:
+--  -31 - error moving files during the restore operation
+--  -32 - error removing folders during the restore operation
+--  -33 - error recreating the PDMS_Overlays subFolder during the restore operation
+------------------------------------------------------------------------
+define method .upgrade(!mode is STRING) is ARRAY
+  !res = ARRAY()
+
+  if( !this.validData(!mode, !res) ) then
+    if( !this.useCL ) then
+      Write 'Starting the folder upgrade process. Please wait ...'
+    endif
+    !fullLog = !this.logLevel.eq(2)
+    if( not !this.openLog() ) then
+      !this.logLevel = 0 $* turn off logging, since the log file could not be opened
+      !fullLog = False
+    elseif( !fullLog ) then
+      !s = !mode.upCase()
+      !this.doLogWithTime('Opening log file. Starting the folder upgrade process. Mode ' & !s)
+    endif
+
+    !ind = 1
+    do !item values !this.processingData
+      !elements = !item.split('|')
+      if( !elements[1].empty() ) then
+        !code = 0 $* no request to upgrade this item
+      else
+        -- Path, dedicated upgrade method name, action to perform in the FULL mode
+        !code = !this.process(!elements[1], !elements[2], !elements[3])
+      endif
+      !res[!ind] = !code $* update the code for this item
+      !ind = !ind + 1    $* advance to the next item
+    enddo
+
+    if( !this.logLevel.neq(0) ) then
+      if( !fullLog ) then
+        !this.doLogWithTime('Closing log file')
+      endif
+      !logFName = !this.logFile.fullName()
+      !this.logFile.close()
+    endif
+    if( !this.useCL ) then
+      Write 'Folder upgrade process has finished!'
+    endif
+  elseif( !this.useCL ) then
+    Write 'Syntax error in the folder upgrade processing data! Quitting ...'
+  endif
+
+  do !code values !res
+    if( !code.lt(0) ) then
+      if( !this.useCL ) then
+        if( !this.logLevel.eq(0) ) then
+          !msg = 'Errors encountered! See the status codes'
+        else
+          !msg = 'Errors encountered! See the status codes and the log file ' & !logFName
+        endif
+        Write '$!msg'
+        break
+      endif
+    endif
+  enddo
+
+  return !res            $* return result codes
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      validData
+--
+-- Description: Performs the initial validation of the processing data
+--
+-- Method Type: function
+-- Arguments:
+--    1    R    STRING   Operating mode for the folder upgrade process
+--    2   R/W   ARRAY    Result codes to return if not valid
+-- Return:
+--    BOOLEAN    True, if the processing data are 'syntactically' correct
+------------------------------------------------------------------------
+define method .validData(!mode is STRING, !result is ARRAY) is BOOLEAN
+  !result.clear()
+  !nData = !this.processingData.size()
+  !modeUP = !mode.upCase()
+  !this.lastMode = !modeUP
+  -- Determine the settings for the selected operating mode of the folder upgrade method
+  if( !nData.eq(0) ) then
+    return False $* no !result elements to set
+  elseif( !modeUP.eq('CHECKONLY') ) then
+    !this.doCorrectFolders = False
+  elseif( !modeUP.eq('BASIC') or !modeUP.eq('FULL') or !modeUP.eq('RESTORE') ) then
+    !this.doCorrectFolders = True
+  else
+    -- Set ALL elements of the returned array to -2
+    -- indicating, that an incorrect mode string has been supplied
+    do !ind from 1 to !nData
+      !result[!ind] = -2
+    enddo
+    return False
+  endif
+
+  !res = True
+  -- Check the elements of the ProcessingData array
+  do !ind indices !this.processingData
+    !item = !this.processingData[!ind]
+    !code = 1 $* default code to store (success!)
+    if( !item.objectType().neq('STRING') ) then
+      !code = -4   $* invalid processing data (not a string)
+      !res = False $* do not proceed
+    elseif( !item.empty() ) then
+      !code = 0    $* no request to process this folder
+      !this.processingData[!ind] = '||MOVE'
+    else
+      !elements = !item.split('|')
+      !nElements = !elements.size()
+      if( !nElements.lt(2) ) then
+        !code = -4   $* invalid processing data (not enough data)
+        !res = False $* do not proceed
+      elseif( !nElements.eq(2) ) then
+        -- append the default action (MOVE)
+        !this.processingData[!ind] = !item & '|MOVE'
+      else $* !nElements >= 3
+        !action = !elements[3].upCase()
+        -- Allowed actions: MOVE, DELETE
+        if( !action.neq('MOVE') and !action.neq('DELETE') ) then
+          !code = -4   $* invalid processing data (bad action specified)
+          !res = False $* do not proceed
+        endif
+      endif
+    endif
+    -- add the proper result code for this item
+    !result.append(!code)
+  enddo
+  return !res
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      process
+--
+-- Description: General driver method for upgrading/restoring a single folder structure
+-- NOTE: The doCorrectFolders attribute must be set accordingly
+--
+-- Method Type: function
+-- Arguments:
+--    1   R   STRING   Path to process
+--    2   R   STRING   Dedicated upgrade method name
+--    3   R   STRING   Action to perform in the FULL mode (MOVE, DELETE, RESTORE)
+-- Return:
+--    REAL    Status code to be put in the array returned by .upgrade method
+------------------------------------------------------------------------
+define method .process(!path is STRING, !method is STRING, !action is STRING) is REAL
+  !fullLog = !this.logLevel.eq(2)
+  !errLog  = !this.logLevel.geq(1)
+
+  if( !errLog ) then
+    !msg = 'Processing path ' & !path & ' using the method ' & !method
+    if( !this.doCorrectFolders ) then
+      !msg = !msg & ' with the file handling action ' & !action
+    endif
+    !this.doLogWithTime(!msg)
+  endif
+  if( !this.useCL ) then
+    Write 'Processing path $!path'
+  endif
+
+  -- Check the existence of !path as a FOLDER
+  !dir = object FILE(!path)
+  if( !dir.exists() ) then
+    -- and if it is a folder
+    if( !dir.type().eq('DIRECTORY') ) then
+      !act = !action.upCase()
+      if( !act.eq('MOVE') or !act.eq('RESTORE') ) then
+        !actID = 1
+      elseif( !act.eq('DELETE') ) then
+        !actID = 2
+      else
+        !actID = 0 $* should not happen
+      endif
+      -- Call the dedicated upgrade method
+      if( !fullLog ) then
+        !this.doLog('Executing the dedicated upgrade method: ' & !method)
+      endif
+      !res = !this.$!method(!dir, !actID)
+      handle (2,779)
+        !res = -3 $* dedicated upgrade method not found
+        if( !errLog ) then
+          !this.doLog('Dedicated upgrade method (' & !method & ') was not found, or raised an exception!')
+        endif
+      elsehandle None
+        if( !errLog ) then
+          !this.doLogWithTime('Finished processing path ' & !path & ' using the method ' & !method)
+        endif
+      endhandle
+      return !res
+    elseif( !errLog ) then
+      !this.doLog(!path & ' already exists as a file, not a folder!')
+    endif
+  elseif( !errLog ) then
+    !this.doLog('The main folder to process (' & !path & ') does not exist!')
+  endif
+  return -1 $* !path does not exist, or is not a folder (is a file)
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      upgradePIC
+--
+-- Description: Dedicated upgrade method for the folder with just the 00..31 subFolders
+--
+-- Example: picture files, drawing object files
+--
+-- Method Type: function
+-- Arguments:
+--    1   R   FILE   Path to process
+--    2   R   REAL   Action to perform in the FULL mode (1 - MOVE, 2 - DELETE)
+-- Return:
+--    REAL    Status code to be put in the array returned by .upgrade method
+------------------------------------------------------------------------
+define method .upgradePIC(!dir is FILE, !action is REAL) is REAL
+  !subFolders = ARRAY()
+  -- 00 .. 31 NOTE: They are at indices 1 .. 32 !!!
+  do !subNo from 0 to !this.subFolderCount - 1
+    !subFolders.append(!this.num2.subString(2 * !subNo + 1, 2))
+  enddo
+  -- Check / create the subfolders first
+  !code = !this.createFolders(!dir, !subFolders)
+  if( !code.eq(1) ) then
+    !dirName = !dir.fullName()
+    if( !dirName.subString(-1,1).neq('\') ) then
+      !main = !dirName & '\'
+    else
+      !main = !dirName
+    endif
+    -- Move the files to the subfolders
+    do !subNo from 1 to !this.subFolderCount
+      !code = !this.distributeFiles(!main & !subFolders[!subNo], !dirName, !subFolders, !subNo - 1, !action)
+      break if( !code.neq(1) )
+    enddo
+    if( !code.eq(1) ) then
+      !code = !this.distributeFiles(!dirName, !dirName, !subFolders, -99, !action)
+    endif
+  endif
+  return !code
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      upgradeDWG
+--
+-- Description: Dedicated upgrade method for the DWG folders (DWG files)
+-- It handles additionally the PDMS_Overlays subFolders
+--
+-- Note: You should not use here !action = 'DELETE' !!!
+--
+-- Method Type: function
+-- Arguments:
+--    1   R   FILE   Path to process
+--    2   R   REAL   Action to perform in the FULL mode (1 - MOVE, 2 - DELETE)
+-- Return:
+--    REAL    Status code to be put in the array returned by .upgrade method
+------------------------------------------------------------------------
+define method .upgradeDWG(!dir is FILE, !action is REAL) is REAL
+  !s = 'PDMS_Overlays/PDMS_Symbols/PDMS_BackingSheets'
+  !subFolders = !s.split('/')
+  -- Create these three folders first
+  !res = !this.createFolders(!dir, !subFolders)
+  if( !res.eq(1) and !this.doCorrectFolders) then
+    do !subNo from 1 to !this.subFolderCount
+      !subFolders[!subNo] = !this.num2.subString(2 * !subNo - 1, 2) & '\PDMS_Overlays'
+    enddo
+    !dirName = !dir.fullName()
+    if( !dirName.subString(-1,1).eq('\') ) then
+      !main = !dirName
+    else
+      !main = !dirName & '\'
+    endif
+    -- Move the overlays first (PDMS_Overlay)
+    !res = !this.collectFiles(!dirName, !subFolders, !main & 'PDMS_Overlays', !action)
+    if( !res.eq(1) ) then
+      do !subNo from 1 to !this.subFolderCount
+        !subFolders[!subNo] = !subFolders[!subNo].subString(1, 2)
+      enddo
+      -- Then move normal DWG files
+      !res = !this.collectFiles(!dirName, !subFolders, !dirName, !action)
+      if( !res.eq(1) ) then
+        -- This should remove both 00 .. 31 and its PDMS_Overlays folders (if any)
+        !res = !this.removeFolders(!dir, !subFolders)
+      endif
+    endif
+  endif
+  return !res
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      checkDB0JUNK0Single
+--
+-- Description: Checks the single DB0JUNK0 file
+--
+-- Method Type: function
+-- Arguments:
+--    1   R  STRING  The path to the DB0JUNK0 file
+-- Return:
+--    REAL    Status code to be put in the array returned by .upgrade method
+------------------------------------------------------------------------
+define method .checkDB0JUNK0Single(!path is STRING) is REAL
+  !f = object FILE(!path)
+  if( !this.doCorrectFolders ) then
+    !res = -14
+  else
+    !res = -11
+  endif
+  if( !f.exists() ) then
+    if( !f.type().eq('FILE') ) then
+      !res = 1
+    endif
+  elseif( !this.doCorrectFolders ) then
+    !f.open('WRITE')
+    handle ANY
+    elsehandle None
+      !res = 1
+      !f.close()
+    endhandle
+  endif
+  return !res
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      executeBatch
+--
+-- Description: Executes the batch file and reads the result code
+--
+-- Method Type: function
+-- Arguments:
+--    1   R   REAL  The error code to use if SYSCOM call fails
+-- Return:
+--    REAL    Status code to be put in the array returned by .upgrade method
+------------------------------------------------------------------------
+define method .executeBatch(!sysComError is REAL) is REAL
+  !batFile = !this.tempFileName & '.bat'
+  !txtFile = !this.tempFileName & '.txt'
+  !f = object FILE(!batFile)
+  !f.writeFile('OVERWRITE', !this.batLines)
+  !f = object FILE(!txtFile)
+  if( !f.exists() ) then
+    !f.deleteFile()
+  endif
+  !res = 1
+  SYSCOM '$!batFile'
+  handle ANY
+    !res = !sysComError
+  elsehandle None
+    if( !f.exists() ) then
+      !f.open('READ')
+      !line = !f.readRecord()
+      !f.close()
+      !res = $!line
+    endif
+  endhandle
+  return !res
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      handleOutFile
+--
+-- Description: Common code handling the .out file
+--
+-- Method Type: procedure
+-- Arguments:
+--    1   R   REAL    Operation requested
+--    2   R   BOOLEAN Error log setting
+-- Return:
+------------------------------------------------------------------------
+define method .handleOutFile(!opCode is REAL, !errLog is BOOLEAN)
+  if( !errLog ) then
+    !f = object FILE(!this.tempFileName & '.out')
+    if( !opCode.eq(1) ) then
+      !f.open('OVERWRITE')
+      !f.close()
+    elseif( !opCode.eq(2) ) then
+      !f.open('READ')
+      do
+        !line = !f.readRecord()
+        break if( !line.unset() )
+        !this.doLog(!line)
+      enddo
+      !f.close()
+    endif
+  endif
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      createFolders
+--
+-- Description: Checks/creates the given subfolders
+--
+-- Method Type: function
+-- Arguments:
+--    1   R   FILE    Main folder
+--    2   R   ARRAY   Array of subfolders to check/create
+-- Return:
+--    REAL    Status code to be put in the array returned by .upgrade method
+------------------------------------------------------------------------
+define method .createFolders(!dir is FILE, !subFolders is ARRAY) is REAL
+  !fullLog = !this.logLevel.eq(2)
+  !errLog  = !this.logLevel.geq(1)
+  !main = !dir.fullName()
+  if( !main.subString(-1,1).neq('\') ) then
+    !main = !main & '\'
+  endif
+  !this.handleOutFile(1, !errLog)
+  !res = 1 $* OK
+  if( !this.doCorrectFolders ) then
+    !this.batLines.clear()
+    !this.batLines[1] = 'echo off'
+  endif
+
+  do !subName values !subFolders
+    !folderName = !main & !subName
+    !subDir = object FILE(!folderName)
+    if( !subDir.exists() ) then
+      if( !subDir.type().eq('DIRECTORY') ) then
+        !res = !this.checkDB0JUNK0Single(!folderName & '\DB0JUNK0')
+        if( !res.eq(1) ) then
+          if( !fullLog ) then
+            !this.doLog('Folder $!folderName, OK')
+          endif
+        elseif( !errLog ) then
+          if( !res.eq(-11) ) then
+            !msg = 'Folder $!folderName - no DB0JUNK0 file found!'
+          else
+            !msg = 'Folder $!folderName - the file DB0JUNK0 could not be created'
+          endif
+          !this.doLog(!msg)
+        endif
+      else $* FILE
+        if( !this.doCorrectFolders ) then
+          !res = -12 $* error (file exists instead)
+          !msg = 'Folder $!folderName could not be created (file exists instead!)'
+        else
+          !res = -11 $* error (invalid folder structure)
+          !msg = 'Folder $!folderName does not exist!'
+        endif
+        if( !errLog ) then
+          !this.doLog(!msg)
+        endif
+      endif
+    elseif( !this.doCorrectFolders ) then
+      !lines[1] = 'set ARG=$!folderName'
+      !lines[2] = 'mkdir %ARG% > nul'
+      !lines[3] = 'if errorlevel 1 goto MDERR'
+      !lines[4] = 'type nul >$!folderName$n\DB0JUNK0'
+      if( !fullLog ) then
+        !lines[5] = 'echo Folder %ARG% created>>' & !this.tempFileName & '.out'
+      endif
+      !this.batLines.appendArray(!lines)
+    else
+      !res = -11 $* error (invalid folder structure)
+      if( !errLog ) then
+        !this.doLog('Folder $!folderName does not exist!')
+      endif
+    endif
+    break if( !res.neq(1) )
+  enddo
+
+  if( !res.eq(1) and !this.batLines.size().gt(1) ) then
+    !lines[1] = 'goto end'
+    !lines[2] = ':MDERR'
+    if( !errLog ) then
+      !lines[3] = 'echo Folder %ARG%, creation Error!>>' & !this.tempFileName & '.out'
+    endif
+    !lines.append('echo -13>' & !this.tempFileName & '.txt')
+    !lines.append(':end')
+    !lines.append('set ARG=')
+    !this.batLines.appendArray(!lines)
+    if( !errLog ) then
+      !this.doLog('*** Missing folder creation pass')
+    endif
+    !res = !this.executeBatch(-13)
+    !this.handleOutFile(2, !errLog)
+  endif
+  return !res
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      removeFolders
+--
+-- Description: Removes the given subfolders and its contents
+-- Note: The function is always called with doCorrectFolders set to True
+--
+-- Method Type: function
+-- Arguments:
+--    1   R   FILE    Main folder
+--    2   R   ARRAY   Array of subfolders to remove
+-- Return:
+--    REAL    Status code to be put in the array returned by .upgrade method
+------------------------------------------------------------------------
+define method .removeFolders(!dir is FILE, !subFolders is ARRAY) is REAL
+  !fullLog = !this.logLevel.eq(2)
+  !errLog  = !this.logLevel.geq(1)
+  !main = !dir.fullName()
+  if( !main.subString(-1,1).neq('\') ) then
+    !main = !main & '\'
+  endif
+  !this.handleOutFile(1, !errLog)
+  !res = 1 $* OK
+  !this.batLines.clear()
+  !this.batLines[1] = 'echo off'
+
+  do !subName values !subFolders
+    !folderName = !main & !subName
+    !subDir = object FILE(!folderName)
+    if( !subDir.exists() ) then
+      if( !subDir.type().eq('DIRECTORY') ) then
+        !lines[1] = 'set ARG=$!folderName'
+        !lines[2] = 'rmdir /S /Q %ARG% > nul'
+        !lines[3] = 'if errorlevel 1 goto RDERR'
+        if( !fullLog ) then
+          !lines[4] = 'echo Folder %ARG% removed successfully>>' & !this.tempFileName & '.out'
+        endif
+        !this.batLines.appendArray(!lines)
+      elseif( !fullLog ) then
+        !this.doLog('$!folderName is a file not folder - not removed!')
+      endif
+    elseif( !fullLog ) then
+      !this.doLog('Folder $!folderName does not exist - skipped!')
+    endif
+  enddo
+
+  if( !res.eq(1) and !this.batLines.size().gt(1) ) then
+    !lines[1] = 'goto end'
+    !lines[2] = ':RDERR'
+    !lines[3] = 'echo -13>' & !this.tempFileName & '.txt'
+    if( !errLog ) then
+      !lines[4] = 'echo Error removing folder %ARG%>>' & !this.tempFileName & '.out'
+    endif
+    !lines.append(':end')
+    !lines.append('set ARG=')
+    !this.batLines.appendArray(!lines)
+    !res = !this.executeBatch(-13)
+    !this.handleOutFile(2, !errLog)
+  endif
+  return !res
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      distributeFiles
+--
+-- Description: Checks the files in the folder !from, moving them to the appropriate
+-- subFolders under the folder !top. Only files, whose names match the syntax
+-- ?nn-mm-kk-ll.* are considered, assuming that nn is the DB ID, and mm is
+-- the object ID in that database.
+--
+-- Method Type: function
+-- Arguments:
+--    1   R   STRING  Folder containing files to check
+--    2   R   STRING  Top folder having the subfolders to distribute files into
+--    3   R   ARRAY   Array of subFolders names (under !top), where files should be distributed
+--    4   R   REAL    The numerical ID of the folder !from (0..31), or a negative number for the main folder
+--    5   R   REAL    ID of the action to perform on the file (1 - MOVE, 2 - DELETE)
+-- Return:
+--    REAL    Status code to be put in the array returned by .upgrade method
+------------------------------------------------------------------------
+define method .distributeFiles(!from is STRING, !top is STRING, !subDir is ARRAY, !fID is REAL, !action is REAL) is REAL
+  !fullLog = !this.logLevel.eq(2)
+  !errLog  = !this.logLevel.geq(1)
+  !source = object FILE(!from)
+
+  if( !source.exists() ) then
+    if( !source.type().neq('DIRECTORY') ) then
+      if( !errLog ) then
+        !this.doLog('Warning: The path ' & !from & ' does not represent a folder! Skipping ...')
+      endif
+      return 1
+    endif
+  else
+    if( !errLog ) then
+      !this.doLog('Warning: The path ' & !from & ' does not exist! Skipping ...')
+    endif
+    return 1
+  endif
+
+  !arrFiles = !source.files()
+  if( !arrFiles.empty() ) then
+    if( !fullLog ) then
+      !this.doLog('No files found in the folder ' & !from)
+    endif
+  else
+
+    do !ff values !arrFiles
+      !ffName = !ff.fullName()
+      -- determine the subFolder ID, under which the file should be located
+      !id = !this.subFolderID(!ff)
+
+      -- Skip for files not matching the naming convention, or located at the correct place
+      if( !id.eq(-1) ) then
+        if( !fullLog and !ffName.match('DB0JUNK0').eq(0) ) then
+          !this.doLog('The file name ' & !ffName & ' does not match the pattern. Skipping ...')
+        endif
+        skip
+      endif
+      -- Skip if moving files but the folder is already correct
+      if( !id.eq(!fID) and !action.eq(1) ) then
+        if( !fullLog ) then
+          !this.doLog('File ' & !ffName & ', OK')
+        endif
+        skip
+      endif
+
+      -- MOVE
+      if( !action.eq(1) ) then
+        !where = !top & '\' &!subDir[!id + 1] $* 00 is at index 1, 01 at index 2 etc.
+        !unusedRes = !ff.move(!where)
+        handle ANY
+          if( !errLog ) then
+            !this.doLog('Error moving file ' & !ffName & ' to the folder ' & !where & ' [' & !!error.text & ']')
+          endif
+          return -21 $* error while moving files
+        elsehandle None
+          if( !fullLog ) then
+            !this.doLog('File ' & !ffName & ' moved to the folder ' & !where)
+          endif
+        endhandle
+
+      -- DELETE
+      elseif( !action.eq(2) ) then
+        !ff.deleteFile()
+        handle ANY
+          if( !errLog ) then
+            !this.doLog('Error deleting file ' & !ffName & ' [' & !!error.text & ']')
+          endif
+          return -22 $* error while deleting files
+        elsehandle None
+          if( !fullLog ) then
+            !this.doLog('File ' & !ffName & ' deleted')
+          endif
+        endhandle
+      endif
+    enddo
+
+  endif
+  return 1
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      collectFiles
+--
+-- Description: Checks the files in the folders !top\!subFolders[n],
+-- moving them to the folder !target.
+-- Called only with doCorrectFolders set to True
+--
+-- Method Type: function
+-- Arguments:
+--    1   R   STRING  Top folder having the subfolders to collect files from
+--    2   R   ARRAY   Array of subFolders names (under !top), from where files should be collected
+--    3   R   STRING  The name of the target folder to which the files should be collected
+--    4   R   REAL    ID of the action to perform on the file (1 - MOVE, 2 - DELETE)
+-- Return:
+--    REAL    Status code to be put in the array returned by .upgrade method
+define method .collectFiles(!top is STRING, !subFolders is ARRAY, !target is STRING, !action is REAL) is REAL
+  !fullLog = !this.logLevel.eq(2)
+  !errLog  = !this.logLevel.geq(1)
+  !this.handleOutFile(1, !errLog)
+  !this.batLines.clear()
+  !this.batLines[1] = 'echo off'
+
+  do !subName values !subFolders
+    !source = !top & '\' & !subName
+    !f = object FILE(!source)
+    if( !f.exists() ) then
+      if( !f.type().eq('DIRECTORY') ) then
+        if( !f.files().size().gt(0) ) then
+          !lines[1] = 'set ARG=$!source'
+          if( !action.eq(1) ) then
+            !lines[2] = 'MOVE /Y %ARG%\*.* $!target > nul'
+            if( !fullLog ) then
+              !lines[3] = 'echo Moving files from %ARG% to $!target>>' & !this.tempFileName & '.out'
+            endif
+            !lines.append('if errorlevel 1 goto MOVERR')
+          else
+            !lines[2] = 'DEL /Q $!source$n\*.* > nul'
+            if( !fullLog ) then
+              !lines[3] = 'echo Deleting files from folder %ARG%>>' & !this.tempFileName & '.out'
+            endif
+            !lines.append('if errorlevel 1 goto DELERR')
+          endif
+          !this.batLines.appendArray(!lines)
+        elseif( !fullLog ) then
+          !this.doLog('Folder $!source is empty. Skipping ...')
+        endif
+      elseif( !errLog ) then
+        !this.doLog('Warning: The path ' & !source & ' does not represent a folder! Skipping ...')
+      endif
+    elseif( !errLog ) then
+      !this.doLog('Warning: The path ' & !source & ' does not exist! Skipping ...')
+    endif
+  enddo
+
+  if( !this.batLines.size().gt(1) ) then
+    !lines[1] = 'goto end'
+    !lines[2] = ':MOVERR'
+    !lines[3] = 'echo -21>' & !this.tempFileName & '.txt'
+    if( !errLog ) then
+      !lines[4] = 'echo Error moving files from folder %ARG% to $!target>>' & !this.tempFileName & '.out'
+    endif
+    !lines.append('goto end')
+    !lines.append(':DELERR')
+    !lines.append('echo -22>' & !this.tempFileName & '.txt')
+    if( !errLog ) then
+      !lines.append('echo Error deleting files from folder %ARG%>>' & !this.tempFileName & '.out')
+    endif
+    !lines.append(':end')
+    !lines.append('set ARG=')
+    !this.batLines.appendArray(!lines)
+    !code = !this.executeBatch(-21)
+    !this.handleOutFile(2, !errLog)
+  else
+    !code = 1
+  endif
+  return !code
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      subFolderID
+--
+-- Description: Derives the subFolder ID from the file name matching the ?nn-mm-kk-ll.* syntax
+--
+-- Method Type: function
+-- Arguments:
+--    1   R   FILE    File, whose name is to be analysed
+-- Return:
+--    REAL    subFolder ID derived from the file name (or -1 on error)
+------------------------------------------------------------------------
+define method .subFolderID(!file is FILE) is REAL
+  !name = !file.entry() $* file name
+  !parts = !name.split('-')
+  if( !parts.size().eq(4) ) then
+    !ref2 = !parts[2].real()
+    handle (2,441)
+      return -1
+    endhandle
+    -- derive the subFolder ID
+    return !ref2 - INT(!ref2 / !this.subFolderCount) * !this.subFolderCount
+  endif
+  return -1
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      restorePIC
+--
+-- Description: Prepares the code to restore the upgraded PIC-type folder to the old format
+--
+-- Method Type: procedure
+-- Arguments:
+--    1   R   FILE    Main folder to analyse (e.g. %BASPIC%)
+--    2   R   REAL    Dummy argument to keep the same interface as for the upgrade methods
+-- Return:
+--    REAL  Status code
+------------------------------------------------------------------------
+define method .restorePIC(!mainDir is FILE, !dummy is REAL) is REAL
+  !main = !mainDir.fullName()
+  do !subNo from 1 to !this.subFolderCount
+    !subFolders[!subNo] = !this.num2.subString(2 * !subNo - 1, 2)
+  enddo
+  -- Move files from subfolders back to the main folder
+  !res = !this.collectFiles(!main, !subFolders, !main, 1)
+  if( !res.eq(1) ) then
+    -- Remove the 00..31 subfolders
+    !res = !this.removeFolders(!mainDir, !subFolders)
+  endif
+  return !res
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      restoreDWG
+--
+-- Description: Prepares the code to restore the upgraded DWG-type folder to the old format
+--
+-- Method Type: procedure
+-- Arguments:
+--    1   R   FILE    Main folder to analyse (e.g. %BASDWG%)
+--    2   R   REAL    Dummy argument to keep the same interface as for the upgrade methods
+-- Return:
+--    REAL  Status code
+------------------------------------------------------------------------
+define method .restoreDWG(!mainDir is FILE, !dummy is REAL) is REAL
+  -- Now the DWG folder structure is the same as for 11.6
+  return !this.upgradeDWG(!mainDir, 1)
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      restore
+--
+-- Description: Restores the folder structure to the old format
+--
+-- Method Type: procedure
+-- Arguments:
+-- Return:
+------------------------------------------------------------------------
+define method .restore() is ARRAY
+  !res = ARRAY()
+
+  if( !this.validData('RESTORE', !res) ) then
+    if( !this.useCL ) then
+      Write 'Starting the restore of the folder structure. Please wait ...'
+    endif
+    !fullLog = !this.logLevel.eq(2)
+    if( not !this.openLog() ) then
+      !this.logLevel = 0 $* turn off logging, since the log file could not be opened
+      !fullLog = False
+    elseif( !fullLog ) then
+      !this.doLogWithTime('Opening log file. Starting the folder structure restore process')
+    endif
+
+    !ind = 1
+    do !item values !this.processingData
+      !elements = !item.split('|')
+      if( !elements[1].empty() ) then
+        !code = 0 $* no request to upgrade this item
+      else
+        !elements[2] = !elements[2].replace('upgrade', 'restore')
+        !elements[3] = 'RESTORE'
+        -- Path, dedicated upgrade method name, action to perform in the FULL mode
+        !code = !this.process(!elements[1], !elements[2], !elements[3])
+      endif
+      !res[!ind] = !code $* update the code for this item
+      !ind = !ind + 1    $* advance to the next item
+    enddo
+
+    if( !this.logLevel.neq(0) ) then
+      if( !fullLog ) then
+        !this.doLogWithTime('Closing log file')
+      endif
+      !logFName = !this.logFile.fullName()
+      !this.logFile.close()
+    endif
+    if( !this.useCL ) then
+      Write 'Folder restore process has finished!'
+    endif
+  elseif( !this.useCL ) then
+    Write 'Syntax error in the folder restore processing data! Quitting ...'
+  endif
+
+  do !code values !res
+    if( !code.lt(0) ) then
+      if( !this.useCL ) then
+        if( !this.logLevel.eq(0) ) then
+          !msg = 'Errors encountered! See the status codes'
+        else
+          !msg = 'Errors encountered! See the status codes and the log file ' & !logFName
+        endif
+        Write '$!msg'
+        break
+      endif
+    endif
+  enddo
+
+  return !res            $* return result codes
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      errorMsg
+--
+-- Description: Returns the array of error message strings corresponding to the given integer status codes
+--
+-- Method Type: function
+-- Arguments:
+--    1   R   ARRAY    Array of returned status codes
+-- Return:
+--    ARRAY    Output array of corresponding message strings
+------------------------------------------------------------------------
+define method .errorMsg(!res is ARRAY) is ARRAY
+  !out = ARRAY()
+  !ind = 0
+  do !code values !res
+    !ind = !ind + 1
+    !elements = !this.processingData[!ind].split('|')
+    !folder = !elements[1]
+    if( !code.eq(1) ) then
+      if( !this.lastMode.eq('CHECKONLY') ) then
+        !msg = !folder & ' folder structure is correct'
+      elseif( !this.lastMode.eq('RESTORE') ) then
+        !msg = !folder & ' folder structure has been successfully restored'
+      else
+        !msg = !folder & ' folder structure has been successfully verified / updated'
+      endif
+    elseif( !code.eq(0) ) then
+      !msg = ''
+    elseif( !code.eq(-1) ) then
+      !msg = 'Main folder ' & !folder & ' has not been found!'
+    elseif( !code.eq(-2) ) then
+      !msg = 'Operating mode ' & !this.lastMode & ' has not been recognised!'
+    elseif( !code.eq(-3) ) then
+      !msg = 'Dedicated folder upgrade method (' & !elements[2] & ') is not known!'
+    elseif( !code.eq(-4) ) then
+      !msg = 'Syntax error in the processing data!'
+    elseif( !code.eq(-11) ) then
+      !msg = 'Incorrect structure of the ' & !folder & ' folder!'
+    elseif( !code.eq(-12) ) then
+      !msg = 'Error while creating subFolders in the ' & !folder & ' folder (file exists with the same name)!'
+    elseif( !code.eq(-13) ) then
+      !msg = 'Error while creating subFolders in the ' & !folder & ' folder!'
+    elseif( !code.eq(-14) ) then
+      !msg = 'Error while creating the DB0JUNK0 file!'
+    elseif( !code.eq(-21) ) then
+      !msg = 'Error while moving files in the ' & !folder & ' folder!'
+    elseif( !code.eq(-22) ) then
+      !msg = 'Error while deleting files in the ' & !folder & ' folder!'
+    elseif( !code.eq(-31) ) then
+      !msg = 'Error while moving files in the ' & !folder & ' folder during the restore operation!'
+    elseif( !code.eq(-32) ) then
+      !msg = 'Error while removing subFolders in the ' & !folder & ' folder during the restore operation!'
+    elseif( !code.eq(-33) ) then
+      !msg = 'Error while recreating the PDMS_Overlays subFolder in the ' & !folder & ' folder during the restore operation!'
+    else
+      !msg = 'Unknown error while processing the ' & !folder & ' folder!'
+    endif
+    !out.append(!msg)
+  enddo
+  return !out
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      isOK
+--
+-- Description: Returns TRUE, if all status codes indicate success
+--
+-- Method Type: function
+-- Arguments:
+--    1   R   ARRAY    Array of returned status codes
+-- Return:
+--    BOOLEAN    Overall status of the operation (success/failure)
+------------------------------------------------------------------------
+define method .isOK(!res is ARRAY) is BOOLEAN
+  !ok = true
+  do !code values !res
+    if( !code.lt(0) ) then
+      !ok = false
+      break
+    endif
+  enddo
+  return !ok
+endmethod

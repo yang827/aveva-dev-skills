@@ -1,0 +1,601 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            tappingListSelector.pmlobj
+--   Type:          Object Definition
+--   Group:         Non standard Branch Connections
+--     Keyword:     APP
+--   Module:        paragon
+--   Replaces:
+--
+-- Author:          Tony Martin
+-- Created:         22/07/2013 10:44:58
+--
+--
+-- Description:     Object for searching tapping tables and returning lists
+-- of available sizes
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  dtext(ARRAY)                     ARRAY
+--  findBoreSizes(DBREF)             ARRAY               find the bore sizes up to the current branch head size
+--  getAvailableTypes(BORE,BORE)     -
+--  getBoreStrings(REAL,REAL)        -
+--  getCurrentSettings(BORE,BORE)    ARRAY               return a list of types based on thr passed main and
+--  getLowerBores()                  ARRAY
+--  getMaximumBore(DBREF)            -                   find the maximum bore size within the current branch
+--  getTappings(BORE,DBREF)          -                   method to look for the list of available couplings
+--  readTable()                      -                   read the passed tapping table
+--  setBasicDtexts()                 -                   set the standard set of dtexts for if no table is available
+--  setBranchTable(DBREF)            -
+--  setCouplingList()                -                   if the list of available types includes TAP then activate
+--  setListGadget()                  -                   set the form list gadget with the current rtexts
+--  tappingListSelector(DBREF,GADGET) -
+--  tappingListSelector(GADGET,GADGET,GADGET) -
+--
+------------------------------------------------------------------------
+define object TAPPINGLISTSELECTOR
+
+-- the list of main bores available
+member .mainBores      is ARRAY
+-- get the main branch maximum bore
+member  .maxBore       is BORE
+-- the list of lower bores available
+member .reducedBores   is ARRAY
+-- the list of types available
+member .tappingTypes   is ARRAY
+-- an array of arrays of bores available at each size
+member .availableBores is ARRAY
+-- the spec which this list belongs to
+member .spec           is DBREF
+-- store the name of the form gadget which will be populated
+member .listGadget     is GADGET
+-- store the bore sizes available
+member .boreGadget     is GADGET
+-- store the couplings available at the current size
+member .couplingList   is GADGET
+-- switch to activate/deactivate
+member .active         is BOOLEAN
+
+-- save the dtext and rtext
+member .dtext is ARRAY
+member .rtext is ARRAY
+-- store the current tapping table so that it can be re-accessed should we need to
+member .tappingTable is DBREF
+-- set the main branch
+member .branch is DBREF
+--
+
+
+
+endobject
+-- End of object definition for TAPPINGLISTSELECTOR
+------------------------------------------------------------------------
+-- Method:      .tappingListSelector()
+-- Description: Constructor
+-- Basic Constructor to set the gadget dText for default sizes
+--
+--
+------------------------------------------------------------------------
+define method .tappingListSelector(!listGadget is GADGET,!boreGadget is GADGET,!couplingList is GADGET  )
+
+!this.active = FALSE
+!this.setBasicDtexts()
+!this.listGadget = !listGadget
+!this.boreGadget = !boreGadget
+!this.couplingList = !couplingList
+!this.boreGadget.clear()
+!this.setListGadget()
+
+endmethod
+
+------------------------------------------------------------------------
+-- Method:      .tappingListSelector()
+-- Description: Constructor
+-- gets the associated branch tables and sets up the lists
+--
+--
+------------------------------------------------------------------------
+define method .tappingListSelector(!branch is DBREF,!gadget is GADGET )
+
+   !this.active = FALSE
+   !this.listGadget = !gadget
+   -- the branch is the main item which determines where to look for the tapping table
+   !this.spec = !branch.pspec
+   if !this.spec.tapRef.set().and(!this.spec.tapRef.purp.eq('PTAP')) then
+     -- we have a dedicated tapping spec
+     !this.tappingTable = !this.spec.tapRef
+   else
+     -- we do not have a dedicated tapping table we might have a generic one
+     var !coll call all BRTAB with purp eq 'PTAP'
+     if !coll.set() then
+       !this.tappingTable = !coll[1].dbref()
+     else
+       !this.tappingTable = object DBREF()
+     endif
+   endif
+
+   if !this.tappingTable.set() then
+      !this.readTable(!this.tappingTable)
+   endif
+
+   !this.setBasicDtexts()
+   !this.setListGadget()
+
+endmethod
+------------------------------------------------------------------------
+-- Method:      .tappingListSelector(!gadget is GADGET,!action is BOOLEAN)
+-- Description: Finds the available tapping types and bore sizes depending on
+-- the type of NSBC restriction being used
+--
+--
+------------------------------------------------------------------------
+define method .setBranchTable(!branch is DBREF)
+
+
+   !this.branch = !branch
+   !this.active = FALSE
+   !this.tappingTable = object DBREF()
+   if !!pipingsettings.nonStandardBranchTable.eq('3') then
+      -- there is no restriction on the use of tappings
+      !this.setBasicDtexts()
+      !this.setListGadget()
+      !this.getMaximumBore(!this.branch)
+      !this.boreGadget.dtext = !this.findBoreSizes(!branch)
+      !this.active = TRUE
+      return
+    elseif !!pipingsettings.nonStandardBranchTable.eq('1') then
+      !!alert.error('Non Standard Branch connections are not allowed on this Project')
+      !this.listGadget.clear()
+      !this.boreGadget.clear()
+      return error 456
+     elseif !!pipingsettings.nonStandardBranchTable.eq('2') then
+      -- we are using a restriction of only the spec brref tapref when it works
+       !this.tappingTable = !branch.pspec.tapRef
+       if !this.tappingTable.badRef()then
+          !!alert.error('Non Standard Branch connections are not allowed on this Pipe')
+          !this.listGadget.clear()
+          !this.boreGadget.clear()
+          return error 567
+       endif
+     else
+         !this.tappingTable = !!pipingsettings.nonStandardBranchTable.dbref()
+         handle ANY
+          !!alert.error('Non Standard Branch connections are not allowed on this Pipe')
+          !this.listGadget.clear()
+          !this.boreGadget.clear()
+          return error 567
+         endhandle
+    endif
+
+   -- if we get here we have a valid table to read
+   !this.readTable()
+   !this.active = TRUE
+   !this.setBasicDtexts()
+   !this.setListGadget()
+
+endmethod
+
+------------------------------------------------------------------------
+-- Method:      .readTable(!table is DBREF)
+-- Description: read the passed tapping table
+-- configuration
+--
+-- mainBores ia an array with three parts
+-- mainBores[1] is a list of top level SBRTABs by refno
+-- mainBores[2] is a list of bores matching the elements in mainBores[1]
+-- mainBores[3] is a set of arrays in the same order as mainBores[1]
+-- but each array is a further 3 column arrays containing the subcomponents
+-- the three arrays are:
+-- array[1] is a list of top level SSBRTABs by refno for each available branch bore
+-- array[2] is a list of bores matching the elements in array[1]
+-- array[3] is a list of available tapping codes relating to the elements and
+-- bores from arrays 1 and 2
+-- array[3] element format is #STU##SSU##SSA##EXT##TAP#
+-- there is a maximum of 5 types but this could be less
+------------------------------------------------------------------------
+define method .readTable()
+
+   -- get top level bore selectors
+   var !mainSelectors coll all SBRTAB with owner eq $!this.tappingTable for $!this.tappingTable
+   --q var !mainSelectors
+   if !mainSelectors.set() then
+     !mainBores[1] = ARRAY()
+     !mainBores[2] = ARRAY()
+     !mainBores[3] = ARRAY()
+   endif
+   do !a values !mainSelectors
+     !mainBores[1].append(!a.dbref())
+     !mainBores[2].append(!a.dbref().nbore)
+   enddo
+
+   -- now we have the main bores
+   !this.mainBores = !mainBores
+   -- loop through the main bores and find out what bores are available
+      !subBores[1] = ARRAY()
+      !subBores[2] = ARRAY()
+
+   do !a index !this.mainBores[1]
+       !subBores[1] = ARRAY()
+       !subBores[2] = ARRAY()
+       !subBores[3] = ARRAY()
+   -- each main bore can have a number of sub bores
+       var !b coll all SSBRTA with mcount gt 0 for $!this.mainBores[1][$!a]
+       do !c values !b
+         !subBores[1].append(!c.dbref())
+         !subBores[2].append(!c.dbref().nbore)
+         !textString = ''
+         do !d values !c.dbref().members
+           !textString = !textString & !d.typea & '#'
+         enddo
+         -- get rid of the duplicate backslashes
+         !subBores[3].append(!textString)
+       enddo
+       --q var !subBores
+       !this.mainBores[3][$!a] = !subBores
+   enddo
+
+endmethod
+
+------------------------------------------------------------------------
+-- Method:      .getLowerBores(!bore is BORE) is ARRAY
+-- Description: get the list of available bores below the passed bore
+-- it either uses a table or the main size if no table is available
+--
+------------------------------------------------------------------------
+define method .getLowerBores() is ARRAY
+
+-- code for if the NSBC is unrestricted
+if !this.tappingTable.badRef() then
+  -- use the main method for getting reduced bores
+
+  !this.getMaximumBore(!this.branch)
+  !return = !this.findBoreSizes(!this.branch)
+  return !return
+endif
+
+  !this.getMaximumBore(!this.branch)
+
+  -- loop through the bores to get a size list
+  !bores = !this.mainBores[2]
+  !return = ARRAY()
+  !reference = ARRAY()
+  -- first of all find the passed bore
+  do !a index !bores
+     if !bores[!a].eq(!this.maxBore) then
+       !reference = !this.mainBores[3][!a]
+       break
+     endif
+  enddo
+
+  do !b values !reference[2]
+    !return.append(!b.string())
+  enddo
+
+  return !return
+
+endmethod
+
+
+
+------------------------------------------------------------------------
+-- Method:      .getAvailableTypes(!mainBore is BORE,!reducedBore is Bore) is ARRAY
+-- Description: set the object rtext to what is available from the given bores
+-- if the reduced bore is unset then it returns all available rtexts for all sizes
+--
+------------------------------------------------------------------------
+define method .getAvailableTypes(!mainBore is BORE,!reducedBore is BORE)
+
+
+-- code for if the NSBC is unrestricted
+if !this.tappingTable.badRef() then
+  !this.setBasicDtexts()
+  return
+endif
+
+
+  -- loop through the bores to get a size list
+  !bores = !this.mainBores[2]
+  !strings = ARRAY()
+  !reference = ARRAY()
+  !temp = ARRAY()
+  -- first of all find the passed bore
+  do !a index !bores
+     if !bores[!a].eq(!mainBore) then
+       !reference = !this.mainBores[3][!a]
+       break
+     endif
+  enddo
+
+  if !reducedBore.unset() then
+    do !b values !reference[3]
+        !strings.append(!b)
+    enddo
+  else
+    do !b index !reference[3]
+      if !reference[2][!b].eq(!reducedBore) then
+        --q var !reference[3][!b]
+        !strings.append(!reference[3][!b])
+        break
+      endif
+    enddo
+
+  endif
+
+  do !splitString values !strings
+    -- now we need to set up the rtext
+    !splitString =  !splitString & '%'
+    !splitString = !splitString.replace('%#','').replace('#%','')
+    !list = !splitString.split('#')
+    !temp.appendarray(!list)
+  enddo
+
+  !temp.unique()
+
+  -- now set the dtext and rtext
+  !this.setBasicDtexts()
+  do !a index !this.rtext
+   !val = !temp.findFirst(!this.rtext[!a])
+   if !val.unset() then
+     !this.rtext.deletefrom(!a,1)
+     !this.dtext.deletefrom(!a,1)
+   else
+     skip
+   endif
+  enddo
+
+  !this.rtext.compress()
+  !this.dtext.compress()
+  !this.setListGadget()
+  handle 111
+    !!pipeTappings.resetBranchVariables()
+    !!pipeTappings.defaultGadgets(TRUE)
+    return error 111 noalert
+  endhandle
+
+
+endmethod
+
+------------------------------------------------------------------------
+-- Method:      .getCurrentSettings(!mainBore is bore,!branchBore is bore)
+-- Description: return a list of types based on thr passed main and
+-- branch bores this is the main method for searching
+--
+------------------------------------------------------------------------
+define method .getCurrentSettings(!mainBore is BORE,!branchBore is BORE) is ARRAY
+
+
+   !this.rtext = ARRAY()
+   !this.dtext = ARRAY()
+   !return = ARRAY()
+   !index = !this.mainBores[2].findFirst(!mainBore)
+   if !index.unset() then
+     !return[1] = 'No types available'
+     return !return
+   endif
+
+
+   -- index is set so we have found the position of the main bore
+   -- table is mainBore[3][!index]
+   !subIndex = !this.mainBores[3][!index][2].findFirst(!branchBore)
+
+   if !subIndex.unset() then
+     !return[1] = 'No types available'
+     return !return
+   endif
+
+   -- subindex is set so we have found the position of the main bore and the subbores
+   -- table is mainBore[3][!index][!subIndex]
+   !splitString = !this.mainBores[3][!index][3][!subIndex]
+   !splitString =  !splitString & '%'
+   !splitString = !splitString.replace('%#','').replace('#%','')
+
+   !return = !splitString.split('#')
+
+   return !return
+
+endmethod
+
+------------------------------------------------------------------------
+-- Method:      .getBoreStrings(!main is REAL,!branch is REAL)
+-- Description: take two bores and search for the valid connections at
+-- these sizes
+-- this method is for use with real values rather than bore values
+--
+------------------------------------------------------------------------
+define method .getBoreStrings(!main is REAL,!branch is REAL)
+
+   !mainBore   = !main.bore()
+   !branchBore = !branch.bore()
+
+   !this.rtext = !this.getCurrentSettings(!mainBore,!branchBore)
+   if !this.rtext[1].eq('No types available') then
+     !this.dtext = !this.rtext
+     !this.rtext[1] = ''
+     return
+   else
+     !this.dtext = !this.dtext(!this.rtext)
+   endif
+
+endmethod
+
+------------------------------------------------------------------------
+-- Method:      .dtext(!input is array) is array
+-- Description: returns the equivalent detail text from the passed array of rtexts
+--
+------------------------------------------------------------------------
+define method .dtext(!input is ARRAY) is ARRAY
+
+   -- input an array of texts and return the equivalent dtext
+   !return = ARRAY()
+
+   do !a values !input
+     !return.append(!a.replace('STU','Insert Connection').replace('SSU','Surface Connection').replace('SSA','Saddle Connection').replace('SEX','Extruded Connection').replace('TAP','Boss Connection'))
+   enddo
+
+   return !return
+
+endmethod
+
+------------------------------------------------------------------------
+-- Method:      .setBasicDtexts()
+-- Description: set the standard set of dtexts for if no table is available
+-- or we have decided that we don't want to use it
+--
+------------------------------------------------------------------------
+define method .setBasicDtexts()
+
+   !dtext[1] = 'Insert Connection'
+   !rtext[1] = 'STU'
+   !dtext[2] = 'Surface Connection'
+   !rtext[2] = 'SSU'
+   !dtext[3] = 'Saddle Connection'
+   !rtext[3] = 'SSA'
+   !dtext[4] = 'Extruded Connection'
+   !rtext[4] = 'SEX'
+   !dtext[5] = 'Boss Connection'
+   !rtext[5] = 'TAP'
+
+   !this.dtext = !dtext
+   !this.rtext = !rtext
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .getMaximumBore
+--
+-- Description: find the maximum bore size within the current branch
+--
+--
+------------------------------------------------------------------------
+define method .getMaximumBore(!branch is DBREF)
+
+ if !branch.pspec.unset() then
+   return !!alert.error('Selected branch does not have a PSPEC set')
+   return object ARRAY()
+ endif
+
+ if !branch.hBore.unset() then
+   return !!alert.error('Selected branch does not have its hBore set')
+   return object ARRAY()
+ endif
+
+ !bore = !branch.hBore
+
+ -- loop round the branch members to find the largest bore
+ if !branch.members.size().gt(0) then
+   do !a values !branch.members
+     !testBore = !a.aBore
+     handle ANY
+       skip
+     endhandle
+     if !testBore.gt(!bore) then
+       !bore = !testBore
+     endif
+      !testBore = !a.lBore
+     handle ANY
+       skip
+     endhandle
+     if !testBore.gt(!bore) then
+       !bore = !testBore
+     endif
+   enddo
+ endif
+
+ -- set the maximum bore to display on the form
+ !this.maxBore = !bore
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .findBoreSizes
+--
+-- Description: find the bore sizes up to the current branch head size
+-- This is only called if no tapping table is available
+--
+--
+------------------------------------------------------------------------
+define method  .findBoreSizes(!branch is DBREF) is ARRAY
+
+ --get the available bores from the piping spec object
+ !spec = object SPECIFICATION(!branch.pspec)
+ !bores = !spec.bores
+ !return = ARRAY()
+ do !a values !bores
+   if !a.leq( !this.maxBore ) then
+      !return.append(!a.string())
+   endif
+ enddo
+
+ return !return
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      .setListGadget()
+--
+-- Description: set the form list gadget with the current rtexts
+-- methods
+--
+--
+------------------------------------------------------------------------
+define method .setListGadget()
+
+if !this.dtext.size().eq(0) then
+  !!alert.error('No tapping connections available at this Bore size. Please select another branch')
+  return error 111
+endif
+
+!this.listGadget.dtext = !this.dtext
+!this.listGadget.rtext = !this.rtext
+
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      .setCouplingList()
+--
+-- Description: if the list of available types includes TAP then activate
+-- them
+-- methods
+--
+--
+------------------------------------------------------------------------
+define method .setCouplingList()
+
+!test = !this.rtext.findFirst('TAP')
+if !test.unset() then
+  -- set the coupling list to none
+  !dtext[1] = 'None'
+  !this.couplingType.val = 1
+  !this.couplingType.active = FALSE
+endif
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .getTappings(!bore is BORE)
+--
+-- Description: method to look for the list of available couplings
+-- methods
+--
+--
+------------------------------------------------------------------------
+define method .getTappings(!bore is BORE,!pspe is DBREF)
+
+
+     -- at this point we need to populate the list of available components
+     !this.couplingComponents = object COUPLINGLIST(!pspe, !!pipeTappings,!bore )
+     !this.couplingComponents.populatecomponents()
+
+
+endmethod
+--end of code

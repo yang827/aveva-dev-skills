@@ -1,0 +1,392 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            mdsselectioncriteria.pmlobj
+--   Type:          Object Definition
+--   Group:         Multi-discipline Supports
+--     Keyword:     MDS
+--   Module:
+--   Replaces:
+--
+-- Author:          Karel Pleschner
+-- Created:         27/06/2012 18:06:14
+--
+--
+-- Description:
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  anyCustomActive()                BOOLEAN             Test if any from five custom criteria is active
+--  mdsSelectionCriteria()           -                   Default constructor
+--  newData(REAL)                    DBREF
+--  passed(DBREF,DBREF)              STRING              Test branch with user-defined criteria
+--  passed(DBREF,DBREF,REAL)         BOOLEAN             Test branch with one user-defined criteria
+--  temperature(DBREF)               REAL                Custom test on temperature
+--  writeCriteria()                  -                   Save all criteria data into PARAGON
+--  writeTemp()                      -                   Save temperature in FUNC attribute of /MDS/SELECTION-CRITERIA/TEMP/DTSE
+--
+define object MDSSELECTIONCRITERIA
+
+  member .temp is STRING
+  member .description is ARRAY
+  member .expression is ARRAY
+  member .data is ARRAY
+  member .active is ARRAY
+
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:      mdsSelectionCriteria
+--
+-- Description: Default constructor
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]      [Description]
+--
+-- Return:
+--   [Data Type]       [Description]
+--
+------------------------------------------------------------------------
+
+define method .mdsSelectionCriteria()
+
+  !testresult = object BOOLEAN()
+  do !c from 1 to 5
+    !this.expression[!c] = object EXPRESSION()
+    !this.description[!c] = ''
+    !this.data[!c] = nulref
+    !this.active[!c] = false
+    !data = object DBREF('/MDS/SELECTION-CRITERIA/' & !c & '/DATA')
+    handle ANY
+      skip
+    endhandle
+    !this.data[!c] = !data
+    !expr = object EXPRESSION(!data.ppro)
+    handle ANY
+      skip
+    endhandle
+    !testresult = !expr.evaluate(worl)
+    handle ANY
+      skip
+    elsehandle NONE
+      skip if !testresult.objecttype().neq('BOOLEAN')
+    endhandle
+    !this.expression[!c] = !expr
+    !this.description[!c] = !data.desc
+    !this.active[!c] = !data.owne.owne.:mdsactive.and(!expr.set())
+  enddo
+
+  !this.temp = 'TEMP of BRAN'
+  !tempdata = object DBREF('/MDS/SELECTION-CRITERIA/TEMP/DTSE')
+  handle ANY
+    return
+  endhandle
+  !temp = !tempdata.func
+  if !temp.empty().not() then
+    !this.temp = !temp
+  endif
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      temperature
+--
+-- Description: Custom test on temperature
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#]    [R/RW] [Data Type] [Description]
+--    bran   R      DBREF       Branch pointer for custon expression evaluation
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .temperature(!bran is DBREF) is REAL
+
+  -- user temperature calculation
+  !expr = object BLOCK(!this.temp & ' of ' & !bran)
+  handle ANY
+  elsehandle NONE
+
+    !temp = !expr.evaluate()
+
+    handle ANY
+    endhandle
+  endhandle
+
+  if (DEFINED(!temp)) then
+    return !temp
+  endif
+
+  -- standard temperature calculation
+  return object REAL()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      passed
+--
+-- Description: Test branch with user-defined criteria
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#]      [R/RW] [Data Type] [Description]
+--   spco      R      DBREF       Attachment (if already created and properties altered)
+--                                or specification to use with attachment
+--   bran      R      DBREF       Branch of pipe on which attachment is created
+--
+-- Return:
+--   [Data Type] [Description]
+--    STRING     Empty on pass, else contains number of failing criteria
+------------------------------------------------------------------------
+
+define method .passed(!spco is DBREF, !bran is DBREF) is STRING
+
+  !error = ''
+  do !c indices !this.expression
+    !passed = !this.passed(!spco,!bran,!c)
+    handle 99
+      --we only handle error 99 for user defined checking functions
+      !function = '!!' + !this.expression[!c].string().upcase().after('!!').before('USERFUNCBRACK') + '()'
+      !desc = !this.description[!c]
+      if !desc.empty() then
+        !desc = 'Criteria ' & !c
+      endif
+      !error = 'An unhandled error has been detected in the user defined checking function $!function, please debug user defined program listing for "' & !desc & '".'
+      break
+    endhandle
+    if (!passed.not()) then
+      !desc = !this.description[!c]
+      if !desc.empty() then
+        !desc = 'Criteria ' & !c
+      endif
+      !error = 'Pipe does not meet user defined criteria "' & !desc & '".'
+      break
+    endif
+  enddo
+  return !error
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      passed
+--
+-- Description: Test branch with one user-defined criteria
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#]      [R/RW] [Data Type] [Description]
+--   spco      R      DBREF       Attachment (if already created and properties altered)
+--                                or specification to use with attachment
+--   bran      R      DBREF       Branch of pipe on which attachment is created
+--   index     R      REAL        Number of tested criteria
+--
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True on passed, false on failed
+------------------------------------------------------------------------
+
+define method .passed(!spco is DBREF, !bran is DBREF, !index is REAL) is BOOLEAN
+
+
+  !passed = true
+  if !this.active[!index].not() then
+    return !passed
+  endif
+
+  --process user defined checking functions. We look for the keyword USERFUNCBRACK in the expression string which is equal to '()' i.e. the function call brackets
+  if !this.expression[!index].string().upcase().match('USERFUNCBRACK').gt(0) then
+    --our user defined checking function must be of the form !!function() we cannot accept any arguments and it must have a boolean return type
+    !function = '!!' + !this.expression[!index].string().upcase().after('!!').before('USERFUNCBRACK') + '()'
+    !passed = $!function
+    handle ANY
+      return error 99
+    endhandle
+  else
+    --we have a valid expression so process it instead
+    !passed = !this.expression[!index].evaluate(!spco)
+    handle ANY
+    endhandle
+  endif
+  if !passed.unset() then
+    !passed = true
+  endif
+
+  return !passed
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      writeCriteria
+--
+-- Description: Save all criteria data into PARAGON
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .writeCriteria()
+
+  !washere = !!ce
+  do !c indices !this.data
+    if (!this.data[!c].unset()) then
+      !this.data[!c] = !this.newData(!c)
+    endif
+    !data = !this.data[!c]
+    !data.owne.owne.:mdsactive = !this.active[!c]
+    !data.desc = !this.description[!c]
+    !data.ppro = !this.expression[!c].string()
+    handle ANY
+      !!ce = !data
+      unsetruse
+      !data.ppro = !this.expression[!c].string()
+      handle ANY
+        !!ce = !data
+        ppro unset
+      endhandle
+    endhandle
+  enddo
+
+  !this.writeTemp()
+
+  !!ce = !washere
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      newData
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .newData(!idx is REAL) is DBREF
+  !washere = !!ce
+  !!ce = object DBREF('/MDS/SELECTION-CRITERIA') $*/' & !c & '/DATA')
+  handle ANY
+    !!ce = /MDS/OPTION/DEFAULTS
+    LAST CATA
+    NEW CATA /MDS/SELECTION-CRITERIA
+  endhandle
+  !!ce = object DBREF('/MDS/SELECTION-CRITERIA/' & !idx)
+  handle ANY
+    NEW SECT /MDS/SELECTION-CRITERIA/$!<idx>
+  endhandle
+  !!ce = object DBREF('/MDS/SELECTION-CRITERIA/' & !idx & '/DTSE')
+  handle ANY
+    NEW DTSE /MDS/SELECTION-CRITERIA/$!<idx>/DTSE
+  endhandle
+  !!ce = object DBREF('/MDS/SELECTION-CRITERIA/' & !idx & '/DATA')
+  handle ANY
+    NEW DATA /MDS/SELECTION-CRITERIA/$!<idx>/DATA
+  endhandle
+  !data = !!ce
+  !!ce = !washere
+  return !data
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      writeTemp
+--
+-- Description: Save temperature in FUNC attribute of /MDS/SELECTION-CRITERIA/TEMP/DTSE
+--              Remove /MDS/SELECTION-CRITERIA/TEMP section if default used
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#]   [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .writeTemp()
+
+  !washere = !!ce
+  if (!this.temp.eq('TEMP of BRAN') or !this.temp.empty() ) then
+    -- delete setting in paragon if default value used
+    !!ce = object DBREF('/MDS/SELECTION-CRITERIA/TEMP')
+    handle ANY
+    elsehandle NONE
+      delete SECT
+    endhandle
+    !!ce = !washere
+    return
+  endif
+
+  !!ce = object DBREF('/MDS/SELECTION-CRITERIA') $*/' & !c & '/DATA')
+  handle ANY
+    !!ce = /MDS/OPTION/DEFAULTS
+    LAST CATA
+    NEW CATA /MDS/SELECTION-CRITERIA
+  endhandle
+  !!ce = object DBREF('/MDS/SELECTION-CRITERIA/TEMP')
+  handle ANY
+    NEW SECT /MDS/SELECTION-CRITERIA/TEMP
+  endhandle
+  !!ce = object DBREF('/MDS/SELECTION-CRITERIA/TEMP/DTSE')
+  handle ANY
+    NEW DTSE /MDS/SELECTION-CRITERIA/TEMP/DTSE
+  endhandle
+
+  !!ce.func = !this.temp
+  !!ce = !washere
+
+endmethod
+
+
+------------------------------------------------------------------------
+--
+-- Method:      anyCustomActive
+--
+-- Description: Test if any from five custom criteria is active
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     Return true if any from five custom criteria is active
+------------------------------------------------------------------------
+
+define method .anyCustomActive() is BOOLEAN
+
+  do !actSet values !this.active
+    if !actSet then
+      return true
+    endif
+  enddo
+  return false
+
+endmethod

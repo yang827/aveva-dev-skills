@@ -1,0 +1,1867 @@
+-----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            isodrwg.pmlobj
+--   Type:          Object Definition
+--   Group:         ISOADP
+--     Keyword:     Drawing
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         27 March 2001
+--
+--
+-- Description:
+-- Holds the data for the Isometric drawing and creates it
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  clear()                          -                   Clear all necessary arrays
+--  create()                         ISODISPLAYDRWG      Create the drawing
+--  getNextRev(STRING)               STRING              Determine the next revision
+--  isoDrwg(DBREF,BOOLEAN)           -                   Constructor
+--  setSettings(ARRAY)               -                   Set these member settings to the passed values
+--
+------------------------------------------------------------------------
+define object ISODRWG
+
+  member .reference    is DBREF
+
+  member .update       is BOOLEAN
+
+  member .elementRefe  is DBREF
+  member .type         is STRING
+
+  member .sheetRefes   is ARRAY
+  member .spools       is ARRAY
+
+  member .isoDirection is REAL
+  member .registry     is DBREF
+  member .defaults     is ISODEFAULTS
+  member .revision     is ISOREVISION
+
+  member .penetrations is ARRAY
+  member .supports     is ARRAY
+  member .contFrom     is ARRAY
+  member .contTo       is ARRAY
+  member .contOn       is ARRAY
+
+  member .visible      is BOOLEAN
+
+  member .device       is STRING
+
+  member .module       is  ISOMODULE
+
+endobject
+
+-----------------------------------------------------------------------
+--
+-- Method:      .isoDrwg(ARRAY)
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       The element being drawn
+--    2   R      BOOLEAN     Whether to update if the drawing exists, otherwise create or recreate
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .isoDrwg(!elementRefe is DBREF, !update is BOOLEAN)
+
+  -- Store element and update
+  !this.elementRefe = !elementRefe
+  !this.type        = !elementRefe.type.upcase()
+  !this.update      = !update
+
+  -- Get the device
+  VAR !device DEVICE
+  !this.device = !device
+
+endmethod
+-- End of method definition for .isoDrwg(ARRAY)
+
+------------------------------------------------------------------------
+--
+-- Method:        .clear()
+--
+-- Description:   Clear all necessary arrays
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .clear()
+
+  -- Clear all relevant arrays
+  !this.elements.clear()
+  !this.spools.clear()
+  !this.penetrations.clear()
+  !this.supports.clear()
+  !this.contFrom.clear()
+  !this.contTo.clear()
+  !this.contOn.clear()
+
+endmethod
+-- End of method definition for .clear()
+
+------------------------------------------------------------------------
+--
+-- Method:      .create()
+--
+-- Description: Create the drawing
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .create() is ISODISPLAYDRWG
+
+  -- Initialise variables
+  !type          = !this.type
+  !direction     = 'ISO' & !this.isoDirection
+  !lineNumbRule  = !this.defaults.lineNumbRule
+  !numberShts    = !this.spools.size()
+  !revType       = !this.revision.revType
+  !narrSymbol    = !this.defaults.narrSymbols[!this.isoDirection]
+  !ruleRefe      = !this.defaults.reprRuleset
+  !existingShts  = 0
+  !existingIdli  = ARRAY()
+  !drawLists     = ARRAY()
+  !autoLists     = ARRAY()
+  !adjacentLists = ARRAY()
+
+  -- Problems drawing Cable elements means we have to play with the ARCTOL settings, the below settings are working as of 12.0.SP6
+  -- they were tried at 12.1.SP1 but failed so these settings have been used, they may well need to be tweaked if code changes.
+  if (!type.eq('HVAC')) then
+    !arctol = '1'
+
+  else
+    !arctol = '5'
+
+  endif
+
+  -- Extract drawing name from the hvac/cway level, whilst testing for spaces & leading slash
+  VAR !drawingName EVAL $!<this.defaults.drwgNameRule> FOR $!<this.elementRefe>
+  if (!drawingName[1].match(' ').neq(0)) then
+
+    !rootName = !this.elementRefe.flnn
+    !!isoLog.add('  The extracted Drawing Name has spaces. Using the database name')
+
+  else
+
+    if (!drawingName[1].substring(1,1).eq('/')) then
+      !rootName = !drawingName[1].substring(2)
+    else
+      !rootName = !drawingName[1]
+    endif
+
+  endif
+
+  -- Build names
+  !libyName  = !rootName & '/Library'
+  !dllbName  = !rootName & '/Dlst'
+  !dllbSName = !rootName & '/Dlst-Subsidiary'
+  !drwgName  = !rootName & '/Drawing'
+  !sheeName  = !rootName & '/Sheet'
+
+  -- Read status options file
+  !file = object FILE('%PDMSDFLTS%\IsoADP\DRA-ISO-STATUS')
+  if (!file.exists()) then
+    !contents = !file.readfile()
+    !dfltStatus = !contents[5]
+  else
+    !dfltStatus = 'Unchecked'
+  endif
+
+  -- Get date in correct format
+  !date = !!isoDate(!this.defaults)
+
+  -- Get backing sheet data
+  !backObj     = object ISOBACK(!this.defaults.backingSheet)
+  !backRefe    = !backObj.reference
+  !shtSize     = !backObj.size
+  !viewOrigin  = 'X' & !backObj.viewOrigin.east.value() & 'Y' & !backObj.viewOrigin.north.value()
+  !viewXlen    = !backObj.viewXlen
+  !viewYlen    = !backObj.viewYlen
+  !locOrigin   = 'X' & !backObj.locOrigin.east.value() & 'Y' & !backObj.locOrigin.north.value()
+  !locXlen     = !backObj.locXlen
+  !locYlen     = !backObj.locYlen
+  !keypOrigin  = 'X' & !backObj.keypOrigin.east.value() & 'Y' & !backObj.keypOrigin.north.value()
+  !keypXlen    = !backObj.keypXlen
+  !keypYlen    = !backObj.keypYlen
+  !mtoOrigin   = 'X' & !backObj.mtoOrigin.east.value() & 'Y' & !backObj.mtoOrigin.north.value()
+  !mtoXlen     = !backObj.mtoXlen
+  !mtoYlen     = !backObj.mtoYlen
+  !northOrigin = 'X' & !backObj.northOrigin.east.value() & 'Y' & !backObj.northOrigin.north.value()
+
+  -- Get user login name
+  !drawnBy = !!isoLogin()
+
+  -- Access the register
+  !!ce = !this.registry
+
+  -- ---------------------------------------------------------------------------------------------
+  -- Test if drawing exists
+  VAR !exist EXIST /$!drwgName
+  if (!exist.eq(|TRUEA|)) then
+
+    DRWG /$!drwgName
+
+    -- Update the existing drawing
+    if (!this.update) then
+
+      -- Get all existing sheets, eliminating any marked as deleted
+      VAR !allLiveShts COLL ALL SHEE WI :IdpIsoStatus NEQ 'Deleted' FOR CE
+
+      -- Get number of existing sheets
+      !existingShts = !allLiveShts.size()
+
+      -- Set update description
+      !updateDesc = 'Updating'
+
+    -- Recreate the existing drawing
+    else
+
+      DELETE DRWG MEM
+
+      !updateDesc   = 'Recreating'
+
+    endif
+
+  else
+
+    NEW DRWG /$!drwgName
+     TITLE |$!type ISOMETRIC|
+     SPPURP ISOADP
+     FUNC |Isometric ADP|
+
+    -- Set drwg number
+    !!isoDrwgNo(!type, !this.elementRefe, !!ce, !this.defaults)
+
+    -- Set update method as creating
+    !updateDesc = 'Creating'
+
+  endif
+
+  !drwgRefe = !!ce
+
+  -- DRAWLISTS ----------------------------------------------------------------------------------------------
+
+  -- HVAC
+  if (!type.eq('HVAC')) then
+
+    -- Test if the library exists
+    VAR !exist EXIST /$!libyName
+    if (!exist.eq(|TRUEA|)) then
+
+      DLLB /$!dllbName
+      !existingIdli = !!ce.mem
+
+    else
+
+      NEW LIBY /$!libyName
+      NEW DLLB /$!dllbName
+
+    endif
+
+    !dllbRefe = !!ce
+
+    -- Add log message
+    !!isoLog.add('')
+    !!isoLog.add('  Creating the drawlists for ' & !rootName)
+
+    -- Create the drawlists
+    do !index ind !this.spools
+
+      !spool    = !this.spools[!index]
+      !idliName = !dllbName & '-Sht' & !index
+
+      -- Test for existing idlist
+      if (!existingIdli.size().eq(0) or undefined(!existingIdli[!index])) then
+
+        NEW IDLI /$!idliName
+        FUNC |$!index|
+
+      else
+
+        -- Clear the existing
+        !!ce = !existingIdli[!index]
+        DELETE IDLI MEM
+        handle (2,618)
+          -- (2,618)   Unable to claim all elements below ....
+          !!alert.error('Drawings are already claimed by another user, correct and re-run')
+          return
+        endhandle
+
+     endif
+
+      !drawLists.append(!!ce)
+
+      -- Add the spool components
+      do !component val !spool.components
+       ADD $!component
+      enddo
+
+    enddo
+
+  -- CWAY
+  else
+
+    -- Test if the library exists
+    VAR !exist EXIST /$!libyName
+    if (!exist.eq(|TRUEA|)) then
+
+      -- Get the existing drawlists
+      DLLB /$!dllbName
+      !dllbRefe     = !!ce
+      !existingIdli = !!ce.mem
+
+      -- Sort the drawlists into sheet order
+      !getFunc = object BLOCK('!existingIdli[!evalIndex].func')
+      !allFunc = !existingIdli.evaluate(!getFunc)
+      !sorted  = !allFunc.sortedIndices()
+      !existingIdli.reIndex(!sorted)
+
+    else
+
+      NEW LIBY /$!libyName
+      NEW DLLB /$!dllbName
+
+      !dllbRefe = !!ce
+
+      NEW DLLB /$!dllbSName
+        SPPURP CWSUBS
+
+      !dllbSRefe = !!ce
+
+    endif
+
+    -- Add log message
+    !!isoLog.add('')
+    !!isoLog.add('  Creating the drawlists for ' & !rootName)
+
+    -- Create the drawlists
+    do !index ind !this.spools
+
+      !spool     = !this.spools[!index]
+      !idliName  = !dllbName & '-Sht' & !index
+      !idliAName = !dllbName & '-Sht' & !index & '.1'
+      !idliBName = !dllbName & '-Sht' & !index & '.2'
+
+      -- For non-existing id lists
+      if (!existingIdli.size().eq(0) or undefined(!existingIdli[!index])) then
+
+        -- Build the subsidiary id lists
+        !!ce = !dllbSRefe
+
+        -- The spool parts
+        NEW IDLI /$!idliAName
+         FUNC |$!index|
+         SPPURP PARTSL
+
+        -- We will use this id list for auto limits
+        !autoLists.append(!!ce)
+
+        -- Add the parts
+        do !component val !spool.components
+          ADD $!component
+        enddo
+
+        -- The adjacent parts
+        NEW IDLI /$!idliBName
+         FUNC |Adjacent|
+         SPPURP ADJCNT
+
+        -- We will use this id list for a local representation
+        !adjacentLists.append(!!ce)
+
+        -- Add the parts
+        do !component val !spool.adjacent
+          ADD $!component
+        enddo
+
+        -- Build the main id list
+        !!ce = !dllbRefe
+
+        NEW IDLI /$!idliName
+         FUNC |$!index|
+
+        -- We will use this id list for the graphical view contents
+        !idliRefe = !!ce
+
+        -- Add the subsidiary id lists
+        ADD /$!idliAName
+        ADD /$!idliBName
+
+      -- Use the existing
+      else
+
+        -- We have the main id list
+        !idliRefe = !existingIdli[!index]
+
+        -- Get the existing subsidiary id lists
+        VAR !allIdli EVAL IDNM FOR ALL ADDE FOR $!idliRefe
+
+        -- Clear the existing subsidiary id lists
+        do !idli val !allIdli
+
+          !!ce = !idli.dbref()
+
+          DELETE IDLI MEM
+            handle (2,618)
+              -- (2,618)   Unable to claim all elements below ....
+              !!alert.error('Drawings are already claimed by another user, correct and re-run')
+              return
+            endhandle
+
+          -- Add the adjacent parts
+          if (!!ce.func.eq('Adjacent')) then
+
+            do !component val !spool.adjacent
+              ADD $!component
+            enddo
+
+          -- Add the spool parts
+          else
+
+            -- We will use this id list for auto limits
+            !autoLists.append(!!ce)
+
+            do !component val !spool.components
+              ADD $!component
+            enddo
+
+          endif
+
+        enddo
+
+      endif
+
+      !drawLists.append(!idliRefe)
+
+    enddo
+
+  endif
+
+  -- ----------------------------------------------------------------------------------------------
+
+  !!ce = !drwgRefe
+
+  -- Build display object
+  !displayObj = object ISODISPLAYDRWG(!drwgRefe)
+
+  -- Extract line number
+  VAR !value EVAL $!lineNumbRule FOR $!<this.elementRefe>
+  :IdpLineNo |$!value[1]|
+
+  -- Set drwg attributes as defined by defaults file DRA-ISO-ATTRIB & DRA-ISO-ATTRIB-CWAY
+  -- This is so values can be added to the DRWG element for use on the sheet
+  -- Specifically in the title block
+  -- THE EXTRACTION IS CARRIED OUT AT THE COMPONENT LEVEL
+  -- Avoid unsuitable component types
+  do !compRefe val !this.spools[1].components
+
+    -- For CWAY avoid POINTR elements
+    skip if (!compRefe.type.upcase().eq('POINTR'))
+
+    -- Use this element
+    !component = !compRefe
+
+    -- We are done
+    break
+
+  enddo
+
+  -- Get the relevant attribute array depending on discipline
+  -- HVAC
+  if (!type.eq('HVAC')) then
+    !attributeRules = !this.defaults.drwgAttribs
+  else
+    !attributeRules = !this.defaults.cwayDrwgAttribs
+
+  endif
+
+  -- Get the attribute data
+  do !attrib val !attributeRules
+    !bits = !attrib.split(';')
+    VAR !value EVAL $!bits[2] FOR $!component
+    $!bits[1] |$!value[1]|
+  enddo
+
+  -- Set message
+  !!isoPrompt(!updateDesc & ' drawing ' & !rootName,1)
+  !!isoLog.add(' ')
+  !!isoLog.add(' ' & !updateDesc & ' drawing for ' & !type & ' No: ' & !drwgName)
+
+  -- Set the percentage complete
+  -- Creating a sheet is half of the effort and update design is the other
+  !!isoProcess.setPercent(50 / !numberShts)
+
+  -- ----------------------------------------------------------------------------------------------
+
+  -- Create hierarchy
+  do !shtNumber from 1 to !numberShts
+
+    -- Log message
+    !!isoLog.add('  ' & !updateDesc & ' sheet ' & !shtNumber & ' of ' & !numberShts)
+
+    -- Change method for extra sheets required on update
+    if (!updateDesc.eq('Updating') and !shtNumber.gt(!existingShts)) then
+      !updateDesc = 'Creating'
+    endif
+
+    -- Set message
+    !!isoPrompt(' ' & !updateDesc & ' sheet ' & !shtNumber & ' of ' & !numberShts,2)
+
+    -- Create sheet
+    if (!updateDesc.eq('Updating') and !shtNumber.leq(!existingShts)) then
+      SHEE /$!sheeName$!shtNumber
+        handle (2,109)
+          NEW SHEE /$!sheeName$!shtNumber  SIZE $!shtSize[1] $!shtSize[2]
+        endhandle
+
+    else
+      NEW SHEE /$!sheeName$!shtNumber
+       SIZE $!shtSize[1] $!shtSize[2]
+
+    endif
+
+    -- Set sheet attributes
+    TITL |$!rootName|
+    FUNC |$!type|
+    SPPURP ISOADP
+    :IdpSheetNo $!shtNumber
+    :IdpNumberOff $!numberShts
+    :IdpIsoStatus '$!dfltStatus'
+
+    !sheeRefe = !!ce
+
+    -- Set the Marine type as necessary
+    !!setmarptype(!sheeRefe, 30)
+
+    -- Add this sheet to the drawing object
+    !displayObj.setSheet(!sheeRefe)
+
+    -- Calculate the total weight
+    !!isoLog.add('    Calculating total weight...')
+
+    -- Check the backing sheet version
+    -- If the font is <5 then it is native and version 11.6
+    if (!sheeRefe.owne.font.lt(5)) then
+       !totalWeight = !!isoCalcTotalWeight(!this.spools[!shtNumber], false)
+
+    -- True-Type and version 12
+    else
+      !totalWeight = !!isoCalcTotalWeight(!this.spools[!shtNumber], true)
+
+    endif
+
+    :IdpTotWeight |$!totalWeight|
+
+    -- Calculate centre of gravity & total weight
+    if (!this.defaults.isoContent.cog) then
+      !!isoLog.add('    Calculating centre of gravity...')
+      !cofg = !!isoCalcCoG(!this.spools[!shtNumber], !type)
+
+    else
+      !cofg = '-'
+
+    endif
+
+    -- Set the cofg attribute
+    :IdpCofG |$!cofg|
+
+    -- Extract spec name using the spec break rules
+    if (!this.type.eq('HVAC')) then
+
+      -- Get the class from the branch
+      !currSpec = !this.spools[!shtNumber].branch.dscode
+
+      -- Check the backing sheet version. If the font is <5 then it is native and version 11.6
+      if (!sheeRefe.owne.font.lt(5)) then
+        !specDesc = ''
+
+      else
+        !specDesc = 'Duct Class:'
+
+      endif
+
+    else
+
+      -- Get the default rule for extracting the spec name
+      !rule = !this.defaults.elecSpecBrk.rule
+
+      -- Get the specification from the ctmtrl
+      if (!this.spools[!shtNumber].ctmtrl.badref()) then
+        !currSpec = ''
+
+      else
+
+        if (!this.spools[!shtNumber].ctmtrl.ctspe.badref()) then
+          !currSpec = ''
+
+        else
+          !currSpec = !this.spools[!shtNumber].ctmtrl.ctspe.name
+
+        endif
+
+      endif
+
+      -- Set the description string
+      !specDesc = 'Tray Spec:'
+
+      -- Extract the specification name for display
+      !currSpec = !currSpec$!rule
+
+    endif
+
+
+    -- Test for empty string in which case warn the user by setting to unset
+    if (!currSpec.eq('')) then
+      !currSpec = 'Unset'
+    endif
+
+    -- Get the material
+    !material = !this.spools[!shtNumber].getMaterial()
+
+    -- Build material string
+    if (!material.upcase().eq('UNSET')) then
+      !material = ''
+
+    else
+      !material = '#/Material: ' & !material
+
+    endif
+
+    -- Set the sheet attribute with the specification and material for the backing sheet
+    -- Check the backing sheet version. If the font is <5 then it is native and version 11.6
+    if (!sheeRefe.owne.font.lt(5)) then
+      :IdpSpec |$!currSpec|
+
+    else
+      :IdpSpec |$!specDesc $!currSpec$!material|
+
+    endif
+
+    -- Create a standard pattern
+    if (!this.defaults.isoContent.stanPat) then
+
+      -- Test for an reserved area
+      if (!backObj.stanPatArea.badref()) then
+
+        !!isoLog.add('WARNING: Cannot find a backing sheet reserved area for the standard pattern. The process has been aborted.')
+
+      else
+
+      -- Build overlay name
+      !olayName = '/' & !sheeName & !shtNumber & '/StandardPattern'
+
+      -- Create the overlay
+      !!isoStanPat(!this.type, !this.defaults.standardPatt, !backObj.stanPatOrigin, !olayName, !this.update)
+
+      endif
+
+    endif
+
+    -- Create revision, when switched on
+    if (!this.defaults.isoContent.revi) then
+
+      -- Determine revision number
+      !revNumber = !this.getNextRev(!updateDesc)
+
+      -- Check for a dummy revision
+      REVI /$!sheeName$!shtNumber/Rev:
+        handle (2,109)
+        -- Undefined name
+
+        elsehandle none
+
+        -- We do not want this as we will create a real one
+        DELETE REVI
+
+        endhandle
+
+    -- When revision switched off, create a dummy one for the backing sheet hash code
+    else
+      !revNumber = ''
+
+    endif
+
+    -- Get into position
+    !!ce = !sheeRefe
+    LAST REVI
+      handle (2,113)
+      -- List exhausted
+      endhandle
+
+    -- Create a new revision element
+    NEW REVI /$!sheeName$!shtNumber/Rev:$!revNumber
+      handle (41,12)
+
+        -- The revision already exists
+        DELETE REVI
+
+        REVI /$!sheeName$!shtNumber/Rev:$!revNumber
+         REVD |$!date|
+         RVAU |$!drawnBy|
+
+         !reviRefe = !!ce
+
+      elsehandle none
+
+        REVD |$!date|
+        RVSN |$!revNumber|
+        RVAU |$!drawnBy|
+        APPR | |
+        APPD | |
+        :IdpInText $!revType
+
+        !reviRefe = !!ce
+
+      endhandle
+
+    -- Return to the SHEE
+    !!ce = !sheeRefe
+
+    -- Set revision. This is used by a backing sheet hash code to display the latest revision
+    :IdpReviRef $!reviRefe
+
+    -- Set backing sheet
+    BSRF UNSET  BSRF $!backRefe
+
+    -- Clear the revision history notes. The REVI elements remain containing the history data
+    if (!updateDesc.eq('Updating')) then
+
+      -- Delete all previous history notes
+      VAR !allNote COLL ALL NOTE WI SPPURP EQ 'HISTRY' FOR CE
+
+      do !note val !allNote
+
+        !!ce = !note.dbref()
+
+        DELETE NOTE
+
+      enddo
+
+    endif
+
+    -- Build revision history
+    if (!this.defaults.isoContent.revi) then
+
+      !!isoRevision(!type, !this.defaults)
+
+    endif
+
+    -- Create note for north arrow
+    if (!this.defaults.isoContent.nArr) then
+
+     !!isoLog.add('    Creating north arrow...')
+
+     if (!updateDesc.eq('Updating') and !shtNumber.leq(!existingShts)) then
+
+        SYMB 1 OF NOTE /$!sheeName$!shtNumber/NorthArrow
+          handle (2,109)
+            NOTE /$!sheeName$!shtNumber/NorthArrow
+              handle (2,109)
+                NEW NOTE /$!sheeName$!shtNumber/NorthArrow  SPPURP NARNOT
+                NEW SYMB  TMRF $!narrSymbol  ORIGIN $!northOrigin
+              elsehandle none
+                NEW SYMB  TMRF $!narrSymbol  ORIGIN $!northOrigin
+              endhandle
+
+          elsehandle none
+            TMRF $!narrSymbol
+          endhandle
+
+      else
+
+        NEW NOTE /$!sheeName$!shtNumber/NorthArrow
+         SPPURP NARNOT
+
+        NEW SYMB  TMRF $!narrSymbol  ORIGIN $!northOrigin
+
+      endif
+
+    endif
+
+    -- Keyplan view
+    if (!this.defaults.isoContent.keyP) then
+
+      !!isoLog.add('    Creating the keyplan...')
+
+      -- Create view
+      if (!updateDesc.eq('Updating') and !shtNumber.leq(!existingShts)) then
+        VIEW /$!sheeName$!shtNumber/KeyPlan
+          handle (2,109)
+             NEW VIEW /$!sheeName$!shtNumber/KeyPlan
+          endhandle
+
+      else
+        NEW VIEW /$!sheeName$!shtNumber/KeyPlan
+
+      endif
+
+      -- Set view attributes
+      DIR D
+      TITLE |Key Plan|
+      VTYPE UNIV
+      SIZE $!keypXlen $!keypYlen
+      XYPO $!keypOrigin
+
+      if (!updateDesc.neq('Updating')) then
+
+        -- Create keyplan view layer
+        NEW LAYE /$!sheeName$!shtNumber/KeyPlan/LocationBits
+         SPPURP KEYPLN
+         PURP KEY
+         FUNC 'Keyplan'
+
+      else
+
+        LAYE /$!sheeName$!shtNumber/KeyPlan/LocationBits
+          handle (2,109)
+            NEW LAYE /$!sheeName$!shtNumber/KeyPlan/LocationBits
+             SPPURP KEYPLN
+             PURP KEY
+             FUNC 'Keyplan'
+          elsehandle none
+            DELETE LAYE MEM
+          endhandle
+
+      endif
+
+      !keypLayeRefe = !!ce
+
+    endif
+
+    -- Create detailed isometric view
+    !!isoLog.add('    Creating the detail isometric view...')
+    if (!updateDesc.eq('Updating') and !shtNumber.leq(!existingShts)) then
+      VIEW /$!sheeName$!shtNumber/Isometric
+        handle (2,109)
+          NEW VIEW /$!sheeName$!shtNumber/Isometric
+        endhandle
+
+    else
+      NEW VIEW /$!sheeName$!shtNumber/Isometric
+
+    endif
+
+    -- Set view attributes
+    DIR $!direction
+    TITLE |Isometric|
+    GLOBAL
+    SIZE $!viewXlen $!viewYlen
+    XYPO $!viewOrigin
+    RRSF $!ruleRefe
+    IDLN $!drawLists[$!shtNumber]
+    ARCTOL $!arctol
+    SPPURP MAINVW
+    FUNC 'Main'
+
+    !mainViewRefe = !!ce
+
+    -- For CWAY create the local rule for the adjacent parts
+    if (!type.eq('CWAY')) then
+
+      -- Test for existing
+      VAR !exist EXIST /$!sheeName$!shtNumber/AdjacentRule
+      if (!exist.eq(|FALSEA|)) then
+        NEW RRUL /$!sheeName$!shtNumber/AdjacentRule
+          USE /TT/Isometric_ADP/Dashed_Style FOR $!adjacentLists[$!shtNumber]
+
+      endif
+
+    endif
+
+    -- Get all components on this drawing
+    !allComp = !this.spools[$!shtNumber].components
+
+    -- Create graphics
+    if (!this.defaults.isoContent.main) then
+
+      !!isoLog.add('    Creating the main design graphics...')
+
+      -- For HVAC set the limits to the referenced drawlist
+      if (!type.eq('HVAC')) then
+        AUTO
+          handle any
+          endhandle
+
+      -- For CWAY set the limits to the drawlist containing the parts
+      else
+        AUTO $!autoLists[$!shtNumber]
+          handle any
+          endhandle
+
+      endif
+
+      -- Create the graphics
+      UPDATE DESI
+        handle any
+        endhandle
+
+    endif
+
+    -- Test for abort
+    if (!!fmsys.interrupt()) then
+      break
+    endif
+
+    -- Create Layers
+    -- User added data
+    !!isoLog.add('    Creating the layers...')
+    if (!shtNumber.gt(!existingShts)) then
+
+      NEW LAYE /$!sheeName$!shtNumber/Iso/UserLabels
+       SPPURP USRLAB
+       PURP LABA
+       FUNC 'User Labels'
+
+       -- Add a new vnote for 2D draughting
+       NEW VNOT
+       func '2D Draughting'
+
+    endif
+
+    -- Specification break for HVAC only
+    if (!this.defaults.isoContent.spec and !type.eq('HVAC')) then
+
+      !!isoLog.add('    Creating the specification breaks...')
+
+      if (!updateDesc.eq('Updating')) then
+
+        LAYE /$!sheeName$!shtNumber/Iso/SpecBreaks
+          handle (2,109)
+            NEW LAYE /$!sheeName$!shtNumber/Iso/SpecBreaks
+             SPPURP SPCBRK
+             FUNC 'Specification Breaks'
+             PURP LABB
+               handle (64,12)
+                 -- Only 1 Layer with PURPose LABB is allowed per View
+                 CALLDRG USETLAYPRP $<LAB$>
+               endhandle
+          elsehandle none
+            DELETE LAYE MEM
+          endhandle
+
+      else
+
+        NEW LAYE /$!sheeName$!shtNumber/Iso/SpecBreaks
+         SPPURP SPCBRK
+         PURP LABB
+         FUNC 'Specification Breaks'
+
+      endif
+
+      -- Create any spec break labels
+      !!isoSpecBrk(!allComp, !type, !drawLists, !shtNumber, !this.defaults)
+
+    endif
+
+    -- Insulation break for HVAC only
+    if (!this.defaults.isoContent.insul and !type.eq('HVAC')) then
+
+      !!isoLog.add('    Creating the insulation breaks...')
+
+      if (!updateDesc.eq('Updating')) then
+
+        LAYE /$!sheeName$!shtNumber/Iso/InsulBreaks
+          handle (2,109)
+            NEW LAYE /$!sheeName$!shtNumber/Iso/InsulBreaks
+             SPPURP INSBRK
+             FUNC 'Insulation Breaks'
+             PURP LABC
+               handle (64,12)
+                 -- Only 1 Layer with PURPose LABC is allowed per View
+                 CALLDRG USETLAYPRP $<LAB$>
+               endhandle
+          elsehandle none
+            DELETE LAYE MEM
+          endhandle
+
+      else
+
+        NEW LAYE /$!sheeName$!shtNumber/Iso/InsulBreaks
+         SPPURP INSBRK
+         PURP LABC
+         FUNC 'Insulation Breaks'
+
+      endif
+
+      -- Create any spec break labels
+      !!isoInsulBrk(!allComp,!type,!drawLists,!shtNumber, !this.defaults)
+
+    endif
+
+    -- Named component(s)
+    if (!this.defaults.isoContent.name) then
+
+      !!isoLog.add('    Creating the name tags...')
+
+      if (!updateDesc.eq('Updating')) then
+
+        LAYE /$!sheeName$!shtNumber/Iso/NamedLabels
+          handle (2,109)
+            NEW LAYE /$!sheeName$!shtNumber/Iso/NamedLabels
+             SPPURP NAMLAB
+             FUNC 'Named Elements'
+             PURP LABD
+               handle (64,12)
+                 -- Only 1 Layer with PURPose LABD is allowed per View
+                 CALLDRG USETLAYPRP $<LAB$>
+               endhandle
+          endhandle
+
+      else
+
+        NEW LAYE /$!sheeName$!shtNumber/Iso/NamedLabels
+         SPPURP NAMLAB
+         PURP LABD
+         FUNC 'Named Elements'
+
+      endif
+
+      -- Create the named labels
+      !!isoNamed(!allComp, !type, !this.defaults)
+
+    endif
+
+    -- HVAC Penetrations
+    if (!this.defaults.isoContent.pene and !type.eq('HVAC')) then
+
+      !!isoLog.add('    Creating the penetration tags...')
+
+      if (!updateDesc.eq('Updating')) then
+
+        LAYE /$!sheeName$!shtNumber/Iso/Penetrations
+          handle (2,109)
+            NEW LAYE /$!sheeName$!shtNumber/Iso/Penetrations
+             SPPURP PENLAB
+             PURP LABE
+             FUNC 'Penetrations'
+             PURP LABE
+               handle (64,12)
+                 -- Only 1 Layer with PURPose LABE is allowed per View
+                 CALLDRG USETLAYPRP $<LAB$>
+               endhandle
+          endhandle
+
+      else
+
+        NEW LAYE /$!sheeName$!shtNumber/Iso/Penetrations
+         SPPURP PENLAB
+         PURP LABE
+         FUNC 'Penetrations'
+
+      endif
+
+      -- Create the penetration labels
+      !!isoPenetration(!this.spools[!shtNumber].penetrations, !this.spools[!shtNumber].peneComps, !type, !this.defaults)
+
+    endif
+
+    -- MDS supports
+    if (!this.defaults.isoContent.supp) then
+
+      !!isoLog.add('    Creating the MDS tags...')
+
+      if (!updateDesc.eq('Updating')) then
+
+        LAYE /$!sheeName$!shtNumber/Iso/Supports
+          handle ANY
+            NEW LAYE /$!sheeName$!shtNumber/Iso/Supports
+            SPPURP SUPPLAB
+            PURP LABF
+            FUNC 'Supports'
+            PURP LABF
+               handle (64,12)
+                 -- Only 1 Layer with PURPose LABF is allowed per View
+                 CALLDRG USETLAYPRP $<LAB$>
+               endhandle
+          endhandle
+
+      else
+
+        NEW LAYE /$!sheeName$!shtNumber/Iso/Supports
+         SPPURP SUPPLAB
+         PURP LABF
+         FUNC 'Supports'
+
+      endif
+
+      -- Create the support labels
+      -- HVAC
+      if (!type.eq('HVAC')) then
+        !!isoSupports(!this.spools[!shtNumber].supports, !this.spools[!shtNumber].suppComps, !type, !this.defaults)
+
+      -- CWAY
+      else
+        !!isoCwaySupports(!this.spools[!shtNumber].supports, !this.spools[!shtNumber].suppComps, !type, !this.defaults)
+
+      endif
+
+    endif
+
+    -- Continuations
+    !!isoLog.add('    Creating the continuations...')
+    if (!updateDesc.eq('Updating') and !shtNumber.leq(!existingShts)) then
+
+      LAYE /$!sheeName$!shtNumber/Iso/ContdLabels
+        handle (2,109)
+          NEW LAYE /$!sheeName$!shtNumber/Iso/ContdLabels
+           SPPURP CONLAB
+           PURP LABG
+           FUNC 'Continuations'
+           PURP LABG
+               handle (64,12)
+                 -- Only 1 Layer with PURPose LABG is allowed per View
+                 CALLDRG USETLAYPRP $<LAB$>
+               endhandle
+         endhandle
+
+    else
+
+      NEW LAYE /$!sheeName$!shtNumber/Iso/ContdLabels
+       SPPURP CONLAB
+       PURP LABG
+       FUNC 'Continuations'
+
+    endif
+
+    -- Create the continuation labels
+    if (!type.eq('HVAC')) then
+      !!isoCont(!type, !shtNumber, !dllbRefe, !this.spools[!shtNumber], !this.defaults)
+
+    else
+      !!isoCwayCont(!shtNumber, !this.spools[!shtNumber], !this.defaults)
+
+    endif
+
+    -- Electrical length table
+    if (!type.eq('CWAY')) then
+
+      !!isoLog.add('    Creating the electrical length table...')
+
+      if (!updateDesc.eq('Updating') and !shtNumber.leq(!existingShts)) then
+
+        LAYE /$!sheeName$!shtNumber/Iso/LengthTable
+          handle (2,109)
+            NEW LAYE /$!sheeName$!shtNumber/Iso/LengthTable
+             SPPURP LENTAB
+             PURP LLTB
+             FUNC 'Length Table'
+          elsehandle none
+            DELETE LAYE MEM
+          endhandle
+
+      else
+
+        NEW LAYE /$!sheeName$!shtNumber/Iso/LengthTable
+         SPPURP LENTAB
+         PURP LLTB
+         FUNC 'Length Table'
+
+      endif
+
+      -- Build the table
+      !!isoElecTable(!allComp, !type, !this.defaults)
+
+    endif
+
+    -- Isometric origin - related to the key plan
+    if (!this.defaults.isoContent.keyP) then
+
+      !!isoLog.add('    Creating the isometric origin...')
+
+      if (!updateDesc.eq('Updating') and !shtNumber.leq(!existingShts)) then
+
+        LAYE /$!sheeName$!shtNumber/Iso/IsoOrigin
+          handle (2,109)
+            NEW LAYE /$!sheeName$!shtNumber/Iso/IsoOrigin
+             SPPURP ORIGIN
+             PURP ORIG
+             FUNC 'Iso Origin'
+          elsehandle none
+            DELETE LAYE MEM
+          endhandle
+
+      else
+
+        NEW LAYE /$!sheeName$!shtNumber/Iso/IsoOrigin
+         SPPURP ORIGIN
+         PURP ORIG
+         FUNC 'Iso Origin'
+
+      endif
+
+      -- Create the origin tag
+      !origin = !!isoOrigin(!allComp, !type, !this.defaults)
+
+    endif
+
+    -- Symbols
+    if (!updateDesc.eq('Updating') and !shtNumber.leq(!existingShts)) then
+
+      LAYE /$!sheeName$!shtNumber/Iso/Symbols
+        handle (2,109)
+          NEW LAYE /$!sheeName$!shtNumber/Iso/Symbols
+            SPPURP SYMBOL
+            PURP NOTA
+            FUNC 'Symbols'
+        elsehandle none
+          DELETE LAYE MEM
+        endhandle
+
+    else
+
+      NEW LAYE /$!sheeName$!shtNumber/Iso/Symbols
+        SPPURP SYMBOL
+        PURP NOTA
+        FUNC 'Symbols'
+
+    endif
+
+    -- Coordinates/Elevations
+    if (!this.defaults.isoContent.dimn) then
+
+      !!isoLog.add('    Creating the coordinates and elevations...')
+
+      if (!updateDesc.eq('Updating') and !shtNumber.leq(!existingShts)) then
+
+        LAYE /$!sheeName$!shtNumber/Iso/Elevations
+          handle (2,109)
+            NEW LAYE /$!sheeName$!shtNumber/Iso/Elevations
+             SPPURP ELEVAT
+             PURP LABI
+             FUNC 'Elevations'
+          elsehandle none
+            DELETE LAYE MEM
+          endhandle
+
+      else
+
+        NEW LAYE /$!sheeName$!shtNumber/Iso/Elevations
+         SPPURP ELEVAT
+         PURP LABI
+         FUNC 'Elevations'
+
+      endif
+
+      -- Create the elevation/coordinate labels
+      LAYE
+      if (!type.eq('HVAC')) then
+        !!isoHvacElev(!allComp, !this.defaults)
+
+      else
+
+        -- Create template-based labels (SLAB)
+        if (!this.defaults.elecElevTag.lType.eq('Template')) then
+          !!isoCwayElev(!allComp, !this.defaults)
+
+        -- Create general labels (GLAB)
+        else
+          !!isoUserCwayElev(!allComp, !this.defaults)
+
+        endif
+
+      endif
+
+    endif
+
+    -- Build the Material Take Off Table
+    if (!this.defaults.isoContent.mtoT) then
+
+      !!isoLog.add('    Creating the MTO table...')
+
+
+      if (!updateDesc.eq('Updating') and !shtNumber.leq(!existingShts)) then
+
+        LAYE /$!sheeName$!shtNumber/Iso/MtoTable
+          handle (2,109)
+            NEW VIEW /$!sheeName$!shtNumber/MtoTable
+             TITLE |Material Take Off|
+             SIZE $!mtoXlen $!mtoYlen
+             XYPO $!mtoOrigin
+
+            NEW LAYE /$!sheeName$!shtNumber/Iso/MtoTable
+             SPPURP MTOTAB
+             PURP MTOF
+             FUNC 'MTO Table'
+
+          elsehandle none
+            DELETE LAYE MEM
+          endhandle
+
+      else
+        NEW VIEW /$!sheeName$!shtNumber/MtoTable
+         TITLE |Material Take Off|
+         SIZE $!mtoXlen $!mtoYlen
+         XYPO $!mtoOrigin
+
+        NEW LAYE /$!sheeName$!shtNumber/Iso/MtoTable
+         SPPURP MTOTAB
+         PURP MTOF
+         FUNC 'MTO Table'
+
+      endif
+
+      -- Create the mto table
+      !entries = !!isoMto(!allComp, !type, !this.defaults)
+
+      -- Pass the mto entries to the display object for later reuse
+      !displayObj.setEntries(!shtNumber, !entries)
+
+      -- Access the main view as this is where we want the mto tags to be created
+      !!ce = !mainViewRefe
+
+      -- Mto local tags (position numbers)
+      if (!updateDesc.eq('Updating') and !shtNumber.leq(!existingShts)) then
+
+        LAYE /$!sheeName$!shtNumber/Iso/MtoTags
+          handle (2,109)
+            NEW LAYE /$!sheeName$!shtNumber/Iso/MtoTags
+             SPPURP MTOTAG
+             FUNC 'MTO Tags'
+             PURP TAGB
+               handle (64,12)
+                 -- Only 1 Layer with PURPose TAGB is allowed per View
+                 CALLDRG USETLAYPRP $<TAG$>
+               endhandle
+          endhandle
+
+      else
+
+        NEW LAYE /$!sheeName$!shtNumber/Iso/MtoTags
+         SPPURP MTOTAG
+         PURP TAGB
+         FUNC 'MTO Tags'
+
+      endif
+
+      -- Create the mto tags
+      !!isoMtoTags(!entries, !type, !this.defaults)
+
+    endif
+
+    -- Dimensions
+    if (!this.defaults.isoContent.dimn) then
+
+      !!isoLog.add('    Creating the dimensions...')
+
+      if (!updateDesc.eq('Updating') and !shtNumber.leq(!existingShts)) then
+
+        LAYE /$!sheeName$!shtNumber/Iso/Dimensions
+          handle (2,109)
+            NEW LAYE /$!sheeName$!shtNumber/Iso/Dimensions
+             SPPURP DIMENS
+             FUNC 'Dimensions'
+             PURP DIMA
+               handle (64,12)
+                 -- Only 1 Layer with PURPose DIMA is allowed per View
+                 CALLDRG USETLAYPRP $<DIM$>
+               endhandle
+
+          elsehandle none
+            DELETE LAYE MEM
+          endhandle
+
+      else
+
+        NEW LAYE /$!sheeName$!shtNumber/Iso/Dimensions
+         SPPURP DIMENS
+         PURP DIMA
+         FUNC 'Dimensions'
+
+      endif
+
+      -- Create the dimensions
+      if (!type.eq('HVAC')) then
+        !dimnDef = !this.defaults.hvacDimn
+
+        if (!dimnDef.function.eq('OVERALL')) then
+          :IdpDesc 'Overall'
+          !!isoDimnOverall(!allComp, !this.defaults, false)
+
+        elseif (!dimnDef.function.eq('ALLHORIZ')) then
+          :IdpDesc 'All Horiz'
+          !!isoDimnFull(!allComp, !this.defaults, true)
+
+        elseif (!dimnDef.function.eq('OVERHORIZ')) then
+          :IdpDesc 'Over Horiz'
+          !!isoDimnOverall(!allComp, !this.defaults, true)
+
+        else
+          :IdpDesc 'All'
+          !!isoDimnFull(!allComp, !this.defaults, false)
+
+        endif
+
+      else
+        !dimnDef = !this.defaults.elecDimn
+
+        if (!dimnDef.function.eq('OVERALL')) then
+          :IdpDesc 'Overall'
+          !!isoCwDimnOverall(!allComp, !this.defaults, false)
+
+        elseif (!dimnDef.function.eq('ALLHORIZ')) then
+          :IdpDesc 'All Horiz'
+          !!isoCwDimnFull(!allComp, !this.defaults, true)
+
+        elseif (!dimnDef.function.eq('OVERHORIZ')) then
+          :IdpDesc 'Over Horiz'
+          !!isoCwDimnOverall(!allComp, !this.defaults, true)
+
+        else
+          :IdpDesc 'All'
+          !!isoCwDimnFull(!allComp, !this.defaults, false)
+
+        endif
+
+      endif
+
+    endif
+
+    -- Build keyplan bits
+    if (!this.defaults.isoContent.keyP) then
+
+      -- Get project data
+      !proj = current project
+
+      -- Build the project related function
+      !function = '!!iso' & !proj.code().lowCase() & 'KeyPlan(!origin[1],!origin[2])'
+
+      -- Access the keyplan layer
+      !!ce = !keypLayeRefe
+
+      -- Run the function
+      $!function
+      handle any
+
+         -- Cannot find the project specific function
+         !!isoLog.add('WARNING: Unable to find the project specific function ' & !function)
+
+      endhandle
+
+    endif
+
+    -- Create location view
+    if (!this.defaults.isoContent.loca) then
+
+      !!isoLog.add('    Creating the location plan...')
+
+      if (!updateDesc.eq('Updating') and !shtNumber.leq(!existingShts)) then
+        VIEW /$!sheeName$!shtNumber/Location
+          handle (2,109)
+            NEW VIEW /$!sheeName$!shtNumber/Location
+          endhandle
+
+      else
+        NEW VIEW /$!sheeName$!shtNumber/Location
+
+      endif
+
+      -- Set view attributes
+      DIR $!direction
+      TITLE |Location Plan|
+      GLOBAL
+      SIZE $!locXlen $!locYlen
+      XYPO $!locOrigin
+
+      -- Set the drawlist to the complete system,
+      -- For HVAC the complete system is the MAIN
+      if (!type.eq('HVAC')) then
+
+        -- Test for an unnamed element
+        if (!rootName.substring(1,1).eq('=')) then
+          IDLN $!rootName
+
+        else
+          IDLN /$!rootName
+
+        endif
+
+      -- For CWAY the complete system is the CTMTRL
+      else
+
+        -- Get the system material from the spool
+        !systemMaterial = !this.spools[!shtNumber].ctmtrl
+
+        -- Set the drawlist
+        IDLN $!systemMaterial
+
+      endif
+
+      -- Set the arc tolerance and view purposes
+      ARCTOL $!arctol
+      SPPURP LOCPLN
+      FUNC 'Location'
+
+      -- Determine style type PDMS or True-Type Fonts
+      if (!!ce.owne.owne.font.gt(4)) then
+        !mainStyle   = /TT/Isometric_ADP/Main_Style
+        !dottedStyle = /TT/Isometric_ADP/Dotted_Style
+
+      else
+        !mainStyle   = /Isometric_ADP/Main_Style
+        !dottedStyle = /Isometric_ADP/Dotted_Style
+
+      endif
+
+      -- Create location local representation rules
+      if (!updateDesc.eq('Updating')) then
+        RRUL /$!sheeName$!shtNumber/Location/LocalRule1
+          handle (2,109)
+            NEW RRUL /$!sheeName$!shtNumber/Location/LocalRule1
+          endhandle
+
+      else
+        NEW RRUL /$!sheeName$!shtNumber/Location/LocalRule1
+
+      endif
+
+      -- For HVAC use this style for the drawlist containing the components
+      if (!type.eq('HVAC')) then
+        USE STYL $!mainStyle for $!drawLists[$!shtNumber]
+
+      -- For CWAY use this style for the drawlist containing the spool parts
+       else
+        USE STYL $!mainStyle for $!autoLists[$!shtNumber]
+
+      endif
+
+      if (!updateDesc.eq('Updating')) then
+        RRUL /$!sheeName$!shtNumber/Location/LocalRule2
+          handle (2,109)
+            NEW RRUL /$!sheeName$!shtNumber/Location/LocalRule2
+          endhandle
+
+      else
+        NEW RRUL /$!sheeName$!shtNumber/Location/LocalRule2
+
+      endif
+
+      -- Set style, while checking for an un-named element
+      if (!rootName.substring(1,1).eq('=')) then
+        USE STYL $!dottedStyle for $!rootName
+
+      else
+        USE STYL $!dottedStyle for /$!rootName
+
+      endif
+
+      -- Set the percentage complete
+      if (!this.device.upcase().eq('GRAPHICS')) then
+        !!isoProcess.setPercent()
+      endif
+
+      -- Create graphics
+      AUTO
+        handle any
+        endhandle
+
+      UPDATE DESIGN
+        handle any
+        endhandle
+
+      -- Set the percentage complete
+      if (!this.device.upcase().eq('GRAPHICS')) then
+        !!isoProcess.setPercent()
+      endif
+
+      -- Create Layers
+      if (!updateDesc.eq('Updating') and !shtNumber.leq(!existingShts)) then
+
+        LAYE /$!sheeName$!shtNumber/Location/LocalLabels
+          handle (2,109)
+            NEW LAYE /$!sheeName$!shtNumber/Location/LocalLabels
+             SPPURP LOCLAB
+             PURP TAGC
+             FUNC 'Location'
+          elsehandle none
+            DELETE LAYE MEM
+          endhandle
+
+      else
+
+        NEW LAYE /$!sheeName$!shtNumber/Location/LocalLabels
+         SPPURP LOCLAB
+         PURP TAGC
+         FUNC 'Location'
+
+         REPSTYLE CASCADING OFF
+         LLEA FALSE  LLStyle Solid  LLColour 2  FONT TEMP  TXCOLOUR TEMP  LFSTYLE TEMP  LFCOLOUR TEMP CHEI TEMP  LTER DOT  XYPO 0 0  BLNK FALSE
+
+      endif
+    endif
+
+    -- Test for only 1 sheet i.e. location plan not required
+    if ($!numberShts eq 1) then
+
+      VIEW
+      LVIS False
+
+      -- Warn the user
+      !!isoLog.messages.append('  NOTE: Switched off the location plan as there is only one sheet')
+
+    endif
+
+  enddo
+
+  -- When updating mark any extra existing sheets as deleted
+  if (!updateDesc.eq('Updating') and !existingShts.gt(!numberShts)) then
+
+    -- Get the date stamp
+    !dateStamp = !!isoDateStamp()
+
+    -- For each
+    do !count from !numberShts + 1 to !existingShts
+
+      -- Access the sheet and mark as deleted
+      SHEE /$!sheeName$!count
+        handle any
+          -- Catch all just in case someone creates a drawing in this area, it counts the sheets and causes it to crash out here
+          skip
+        endhandle
+
+      :IdpIsoStatus 'Deleted'
+
+     !sheeRefe = !!ce
+
+      -- Get the centre of the sheet
+     !size   = !!ce.size
+     !middle = 'X' & (!size[1] / 2) & ' Y' & (!size[2] / 2)
+
+      -- Determine the next revision number
+      !revNumber = !this.getNextRev(!updateDesc)
+
+      -- Get into position
+      LAST REVI
+
+      -- Create a new revision element
+      NEW REVI /$!sheeName$!count/Rev:$!revNumber
+        handle (41,12)
+
+          -- The revision already exists
+          DELETE REVI
+
+          REVI /$!sheeName$!count/Rev:$!revNumber
+           REVD |$!date|
+           RVAU |$!drawnBy|
+
+        elsehandle none
+
+          REVD |$!date|
+          RVSN |$!revNumber|
+          RVAU |$!drawnBy|
+          APPR | |
+          APPD | |
+          :IdpInText $!revType
+          :IdpDesc 'Deleted during update'
+
+        endhandle
+
+      !reviRefe = !!ce
+
+      -- Set sheet reference to the revision
+      !!ce = !sheeRefe
+
+      -- Delete all previous history
+      VAR !allNote COLL ALL NOTE WI SPPURP EQ 'HISTRY' FOR CE
+
+      do !note val !allNote
+        !!ce = !note.dbref()
+        DELETE NOTE
+      enddo
+
+      -- Build revision history
+      !!isoRevision(!type, !this.defaults)
+
+      -- Rename all to indicated that it has been deleted, adding a date stamp for uniqueness
+      NAME ALL /$!sheeName$!count /$!sheeName$!count$n/Deleted$!dateStamp
+
+      -- Add a note across the drawing
+      NEW NOTE /$!sheeName$!count$n/Deleted/$!dateStamp
+      NEW TEXP
+       BTEX 'DELETED' ORIGIN $!middle CHEI 25mm ADEG 35deg JUST C ALIG HB TXCOLO RED
+
+      -- Issue a log file warning
+      !!isoLog.add('WARNING: Sheet ' & !sheeName & !count & ' has been marked as deleted since it is not now necessary')
+
+    enddo
+
+  endif
+
+  -- Save this drwg
+  SAVEWORK
+
+  return !displayObj
+
+endmethod
+-- End of method .create(ISODRWG)
+
+------------------------------------------------------------------------
+--
+-- Method:      .getNextRev()
+--
+-- Description: Determine the next revision
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      The update description
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getNextRev(!updateDesc is STRING) is STRING
+
+  -- Initialise variables
+  !revType = !this.revision.revType
+  !revMode = !this.revision.revMode
+
+  -- Issue log message
+  !!isoLog.add('    Determining the latest revision...')
+
+  -- For a sheet that is being updated
+  if (!updateDesc.eq('Updating')) then
+
+    -- Get existing revisions of the same type as requested
+    if (!revType.eq('INT')) then
+
+      VAR !allRevi EVAL RVSN FOR ALL REVI WI :IdpInText EQ 'INT' FOR CE
+
+      !allRevi.sort()
+
+      !revRange = !this.defaults.internalRev
+      !firstRev = !revRange[1]
+
+    else
+
+      VAR !allRevi EVAL RVSN FOR ALL REVI WI :IdpInText EQ 'EXT' FOR CE
+      !allRevi.sort()
+
+      !revRange = !this.defaults.externalRev
+      !firstRev = !revRange[1]
+
+    endif
+
+    -- Get latest revision
+    if (!allRevi.empty()) then
+      !lastPos = 0
+
+    else
+      !lastPos = !revRange.findFirst(!allRevi[!allRevi.size()])
+
+    endif
+
+    -- Test for unfound revision
+    if (!lastPos.unset()) then
+
+      -- Raise revision with an X
+      if (!allRevi[!allRevi.size()].eq('unset')) then
+
+        -- Set to X
+        !revNumber = 'XX'
+
+        -- Output a warning log message
+        !!isoLog.add(|WARNING: Cannot determine Revision. Setting to the value 'XX'|)
+
+      else
+
+        -- Append to the last rev available
+        !revNumber = 'XX'
+
+        -- Output a warning log message
+        !!isoLog.add(|WARNING: The Revision Range has been exceeded. Setting to the value 'XX'|)
+
+      endif
+
+    else
+
+      -- For incremental
+      if (!revMode.eq('INC')) then
+
+        -- Get next revision
+        !nextPos = !lastPos + 1
+
+        if (!nextPos.gt(!revRange.size())) then
+          !!isoLog.add('WARNING: The Revision Range has been exceeded!')
+          !revNumber = 'X'
+
+        else
+          !revNumber = !revRange[!nextPos]
+
+        endif
+
+      endif
+
+    endif
+
+  -- For a sheet that is being created new
+  else
+
+    -- For incremental
+    if (!revMode.eq('INC')) then
+      !revNumber = !this.defaults.initialRev
+
+    endif
+
+  endif
+
+  -- For specific revision
+  if (!revMode.eq('SPE')) then
+    !revNumber = !this.revision.revInitValue
+
+  endif
+
+  return !revNumber
+
+endmethod
+-- End of method .getNextRev()
+
+------------------------------------------------------------------------
+--
+-- Method:      .setSettings()
+--
+-- Description: Set these member settings to the passed values
+--
+-- Method Type: Function/Procedure
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       Array of settings
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setSettings(!settings is ARRAY)
+
+  !this.isoDirection = !settings[1]
+  !this.registry     = !settings[2]
+  !this.defaults     = !settings[3]
+  !this.revision     = !settings[4]
+
+endmethod
+-- End of method .setSettings()

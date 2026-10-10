@@ -1,0 +1,344 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:  Mdssetdatsu01.pmlfnc
+--   Type:  Function Definition
+--   Group:  Multi Discipline Supports Application
+--     Keyword:  MDS
+--   Module:  design
+--   Replaces:
+--
+-- Author:  Andrew Kirkland
+-- Created:  29 Wed Apr 1998
+--
+--
+-- Description:
+-- Creation function for Slip SU01
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsSetDatSU01()
+
+  !currentunits = !!kgetsetunits()
+
+  -- Force into forwards mode
+  FORWARDS
+
+  -- Initialise variables
+  --!datum       = !!mdsSU01.support.datum
+  !name        = !!mdsSU01.name.val
+  !alias       = !!mdsSU01.support.alias
+  !fromAtta    = !!mdsSU01.support.preliminaryStore.set()
+
+  !cecomp = !!ce
+
+  label /again
+
+  -- Identify atta shoe to attach Slip Unit.
+  prompt off
+  prompt load escape 'Identify Shoe to Add Slip Unit To:-'
+  ID ATTA @
+  handle (61,528)
+    prompt on
+    !!kRestoreUnits(!currentunits)
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsSU01, true)
+      return
+    endif
+    return false
+  endhandle
+  prompt on
+  !atta = !!ce
+
+  -- Check if selected atta is a shoe
+  if !atta.catRef.owner.:MDSType.neq('SHOE') then
+    !!alert.error('The identified element is not suitable for a Slip Unit, it must be a Shoe')
+    !!ce = !cecomp
+    !!kRestoreUnits(!currentunits)
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsSU01, true)
+      return
+    endif
+    return
+  endif
+
+  -- Get shoe HEIGHT stored in prop HEI
+  -- For SU03 and SU04 also get LENGTH in prop LEN and WIDTH in prop FWID
+  -- For AT30 get LENGTH and WIDTH
+  !!ce = !atta
+  !tempDesPar1 = prop HEI
+  !despar1 = !tempDesPar1.real()
+  if !!mdsSU01.support.type.eq('SU03') or !!mdsSU01.support.type.eq('SU04') then
+    !tempDesPar2 = prop LEN
+    !despar2 = !tempDesPar2.real()
+    !tempDesPar3 = prop FWID
+    handle (2,207)
+      !tempDesPar3 = prop BWID
+    endhandle
+    !despar3 = !tempDesPar3.real()
+  elseif !!mdsSU01.support.type.eq('AT30') then
+    !tempDesPar2 = prop FWID
+    !despar2 = !tempDesPar2.real()
+  endif
+  same
+
+  -- Check if valid selection has a Slip unit already ??
+  if(!atta.:MDSGuideRef.badref().not() and !atta.:MDSGuideRef.neq(Nulref) and !atta.:MDSGuideRef.catRef.owner.:MdsType.eq('SLIP')) then
+    !!alert.error('Selected Support Shoe already has a slip unit attached.')
+    !!kRestoreUnits(!currentunits)
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsSU01, true)
+      return
+    endif
+    return
+  endif
+
+  ---------------
+  --<wd>feb2004
+  -- The Identified Shoe may reference a Reinforcing Pad via the uda :mdssref
+  -- Need to Adjust '!despar1' accordingly on the Slip Unit to account for
+  -- BOTH the SHOE prop HEI and the RPAD prop PTHK
+  if (!atta.:mdssref.badref().not() and !atta.:mdssref.unset().not()) then
+    !xce = !!ce
+    !!ce = !atta
+    !pth = 0
+    -- Check if :MDSSREF type is an MDS Reinforcing Pad and get prop PTHK if it EXISTS
+    if (!atta.:mdssref.styp inset ('AT05','AT09','AT23','AT52A','AT52B','AT52C','AT52D','AT52E','AT52F','AT65' )) then
+      !dpn = !!mdsgetdesp('PTHK')
+      !pth = !atta.desp[$!dpn]
+    endif
+    !despar1 = (!despar1 + !pth)
+    !!ce = !xce
+  endif
+  --<wd>feb2004
+  ---------------
+
+  -- Select ancillary
+  !bore = Pl bore
+  handle any
+    !bore = ph bore
+  endhandle
+
+  !!mdsDacControl(true)
+
+  -- <sk> 04/06/2012
+  if !fromAtta then
+    !!ce = object DBREF('/' & !name & '_Pre')
+    :mdssupptype default
+    :mdssuppfunc default
+    -- set datum in the form for distance
+    !!mdsSU01.support.datum = !!ce
+  else
+    new atta
+  endif
+
+  SPKBRK TRUE
+  -- select spref for slip unit
+  !suppType = !!mdsSU01.support.type
+  !findStyp = !!mdsSetSUnits(!suppType)
+  --     sel with styp '$!findStyp' spec /MDS
+  --> Modified - <ab> - 04mar2002
+  sel with styp '$!findStyp' spec /MDS
+  handle (42,501) (42,64)
+    !!alert.error('Can not select a support for bore: $!bore')
+    -- <sk> 04/06/2012
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsSU01, true)
+      return
+    endif
+    delete atta
+    $!cecomp
+    !!kRestoreUnits(!currentunits)
+    !!mdsDacControl(false)
+    return
+  endhandle
+  --< Modified - <ab> - 04mar2002
+  !!mdsSU01.support.datum  = !!ce
+
+  !!mdsSetDesPars(!!ce)
+
+  -- Check branch temperature is within the limits of the Selected ancillary Standard
+  -- If the MINT (Minimum Temperature) data property does not exist in the ancillary's dataset
+  -- the OBJECT 'Mdscheckstd.temp()' will return 'TRUE' and skip the code shown below
+
+  ------------------------------------------------------------------------------
+  -- mjb >>> 03.05.06 <mds12>
+  !mdsattaobj  = object MDSREADPARSDATA()
+  !mdsattadefs = !mdsattaobj.mdsdefsdata(!!ce.stype,!bore.real().value())
+  if (!mdsattadefs.not()) then
+    !!alert.error (|ERROR: ABORTING the creation of this MDS ANCILLARY|)
+    !!kRestoreUnits(!currentunits)
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsSU01, true)
+      return
+    endif
+    delete atta
+    !!mdsDacControl(FALSE)
+    return
+  endif
+
+  !check = object MDSCHECKSTD(!mdsattaobj)
+  --!check = object MDSCHECKSTD()
+
+  -- mjb <<< 03.05.06 end of mod
+  ------------------------------------------------------------------------------
+  !tmin = STRING()
+  !tmax = STRING()
+  if (!check.temp(!alias,!tmin,!tmax).not()) then
+    var !temp temp of branch
+    !!alert.message ('The temperature of the identified pipe ($!temp) is not within the minimum/maximum temperatures ($!tmin / $!tmax)')
+    !!kRestoreUnits(!currentunits)
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsSU01, true)
+      return
+    endif
+    delete atta
+    return
+  endif
+
+  -- Test if the ancillary is available at this elevation
+
+  if !check.elevation(!alias).not() then
+    !position = !!ce.position.wrt(/* )
+    !selectedElevation = !position.up
+    ------------------------------------------------------------------------------
+    -- mjb >>> 03.05.06 <mds12>
+    !minimumElevation = !mdsattaobj.elevation
+    --!minimumElevation = !!mdsPar$!alias[0].despars[1]
+    -- mjb <<< 03.05.06 end of mod
+    ------------------------------------------------------------------------------
+    !!alert.message ('The elevation selected is unsuitable for this ancillary. Selected elevation $!selectedElevation Minimum elevation $!minimumElevation')
+    !!kRestoreUnits(!currentunits)
+    -- <sk> 04/06/2012
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsSU01, true)
+      return
+    endif
+    delete atta
+    return
+  endif
+
+  -- <sk> 06/07/2012 Check user criteria
+  !criteria = !check.criteria()
+  if (!criteria.empty().not()) then
+    !!alert.error (!criteria)
+    !!kRestoreUnits(!currentunits)
+    if !fromAtta then
+      !!mdsRestorePre(!!mdsSU01, true)
+      return
+    endif
+    delete atta
+    return
+  endif
+
+  -- <sk> 06/07/2012
+  -- Set the ATTA material
+  !!mdssetmatref(!!ce)
+  !!mdsDacControl(true)
+  despar n1 $!despar1
+  handle any
+  endhandle
+  if !!mdsSU01.support.type.eq('SU03') or !!mdsSU01.support.type.eq('SU04') then
+    despar n2 $!despar2
+    despar n3 $!despar3
+  elseif !!mdsSU01.support.type.eq('AT30') then
+    despar n1 $!despar1
+    despar n2 $!despar2
+  endif
+
+  !!kRestoreUnits(!currentunits)
+
+  -- Name support
+  :MDSSuppType |$!suppType|
+  Name /$!name
+
+  -- Set Slip Atta :Slipref to Shoe Atta
+  :MDSGuideRef $!atta.name
+  !slip = !!ce
+
+  -- Navigate back to Shoe Atta and Set :MDSGuideRef to Guide Atta
+  !!ce  = !atta
+  :MDSGuideRef $!slip.name
+  handle ANY
+    claim ce
+    :MDSGuideRef $!slip.name
+  elsehandle NONE
+  endhandle
+
+
+  -- Navigate back to Slip Atta
+  !!ce = !slip
+
+  --------------------------------------------------------------------------------
+  !!mdsSetIspe()
+
+  --  Add stex for isometrics
+  STEX '$!name'
+
+  !!mdsSelLstu(!!ce)
+
+  !!mdsDacControl(true)
+
+  -- Position atta
+  --if this is a prelim support the atta may be before the show in the branch hierarchy.
+  --the standard creation creates the slip unit atta after the shoe so we need to take this into account for prelims
+  !current = !!ce
+  prev
+  if !!ce.eq(!atta) then
+    !shoeOrder = 'prev'
+  else
+    !shoeOrder = 'next'
+  endif
+  !!ce = !current
+
+  POS AT $!shoeOrder
+  ori and p3 is p3 of $!shoeOrder
+  handle any
+    ori p3 is p3 of $!shoeOrder
+  endhandle
+
+  -- Add marker text
+  VAR !pOS POS WRT WORLD
+  $M/%PDMSUI%/DES/CLIB/GAIDTEXT 210 Datum $<$!pOS$>
+
+  -- Always add atta to support object
+  !!mdsSU01.support.atta.clear()
+  !!mdsSU01.support.atta.append(!!ce)
+  !!mdsSU01.support.pADir  = Pa Dir wrt world
+  !!mdsSU01.support.pLDir  = Pl Dir wrt world
+  !!mdsSU01.support.p9Dir  = P9 Dir wrt world
+
+  -- Enhance elements using colour set for highlight
+  !colourList = ARRAY()
+  !colourList.appendarray(!!mdsSU01.support.atta)
+
+  -- Colour Support
+  Call !!kEnhanceList(!colourList)
+
+  -- When finished grey out datum gadget and reset gadgets
+
+  !!mdsSetGadgets(!!mdsSU01,!!ce,!!mdsSU01.support.type)
+
+  !!mdsSU01.datum.active = false
+
+  if !alias.eq('AT30') then
+    !!mdsSU01.modAtta.active = true
+  else
+    !!mdsSU01.modAtta.active = false
+  endif
+
+  !!mdsDacControl(false)
+
+endfunction

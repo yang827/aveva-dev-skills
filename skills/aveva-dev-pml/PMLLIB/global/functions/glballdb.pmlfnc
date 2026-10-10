@@ -1,0 +1,247 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            glballdb.pmlfnc
+--   Type:          Function Definition
+--   Group:         PDMS Global Administration Application
+--     Keyword:     GLOBAL
+--   Module:        admin
+--   Replaces:
+--
+-- Author:          E.conba
+-- Created:         Fri Sep 5 10:01:26 BST 1997
+--
+--
+-- Description:
+-- Callback to apply button on the Allocation By Database form.
+-- Function will update the selected databases allocation.
+-- Function to be replaced by method !!glbAllDb.cbApply()
+--
+------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define function
+define function !!glbAllDb()
+
+  -- Initialise variables
+  !continue      = true
+  !continueAll   = true
+  !answered      = false
+  !matchFound    = false
+  !database      = !!glbAllDbRefGet()
+  !allocation    = !!glbAllDbAllocGet()
+  !updateFlag    = false
+  !currAlloc     = ARRAY()
+  !locations     = ARRAY()
+  !parents       = ARRAY()
+  !levels        = ARRAY()
+  !deallocate    = ARRAY()
+  !allocate      = ARRAY()
+  !commands      = ARRAY()
+
+  -- Get the project location data
+  call !!glbAllDbLocGet(!locations, !parents, !levels)
+
+  -- Get the current allocation
+  do !loc values !locations
+
+    -- Find DBREF in allocation list
+    !alloc         = !loc.mem[1].mem
+    !pos           = !alloc.findFirst(!database)
+    if (!pos.set()) then
+      !currAlloc.append(!loc)
+    endif
+
+  enddo
+
+  -- Get top to bottom location order
+  !order         = !levels.sortedIndices()
+  !locations.reIndex(!order)
+  !parents.reIndex(!order)
+  !levels.reIndex(!order)
+
+  -- Get button to top location order
+  !invLocations  = !locations
+  !invParents    = !parents
+  !invLevels     = !levels
+  !invLocations.invert()
+  !invParents.invert()
+  !invLevels.invert()
+
+  -- Get Locations to add and remove
+  !addLocs       = !locations.intersect(!allocation.difference(!currAlloc))
+  !remLocs       = !invLocations.intersect(!currAlloc.difference(!allocation))
+
+  -- Do deallocations first
+  if (!remLocs.set()) then
+
+    do !remDbref values !remLocs
+
+      !dbRef         = !remDbref
+
+      -- Check for parent in remove list
+      do !j
+
+        !parent        = !invParents[!invLocations.findFirst(!dbRef)]
+        !parentPos     = !remLocs.findFirst(!parent)
+        if (!parentPos.unset()) then
+          !deallocate.append(!dbRef)
+          break
+        else
+          !dbRef       = !parent
+        endif
+
+      enddo
+
+    enddo
+
+    -- Make deallocations unique
+    !deallocate.unique()
+
+    -- Create deallocation commands
+    do !dbRef values !deallocate
+      !commands.append(|DEALLOCATE |+ !database.name.substring(3) +| AT '|+ !dbRef.locId +|' INCLUDING DESCENDANTS|)
+    enddo
+
+  endif
+
+  -- Now do the database allocations
+  if (!addLocs.set()) then
+
+    do !i indices !addLocs
+
+      !addDbRef    = !addLocs[!i]
+      !dbRef       = !addDbRef
+
+      -- Find out if the any child locations in the addLocs array
+      do !j indices !addLocs
+        if (!addLocs[!j].locrf.set() and !addLocs[!j].locrf.name eq !addLocs[!i].name) then
+          !childInList = true
+          -- Child in list for $!addLocs[$!i].name
+          break
+        else
+          !childInList = false
+        endif
+      enddo
+
+      -- if a child of this is NOT there, then allocate it
+      if (!childInList.not()) then
+        -- allocating $!addDbRef.name
+        !allocate.append(!addDbRef)
+      else
+        -- NOT allocating $!addDbRef.name
+      endif
+
+    enddo
+
+    GETWORK
+    -- Create Allocation commands
+    do !dbRef values !allocate
+
+      if (!dbRef.members[1].dealal) then
+        -- Deallocation from this location is in progress so give warning (but only once)
+        if (!answered.not()) then
+          !answer = !!alert.confirm('DEALLOCATE ALL is in progress at ' & !dbRef.locId & '. ALLOCATE DB will stall until$
+ DEALLOCATE ALL has completed. Continue with all locations where this is the case?')
+          if (!answer.boolean()) then
+          else
+            !continueAll = false
+            !continue    = false
+          endif
+          !answered = true
+        endif
+      endif
+
+      -- Check to see if allocation is in progress and give warning
+      !deallocateArray = !database.members[1].dealdb
+      if (!deallocateArray.size() gt 0) then
+        -- It could be that the location db ref is unset so test for this
+        !validateDeallocateArray = !deallocateArray[!i].locId
+        handle ANY
+          !validateDeallocateArray = 'NOT SET'
+        endhandle
+        do !i indices !deallocateArray
+          if (!validateDeallocateArray eq !dbRef.locId) then
+            -- Deallocation from this location is in progress so give warning
+            if (!answered.not()) then
+              !answer = !!alert.confirm('DEALLOCATE DB is in progress for ' & !database.name.substring(3) & ' at$
+ ' & !dbRef.locId & '. ALLOCATE on this DB will stall until$
+ DEALLOCATE DB has been completed. Continue with all locations where this is the case?')
+              if (!answer.boolean()) then
+                -- Continue because user said so, even though there are DEALLOCATE DB in progress for this DB at this location
+                !commands.append(|ALLOCATE |+ !database.name.substring(3) +| AT '|+ !dbRef.locId +|'|)
+              else
+                !continue = false
+              endif
+              !answered = true
+            else
+              if (!continue) then
+                -- Continue because user previously said so, even though there are DEALLOCATE DB in progress for this DB at this location
+                !commands.append(|ALLOCATE |+ !database.name.substring(3) +| AT '|+ !dbRef.locId +|'|)
+              endif
+            endif
+            !matchFound = true
+            if (!matchFound) then
+              -- No point in looking for more locations
+              break
+            endif
+          endif
+        enddo
+
+        -- if this location was not found after looping through all deallocate on this DB
+        -- If continueAll is true DEALLOCATE ALL is not in progress or we were told to continue
+        if (!matchFound.not() and !continueAll) then
+           -- Continue because there are no DEALLOCATE DB in progress for this DB at this location
+          !commands.append(|ALLOCATE |+ !database.name.substring(3) +| AT '|+ !dbRef.locId +|'|)
+        endif
+
+      else
+        -- Continue because there are no DEALLOCATE DB in progress for this DB
+        -- If continueAll is true DEALLOCATE ALL is not in progress or we were told to continue
+        if (!continueAll) then
+          !commands.append(|ALLOCATE |+ !database.name.substring(3) +| AT '|+ !dbRef.locId +|'|)
+        endif
+      endif
+
+    enddo
+
+  endif
+
+  -- Execute the commands
+  do !command values !commands
+
+    -- Execute the command
+    -- Requires better error handling
+    $!command
+    handle any
+
+      !!messageFile.error(141, 523,  !command.part(2),  !!error.text)
+
+    elsehandle none
+
+      !updateFlag    = true
+
+    endhandle
+
+  enddo
+
+  -- Update the Update order form
+  if (!updateFlag) then
+    call !!glbUpdOrdRefresh('DB')
+  endif
+
+  if (!commands.size() gt 0) then
+    -- warning message for updates
+    !!alert.warning('A request has been made to allocate or de-allocate databases. This request will only be actioned when the remote site has responded to your request, and you have used Getwork to update your project. Until then, the database allocation will not change.')
+  endif
+
+endfunction
+-- End of function definition for !!glbAllDb

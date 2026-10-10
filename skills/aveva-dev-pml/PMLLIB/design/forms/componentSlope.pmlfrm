@@ -1,0 +1,806 @@
+--------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            componentSlope.pmlfrm
+--   Type:          Form Definition
+--   Group:         Piping
+--   Keyword:
+--   Module:        design
+--   Replaces:      FSLOPE
+--
+-- Author:          Tony Martin
+-- Created:         13/04/2011 09:06:49
+--
+-- Description:     form for setting component slope directions
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  checkDirection(STRING)           -                   validate what was entered into the direction gadget
+--  checkForSlope(DBREF)             REAL
+--  combineSlope()                   -
+--  componentSlope()                 -                   Constructor
+--  init()                           -                   initialise the form
+--  orientateTee(BOOLEAN)            -
+--  setMode()                        -
+--  setSlope()                       -                   does the orientation
+--  setSlope(GADGET,GADGET)          -                   try to parse the different mechanisms for slope
+--  setSlopeAngle(REAL,BOOLEAN)      -
+--  setStates(REAL)                  -                   set the form up depending on which slope type is used
+--  setupTee()                       -                   if its a tee or three way item we can only set p3
+--  tryNomDir()                      BOOLEAN             tries to adjust the nomDir to suit
+--  uSlope(REAL,STRING)              -
+--
+setup form !!componentSlope
+title |Slope|
+init  |!this.init()|
+
+
+button .ceButton | CE | AT 0 0 CALL |!this.init()|
+
+para .name At Xmax.ceButton+0.2 Ymin Text |Name:|
+path right
+hdist 1
+para .dbref width 30 lines 2
+path down
+para .current at xmin .ceButton ymax text 'Current direction:' width 11 lines 1
+para .currentDirection at xmax ymin width 20 lines 1
+text .direction 'New Direction:' at xmin .ceButton ymax call |!this.checkDirection(!this.direction.val)| tagwidth 11 Width 20 is STRING
+button .set 'Slope' at xmax.direction ymin call |!this.combineSlope()|
+
+frame .fr |Slope| At Xmin.ceButton ymax
+  frame .optionFrame  at x1 y0.6
+   rtoggle .user |Use Form Values|  call  |!this.setStates(1)|
+   path right
+   rtoggle .branch |Use Branch Slope|       call  |!this.setStates(2)|
+   --rtoggle .Default |design Slope|   call  |!this.setStates(3)|
+  exit
+   path down
+   text .slope |Fall   1/| At Xmin.fr+2 Ymax+0.1 Call |!this.uSlope(!this.slope.val,'SLOPE')| tagwidth 5 Width 10 is REAL
+   text .angle |Angle    | At Xmin.fr+2 ymax     Call |!this.uSlope(!this.slope.val,'ANGLE')|  tagwidth 5 Width 10 is REAL
+   option .dir |Slope | At Xmax.slope+3 Ymin-0.5 Tagwidth 5 Width 4
+   !dtext[1] = |Down|
+   !rtext[1] = |D|
+   !dtext[2] = |Up  |
+   !rtext[2] = |U|
+   !this.dir.dtext = !dtext
+   !this.dir.rtext = !rtext
+
+   -- Flow creation
+   paragraph .toTailTag                 at xmin.angle          ymax.angle+0.2    text 'With Flow' width 7
+   button    .toTail     toggle         at xmax               ymin    pixmap height 16 width 16 callback '!this.setFlow(true)'
+   paragraph .toHeadTag                 at xmax+3           ymin              text 'Against Flow' width 9
+   button    .toHead     toggle         at xmax              ymin.toTail       pixmap height 16 width 16 callback '!this.setFlow(false)'
+
+
+
+  !icon             = !!pml.getPathname('againstflow16.png')
+  !this.toHead.addPixmap(!icon)
+  !icon             = !!pml.getPathname('withflow16.png')
+  !this.toTail.addPixmap(!icon)
+
+  !this.toHead.val  = false
+  !this.toTail.val  = true
+
+
+exit
+
+
+button .apply | Apply | At Xmin.ceButton Ymax+1 Call |!this.setSlope()|
+path right
+hdist 7
+button .reset   | Reset | Call |!this.undo()| Reset
+button .dismiss |Dismiss| Call |!this.dismiss()| Cancel
+
+
+member .ce is DBREF
+member .undo is UNDOABLE
+member .leaveDirection is DIRECTION
+member .correctedleaveDirection is STRING
+member .arriveDirection is DIRECTION
+member .correctedArriveDirection is STRING
+member .ceIsWobbly is BOOLEAN
+member .ceMaxOffset is REAL
+member .ceWobblyPPoint is REAL
+member .cenomDir is DIRECTION
+member .nomDir is DIRECTION
+member .currentPPoint is REAL
+member .sloRef is DBREF
+member .format is FORMAT
+member .p3Direction is DIRECTION
+
+--!this.optionFrame.callback =  |!this.setStates(!this.optionFrame.val)|
+!this.optionFrame.val = 1
+
+var !coordinate coordinate
+
+if (!coordinate Eq 'XYZ') then
+      !dtext[1] = |Down|
+      !rtext[1] = |-Z|
+      !dtext[2] = |Up  |
+      !rtext[2] = |Z|
+else
+      !dtext[1] = |Down|
+      !rtext[1] = |D|
+      !dtext[2] = |Up  |
+      !rtext[2] = |U|
+endif
+!this.dir.dtext = !dtext
+!this.dir.rtext = !rtext
+
+exit
+
+------------------------------------------------------------------------
+--
+-- Method:      componentSlope
+--
+-- Description: Constructor
+--
+--
+------------------------------------------------------------------------
+define method .componentSlope()
+
+ !this.format     = !!anglefmt
+ !this.format.dp    = 4
+ !this.format.label = 'deg'
+ !this.slope.val = 100
+ !this.angle.val =  0.5729
+ -- this populates the form with a standard 1 in 100 rather than working out
+ -- what it should be. This needs to be improved
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:     init
+--
+-- Description: initialise the form
+--
+--
+------------------------------------------------------------------------
+define method .init()
+
+!owner = !!ce.owner
+if !owner.unset() then
+  return Error 1 |You are not at a Component|
+endif
+if !!ce.owner.type.neq('BRAN').and(!!ce.owner.type.neq('HANG')) then
+   return Error 1 |You are not at a Component|
+endif
+
+-- Ok Can We Change It Let Pdms Do Error Handling
+By E 0
+
+!this.ce = !!ce
+
+-- test if branch has a sloRef
+!this.sloRef = !!ce.owner.sloRef
+-- Is It A Component With A Direction Change?
+
+!adir = !!ce.adir.wrt(/* )
+!ldir = !!ce.ldir.wrt(/* )
+-- test to ce if the component has a wobbly ppoint
+!this.validateComponent(!!ce)
+
+if !this.sloRef.badref().and(!this.ceIsWobbly) then
+   return Error 2 |Branch Sloref is unset - Cannot Orientate this Component offset|
+endif
+
+if !!ce.type inset('TEE','OLET','VTWA') then
+  !this.setupTee()
+  !this.dbref.val = !!ce.flnn
+  return
+endif
+
+
+if !adir.opposite().eq(!ldir)and(!this.ceIsWobbly.not()) then
+   return Error 2 |Component Does Not Have A Direction Change|
+endif
+
+-- go and find out if any end is suitable for directing
+!end = !this.checkForSlope(!!ce)
+if !end .eq(3) then
+  if !this.ceWobblyPPoint.eq(!!ce.leave).or(!this.ceWobblyPPoint.eq(-1)) then
+     -- its the leave so its
+      forw
+      !this.setFlow(TRUE)
+      !this.leaveDirection = !ldir.wrt(/* )
+  else
+      back
+      !this.setFlow(FALSE)
+      !this.leaveDirection = !adir.wrt(/* )
+  endif
+elseif !end.eq(1) then
+  back
+  !this.setFlow(FALSE)
+  !this.leaveDirection = !adir.wrt(/* )
+elseif !end.eq(2) then
+  forw
+  !this.setFlow(TRUE)
+  !this.leaveDirection = !ldir.wrt(/* )
+else
+  return error 21 |Component arrive and leave directions are unsuitable for slopes|
+endif
+
+!this.currentDirection.val = !this.leaveDirection.string()
+!this.direction.val = !this.leaveDirection.string().before(' WRT')
+
+if !this.sloRef.unset() then
+    !this.setStates(1)
+else
+   !this.setStates(2)
+   if !this.optionFrame.val.eq( 1 ) then
+      -- make sure we have the fall bit visible
+      !this.setStates(1)
+   endif
+endif
+
+!this.dbref.val = !!ce.flnn
+endmethod
+
+
+------------------------------------------------------------------------
+--
+-- Method:     setupTee
+--
+-- Description: if its a tee or three way item we can only set p3
+--
+--
+------------------------------------------------------------------------
+define method .setupTee()
+
+-- we need to know where p3 is pointing and if we can apply the slope
+
+!this.p3Direction = !this.ce.pDirection[3].wrt(/* )
+-- !this.currentDirection.val = !this.leaveDirection.string()
+-- !this.direction.val = !this.leaveDirection.string().before(' WRT')
+-- if we are orientating p3 then p3 cannot be arrive or leave
+if !this.ce.arrive.eq(3) then
+       back
+      !this.setFlow(FALSE)
+elseif !this.ce.leave.eq(3)  then
+      -- its the leave so its
+      forw
+      !this.setFlow(TRUE)
+else
+      forw
+      !this.setFlow(TRUE)
+endif
+
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:     combineSlope
+--
+-- Description: add the current slope angle the current direction
+--
+--
+------------------------------------------------------------------------
+define method .combineSlope()
+
+!bits = !this.direction.val.split()
+
+if !bits[1] inset ('U','D','Z','-Z') then
+  !!alert.error('This form cannot be used to slope Vertical lines')
+  return
+endif
+  if !bits.size().eq(5) then
+  -- its in the form e 45 s 1.5 u or -X 0.0981 Y 14.979 -Z
+  !bits[4] = !this.angle.val.string()
+  !bits[5] = !this.dir.selection()
+elseif !bits.size().eq(3) then
+  if !bits[3] inset ('U','D','Z','-Z') then
+    -- just replace the angular bit
+    !bits[2] = !this.angle.val.string()
+    !bits[3] = !this.dir.selection()
+  else
+    -- its something like n45E
+    !bits[4] = !this.angle.val.string()
+    !bits[5] = !this.dir.selection()
+  endif
+else
+-- its a single value
+   !bits[2] = !this.angle.val.string()
+   !bits[3] = !this.dir.selection()
+endif
+
+!dirString = ''
+do !a from 1 to !bits.size()
+  !dirString = !dirString & !bits[!a]
+enddo
+  !dirString = !dirString & ' WRT /* '
+  !dir =  object DIRECTION(!dirString)
+  !this.direction.val = !dir.string().before(' WRT')
+  if !this.ce.type inset('TEE','OLET') then
+   !this.orientateTee(FALSE)
+  endif
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:      setSlope
+--
+-- Description: does the orientation
+--
+--
+------------------------------------------------------------------------
+define method .setSlope()
+
+!!ce = !this.ce
+!this.undo.add()
+if !this.ce.type inset('TEE','OLET') then
+   !this.orientateTee(TRUE)
+   !this.init()
+   return
+endif
+
+ var !mode mode
+   if (|$!mode| eq |Forwards|) then
+      if !this.ceIsWobbly.and(!this.ceWobblyPPoint.eq(!this.ce.leave)) then
+          nomDir $!this.direction
+          handle (2,201)
+          endhandle
+      else
+         dir $!this.direction
+         handle (61,7) (61,34) (61,47)
+            return Error 1 |Unable To Slope Pipe 1/$_Slope $_Dir|
+         elsehandle (61,48)
+            return Error 2 |Components' Angle Cannot Be Changed|
+         endhandle
+      endif
+      Axes At Pl
+   else
+     if !this.ceIsWobbly.and(!this.ceWobblyPPoint.eq(!this.ce.arrive)) then
+          nomDir $!this.direction
+          handle (2,201)
+          endhandle
+
+      else
+      dir $!this.direction
+      handle (61,7) (61,34) (61,47)
+         return Error 1 |Unable To Slope Pipe 1/$_Slope $_Dir|
+      elsehandle (61,48)
+         return Error 2 |Components' Angle Cannot Be Changed|
+      endhandle
+      Axes At Pa
+   endif
+endif
+
+!this.currentDirection.val =  |$!this.direction|
+!this.undo.endUndoAble()
+!this.init()
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      orientateTee
+--
+-- Description: orientates p3 of a tee and sets the nomDir if needed
+--
+--
+------------------------------------------------------------------------
+define method .orientateTee(!fix is BOOLEAN )
+
+  !currentOri = !!ce.orientation
+  var !nomDir nomDir
+  ori and p3 is $!this.direction
+  handle ANY
+    !!alert.error(!!error.text)
+    !!ce.orientation = !currentOri
+    return
+  elsehandle NONE
+    if !!ce.pDirection[3].neq(!this.direction.val.direction()).and(!this.ceIsWobbly) then
+       -- if its got a wobbly ppoint then go and set it
+       !ori = !this.tryNomDir()
+       if !ori.not() then
+          -- put it back to how it was
+         !!alert.error('unable to orientate p3')
+         !!ce.orientation = !currentOri
+         if !nomDir.neq('') then
+             nomDir $!nomDir
+         endif
+         return
+       else
+         if !fix.not() then
+          !!ce.orientation = !currentOri
+            if !nomDir.neq('') then
+              nomDir $!nomDir
+            endif
+         endif
+       endif
+    endif
+  endhandle
+
+endmethod
+------------------------------------------------------------------------
+--
+-- Method:     tryNomDir
+--
+-- Description: tries to adjust the nomDir to suit
+--
+--
+------------------------------------------------------------------------
+define method .tryNomDir() is BOOLEAN
+
+nomDir unset
+!p3dir = !!ce.pDirection[3]
+!angle = !p3dir.angle(!this.direction.val.direction())
+  if !angle.gt(!this.ceMaxOffset) then
+    !!alert.error('angle between p3 and required offset( $!angle )leave is greater than the maximum allowed ($!this.ceMaxOffset)')
+    return FALSE
+  else
+    nomDir $!this.direction
+    return TRUE
+  endif
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      uSlope
+--
+-- Description: sets the slope and angle gadgets
+--
+--
+------------------------------------------------------------------------
+define method .uSlope(!slope is REAL,!type is STRING  )
+
+
+if  !type.eq(|SLOPE|) then
+     !angle = (atan(1 / !slope))
+     !result = !angle.value()
+     !this.angle.val = !result.string(!this.format).real().value()
+else
+     !newSlope  = (1 / (tan(!this.angle.val)))
+     !this.slope.val = !newSlope.string(!this.format).real().value().nint()
+endif
+
+
+endmethod
+
+
+------------------------------------------------------------------------
+--
+-- Method:      undo
+--
+-- Description: performs undo on reset
+--
+--
+------------------------------------------------------------------------
+ define method .undo()
+
+   UNDODB
+   handle ANY
+   endhandle
+
+
+ endmethod
+------------------------------------------------------------------------
+--
+-- Method:     check for slope
+--
+-- Description: checks for vertical legs
+--
+--
+------------------------------------------------------------------------
+define method .checkForSlope(!comp is DBREF) is REAL
+
+!adir = !comp.adir
+--$p adir is $!adir
+!ldir = !comp.ldir
+--$p ldir is $!ldir
+if !adir.isperpendicular(U,25).and(!ldir.isperpendicular(U,25)) then
+  return 3
+elseif !adir.isperpendicular(U,25) then
+  return 1
+elseif !ldir.isperpendicular(U,25) then
+  return 2
+else
+  return 0
+endif
+
+endmethod
+
+
+------------------------------------------------------------------------
+--
+-- Method:      validateComponent
+--
+-- Description: finds if we have a wobbly ppoint and which end it is
+--
+--
+------------------------------------------------------------------------
+ define method .validateComponent(!component is DBREF)
+
+  !test = !!componentSlope(!component)
+  if !test[1] then
+    !this.ceIsWobbly = TRUE
+    !this.ceWobblyPPoint = !test[2]
+    !this.ceMaxOffset = !test[3].real()
+    if defined(!test[4]) then
+      !this.sloRef = !test[4]
+    endif
+    -- set the backwards/forwards state
+    !this .setMode()
+  else
+    !this.ceIsWobbly     = FALSE
+    !this.ceWobblyPPoint = -1
+    !this.ceMaxOffset    = -1
+    !this.sloRef = object DBREF()
+  endif
+
+ endmethod
+------------------------------------------------------------------------
+--
+-- Method:      set mode
+--
+-- Description: puts us in backwards or forwards depending on the ppoint
+--
+--
+------------------------------------------------------------------------
+define method .setMode()
+
+if !this.ceWobblyPPoint.eq( !this.ce.arrive) then
+   -- we need to go into backwards mode
+   backwards
+   !this.toHead.val = TRUE
+   !this.toTail.val = FALSE
+ else
+   forwards
+   !this.toHead.val = FALSE
+   !this.toTail.val = TRUE
+ endif
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      setStates
+--
+-- Description: set the form up depending on which slope type is used
+--
+--
+------------------------------------------------------------------------
+define method .setStates(!option is REAL)
+--$p option is $!option
+-- !this.optionFrame.val = !option
+
+-- if !option is 1 this means that the user wants to do manual angle setting
+-- the action should ensure that the gadgets .fall .angl .slope and .angle are active
+if !this.sloRef.set() then
+  !this.branch.active = TRUE
+else
+  !this.branch.active = FALSE
+endif
+
+if !option.eq( 1 ) then
+   -- the user is selecting his own angle
+   !this.slope.active = TRUE
+   !this.angle.active = TRUE
+elseif !option.eq(2) then
+   -- the user wants to use the slope set by the sloRef
+   if !this.sloRef.set() then
+     !val = !this.sloRef.defSlope.value()
+     !this.angle.val = !val
+     !this.uSlope(!val,|ANGLE|)
+     !this.slope.active  = FALSE
+     !this.angle.active  = FALSE
+   else
+      -- this is probably not required but caters for the situation where the user unsets the sloRef
+      !!alert.warning('Current Branch does not have a Slope Reference')
+     -- !this.optionFrame.val = 1
+      !this.slope.active = TRUE
+      !this.angle.active = TRUE
+      !this.optionFrame.val = 1
+      return
+   endif
+
+endif
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      set flow
+--
+-- Description: sets the flow direction when the back/forward buttons are pressed.
+--
+--
+------------------------------------------------------------------------
+ define method .setFlow(!action is BOOLEAN )
+
+    !this.toHead.val = !action.not()
+    !this.toTail.val = !action
+     if !action then
+       forwards
+       if !this.ce.type inset('TEE','OLET','VTWA') then
+          !this.leaveDirection = !this.p3Direction
+          axes at p3
+       else
+          !this.leaveDirection = !this.ce.ldir.wrt(/* )
+          axes at pl
+       endif
+       !this.dir.val = 1
+     else
+       backwards
+         if !this.ce.type inset('TEE','OLET','VTWA') then
+          !this.leaveDirection = !this.p3Direction
+          axes at p3
+       else
+          !this.leaveDirection = !this.ce.adir.wrt(/* )
+          axes at pa
+       endif
+       !this.dir.val = 2
+     endif
+     !this.direction.val =!this.leaveDirection.string().before(' WRT')
+     !this.currentDirection.val = !this.leaveDirection.string()
+ endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      set mode
+--
+-- Description: draw a better axis representation than the current one
+--
+--
+------------------------------------------------------------------------
+ define method .drawSlopeAxis()
+
+ --- better method required to show slope
+
+ endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:     dismiss
+--
+-- Description: tidy up when the form is closed
+--
+--
+------------------------------------------------------------------------
+
+ define method .dismiss()
+
+ axes off
+ forwards
+
+ endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:     setSlopeAngle
+--
+-- Description: Calculates the angle or 1 in value
+--
+--
+------------------------------------------------------------------------
+
+define method .setSlopeAngle(!value is REAL, !slope is BOOLEAN)
+
+
+if !slope then
+   !angle = atan( 1.0 / !value)
+   !this.angle.val = !angle.string('D4').real()
+else
+   !tan = tan(!value)
+   !slope = 1 / !tan
+   !rounded = !slope.nint().string(!!realfmt).real()
+   !this.slope.val = !rounded
+endif
+
+return
+
+
+
+------------------------------------------------------------------------
+--
+-- Method:   setSlope()
+-- Description: try to parse the different mechanisms for slope
+--
+------------------------------------------------------------------------
+define method .setSlope(!gadget is GADGET,!target is GADGET)
+
+   -- check the type of input
+  !inputLine = !gadget.val.trim('LRM').replace(' ','')
+  -- 'Angle' '1 in ' 'Percent' 'value in '
+  if !this.definition.selection().eq('Angle') then
+     -- the input should be a real
+     !value = !gadget.val.real()
+     handle ANY
+       !!alert.error('Input value is not numeric')
+       !gadget.val = ''
+       return
+     endhandle
+  elseif !this.definition.selection().eq('1 in ') then
+     !test = !gadget.val.real()
+     handle NONE
+       -- if there is no error the input value is just numeric
+       !value = atan( 1.0 / !test)
+     elsehandle ANY
+       if !inputLine.upcase().match('IN').eq(0) then
+         !!alert.error('input value should be in the format - 1 in 200')
+         return
+       endif
+       !before = !inputLine.upcase().before('IN').real()
+       handle ANY
+          !!alert.error('Invalid input format')
+          return
+       elsehandle NONE
+        if !before.neq(1) then
+          !!alert.error('first value should be 1')
+          return
+        endif
+       endhandle
+       !after = !inputLine.upcase().after('IN').real()
+       handle ANY
+         !!alert.error('second value should be numeric')
+          return
+       endhandle
+       !value = atan( 1.0 / !after)
+     endhandle
+  elseif !this.definition.selection().eq('Percent') then
+     !test = !gadget.val.real()
+     handle NONE
+       -- if there is no error the input value is just numeric
+       !value = atan( (!test / 100))
+     elsehandle ANY
+       !!alert.error('Input value is not numeric')
+       !gadget.val = ''
+       return
+     endhandle
+   elseif !this.definition.selection().eq('value in ') then
+     !test = !gadget.val.real()
+     handle NONE
+       -- if there is no error the input value is just numeric
+       !value = atan( 1.0 / !test)
+     elsehandle ANY
+       if !inputLine.upcase().match('IN').eq(0) then
+         !!alert.error('input value should be in the format - 1 in 200')
+         return
+       endif
+       !before = !inputLine.upcase().before('IN').real()
+       handle ANY
+          !!alert.error('Invalid input format')
+          return
+       endhandle
+       !after = !inputLine.upcase().after('IN').real()
+       handle ANY
+         !!alert.error('second value should be numeric')
+          return
+       endhandle
+       !value = atan( !before / !after)
+     endhandle
+  endif
+
+   --!this.setAngle(atan( 1.0 / !slope))
+
+  !this.setSlope(!value,!target)
+  !this.displaySlope()
+
+endmethod
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+--
+-- Method:      checkDirection
+--
+-- Description: validate what was entered into the direction gadget
+--
+--
+------------------------------------------------------------------------
+define method .checkDirection(!direction is STRING)
+
+  !dir = !direction.direction()
+  handle ANY
+    !!alert.error('invalid direction $!direction')
+    !this.init()
+  endhandle
+
+endmethod

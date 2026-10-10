@@ -1,0 +1,809 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            loc3dexplicit.pmlfrm
+--   Type:          Form Definition
+--   Group:         General Application
+--     Keyword:     MDS
+--   Module:        design
+--   Replaces:
+--
+-- Author:          N.Morris
+-- Created:         Wed Nov 07 12:59:55 WAT 2001
+--
+-- Description:
+-- 3D location for adp
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  apply()                          -                   Action carried out on applying form
+--  close()                          -                   Close form and tidy
+--  datum(BOOLEAN)                   -                   Change datum for position
+--  edit(DBREF)                      -                   Setup data for form to be shown
+--  loc3DExplicit()                  -                   Constructor
+--  pick(STRING)                     -                   Set new position
+--  preview()                        -                   Preview the plane
+--  preview(STRING,STRING)           -                   Preview the plane
+--  setDesignation(POSITION)         -                   Set designation position
+--  setPosition()                    -                   Set new position
+--  setWrt()                         -                   Set up with new wrt item
+--  setup(DBREF)                     BOOLEAN             Setup form with passed element
+--  setupOwner(DBREF)                -                   Setup form with data from EDGPICK (makes picked items owner the item)
+--  tidy()                           -                   Hide all aid graphics
+--
+------------------------------------------------------------------------
+
+setup form !!loc3DExplicit
+
+  !!loc3DExplicit.formTitle     = 'Location Position'
+  !!loc3DExplicit.iconTitle     = 'Position'
+  !!loc3DExplicit.callback      = ''
+  !!loc3DExplicit.formRevision  = ' $Revision: 1.1.19.1 $ '
+
+  -- Body of form definition
+  bar
+  exit
+
+  -- Element name
+  paragraph .ceName at xmin ymin width 34 lines 1
+
+  -- Positioning Reference
+  option .refDatum 'Datum ' at xmin.ceName ymax callback '!this.datum(true)' width 20
+  !this.refDatum.active = false
+
+  -- Positioning Gadgets
+  frame .positionFrame 'Position' at xmin.ceName ymax width 34
+
+    path down
+    option .ew at x1 y1.5 width 5
+    option .ns width 5
+    option .ud width 5
+    text   .x     at xmax+1 ymin.ew width 14 is REAL format !!distanceFmt
+    text   .y     at xmin   ymin.ns width 14 is REAL format !!distanceFmt
+    text   .z     at xmin   ymin.ud width 14 is REAL format !!distanceFmt
+    toggle .xFlag at xmax+1 ymin.ew
+    toggle .yFlag at xmin   ymin.ns
+    toggle .zFlag at xmin   ymin.ud
+
+    --  Reference (wrt)
+    halign right
+    text .wrt 'wrt' at xmin.ud ymax+0.3 callback '!this.setWrt()' width 26 string
+
+    para   .lock  at xmin.xFlag-1 ymin.xFlag-1 text 'Lock'
+  exit
+
+  -- Apply/Dismiss
+  button .apply   'Apply'   at xmin form-0    ymax form+0.25 callback '!this.apply()' apply
+  button .dismiss 'Dismiss' at xmax form-size ymin           callback '!this.close()' cancel
+
+  -- Form Members
+  member .element        is DBREF
+  member .wrtElement     is DBREF
+
+  -- Aid numbers for position & axes
+  member .aidNumber      is REAL
+  member .aidAxes        is REAL
+
+  -- Form Control Members
+  -- Position
+  member .position       is POSITIONLINK
+
+  -- True new position of item
+  member .newPosition    is POSITION
+
+  -- Offset From origin to reference position
+  member .distance       is REAL
+  member .direction      is DIRECTION
+
+  -- Offsets of graphic representations from origin of item
+  member .gphDistance    is REAL
+  member .gphDirection   is DIRECTION
+  member .gphBoxOriginal is GPHBOX
+
+  -- Graphic box used to represent item being repositioned
+  member .gphBox         is GPHBOX
+
+  -- Designate Flag (are we currently defining the offset point)
+  member .designate      is BOOLEAN
+
+  -- Move node flag
+  member .moveNode       is BOOLEAN
+
+exit
+-- End of form definition for !!loc3DExplicit
+
+------------------------------------------------------------------------
+--
+-- Method:      loc3DExplicit
+--
+-- Description:
+--   Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .loc3DExplicit()
+
+  -- Link Position Input Gadgets to Objects
+  !this.position.linkInput('!!loc3DExplicit.position', !this.x, !this.y, !this.z)
+
+  -- Link Position Lock Gadgets to Objects
+  !this.position.linkLock('!!loc3DExplicit.position', !this.xFlag, !this.yFlag, !this.zFlag)
+
+  -- Link Position Option Gadgets to Objects
+  -- Use XYZ in marine, ENU in plant
+  !mod = !!module()
+  if (!mod.modkey neq 'marodes') then
+    !this.position.linkOption('!!loc3DExplicit.position', !this.ew, !this.ns, !this.ud, 'ENU')
+  else
+  	!this.position.linkOption('!!loc3DExplicit.position', !this.ew, !this.ns, !this.ud, 'XYZ')
+  endif
+
+  -- Set Position Action
+  !this.position.setAction('!!loc3DExplicit.setPosition()')
+
+  -- Aid Lines Number
+  -- !this.aidNumber = !!aidNumbers.add('Modify Elements Position')
+  -- !this.aidAxes   = !!aidNumbers.add('Modify Elements Position')
+
+  -- Set defaults for form
+  !this.position.position(object POSITION('N0'), false, true)
+  !this.wrtElement = World
+  !this.wrt.val    = 'World'
+
+endmethod
+-- End of method definition for .loc3DExplicit()
+
+------------------------------------------------------------------------
+--
+-- Method:      setWrt
+--
+-- Description:
+--   Set up with new wrt item
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .setWrt()
+
+  -- re-defined reference
+  !wrtElement   = !this.wrt.val.dbref()
+  handle any
+    !wrtElement = object DBREF()
+  endhandle
+
+  -- use current positions origin if it null
+  if(!wrtElement.unset()) then
+    !wrtElement      = !this.wrtElement
+  else
+    !this.wrtElement = !wrtElement
+  endif
+
+  -- Set tagging method up
+  !this.position.setWrt(!wrtElement)
+
+  -- Set gadget with name of item
+  !this.wrt.val = !wrtElement.name
+
+endmethod
+-- End of method definition for .setWrt()
+
+------------------------------------------------------------------------
+--
+-- Method:      apply
+--
+-- Description:
+--   Action carried out on applying form
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .apply()
+
+  -- Initialise Variables
+  !reference = !!ce
+  -- !position  = !this.position.get()
+
+  -- Move to item
+  !!ce       = !this.element
+  !!mdsDacControl(true)
+  :MDSAdpLoc $!<this.newPosition>
+  !!mdsDacControl(false)
+  -- Modify graphical label
+  !posString = !this.newPosition.string()
+  $M/%PDMSUI%/DES/CLIB/GAIDTEXT 231 $<ADP Location$> $<$!posString$>
+
+  -- Return to where we came from
+  !!ce       = !reference
+
+  -- Redefine the form
+  -- !this.setup(!this.element)
+
+endmethod
+-- End of method definition for .apply()
+
+------------------------------------------------------------------------
+--
+-- Method:      close
+--
+-- Description:
+--   Close form and tidy
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .close()
+
+  -- Hide Modification Plane
+  !this.tidy()
+
+  -- Remove event
+  !!edgCntrl.remove('Explicit Positioning')
+
+  -- Clear location tag
+  $M/%PDMSUI%/DES/CLIB/GAIDTEXT 231
+
+--<kp>feb07 Exit if lighting support
+  if !this.element.type.eq('STRU') then
+     if !this.element.:MdsSuppType.eq(!!mdslsuppDefs.type) then
+         return
+     endif
+  endif
+--<kp>feb07
+
+  -- Show normal tagging
+     !!ce = !this.element
+     !nameOfDatum = !!ce.name + '/DATUM'
+     !!ce = !nameOfDatum.dbref()
+     var !pos pos p9 wrt world
+     $M/%PDMSUI%/DES/CLIB/GAIDTEXT 210 Datum $<$!pos$>
+     do !count from 211 to 230
+        var !num ($!count - 210)
+        !name = !this.element.name.before('/DATUM')
+        !attaName = !name & '.' & !num
+        !!ce = !attaName.dbref()
+          handle any
+            skip
+          endhandle
+        var !pos pos p9 wrt world
+        $M/%PDMSUI%/DES/CLIB/GAIDTEXT $!count $!num $<$!pos$>
+
+      enddo
+
+endmethod
+-- End of method definition for .close()
+
+------------------------------------------------------------------------
+--
+-- Method:      tidy
+--
+-- Description:
+--   Hide all aid graphics
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .tidy()
+
+  -- Hide Modification Plane
+  !!aidNumbers.hide(!this.aidNumber)
+  !!aidNumbers.hide(!this.aidAxes)
+
+endmethod
+-- End of method definition for .tidy()
+
+------------------------------------------------------------------------
+--
+-- Method:      setupOwner
+--
+-- Description: Setup form with data from EDGPICK (makes picked items owner the item)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      EDGPICKDATA Event pick data
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .setupOwner(!element is DBREF)
+
+  -- Initialise Variables
+  !tempElement = !!comNavToSig(!element)
+  !owningElement = !tempElement.owner
+
+  -- Setup with data
+  !this.setup(!owningElement)
+
+endmethod
+-- End of method definition for .setupOwner(DBREF)
+
+------------------------------------------------------------------------
+--
+-- Method:      setup
+--
+-- Description:
+--   Setup form with passed element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element to be modified
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if we can set up with item
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .setup(!passedElement is DBREF) is BOOLEAN
+
+  -- Initialise Variables
+  !element = !!comNavToSig(!passedElement)
+
+  -- If the passed element is the same as the current element, then
+  -- we only need set certain bits of data
+  if(!element eq !this.element and !this.element.set()) then
+
+  -- Difference Element
+  else
+
+    -- Initialise Variables
+    !dText          = ARRAY()
+    !rText          = ARRAY()
+    !this.designate = false
+
+    -- Handle Element without a position
+    if(!element.attributes().findFirst('Position').unset()) then
+      if(not !element.hardType inset('SCTN', 'GENSEC', 'FITT', 'CMFI')) then
+        !!alert.error('Unable to position element (' & !element.flnn & ') with this utility.')
+        return false
+      endif
+    endif
+
+    -- Check we have access to modify the position
+    if(!!dbRefUpdate(!element).not()) then
+      !!alert.error('Unable to Modify element, (' & !!error.text & ').')
+      return false
+    endif
+
+    -- Check element has a position
+    !position = !element.position
+    handle any
+      !!alert.error('Element (' & !element.flnn & ') does not have a position attribute.')
+      return false
+    endhandle
+
+    -- Set Element
+    !this.element = !element
+
+    -- Set default positions
+    !dText[1] = 'Origin'
+    !rText[1] = 'ORIGIN'
+
+    do !i
+      !pnumber = !element.pPosition[!i]
+      handle any
+        break
+      endhandle
+      break if(!pnumber.up.unset())
+      !dText.append('Ppoint - ' & !i)
+      !rText.append('PPOINT ' & !i)
+    enddo
+
+    -- Designate Position
+    !dText.append('Designate Position')
+    !rText.append('DESIGNATE')
+
+    -- Define datum option
+    !this.refDatum.dText = !dText
+    !this.refDatum.rText = !rText
+
+    -- Unlock all gadgets
+    !this.position.unlockAll()
+
+    -- Display element being modified
+    !this.ceName.val = !this.element.flnn
+
+  endif
+
+  -- Define Graphic Object
+  !volume              = object LOCALVOLUME(!this.element, !this.element)
+
+  -- If volume then use the origin of the item (expanded)
+  if(!volume.unset()) then
+    !volume            = object LOCALVOLUME()
+    !volume.wrt        = !this.element
+    !volume.from       = !this.element.position
+    !volume.from.east  = !volume.from.east  - 353.5mm
+    !volume.from.north = !volume.from.north - 353.5mm
+    !volume.from.up    = !volume.from.up    - 353.5mm
+
+    !volume.to         = !this.element.position
+    !volume.to.east    = !volume.to.east    + 353.5mm
+    !volume.to.north   = !volume.to.north   + 353.5mm
+    !volume.to.up      = !volume.to.up      + 353.5mm
+  endif
+
+  !box                 = !volume.box()
+  !this.gphBox         = object GPHBOX(!box)
+  !this.gphBoxOriginal = !this.gphBox
+
+  !!aidNumbers.hide(!this.aidNumber)
+
+  -- Offset from origin to graphic box
+  !this.gphDistance    = !this.element.position.distance(!box.position)
+  if(!this.gphDistance ne 0) then
+    !this.gphDirection = !this.element.position.direction(!box.position)
+  else
+    !this.gphDirection = U
+  endif
+
+  -- Setup positions, etc with the selected datum
+  !this.datum(false)
+
+  -- Return
+  return true
+
+endmethod
+-- End of method definition for .setup(DBREF) BOOLEAN
+
+------------------------------------------------------------------------
+--
+-- Method:      edit
+--
+-- Description:
+--   Setup data for form to be shown
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element to be modified
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .edit(!element is DBREF)
+
+  -- Setup form
+  if(!this.setup(!element)) then
+
+    -- Define EDG positional pick
+    !packet                = object EDGPACKET()
+    !packet.positionLink('!!loc3DExplicit.position', 'Modify Position')
+    !packet.close          = '!!loc3DExplicit.tidy()'
+    !packet.key            = 'explicitPosition'
+    !packet.description    = 'Explicit Positioning'
+    !packet.form           = !!loc3DExplicit
+    !packet.priority       = 1
+    !packet.remove         = false
+    !packet.type           = 'dbModify'
+
+    -- Add into EDG packet
+    !!edgCntrl.add(!packet)
+
+  endif
+
+endmethod
+-- End of method definition for .edit(DBREF)
+
+------------------------------------------------------------------------
+--
+-- Method:      preview
+--
+-- Description:
+--   Preview the plane
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .preview()
+
+  !posString = !this.newPosition.string()
+  $M/%PDMSUI%/DES/CLIB/GAIDTEXT 231 $<ADP Location$> $<$!posString$>
+  return
+
+  -- Get position
+  !position  = !this.position.get()
+
+  -- Display new position
+  !!aidNumbers.replace(!this.aidNumber, !this.gphBox)
+  !gphAxes        = object GPHAXES(!position, !this.wrtElement.orientation)
+  !gphAxes.detail = false
+  !gphAxes.xyz    = false
+  !gphAxes.height = 250mm
+  !!aidNumbers.replace(!this.aidAxes, !gphAxes)
+
+  -- Tag Position
+  !datum = !this.refDatum.selection('DTEXT')
+  AID TEXT NUMB $!this.aidNumber '$!datum' AT $!position
+
+endmethod
+-- End of method definition for .preview()
+
+------------------------------------------------------------------------
+--
+-- Method:      preview
+--
+-- Description:
+--   Preview the plane
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      String      Position as string
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .preview(!posString is STRING,!text is STRING)
+
+  -- Clear existing tagging
+  do !clear from 210 to 230
+    $M/%PDMSUI%/DES/CLIB/GAIDTEXT $!clear
+  enddo
+
+  -- !posString = !this.newPosition.string()
+  $M/%PDMSUI%/DES/CLIB/GAIDTEXT 231 $<$!text$> $<$!posString$>
+
+endmethod
+-- End of method definition for .preview()
+
+
+------------------------------------------------------------------------
+--
+-- Method:      datum
+--
+-- Description:
+--   Change datum for position
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .datum(!select is BOOLEAN)
+
+  -- Initialise Variables
+  !selection = !this.refDatum.selection()
+
+  -- Are we currently designating the offset point
+  if(!this.designate) then
+    !!edgCntrl.remove('Designate Positioning')
+  endif
+
+  -- Initialise Defaults
+  !this.designate = false
+  if !this.element.type.eq('STRU') then
+    if !this.element.:mdsadploc.string().upcase().neq('UNSET') then
+      !position       = !this.element.:mdsadploc.wrt(!this.wrtElement)
+    else
+      !position       = !this.element.position.wrt(!this.wrtElement)
+    endif
+  else
+    !position       = !this.element.position.wrt(!this.wrtElement)
+  endif
+  !this.distance  = 0
+  !this.direction = object DIRECTION('U')
+
+  -- Set position
+  !this.newPosition = !position
+  !this.position.position(!position, false, true)
+
+  -- Re-define original box volume
+  !this.gphBox = !this.gphBoxOriginal
+
+  -- Preview with passed position as :MDSAdpLoc and if not set stru position
+  if !!ce.:MDSAdpLoc.up.unset() then
+    !posString = !!ce.position.string()
+  else
+    !posString = !!ce.:MDSAdpLoc.string()
+  endif
+
+  !this.preview(!posString,'ADP Location')
+
+endmethod
+-- End of method definition for .datum(BOOLEAN)
+
+------------------------------------------------------------------------
+--
+-- Method:      setDesignation
+--
+-- Description:
+--   Set designation position
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      POSITION    Offset position
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .setDesignation(!position is POSITION)
+
+  -- Initialise Variables
+  !this.distance  = !this.element.position.distance(!position)
+  if(!this.distance ne 0) then
+    !this.direction = !this.element.position.direction(!position).opposite()
+  else
+    !this.direction = U
+  endif
+  !this.position.position(!position, true, true)
+
+  -- Preview
+  !this.preview()
+
+endmethod
+-- End of method definition for .setDesignation(POSITION)
+
+------------------------------------------------------------------------
+--
+-- Method:      setPosition
+--
+-- Description:
+--   Set new position
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .setPosition()
+
+  -- Initialise Variables
+  !selection = !this.refDatum.selection()
+
+  -- Get current position
+  !position = !this.position.get()
+
+  -- Special Case for sections
+  if(!this.element.hardType eq 'SCTN') then
+    !selection = !this.refDatum.selection()
+    !position  = !this.position.get()
+    if(!selection inset('START', 'END')) then
+      if(!selection eq 'START') then
+        !otherEnd = !this.element.posEnd
+
+      elseif (!selection eq 'END') then
+        !otherEnd = !this.element.posStart
+      endif
+      !distance = !position.distance(!otherEnd)
+      if(!distance ne 0) then
+        !midPoint  = !position.line(!otherEnd).proportion(0.5)
+        !direction = !position.direction(!otherEnd)
+      else
+        !midPoint  = !position
+        !direction = U
+      endif
+
+      !this.gphBox.box.orientation = object ORIENTATION('Z is ' & !direction)
+      !this.gphBox.box.position    = !midPoint
+      !this.gphBox.box.zLength     = !position.distance(!otherEnd)
+
+    else
+      -- New Position
+      !this.newPosition         = !position.offset(!this.direction, !this.distance)
+      !this.gphBox.box.position = !this.newPosition.offset(!this.gphDirection, !this.gphDistance)
+    endif
+
+  -- Special Case for Panel Fittings
+  elseif (!this.element.hardType inset('PFIT','CMPF')) then
+
+    -- Plane, through item
+    !plane                    = object PLANE(!this.element.position, !this.element.owner.orientation)
+    !position                 = !plane.near(!position)
+    !this.position.position(!position, false, true)
+    !this.newPosition         = !position.offset(!this.direction, !this.distance)
+
+    !this.gphBox.box.position = !this.newPosition.offset(!this.gphDirection, !this.gphDistance)
+
+  -- Reposition
+  else
+
+    -- New Position
+    !this.newPosition         = !position.offset(!this.direction, !this.distance)
+    !this.gphBox.box.position = !this.newPosition.offset(!this.gphDirection, !this.gphDistance)
+
+  endif
+  -- Preview
+  !this.preview(!this.newPosition.string(),'New ADP Location')
+
+endmethod
+-- End of method definition for .setPosition()
+
+------------------------------------------------------------------------
+--
+-- Method:      pick
+--
+-- Description:
+--   Set new position
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Option : PICK or OWNER
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .pick(!option is STRING)
+
+  -- Define EDG positional pick
+  !packet                = object EDGPACKET()
+  if(!option.upcase() eq 'OWNER') then
+    !packet.elementPick('Pick item, which owner is to be repositioned')
+    !packet.action       = '!!loc3DExplicit.setupOwner(!this.return[1].item)'
+  else
+    !packet.elementPick('Pick item to be re-positioned')
+    !packet.action       = '!!loc3DExplicit.setup(!this.return[1].item)'
+  endif
+
+  !packet.key            = 'repositionElement'
+  !packet.description    = 'Positioning'
+  !packet.priority       = 3
+  !packet.remove         = true
+  !packet.type           = 'dbModify'
+
+  -- Add to edg system
+  !!edgCntrl.add(!packet)
+  !!mdsDacControl(false)
+endmethod
+-- End of method definition for .pick(STRING)

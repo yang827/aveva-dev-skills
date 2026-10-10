@@ -1,0 +1,292 @@
+--      Keyword:     Undefined
+--  Author:          Undefined
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            tmpltools.pmlobj
+--    Type:          Object Definition
+--    Group:         TMPL
+--    Module:        Design
+--  Created:         Wed Feb  6 11:27:56 2013
+--
+--  Description:     Object for Design Template utility functions
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  copyFlatten(DBREF,DBREF,BOOLEAN) DBREF
+--  copyFrom(DBREF,DBREF,BOOLEAN,BOOLEAN) DBREF
+--  validateCopy(DBREF,BOOLEAN)      DBREF               Validate element !original to see if a TMPL copy can be created
+--
+----------------------------------------------------------------------
+
+define object TMPLTOOLS
+
+  member .message    is STRING
+
+endobject
+
+------------------------------------------------------------------------
+--
+-- Method:      copyFrom
+--
+-- Description: Create Design Template by copying from equipment, volume model
+--              or another template
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Copy shapes from this DBREF
+--    2   R      DBREF       Owning TMAR element
+--    3   R      BOOLEAN     True to reserve world orientation, false for 'local' orientation
+--    4   R      BOOLEAN     True to flatten the structure (for SUBE, SVOLM and TMPL)
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       of created TMPL element, or unset if it could not be created
+--
+------------------------------------------------------------------------
+
+define method .copyFrom( !original is DBREF, !tmplOwner is DBREF, !useWorldOrientation is BOOLEAN, !flatten is BOOLEAN ) is DBREF
+
+  -- check that this element can be copied
+  !this.message = ''
+  !refElement   = !this.validateCopy(!original, !flatten)
+  if( badref( !refElement ) ) then
+    return object DBREF()
+  endif
+
+  !hardType = !refElement.hardType
+  if( !hardType eq 'TMPL' ) then
+
+    -- straight copy
+    !!ce = !tmplOwner
+    NEW TMPL COPY $!<refElement>
+    handle any
+      !this.message = !!error.text
+      !tmpl   = object DBREF()
+    elsehandle none
+      !tmpl = !!ce
+    endhandle
+
+  else
+
+    -- special case for VOLM - always flatten VOLM structure (for backward compatibility)
+    if( !refElement.hardType eq |VOLM| ) then
+
+      !tmpl = !this.copyFlatten(!original, !tmplOwner, !useWorldOrientation)
+
+    elseif( !flatten or !useWorldOrientation ) then
+
+      -- flatten the hierarchy
+      !tmpl = !this.copyFlatten(!original, !tmplOwner, !useWorldOrientation)
+
+    else
+
+      -- Not a VOLM - copy members
+      !!ce    = !tmplOwner
+      NEW TMPL
+      !tmpl   = !!ce
+      COPY MEMB OF $!<refElement>
+      handle (41,8)
+        !!ce = !tmpl
+        DELETE TMPL
+        handle any
+        endhandle
+        !this.message = !!error.text
+        !tmpl = object DBREF()
+      elsehandle any
+        !this.message = !!error.text
+        !tmpl = object DBREF()
+      endhandle
+
+    endif
+
+  endif
+
+  return !tmpl
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      copyFlatten
+--
+-- Description: Create Design Template by copying from the reference element
+--              hierarchy any elements that can be template members
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Reference element
+--    2   R      DBREF       Owning TMAR element
+--    3   R      BOOLEAN     True to reserve world orientation, false for 'local' orientation
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       of created TMPL element, or unset if it could not be created
+--
+------------------------------------------------------------------------
+
+define method .copyFlatten( !original is DBREF, !tmplOwner is DBREF, !useWorldOrientation is BOOLEAN ) is DBREF
+
+  -- copy members of selected item
+  !members        = !original.members
+  !tmplMemberList = ARRAY()
+  !this.message = ''
+
+  -- special case for SVOLM - flatten VOLM structure
+  do !element values !members
+    if( !element.oList.findFirst('TMPL').set() ) then
+      -- append element to copy array
+      !tmplMemberList.append(!element)
+    else
+      -- check for member elements that can be in templates
+      do !secondLevelMember values !element.members
+        if( !secondLevelMember.oList.findFirst('TMPL').set() ) then
+          -- append element to copy array
+          !tmplMemberList.append(!secondLevelMember)
+        endif
+      enddo
+    endif
+  enddo
+
+  -- invert the list so elements appear in the same logical order
+  !tmplMemberList.invert()
+
+  -- create TMPL with copied elements
+  !!ce  = !tmplOwner
+  NEW TMPL
+  handle any
+    !this.message = !!error.text
+    !tmpl   = object DBREF()
+    return !tmpl
+  elsehandle none
+    !tmpl = !!ce
+  endhandle
+
+  if( !useWorldOrientation ) then
+    !wrtElement = /*
+  else
+    !wrtElement = !original
+  endif
+
+  -- copy to the template
+  do !element values !tmplMemberList
+    !deltaPos = !element.pos.wrt(!wrtElement)
+    handle any
+      -- ignore elements that do not have a position
+      skip
+    endhandle
+    !deltaOri = !element.ori.wrt(!wrtElement)
+    !deltaPos.origin = !tmpl
+    !deltaOri.origin = !tmpl
+    !type = !element.fullType
+    !!ce  = !tmpl
+    NEW $!<type> COPY $!<element>
+    -- move elements to origin defined by position of original
+    if( !useWorldOrientation ) then
+      !originalPos    = !original.pos.wrt(world)
+      !deltaPos.east  = !deltaPos.east - !originalPos.east
+      !deltaPos.north = !deltaPos.north - !originalPos.north
+      !deltaPos.up    = !deltaPos.up - !originalPos.up
+    endif
+    !!ce.pos = !deltaPos
+    !!ce.ori = !deltaOri
+  enddo
+
+  !!ce = !tmpl
+
+  return !tmpl
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      validateCopy
+--
+-- Description:
+-- Validate element !original to see if a TMPL copy can be created
+-- from this element
+-- The actual element used as the base element for the copy
+-- This logic is a modified version of the original logic in PML 1
+-- macro ITMPTMP
+--
+-- Method Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element selected for TMPL copy
+--    2   R      BOOLEAN     True - skip over elements that cannot be in a TMPL
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       Element that will be copied, or unset if not a valid copy
+--
+------------------------------------------------------------------------
+
+define method .validateCopy( !original is DBREF, !flatten is BOOLEAN) is DBREF
+
+  -- Initialise variables
+  !specialCase[1] = 'SUBS'
+  !specialCase[2] = 'SVOLM'
+  !specialCase[3] = 'VOLM'
+
+  -- get original element ancestors
+  !ownerList      = !original.ownLst
+  !ownerList.invert()
+  !ownerList.insert(1, !original)
+
+  -- get list of ancestor hard types
+  !block          = object BLOCK('!ownerList[!evalIndex].hardType')
+  !typeList       = !ownerList.evaluate(!block)
+
+  -- first look for TMPL owner
+  !index          = !typeList.findFirst('TMPL')
+  if( !index.set() ) then
+    return !ownerList[!index]
+  endif
+
+  -- TMPL not found, look for special cases
+  do !specialType values !specialCase
+    !index        = !typeList.findFirst(!specialType)
+    if( !index.set() ) then
+      return !ownerList[!index]
+    endif
+  enddo
+
+  -- still not found - now look for element that can own a TMPL
+  !tmplOwnerElement = !!dtbOwnerOfType(!original, 'TMPL')
+
+  if( !tmplOwnerElement.set() ) then
+
+    if( !flatten.not() ) then
+      -- check that all member elements can be owned by a TMPL
+      !members = !tmplOwnerElement.members
+      do !element values !members
+        -- check owner list for this element
+        if( !element.oList.findFirst('TMPL').unset() ) then
+          -- found an element that cannot be in a TMPL
+          !this.message = 'Selected element has members that cannot be owned by a Design Template'
+          return object DBREF()
+        endif
+      enddo
+    endif
+
+  else
+
+    -- see if the picked element can be in a TMPL
+    if( !original.oList.findFirst('TMPL').set() ) then
+      -- found an element that cannot be in a TMPL
+      !tmplOwnerElement = !original
+    endif
+
+  endif
+
+  if( !tmplOwnerElement.unset() ) then
+    !this.message = 'Selected element cannot be owned by a Design Template'
+  endif
+
+  return !tmplOwnerElement
+
+endmethod

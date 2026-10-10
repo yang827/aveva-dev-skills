@@ -1,0 +1,323 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:  MdsRepeatAtta.pmlfnc
+--   Type:  Function Definition
+--   Group:  Multi Discipline Supports Application
+--     Keyword:  MDS
+--   Module:  design
+--   Replaces:
+--
+-- Author:  Neale Morris
+-- Created:  Friday 28th Jan 2005
+--
+--
+-- Description:
+-- Function to repeat an atta on another line
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsRepeatAtta(!form is FORM)
+
+  -- initialize variables
+  !uniquenames = !!mdsoptions.mdsuniquenames
+
+  -- Has the support any attas
+  if !form.support.atta.size().eq(0) then
+    !!alert.error('No ancillaries have been created, aborting repeat process')
+    return
+  endif
+
+  -- If there is only 2 i.e DATUM/SREF then skip identification of atta
+  -- Otherwise identify atta
+  if !form.support.atta.size().eq(2) then
+    !attaToCopy = !form.support.datum
+  else
+    !attaToCopy = !form.support.singlePick('ATTA','Identify atta to repeat')
+    if !attaToCopy.unset() then
+      return
+    endif
+  endif
+
+  -- Does the atta belong to the support
+  if !form.support.atta.find(!attaToCopy).unset() then
+    !!alert.error('Identified atta does not belong to support $!form.support.stru.name')
+    return
+  endif
+
+  !insu1 = !attaToCopy.inth
+  !temp1 = !attaToCopy.owne.owne.temp
+  !pipemat1 = !attaToCopy.owne.pspe.:MdsPipeMat
+  handle ANY
+    !!mdsDacControl(FALSE)
+    !!alert.error('Pipe specification is not valid at pipe of $!attaToCopy.name$n')
+    return
+  endhandle
+
+  -- Does the atta have a guide ref, if so we have to copy it as well
+  !mdsGuideRef = !attaToCopy.:MdsGuideRef
+  if !mdsGuideRef.badref().not() then
+    !hasGuideRef = TRUE
+  else
+    !hasGuideRef = FALSE
+  endif
+
+  !!mdsDacControl(true)
+
+  -- Find out if the atta is part of a :mdsattaref association
+  !collsctn = !form.support.crossbars()
+  !collsctn.appendarray(!form.support.verticals())
+  do !findAttaRef values !collsctn
+    !match = !findAttaRef.:MdsAttaRef.findfirst(!attaToCopy)
+    if !match.set() then
+      !bar = !findAttaRef
+    endif
+  enddo
+
+  -- Loop until user finishes of error
+  do
+
+    -- Identify the pipe to copy atta into
+    if (!!mdsIdTube('TUBE', 'Identify tube of pipe to repeat ancillary','PIPE').not())then
+      break
+    endif
+
+    -- Can we create the atta
+
+    NEW ATTA
+    handle (2,614) (2,613)
+      !!mdsDacControl(false)
+      !!alert.error(!!error.text)
+      skip
+    elsehandle any
+      !!mdsDacControl(false)
+      !!alert.error('Unable to create a support ATTA in this branch')
+      skip
+    endhandle
+
+    !newAtta = !!ce
+
+    SPKBRK TRUE
+
+    -- Check material
+    !temp2 = !newAtta.owne.owne.temp
+    !pipemat2 = !newAtta.owne.pspe.:MdsPipeMat
+    handle ANY
+      !!mdsDacControl(FALSE)
+      !!alert.error('Pipe specification is not valid at pipe of $!newAtta.name$n')
+      !!ce = !newAtta
+      delete ATTA
+      skip
+    endhandle
+
+    copy $!attaToCopy
+    !styp = !attaToCopy.styp
+
+    -- If it is a different bore then reselect it
+
+    select with styp '$!styp' spec /MDS
+    handle ANY
+      delete atta
+      !!alert.error('Unable to select identified atta in this branch')
+      !!mdsDacControl(FALSE)
+      skip
+    endhandle
+
+    ispe = ispe of prev
+    handle ANY
+      ispe ispe of bran
+    endhandle
+    !insu2 = !newAtta.inth
+
+    -- Remove any references to plates
+
+    :MDSPlate def
+
+    !!mdsSetDesPars(!!ce)
+    Call !!mdsTransport(!!ce,!form.support.stru.name)
+    ------------------------------------------------------------------------------
+    -- mjb >>> 05.05.06 <mds12>
+    !!ce = !newAtta
+
+    !mdsattaobj  = object MDSREADPARSDATA()
+    !mdsattaobj.mdsdefsdata(!newAtta.stype,!newAtta.lbor.real().value())
+
+    !check = object MDSCHECKSTD(!mdsattaobj)
+    --!check = object MDSCHECKSTD()
+    -- mjb <<< 05.05.06 end of mod
+    ------------------------------------------------------------------------------
+    !min = STRING()
+    !max = STRING()
+    !matError = STRING()
+
+    -- Check if material of pipe is suitable
+
+    !!ce = !newAtta
+
+    if (!check.material(!matError).not()) then
+      delete atta
+      !!alert.error('Material of identified pipe is unsuitable, Original pipe material = $!pipemat1$n, Identified pipe material = $!pipemat2$n')
+      !!mdsDacControl(FALSE)
+      return
+    endif
+
+    -- Check if insulation is suitable
+
+    !!ce = !newAtta
+
+    if (!check.insu(!styp,!min,!max).not()) then
+      delete atta
+      !!alert.error('Insulation thickness of identified pipe is unsuitable, Original pipe insulation thickness = $!insu1$n, Identified pipe insulation thickness = $!insu2$n')
+      !!mdsDacControl(FALSE)
+      return
+    endif
+
+    -- Check if temperature is suitable
+
+    !!ce = !newAtta
+
+    if (!check.temp(!styp,!min,!max).not()) then
+      delete atta
+      !!alert.error('Temperature of identified pipe is unsuitable, Original temperature = $!temp1$n, Identified pipe temperature = $!temp2$n')
+      !!mdsDacControl(FALSE)
+      return
+    endif
+
+    -- <sk> 06/07/2012 Test custom criteria
+    !criteria = !check.criteria()
+    if (!criteria.empty().not()) then
+      delete atta
+      !!alert.error (!criteria)
+      !!mdsDacControl(FALSE)
+      return
+    endif
+    -- </sk> 06/07/2012
+
+    -- Set position
+    !!ce = !newAtta
+    plane pl thro $!form.support.datum
+    ori and p9 is p9 of $!form.support.datum
+    handle ANY
+      ori
+    endhandle
+
+    -- Set name only if unique naming is off
+    if !uniquenames then
+      waiton !!mdsSupportName
+      !name = !!mdsSupportName.name.val
+      !!ce = !newAtta
+      if !!mdsSupportName.ok.val.not() then
+        delete ATTA
+        skip
+      endif
+      !newAtta.name = '/' & !name
+    else
+      !name = !form.support.stru.name
+      do !count from 1 to 100
+        !newAtta.name = !name & '.' & !count
+        handle ANY
+          skip
+        elsehandle NONE
+          break
+        endhandle
+      enddo
+    endif
+
+    -- Add it to the support object and cross bar 1 if created
+
+    !form.support.atta.append(!newAtta)
+
+    -- Always add atta to datum cross bar
+    if (!form.support.bars.empty())then
+      !form.support.bars[1][1] = !newAtta
+    else
+      !form.support.bars[1].append(!newAtta)
+    endif
+
+    -- Set the :mdsattaref if valid but not if special
+
+    if !form.string().upcase().neq('MDSSPECIAL') then
+      !bar = !form.support.crossbars().first()
+      handle NONE
+        !attaref = !bar.:mdsattaref
+        !attaref.append(!newAtta)
+        !bar.:mdsattaref = !attaref
+      elsehandle ANY
+      endhandle
+    endif
+
+    -- set association
+    if !uniquenames then
+      !assoc = object MDSASSOCIATION(!form.support.stru,false)
+      !assoc.addAssociation(!newAtta)
+    endif
+
+    -- If the copied atta has a guide ref copy that as well
+
+    if !hasGuideRef then
+      !!ce = !newAtta
+      new atta copy $!mdsGuideRef
+      !newGuide = !!ce
+      !guideStyp = !!ce.styp
+      select with styp '$!guideStyp' spec /MDS
+      handle ANY
+        delete atta
+        !!alert.error('Unable to select guideref of identified atta')
+        !!mdsDacControl(FALSE)
+        return
+      endhandle
+      ispe = ispe of prev
+      handle ANY
+        ispe ispe of bran
+      endhandle
+      !!mdsSetDesPars(!!ce)
+      plane pl thro $!attaToCopy
+      ori and p9 is p9 of $!attaToCopy
+      :MdsGuideRef $!newAtta
+      -- Set name
+      do !count from 1 to 100
+        name $!form.support.stru.name$n.$!count
+        handle ANY
+          skip
+        elsehandle NONE
+          break
+        endhandle
+      enddo
+      !form.support.atta.append(!!ce)
+      -- Always add atta to datum cross bar
+      if (!form.support.bars.empty())then
+        !form.support.bars[1][1] = !newGuide
+      else
+        !form.support.bars[1].append(!newGuide)
+      endif
+      Call !!mdsTransport(!!ce,!form.support.stru.name)
+      !!ce = !newAtta
+      :mdsGuideRef $!newGuide
+    endif
+
+    !!ce = !newAtta
+
+    !!mdsCreateLugs()
+
+    !!mdsDacControl(FALSE)
+    !!mdsaidtext(!form)
+    !!fmsys.refresh()
+
+  enddo
+
+  -- Standards ST19, ST21, ST22 and ST23 require the automatic generation of LUGS
+
+
+endfunction

@@ -46,6 +46,10 @@ Fast-lookup decision rules, syntax flowcharts, trade-off matrices, and diagnosti
   - **Do**: Use `BEFORE(!str, !token)`, `AFTER(!str, !token)`, or `PART(!str, !index, !delim)`.
   - **Don't**: Attempt string subtraction (`!str - !sub`).
   - **Because**: String subtraction is an invalid operation in PML; `BEFORE` and `AFTER` provide clean prefix/suffix splitting.
+- **When one function must handle multiple input types**:
+  - **Do**: Declare the formal parameter with `is ANY` in `define function` / `define method` (and use `is ANY` as a return type only with documented evidence).
+  - **Don't**: Declare a normal variable `!value is ANY`, or treat ANY like C# `object`, a generic type parameter `T`, or dynamic typing.
+  - **Because**: In PML, ANY is a signature-position type specifier only; ordinary variables keep the type fixed at creation and PML has no generic or dynamic variable type.
 - **When opening or creating Marine Drafting drawings**:
   - **Do**: Check `if (!marDraft.DwgCurrent()) then !marDraft.DwgClose() endif`.
   - **Don't**: Call `DwgOpen` or `DwgNew` directly.
@@ -115,10 +119,11 @@ Need to automate an AVEVA task?
 |---|---|---|
 | `(41, 8) ERROR` | Attempting to create an element at an illegal hierarchy level | Navigate to valid parent (e.g., `ZONE` before creating `EQUI`) |
 | `(41, 12) ERROR` | Duplicate element name in database | Query existing names or append unique index suffix |
-| `(1000, 0) ERROR` | Re-importing a .NET assembly already resident in memory | Wrap `import` in `handle (1000, 0) ... endhandle` |
+| `(1000, 0) ERROR` | Re-importing a .NET assembly already resident in memory | Place `handle (1000, 0) ... endhandle` immediately **after** the `import` (import stays outside the trap — see SKILL.md Core Framework 9) |
 | `Unknown function or object` | File missing from index or bad naming | Check lowercase filename; run `pml rehash all` |
 | UI form changes not showing | Outdated bytecode cached in memory | Run `pml reload form !!formname` |
 | Element attributes return empty | Dereferencing an invalid or deleted pointer | Check `if (not !ref.badRef())` before attribute queries |
 | Marine Drafting drawing error | Calling drawing methods without active drawing | Verify `if (!marDraft.DwgCurrent())` |
 | Corrupted Array / Data Mutation | Reference aliasing bug (`!x = !y` on arrays) | Replace with `!x = !y.clone()` |
 | Interactive pick freezes all forms | Using superseded `ID @` inside modeless form | Migrate to modern `!!edgCntrl.addPacket()` architecture |
+| `is ANY` written on a normal variable (e.g. `!value is ANY` in a function body) | ANY mistaken for a generic/dynamic variable type (C# `object`, `T`) | Judge by syntactic position: parameter/return declarations are legal — only normal-variable declarations are defects; refactor to concrete types, `ARRAY`, or an ANY formal parameter |

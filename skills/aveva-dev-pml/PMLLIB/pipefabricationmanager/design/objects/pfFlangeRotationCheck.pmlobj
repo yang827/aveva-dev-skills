@@ -1,0 +1,497 @@
+--------------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            pfFlangeRotationCheck.pmlobj
+--   Type:          Object Definition
+--   Group:         Pipe Fabrication
+--     Keyword:     PF
+--   Module:        Design
+--   Replaces:
+--
+-- Author:          HyunJong Roh (Nick)
+--                  DoHyoung Kim (Bright)
+-- Created:         Tuesday 6th December 2011
+--
+-- Description:     check offset angle between flanges
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  check(DBREF,ARRAY)               -                   check offset angle between flanges
+--  getConnectionPpoint(DBREF,DBREF,BOOLEAN) REAL                return the ppoint number which is connected the given branch
+--  getHeadReferences(DBREF,ARRAY)   STRING              return the head reference elements
+--  getTailReferences(DBREF,ARRAY)   STRING              return the tail reference elements
+--  initialize()                     -                   initialize this object
+--
+--------------------------------------------------------------------------------
+define object PFFLANGEROTATIONCHECK
+
+  member  .flangeUtility  is PFFLANGEUTILITY
+
+endobject
+
+--------------------------------------------------------------------------------
+--
+-- Method:      initialize
+--
+-- Description: not used in this object
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type]                  [Description]
+--
+-- Return:
+--   [Data Type]             [Description]
+--
+--------------------------------------------------------------------------------
+define method .initialize()
+  -- no operation
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      check
+--
+-- Description: check offset angle between flanges
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       target branch element
+--    2   RW     ARRAY       check results
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .check(!targetRef is DBREF, !results is ARRAY)
+
+  !tolerance = 0.5degree
+
+  !headRefs = object ARRAY()
+  !tailRefs = object ARRAY()
+  !memberRefs = !targetRef.members
+
+  !headType = !this.getHeadReferences(!targetRef, !headRefs)
+  !tailType = !this.getTailReferences(!targetRef, !tailRefs)
+
+  !headCount = !headRefs.size()
+  !tailCount = !tailRefs.size()
+  !count = !memberRefs.size()
+
+  do !i to !count
+    !memberRef = !memberRefs[!i]
+    !type = !memberRef.type
+
+    skip if !type.neq('FLAN')
+
+    -- find previous flange connection
+    !arriveConnection = !memberRef.acon
+    handle (2,201)
+      !arriveConnection = ''
+    endhandle
+
+    if !arriveConnection.subString(1, 1).eq('F') then
+
+      !checkHeadRefs = true
+
+      do !j from !i - 1 to 1 by -1
+        !prevRef = !memberRefs[!j]
+        !leaveConnection = !prevRef.lcon
+        handle (2,201)
+          !leaveConnection = ''
+        endhandle
+
+        !connectionType = !leaveConnection.subString(1, 1)
+        if !connectionType.eq('G') then
+          -- gasket found, continue
+        elseif !connectionType.eq('F') or !connectionType.eq('W') then
+          if !prevRef.type.neq('FLAN') then
+            !offsetAngle = !this.flangeUtility.getAlignmentOffsetAngle(!prevRef, !memberRef, !prevRef.leave, !memberRef.arrive, !memberRef.adir)
+            if !offsetAngle.abs().geq(0.5degree) then
+              !results.append(object PFFLANGEROTATIONCHECKRESULT(!prevRef, !memberRef, !prevRef.leave, !memberRef.arrive))
+            endif
+          endif
+          !checkHeadRefs = false
+          break
+        else
+          -- not flange/wafer connection, break
+          !checkHeadRefs = false
+          break
+        endif
+      enddo
+
+      if !checkHeadRefs and !headCount.gt(0) then
+        -- if the previous component is the first component in this branch, let's check the head references
+        if !headType.eq('NOZZ') then
+
+          -- connected to nozzle
+          !prevRef = !headRefs[1]
+          !offsetAngle = !this.flangeUtility.getAlignmentOffsetAngle(!prevRef, !memberRef, 0, !memberRef.arrive, !memberRef.adir)
+          if !offsetAngle.abs().geq(!tolerance) then
+            !results.append(object PFFLANGEROTATIONCHECKRESULT(!prevRef, !memberRef, 0, !memberRef.arrive))
+          endif
+
+        elseif !headType.eq('BRANCH') then
+
+          -- connected to branch component (TEE, OLET...)
+          !prevRef = !headRefs[1]
+          !ppoint = !this.getConnectionPpoint(!prevRef, !targetRef, true)
+          !connectionType = !prevRef.ppco[!ppoint].subString(1, 1)
+          if !connectionType.eq('F') or !connectionType.eq('W') then
+            !offsetAngle = !this.flangeUtility.getAlignmentOffsetAngle(!prevRef, !memberRef, !ppoint, !memberRef.arrive, !memberRef.adir)
+            if !offsetAngle.abs().geq(!tolerance) then
+              !results.append(object PFFLANGEROTATIONCHECKRESULT(!prevRef, !memberRef, !ppoint, !memberRef.arrive))
+            endif
+          endif
+
+        elseif !headType.eq('HEAD') then
+
+          -- connected to branch head
+          do !k from 1 to !headCount
+            !prevRef = !headRefs[!k]
+            !arriveConnection = !prevRef.acon
+            handle (2,201)
+              !arriveConnection = ''
+            endhandle
+
+            !connectionType = !arriveConnection.subString(1, 1)
+            if !connectionType.eq('G') then
+              -- gasket found, continue
+            elseif !connectionType.eq('F') or !connectionType.eq('W') then
+              -- flange or wafer component found
+              !offsetAngle = !this.flangeUtility.getAlignmentOffsetAngle(!prevRef, !memberRef, !prevRef.arrive, !memberRef.arrive, !memberRef.adir)
+              if !offsetAngle.abs().geq(!tolerance) then
+                !results.append(object PFFLANGEROTATIONCHECKRESULT(!prevRef, !memberRef, !prevRef.arrive, !memberRef.arrive))
+              endif
+              break
+            else
+              -- not flange or wafer component, break
+              break
+            endif
+          enddo
+
+        elseif !headType.eq('TAIL') then
+          -- connected to branch tail
+          do !k from !headCount to 1 by -1
+            !prevRef = !headRefs[!k]
+            !leaveConnection = !prevRef.lcon
+            handle (2,208)
+              !leaveConnection = ''
+            endhandle
+
+            !connectionType = !leaveConnection.subString(1, 1)
+            if !connectionType.eq('G') then
+              -- gasket found, continue
+            elseif !connectionType.eq('F') or !connectionType.eq('W') then
+              -- flange or wafer component found
+              !offsetAngle = !this.flangeUtility.getAlignmentOffsetAngle(!prevRef, !memberRef, !prevRef.leave, !memberRef.arrive, !memberRef.adir)
+              if !offsetAngle.abs().geq(!tolerance) then
+                !results.append(object PFFLANGEROTATIONCHECKRESULT(!prevRef, !memberRef, !prevRef.leave, !memberRef.arrive))
+              endif
+              break
+            else
+              -- not flange or wafer component, break
+              break
+            endif
+          enddo
+        endif
+
+      endif
+    endif
+
+    -- find next flange connection
+    !leaveConnection = !memberRef.lcon
+    handle (2,201)
+      !leaveConnection = ''
+    endhandle
+
+    if !leaveConnection.subString(1, 1).eq('F') then
+
+      !checkTailRefs = true
+
+      do !j from !i + 1 to !count
+        !nextRef = !memberRefs[!j]
+        !arriveConnection = !nextRef.acon
+        handle (2,201)
+          !arriveConnection = ''
+        endhandle
+
+        !connectionType = !arriveConnection.subString(1, 1)
+
+        if !connectionType.eq('G') then
+          -- gasket, continue
+        elseif !connectionType.eq('F') or !connectionType.eq('W') then
+          !offsetAngle = !this.flangeUtility.getAlignmentOffsetAngle(!memberRef, !nextRef, !memberRef.leave, !nextRef.arrive, !memberRef.ldir)
+          if !offsetAngle.abs().geq(!tolerance) then
+            !results.append(object PFFLANGEROTATIONCHECKRESULT(!memberRef, !nextRef, !memberRef.leave, !nextRef.arrive))
+          endif
+          !checkTailRefs = false
+          break
+        else
+          -- not flange/wafer connection, break
+          !checkTailRefs = false
+          break
+        endif
+      enddo
+
+      if !checkTailRefs and !tailCount.gt(0) then
+        -- if the gasket is the last component in this branch, let's check the tail references
+        if !tailType.eq('NOZZ') then
+
+          -- connected to nozzle
+          !nextRef = !tailRefs[1]
+          !offsetAngle = !this.flangeUtility.getAlignmentOffsetAngle(!memberRef, !nextRef, !memberRef.leave, 0, !memberRef.ldir)
+          if !offsetAngle.abs().geq(!tolerance) then
+            !results.append(object PFFLANGEROTATIONCHECKRESULT(!memberRef, !nextRef, !memberRef.leave, 0))
+          endif
+
+        elseif !tailType.eq('BRANCH') then
+
+          -- connected to branch component (TEE, OLET...)
+          !nextRef = !tailRefs[1]
+          !ppoint = !this.getConnectionPpoint(!nextRef, !targetRef, false)
+          !connectionType = !nextRef.ppco[!ppoint].subString(1, 1)
+          if !connectionType.eq('F') or !connectionType.eq('W') then
+            !offsetAngle = !this.flangeUtility.getAlignmentOffsetAngle(!memberRef, !nextRef, !memberRef.leave, !ppoint, !memberRef.ldir)
+            if !offsetAngle.abs().geq(!tolerance) then
+              !results.append(object PFFLANGEROTATIONCHECKRESULT(!memberRef, !nextRef, !memberRef.leave, !ppoint))
+            endif
+          endif
+
+        elseif !tailType.eq('HEAD') then
+
+          -- connected to branch head
+          do !k from 1 to !tailCount
+            !nextRef = !tailRefs[!k]
+            !arriveConnection = !nextRef.acon
+            handle (2,201)
+              !arriveConnection = ''
+            endhandle
+
+            !connectionType = !arriveConnection.subString(1, 1)
+            if !connectionType.eq('G') then
+              -- gasket found, continue
+            elseif !connectionType.eq('F') or !connectionType.eq('W') then
+              -- flange or wafer component found
+              !offsetAngle = !this.flangeUtility.getAlignmentOffsetAngle(!memberRef, !nextRef, !memberRef.leave, !nextRef.arrive, !memberRef.ldir)
+              if !offsetAngle.abs().geq(!tolerance) then
+                !results.append(object PFFLANGEROTATIONCHECKRESULT(!memberRef, !nextRef, !memberRef.leave, !nextRef.arrive))
+              endif
+              break
+            else
+              -- not flange or wafer component, break
+              break
+            endif
+          enddo
+
+        elseif !tailType.eq('TAIL') then
+          -- connected to branch tail
+          do !k from !tailCount to 1 by -1
+            !nextRef = !tailRefs[!k]
+            !leaveConnection = !nextRef.lcon
+            handle any
+              !leaveConnection = ''
+            endhandle
+            !connectionType = !leaveConnection.subString(1, 1)
+            if !connectionType.eq('G') then
+              -- gasket found, continue
+            elseif !connectionType.eq('F') or !connectionType.eq('W') then
+              -- flange or wafer component found
+              !offsetAngle = !this.flangeUtility.getAlignmentOffsetAngle(!memberRef, !nextRef, !memberRef.leave, !nextRef.leave, !memberRef.ldir)
+              if !offsetAngle.abs().geq(!tolerance) then
+                !results.append(object PFFLANGEROTATIONCHECKRESULT(!memberRef, !nextRef, !memberRef.leave, !nextRef.leave))
+              endif
+              break
+            else
+              -- not flange or wafer component, break
+              break
+            endif
+          enddo
+        endif
+
+      endif
+    endif
+
+  enddo
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getHeadReferences
+--
+-- Description: return the head reference elements
+--
+-- Method Type: Function
+-- Arguments:
+--   [#]  [R/RW] [Data Type]                  [Description]
+--    1    R      DBREF                        target branch
+--    2    RW     ARRAY                        elements
+-- Return:
+--   [Data Type]             [Description]
+--    STRING                  connection type(NOZZ, BRANCH, HEAD, TAIL)
+--------------------------------------------------------------------------------
+define method .getHeadReferences(!branRef is DBREF, !references is ARRAY) is STRING
+
+  !href = !branRef.href
+  if !href.badref().not() then
+    if !href.type.eq('NOZZ') then
+      !references.append(!href)
+      return 'NOZZ'
+    elseif !href.type.eq('BRAN') and !href.owner.type.eq('PIPE') then
+      !references.appendArray(!href.members)
+
+      !hpos = !branRef.hpos
+      !distance1 = !hpos.distance(!href.hpos)
+      !distance2 = !hpos.distance(!href.tpos)
+
+      if !distance1.lt(!distance2) then
+        -- connected to HEAD
+        return 'HEAD'
+      else
+        -- connected to TAIL
+        return 'TAIL'
+      endif
+
+    elseif !href.owner.type.eq('BRAN') and !href.owner.owner.type.eq('PIPE') then
+      !references.append(!href)
+      return 'BRANCH'
+    endif
+  endif
+
+  return ''
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getConnectionPpoint
+--
+-- Description: return the ppoint number which is connected the given branch
+--
+-- Method Type: Function
+-- Arguments:
+--   [#]  [R/RW] [Data Type]                  [Description]
+--    1    R      DBREF                        branch component
+--    2    R      DBREF                        branch reference
+--    3    R      BOOLEAN                      true : head, false : tail
+-- Return:
+--   [Data Type]             [Description]
+--    REAL                    ppoint number which is connected to the given branch
+--------------------------------------------------------------------------------
+define method .getConnectionPpoint(!component is DBREF, !branRef is DBREF, !head is BOOLEAN) is REAL
+
+  !cref = !component.cref
+  handle ANY
+    -- does not have attribute CREF
+    !crfarray = !component.crfarray
+    handle ANY
+      -- does not have attribute crfarray
+    elsehandle NONE
+      if !crfarray.set() then
+        !candidates = object ARRAY()
+        !arrive = !component.arrive
+        !leave = !component.leave
+        do !i indices !crfarray
+          if !i.neq(!arrive) and !i.neq(!leave) then
+            !cref = !crfarray[!i]
+            if !cref.badref().not() and !cref.eq(!branRef) then
+              !candidates.append(!i)
+            endif
+          endif
+        enddo
+
+        if !candidates.size().eq(1) then
+          return !candidates[1]
+        endif
+
+        !ppoint = object REAL()
+        !minDistance = object REAL()
+        do !candidate values !candidates
+          if !head then
+            !distance = !component.ppos[!candidate].distance(!branRef.hpos)
+          else
+            !distance = !component.ppos[!candidate].distance(!branRef.tpos)
+          endif
+          if !ppoint.unset() then
+            !ppoint = !candidate
+            !minDistance = !distance
+          else
+            if !minDistance.gt(!distance) then
+              !ppoint = !candidate
+              !minDistance = !distance
+            endif
+          endif
+        enddo
+
+        return !ppoint
+
+      endif
+    endhandle
+  elsehandle NONE
+    !arrive = !component.arrive
+    !leave = !component.leave
+    if !arrive.neq(1) and !leave.neq(1) then
+      return 1
+    elseif !arrive.neq(2) and !leave.neq(2) then
+      return 2
+    elseif !arrive.neq(3) and !leave.neq(3) then
+      return 3
+    endif
+  endhandle
+
+  return object REAL()
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getTailReferences
+--
+-- Description: return the tail reference elements
+--
+-- Method Type: Function
+-- Arguments:
+--   [#]  [R/RW] [Data Type]                  [Description]
+--    1    R      DBREF                        target branch
+--    2    RW     ARRAY                        elements
+-- Return:
+--   [Data Type]             [Description]
+--    STRING                  connection type(NOZZ, BRANCH, HEAD, TAIL)
+--------------------------------------------------------------------------------
+define method .getTailReferences(!branRef is DBREF, !references is ARRAY) is STRING
+
+  !references = object ARRAY()
+
+  !tref = !branRef.tref
+  if !tref.badref().not() then
+    if !tref.type.eq('NOZZ') then
+      !references.append(!tref)
+      return 'NOZZ'
+    elseif !tref.type.eq('BRAN') then
+
+      !references.appendArray(!tref.members)
+
+      !tpos = !branRef.tpos
+      !distance1 = !tpos.distance(!tref.hpos)
+      !distance2 = !tpos.distance(!tref.tpos)
+
+      if !distance1.lt(!distance2) then
+        -- connected to HEAD
+        return 'HEAD'
+      else
+        -- connected to TAIL
+        return 'TAIL'
+      endif
+    elseif !tref.owner.type.eq('BRAN') and !tref.owner.owner.type.eq('PIPE') then
+      !references.append(!tref)
+      return 'BRANCH'
+    endif
+  endif
+
+  return ''
+
+endmethod

@@ -1,0 +1,220 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            admvirtuser.pmlobj
+--   Type:          Object Definition
+--   Group:         General Application
+
+--     Keyword:     GEN
+--   Module:        admin
+--   Replaces:
+--
+-- Author:          I.Clark
+-- Created:         Thu Feb 18 10:13:00 GMT 1999
+--
+--
+-- Description:
+-- A virtual user, to store user details outside of a database!
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  goReal()                         -                   Converts a virtual ADMVIRUSER into a real USER
+--  goVirtual(DBREF)                 -                   Converts a dbref/user into an ADMVIRTUSER
+--
+
+define object ADMVIRTUSER
+  member .name         is STRING
+  member .password     is STRING
+  member .security     is STRING
+  member .description  is STRING
+  member .teams        is ARRAY
+  member .acrAttribute is ARRAY
+  member .acrs         is ARRAY
+  member .acrGroups    is ARRAY
+  member .scopes       is ARRAY
+  member .dbRef        is DBREF
+  member .location     is STRING
+endobject
+-- End of object definition for ADMVIRTUSER
+------------------------------------------------------------------------
+--
+-- Method:  .goVirtual()
+--
+-- Description: Converts a dbref/user into an ADMVIRTUSER
+--
+-- Method Type: Function/ Procedure
+-- arguments:
+--  [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .goVirtual(!dbRef is DBREF)
+  !this.name        = !dbRef.name
+  -- DUN 1135 : no access to user password text
+  !this.password    = ||
+  !this.security    = !dbRef.security
+  !this.description = !dbRef.description
+  -- The Team list
+  -- P-6218 If the name has a leading slash remove it otherwise the name is given
+  -- a leading slash which causes confusion at the satellite
+  if (!this.name.substring(1,1) eq '/') then
+    !this.name = !this.name.after('/')
+  endif
+
+  !this.teams.clear()
+  do !i values !dbRef.teamLs
+    !this.teams.append(!i.name)
+  enddo
+  -- The ACR List
+  !this.acrs.clear()
+  do !j values !dbRef.acrLi
+    -- The ACR list can contain ACR's or ACR groups. so....
+    if (!j.type eq 'ACR') then
+      !temp = object ADMACR()
+      !temp.goVirtual(!j)
+      !this.acrs.append(!temp)
+      !this.acrAttribute.append(!temp)
+    -- Store the ACRST as an ADMACR object in the ACR group member
+    elseif (!j.type eq 'ACRST') then
+      !temp = object ADMACR()
+      !temp.goVirtual(!j)
+      !this.acrGroups.append(!temp)
+      !this.acrAttribute.append(!temp)
+      -- Store the ACRL as an array of ADMACR objects under the ACR group array member
+      do !k values !j.members
+        !temp = object ADMACR()
+        -- In case the reference element does not exist
+        !temp.goVirtual(!k.acrf)
+        !this.acrs.append(!temp)
+        -- Record the ACRL element reference in an array on the group
+        !temp.goVirtual(!k)
+        !this.acrGroups[!this.acrGroups.size()].acrRefs.append(!temp)
+      enddo
+    endif
+  enddo
+  --Make sure ACRs are not duplicated (Needed really because of ACR group members)
+  !this.acrs.unique()
+
+  -- Check for Scopes
+  !this.scopes.clear()
+
+  do !k values !this.acrs
+    if( !k.scoRefName eq '=0/0' ) then
+    	continue
+    endif
+    !tempScope = object ADMVIRTSCOPE()
+    !ref = object DBREF( !k.scoRefName )
+    !tempScope.goVirtual(!ref)
+    !this.scopes.append(!tempScope)
+  enddo
+
+  !this.scopes.unique()
+
+  !this.dbRef = !dbRef
+  !this.location = !!adminApplic.getAdmContext().name
+endmethod
+-- End of method definition for .goVirtual(DBREF)
+------------------------------------------------------------------------
+--
+-- Method:  .goReal()
+--
+-- Description: Converts a virtual ADMVIRUSER into a real USER
+--
+-- Method Type: Function/ Procedure
+-- arguments:
+--  [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .goReal()
+
+  --get the current open sys db location name
+  if(!this.location EQ !!ce.admLoc.name)then
+    -- ##
+    !!alert.error(|You can not re-create the same USER in the same location|)
+    return
+  endif
+  !!ce = /*U
+  !userName = !this.name
+  -- check name before trying NEW
+  !unusedCheckName = !userName.dbRef()
+  handle any
+  elsehandle none
+    -- check for name already in use
+    !message =!!messageFile.messageString(141, 103,  !this.name)
+    return ERROR 1 |$!message|
+  endhandle
+  call !!admCommand('CREATE USER |$!userName| $!this.password $!this.security')
+  handle (41,12) (1,3)
+    -- User already exists
+      !message =!!messageFile.messageString(141, 103,  !this.name)
+    return ERROR 1 |$!message|
+  elsehandle ANY
+    return ERROR 1 |$!!error.text|
+  endhandle
+  -- Set description
+  USER /$!userName
+  !!ce.description = !this.description
+  -- add user to teams
+  do !i values !this.teams
+    !teamName = !i.substring(3)
+    call !!admCommand(|SET TEAM $!teamName|)
+    call !!admCommand('TADD |$!userName|')
+  enddo
+
+  -- Do the Scopes before creating the ACRs
+  do !k values !this.scopes
+    !unused = !k.name.dbRef()
+    handle (2,109)
+      !okCreate = true
+    elsehandle none
+       -- Scope already exists - this is OK
+       !okCreate = false
+    endhandle
+
+    if( !okCreate ) then
+      -- Create the SCOPE
+      !k.goReal()
+    endif
+
+  enddo
+
+  -- Do the ACRs
+  do !j values !this.acrs
+    !j.goReal()
+    handle any
+    endhandle
+  enddo
+  -- Do the ACR groups
+  do !j values !this.acrGroups
+    !j.goReal()
+    handle any
+    elsehandle NONE
+      do !k values !j.acrRefs
+        !k.goReal()
+        handle any
+        endhandle
+      enddo
+    endhandle
+  enddo
+  -- We now need to set the ACRLI attribute for the user
+  -- We have to navigate to the user
+  USER /$!userName
+  do !i indices !this.acrAttribute
+    !acrName = !this.acrAttribute[!i].name
+    ACRLI Number $!i $!acrName
+    handle any
+      !!alert.error(!!error.text)
+      ADMINISTER SYSTEM LOCAL
+      return error 4
+    endhandle
+  enddo
+endmethod
+-- End of method definition for .goReal()

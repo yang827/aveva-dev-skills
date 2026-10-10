@@ -1,0 +1,2004 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File:                mdscreateft04.pmlfnc
+--   Type:              Function Definition
+--   Group:             Multi Discipline Supports Application
+--     Keyword:         MDS
+--   Module:            design
+--   Replaces:          MPS127
+--
+-- Author:              I.osborne
+-- Created:             Mon Jun 23
+--
+--
+-- Description:
+-- function to create support frame type 04
+--
+--------------------------------------------------------------------------------
+--
+-- Arguments:
+--    [#]   [R/RW]   [Data Type]   [Description]
+--     1     R         STRING       Method of creating support
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+--------------------------------------------------------------------------------
+
+-- Define Function
+define function !!mdsCreateFt04(!method is STRING)
+
+  -- Find current units and set the distance unit to metric
+
+  !currentUnits = !!kGetSetUnits()
+
+  -- Initialise variables
+  call !!mdsResetPins(1,9)
+  !support    = !!mdsFt04.support
+  !config     = !support.config
+
+  --<wd>may2007<mds12>
+  --    if (!config eq 4)then
+  --      !iDType = 'GENSEC SCTN'
+  --    else
+  --      !iDType = 'GENSEC SCTN SBFI PANE FLOOR WALL GWALL STWALL SCREED CFLOOR CSCREED CWALL BOX'
+  --    endif
+  !session   = current session
+  if !session.module().upcase().match('DESIGN').gt(0) then
+    if (!config eq 4)then
+      !iDType = 'GENSEC SCTN'
+    else
+      !iDType = 'GENSEC SCTN SBFI PANE FLOOR WALL GWALL STWALL SCREED CFLOOR CSCREED CWALL BOX'
+    endif
+  elseif  !session.module().upcase().match('OUTFITTING').gt(0) then
+    if (!config eq 4)then
+      !iDType = 'GENSEC SCTN HSTIFF'
+    else
+      !iDType = 'GENSEC SCTN SBFI PANE FLOOR WALL GWALL STWALL SCREED CFLOOR CSCREED CWALL BOX HSTIFF HPLATE'
+    endif
+  endif
+  --<wd>may2007<mds12>
+
+  --!clearance  = !!mdsOptions.clear.val
+  !overlap    = !!mdsOptions.overlap.val
+  -- !selection  = !!mdsFt04.size.selection('Rtext')
+  !selection  = !!mdsSetSteel.size.selection('Rtext')
+  !datum      = !support.datum
+  --<k.pleschner>Apr06
+  !datumDflts = object MDSANCGEOMDFLTS(!datum)
+  !clearance = !datumDflts.cend
+  --<k.pleschner>Apr06
+  !stru       = !support.stru
+  !name       = !stru.name
+  !p10Dir     = !support.p10Dir
+  !p11Dir     = !support.p11Dir
+  !alias      = !support.alias
+  !buildStyle = :MdsBuildStyl of $!stru
+  !struIsOld  = !stru.mcount.boolean()
+
+  var !pjoiColl coll all pjoi with gtyp eq 'APAD' for $!stru
+  if !pjoiColl.size().neq(0) then
+    !padsExist = TRUE
+  else
+    !padsExist = FALSE
+  endif
+
+  -- Does the support have attached/Associated supports
+
+  if !!mdsgetconnectedsupp(!stru) then
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+  ----------------------------- **** connexions **** -----------------------------
+  --$(
+  !refe         = !!ce
+  !form      = !!mdsFt04
+
+  --<kp>jan2012 MDS associations
+  !picks = ARRAY()
+
+  -- Can we write to the spref attribute of the SREF atta
+  -- and the stru
+
+  if !support.datum.badref().not() then
+    !srefName = !support.datum.name.before('/DATUM') + '/SREF'
+    if !!mdsComClaimDac(!support.stru,'DACMOD','POS').not() or !!mdsComClaimDac(!srefName.dbref(),'DACMOD','SPREF').not() then
+      !despars = !srefName.dbref().despar
+      !!mdsResetDims(!form,!despars)
+      !!kRestoreUnits(!currentUnits)
+      !!alert.error('Unable to change the support as write access to the SREF atta is not available')
+      return
+    endif
+  endif
+
+  !haveJoints = FALSE
+  if(!form.support.joints.unset().not()) then
+    !joints     = !support.joints
+    !attributes = ARRAY()
+    !haveJoints = !!kRestoreJoints(!joints,!attributes,'SAVE','')
+    handle ANY
+      !haveJoints = FALSE
+      !support.joints.clear()
+      -- in case they have been deleted and cancel is used
+    endhandle
+  endif
+  --$)
+  ---------------------------------------------------------------------------------
+
+  -- Check that Datum atta has been created
+  if (!datum.set().not())then
+    !!alert.message('Datum support atta has not been created')
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+  -- Check that Datum atta has been positioned
+  if (!support.position.not())then
+    !!alert.message('Position atta before identifying supporting steelwork')
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+  !noEquiv = false
+
+  -- Evaluate replacement support name for frame type 04
+  if (!alias eq 'FT04') then
+    !substitute = trim (before (!!mdsFrame.standard.dtext[!!mdsFrame.standard.rtext.findfirst('FT03')], '-'))
+    handle any
+      !noEquiv = true
+      !substitute = 'Identified element is unsuitable to support from'
+    endhandle
+  elseif (!alias eq 'CT01') then
+    !substitute = trim (before (!!mdsCable.standard.dtext[!!mdsCable.standard.rtext.findfirst('CT02')], '-'))
+    handle any
+      !noEquiv = true
+      !substitute = 'Identified element is unsuitable to support from'
+    endhandle
+  endif
+
+  -- store compensations
+  !complates = !!mdsCompplateDflts.compensatingPlates(!form)
+
+  ------------------------------------------------------------------------------------------------------
+  --<wd>aug2007<mds12>
+  -- ENSURE ALL the current MDS SNIPES(FITTINGS) that EXIST on the current MDS STRUCTURE SCTN elements are STORED,
+  -- so "UPDATE" the FORM MDSSUPPORT object member "!form.support.mdssctns" to represent the current MDS STRUCTURE.
+  -- *** IMPORTANT*** The object needs to be UPDATED before CREATIIN/MODIFICATION of the MDS STRUCTURE commences,
+  -- as ADDITIONAL MDS SNIPES may have been ADDED/MODIFIED/DELETED by the USER since the FORM was initialised,
+  -- via the !!mdsSnipe form utility from the MAIN "MDS DESIGN application" BAR menu option... "Modify>Snipe on Angle..."
+  --
+  -- REGENERATE the DATA stored in the FORM MDSSUPPORT object member "!form.support.mdssctns"
+  -- for ALL of the current MDS Support SCTNS and ALL the associated MDS SNIPE(FITTING) members
+  !!mdssupportsctns(!form)
+
+  -- UPDATE the local !support object variable with the latest MDSSNIPE DATA
+  !support.mdssctns      = !form.support.mdssctns
+  !support.mdssctnsstore = !form.support.mdssctnsstore
+
+  --<wd>aug2007<mds12>
+  ------------------------------------------------------------------------------------------------------
+
+  -- Check which attas to work from
+  if (!support.bars.size().leq(1))then
+    !atta = !support.atta
+  else
+    !atta = !support.bars[1]
+  endif
+
+  !!ce = !datum
+  if !config.eq(2) then
+    if !!ce.adir.wrt(/* ).string().eq('U WRT /*') then
+      if !!ce.arr.neq(2) then
+        !p9D = p9 dir wrt /*
+        flip
+        ori
+        ori and p9 is $!p9D
+        !support.p10Dir = p10 dir of $!datum wrt /*
+        !support.p11Dir = p11 dir of $!datum wrt /*
+        !p10Dir = !support.p10dir
+        !p11Dir = !support.p11dir
+      endif
+    endif
+  endif
+  same
+
+  -- Added 30sep2004 - Always read the P9direction for the TRUE !dDir of the DATUM ATTA
+  -- on HORIZONTAL and VERTICAL PIPES -- SLOPING PIPES need the TRUE ORTHOGONAL DIRECTIONS!!!!!!!!
+
+  !uDir = !support.p9dir
+  VAR !p3P9Dir CONST DIR P3 OF $!datum TO P9 OF $!datum
+  !dDir = !p3P9Dir.direction()
+
+  ----------------------------------------------
+  --<wd>oct2004 <GE> 08/04/05 Moved !!mdsremovegrad up in the file
+  --  if (!support.pLDir.up.abs().neq(1))then
+  -- Sloping and True Horizontal Pipes ONLY
+  !directions = !!mdsremovegrad(!datum)
+  ---      !support.datumorthdirs = !directions
+  --<RM> 28/02/2011 P-26823 -- config 2 frames on vertical pipes need udir and ddir to be set to world up and down
+  --otherwise they fail in all creation modes - start
+  if !config.eq(2) then
+    !uDir = d wrt /*
+    !dDir = u wrt /*
+  else
+    !uDir = !directions[3]
+    !dDir = !directions[4]
+  endif
+  --<RM> 28/02/2011 P-26823 -- config 2 frames on vertical pipes need udir and ddir to be set to world up and down
+  --otherwise they fail in all creation modes - end
+  -- Check for framework orientation
+  if (!support.rotateCur)then
+    !toVert   = !directions[6]
+    !fromVert = !directions[5]
+  else
+    !toVert   = !directions[5]
+    !fromVert = !directions[6]
+  endif
+
+  -- Check for frame type 04 configurations form and hide if necessary
+  if (!!mdsFt04Configs.shown())then
+    !!mdsFt04Configs.hide()
+  endif
+
+  -- Store section name and matref for each member
+  -- for resetting later
+
+  !storeMat = ARRAY()
+  !storeMat = !!mdsStoreMat(!name)
+
+
+  -- Generate pin positions for each creation type
+
+  if (!method eq |CURSOR|)then
+    if (!config.eq(4))then
+      !!alert.error('Cursor Option not available for this configuration')
+      !!kRestoreUnits(!currentUnits)
+      return
+    endif
+
+    ------------ *** Connexion Warnings *** -------------
+    --$(
+    !errorMessage = STRING()
+    !dummyS       = ''
+
+    if(!!kErrorsForConns(!form, !errorMessage, !dummyS).eq('UNJOINTED')) then
+      -- nothing to do
+    elseif(!!kErrorsForConns(!form, !errorMessage, !dummyS).eq('WARNING')) then
+      !continue = !!alert.confirm(!errorMessage)
+      if(!continue.eq('NO')) then
+        !!kRestoreUnits(!currentUnits)
+        return
+      endif
+    elseif(!!kErrorsForConns(!form, !errorMessage, !dummyS).eq('ERROR')) then
+      !!alert.error(!errorMessage)
+      !!kRestoreUnits(!currentUnits)
+      return
+    endif
+    --$)
+    ---------------------------------------------
+
+    label /Element1
+
+    !pick = !support.singlePick(!iDType,'Identify element to support from')
+    if !pick.unset() then
+      !!ce = !stru
+      !!kRestoreUnits(!currentUnits)
+      return
+    endif
+
+    !testCe = !!mdsRelToDatum(!datum, !pick, !dDir, !clearance.real())
+    if (!testCe[1].upcase() eq 'UNSET')then
+      !!alert.error('Identified element is unsuitable to support from.')
+      golabel /Element1
+    elseif (!testCe[1].upcase() eq '')then
+      golabel /Element1
+    endif
+    if (!config.eq(3))then
+      if (!testCe[1].upcase() eq 'ABOVE')then
+        if !noEquiv.not() then
+          !!alert.error('Identified element is infront of pipe. Use standard $!substitute')
+        else
+          !!alert.error(!substitute + 'Identified element is infront of pipe.')
+        endif
+        golabel /Element1
+      elseif (!testCe[1].upcase() eq 'EQUAL')then
+        !!alert.error('Identified element is in line with the datum atta')
+        golabel /Element1
+      endif
+    else
+      if (!testCe[1].upcase() eq 'ABOVE')then
+        if (!alias eq 'FT04' or !alias eq 'CT01') then
+          if !noEquiv.not() then
+            !!alert.error('Identified element is below pipe. Use standard $!substitute')
+          else
+            !!alert.error(!substitute + 'Identified element is below pipe.')
+          endif
+        else
+          !!alert.error('Identified element is unsuitable to support from.')
+        endif
+        golabel /Element1
+      elseif (!testCe[1].upcase() eq 'EQUAL')then
+        !!alert.error('Identified element is at the same elevation as the datum atta')
+        golabel /Element1
+      endif
+    endif
+
+    --<wd>may2007<mds12>
+    --      if (!pick.hardType eq 'PANE' or !pick.type eq 'BOX' or !pick.type.eq('SBFI')) then
+    if (!pick.hardType eq 'PANE' or !pick.type eq 'BOX' or !pick.type.eq('SBFI') or !pick.type.eq('HPLATE')) then
+      --<wd>may2007<mds12>
+
+      !plane = !testCe[2]
+      VAR !pDir CONST DIR $!plane
+    endif
+
+
+    !!mdsCreateMess(true)
+
+    -- <k.pleschner>Nov06
+    -- get suitable orientation of template
+    !mdsTmplOri = !!mdsGetTmplOri(!datum,!pick,!pick)
+
+    -- Position Pins
+
+    !!ce = !pick
+
+    -- Check to see if item picked is a bedplate
+
+    --<wd>may2007<mds12>
+    --      if (!pick.hardType eq 'PANE' or !pick.type eq 'BOX' or !pick.type.eq('SBFI'))then
+    if (!pick.hardType eq 'PANE' or !pick.type eq 'BOX' or !pick.type.eq('SBFI') or !pick.type.eq('HPLATE')) then
+      --        STRU
+      --        !frameType = !!ce.:MDSSuppType
+      STRU
+      handle NONE
+        !frameType = !!ce.:MDSSuppType
+      elsehandle ANY
+        !frameType = ''
+      endhandle
+      --<wd>may2007<mds12>
+
+      if (!frameType eq 'FT22')then
+        !bedplate = true
+        PIN 1 AT $!pick
+        PIN 1 DIR $!pDir
+        VAR !tempInter CONS POS INT PIN 1 $!plane
+        !inter = !tempInter.position()
+      elseif !pick.type.eq('SBFI') then
+        PIN 1 AT P1 of $!pick
+        PIN 1 DIR $!pDir
+        VAR !tempInter CONS POS INT PIN 1 $!plane
+        !inter = !tempInter.position()
+        VAR !pin1Up PIN 1 U
+        if (!pin1Up.real().lt(!datum.pos.up))then
+          !!mdsCreateMess(false)
+          !!alert.error('Identified bed plate is above pipe')
+          PIN 1 OFF
+          !!kRestoreUnits(!currentUnits)
+          return
+        endif
+      else
+        -- Position pins clear of attas
+        -- set pin 1 at the datum
+        PIN 1 AT P0 of $!datum
+        -- direct pin 1 to !toVert which is the direction from the atta to V1
+        PIN 1 DIR $!toVert
+        PIN 2 COPY PIN 1
+        !dim = 0
+
+        --<k.pleschner>Apr06 CEND value of MDSANCGEOMDFLTS object is used instead of general default !clearance
+        -- loop through the attas to find the distance past the furthest atta on the support
+        do !iref values !support.atta
+          -- avoid SREF atta
+          skip if !iref.name.substring(-1,-5).eq('/SREF')
+          !i = object MDSANCGEOMDFLTS(!iref)
+
+          --PIN 2 plane PIN 2 CLEAR $!clearance BEH $!i
+          if !i.clge.eq('GEOM') then
+            -- use clearance from geometry
+            PIN 2 plane PIN 2 CLEAR $!i.cend BEH $!i
+          else
+            -- use distance from centreline
+            PIN 2 plane PIN 2 THR $!i
+            PIN 2 plane PIN 2 DISTANCE $!i.cend
+          endif
+          handle (2,109)
+            break
+          endhandle
+          VAR !cDIR CONST DIR PIN 1 TO PIN 2
+          !cdim = !!kStrReal('CONST DIST PIN 1 TO PIN 2')
+
+          -- Set object definition
+          !direction = object KEQUALDIR()
+          !direction.directionA = !cDIR.direction()
+          !direction.directionB = !toVert
+          !direction.tolerance  = 0.05
+
+          if (!cdim.gt(!dim) and !!kDirEqualDir(!direction)) then
+            PIN 2 AT $!datum
+            PIN 2 DIST $!cdim
+            !dim = !cdim
+          else
+            PIN 2 AT $!datum
+            PIN 2 DIST $!dim
+          endif
+        enddo
+        PIN 1 COPY PIN 2
+        -- the result of this do loop is to establish the distance from the datum atta
+        -- to the inside edge of the vertical member pins 1 and 2 are in the same place
+        PIN 1 DIR $!uDir
+        VAR !tempInter CONS POS INT PIN 1 $!plane
+        !inter = !tempInter.position()
+      endif
+
+      --<wd>may2007<mds12>
+      --      elseif (!pick.hardType eq 'SCTN' or !pick.hardType.eq('GENSEC')) then
+      -- Real sctns and wall sctns
+    elseif (!pick.hardType eq 'SCTN' or !pick.hardType.eq('GENSEC') or !pick.hardType.eq('HSTIFF')) then
+      --<wd>may2007<mds12>
+
+      -- ************************ Connexions ***********************
+      --$(
+      !support.connections[1] = !pick
+      -- !!mdsFt04.lineUp.active = False
+      --$)
+
+      !start = plstart NA wrt world
+      !end   = plend NA wrt world
+      --        !start = PosStart wrt world
+      --        !end   = PosEnd wrt world
+      var !lineA CONS line JOIN $!start to $!end
+      var !lineB CONS line P10 of $!datum
+      var !lineC CONS line PAR $!lineB THROUGH P9 of $!datum
+      var !tempInter CONS POS INT $!lineA $!lineC
+      !inter = !tempInter.position()
+
+      -- GE 26/05/06 Trap for when the Datum is rotated and an intersection can be created
+      -- therefore making the user generate via clearance
+      var !angle CONS ANGL $!lineA $!lineC
+      if (!inter.unset() or !angle.neq('90'))then
+        -- if (!inter.unset())then
+        -- GE 26/05/06
+        !!mdsCreateMess(false)
+        !!alert.error('Unable to create support from identified section using this method. Use clearance or dimensions')
+        !!kRestoreUnits(!currentUnits)
+        return
+      endif
+      PIN 1 AT $!inter
+      PIN 1 DIR $!dDir
+      PIN 1 plane PIN 1 THRO P9 OF $!datum
+      VAR !pin1Pos PIN 1 POS WRT WORLD
+      --        !array = !!kClosestPline(!pick, !pin1Pos.position(), !uDir)
+      --        !inter = !array[2]
+      !inter = !!kFlangeOrWeb(!pick, !pin1Pos.position(), !dDir)
+    endif
+
+    --<kp>jan2012 Store pick for association
+    !picks[1] = !pick
+
+    PIN 9 AT $!inter
+    PIN 9 DIR $!dDir
+
+    -- Test position of pin 9 relative to determine orientation
+    pin1 copy p10 of $!datum
+    pin1 plane pin1 thro pin9
+    var !testDir CONS DIR P10 of $!datum to Pin 1
+
+    -- Set object definition
+    !direction = object KEQUALDIR()
+    !direction.directionA = !testDir.direction()
+    !direction.directionB = !support.p10dir
+    !direction.tolerance  = 0.05
+
+    -- Check directions
+    if (!!kDirEqualDir(!direction)) then
+      !support.rotateCur = False
+    else
+      !support.rotateCur = True
+    endif
+
+    PIN 7 AT P0 OF $!datum
+    PIN 7 DIR $!toVert
+    PIN 7 plane PIN 7 THRO PIN 9
+    PIN 7 DIR $!uDir
+    PIN 7 plane PIN 7 THRO PIN 9
+    PIN 9 COPY PIN 7
+    PIN 9 plane PIN 9 THRO P9 OF $!datum
+    PIN 9 DIR $!toVert
+    PIN 8 COPY PIN9
+    PIN 8 plane PIN 8 THRO P9 OF $!datum
+
+    PIN 9 DIR FROM PIN 8 TO PIN 9
+    PIN 8 DIR FROM PIN 9 TO PIN 8
+
+    !dim = 0
+    VAR !tempPin8Dir PIN8 DIR
+
+    --<k.pleschner>Apr06 use CEND member of MDSANCGEOMDFLTS object instead of !clearance
+    -- loop through the attas to find the distance past the furthest atta on the support
+    do !iref values !atta
+      -- avoid SREF atta
+      skip if !iref.name.substring(-1,-5).eq('/SREF')
+      !i = object MDSANCGEOMDFLTS(!iref)
+
+      PIN 4 COPY PIN 8
+      PIN 4 AT $!datum
+      --PIN 4 plane PIN 4 CLEAR $!clearance BEH $!i
+      if !i.clge.eq('GEOM') then
+        -- use clearance from geometry
+        PIN 4 plane PIN 4 CLEAR $!i.cend BEH $!i
+      else
+        -- use distance from centreline
+        PIN 4 plane PIN 4 THR $!i.cend
+        PIN 4 plane PIN 4 DISTANCE $!i.cend
+      endif
+      handle (2,109)
+        break
+      endhandle
+      VAR !cDIR CONST DIR P0 of $!datum TO PIN 4
+      !cdim = !!kStrReal('CONST DIST P0 of $!datum TO PIN 4')
+
+      -- Set object definition
+      !direction = object KEQUALDIR()
+      !direction.directionA = !cDIR.direction()
+      !direction.directionB = !tempPin8Dir.direction()
+      !direction.tolerance  = 0.05
+
+      if (!cdim.gt(!dim) and !!kDirEqualDir(!direction)) then
+        PIN 4 AT $!datum
+        PIN 4 DIST $!cdim
+        !dim = !cdim
+      else
+        PIN 4 AT $!datum
+        PIN 4 DIST $!dim
+      endif
+
+    enddo
+    PIN 4 DIR FROM PIN 8 TO PIN 9
+
+  elseif (!method eq |DIMENSION|)then
+    --<BC>Apr2005
+    --Check to see if V1 exists and save the end and start directions for sloping decks
+    !!ce = $!<name>-V1
+    handle(2,109)
+    elsehandle NONE
+      if (!support.mirror) then
+        !farend = 0
+      else
+        !farend = 1
+      endif
+      -- because we are building by dimension, we need to save the plane of the ends
+      -- mdssaveends stores the end to trim !farend and the method used by mdsoverdim
+      !saveV1 = object MDSSAVEENDS(!!ce,!datum,!farend)
+    endhandle
+
+
+    -- Initialise variables for dimension check
+    !d1 = !!mdsFt04.dim1.val
+    !d2 = !!mdsFt04.dim2.val
+
+    if (!d1.eq(0) or !d2.eq(0))then
+      !!alert.error('Not all of the dimensions have been completed.')
+      !!kRestoreUnits(!currentUnits)
+      return
+    endif
+
+    !!mdsCreateMess(true)
+
+    -- Position pins
+
+    !!ce = !datum
+    PIN 9 COPY P9
+    if (!support.rotateCur)then
+      !tempPin9Dir = !p11Dir
+      !tempPin8Dir = !p10Dir
+    else
+      !tempPin9Dir = !p10Dir
+      !tempPin8Dir = !p11Dir
+    endif
+
+    PIN 9 DIR $!tempPin9Dir
+    PIN 8 COPY PIN9
+    PIN 8 DIR $!tempPin8Dir
+
+    PIN 9 plane PIN 9 THRO CE
+    PIN 8 plane PIN 8 THRO CE
+    PIN 9 DIST $!d1
+    PIN 9 DIR $!dDir
+    PIN 7 COPY PIN 9
+    PIN 7 DIST $!d2
+    PIN 7 DIR $!uDir
+
+    PIN 9 DIR FROM PIN 8 TO PIN 9
+    PIN 8 DIR FROM PIN 9 TO PIN 8
+
+    !dim = 0
+
+    --<k.pleschner>Apr06 use !i.oend instead of !clearance
+    do !iref values !atta
+      -- avoid SREF atta
+      skip if !iref.name.substring(-1,-5).eq('/SREF')
+      !i = object MDSANCGEOMDFLTS(!iref)
+
+      PIN 4 COPY PIN 8
+      PIN 4 AT $!datum
+      --PIN 4 plane PIN 4 CLEAR $!clearance BEH $!i
+      if !i.clge.eq('GEOM') then
+        -- use clearance from geometry
+        PIN 4 plane PIN 4 CLEAR $!i.oend BEH $!i
+      else
+        -- use distance from centreline
+        PIN 4 plane PIN 4 thr $!i
+        PIN 4 plane PIN 4 DISTANCE $!i.oend
+      endif
+      handle (2,109)
+        break
+      endhandle
+      VAR !cDIR CONST DIR P0 of $!datum TO PIN 4
+      !cdim = !!kStrReal('CONST DIST P0 of $!datum TO PIN 4')
+
+      -- Set object definition
+      !direction = object KEQUALDIR()
+      !direction.directionA = !cDIR.direction()
+      !direction.directionB = !tempPin8Dir
+      !direction.tolerance  = 0.05
+
+      if (!cdim.gt(!dim) and !!kDirEqualDir(!direction)) then
+        PIN 4 AT $!datum
+        PIN 4 DIST $!cdim
+        !dim = !cdim
+      else
+        PIN 4 AT $!datum
+        PIN 4 DIST $!dim
+      endif
+    enddo
+    PIN 4 DIR FROM PIN 8 TO PIN 9
+
+  elseif (!method eq |CLEARANCE|)then
+
+    ------------ *** Connexion Warnings *** -------------
+    --$(
+    !errorMessage = STRING()
+    !dummyS       = ''
+    if(!!kErrorsForConns(!form, !errorMessage, !dummyS).eq('UNJOINTED')) then
+      -- nothing to do
+    elseif(!!kErrorsForConns(!form, !errorMessage, !dummyS).eq('WARNING')) then
+      !continue = !!alert.confirm(!errorMessage)
+      if(!continue.eq('NO')) then
+        !!kRestoreUnits(!currentUnits)
+        return
+      endif
+    elseif(!!kErrorsForConns(!form, !errorMessage, !dummyS).eq('ERROR')) then
+      !!alert.error(!errorMessage)
+      !!kRestoreUnits(!currentUnits)
+      return
+    else
+      -- leave in case
+    endif
+    --$)
+    ---------------------------------------------
+
+    label /Element2
+
+    !pick = !support.singlePick(!iDType,'Identify element to support from')
+    if !pick.unset() then
+      !!ce = !stru
+      !!kRestoreUnits(!currentUnits)
+      return
+    endif
+
+    !testCe = !!mdsRelToDatum(!datum, !pick, !dDir, !clearance.real())
+    if (!testCe[1].upcase() eq 'UNSET')then
+      !!alert.error('Identified element is unsuitable to support from.')
+      golabel /Element2
+    elseif (!testCe[1].upcase() eq '')then
+      golabel /Element2
+    endif
+    if (!config.eq(3) or !config.eq(4))then
+      if (!testCe[1].upcase() eq 'ABOVE')then
+        if !noEquiv.not() then
+          !!alert.error('Identified element is infront of pipe. Use standard $!substitute')
+        else
+          !!alert.error(!substitute + 'Identified element is infront of pipe.')
+        endif
+        golabel /Element2
+      elseif (!testCe[1].upcase() eq 'EQUAL')then
+        !!alert.error('Identified element is in line with the datum atta')
+        golabel /Element2
+      endif
+    else
+      if (!testCe[1].upcase() eq 'ABOVE')then
+        if (!alias eq 'FT04' or !alias eq 'CT01') then
+          if !noEquiv.not() then
+            !!alert.error('Identified element is below pipe. Use standard $!substitute')
+          else
+            !!alert.error(!substitute + 'Identified element is below pipe.')
+          endif
+        elseif (!alias eq 'DT04') then
+          !!alert.error('Identified element is unsuitable to support from.')
+        endif
+        golabel /Element2
+      elseif (!testCe[1].upcase() eq 'EQUAL')then
+        !!alert.error('Identified element is at the same elevation as the datum atta')
+        golabel /Element2
+      endif
+    endif
+
+    --<wd>may2007<mds12>
+    --      if (!pick.hardType eq 'PANE' or !pick.type eq 'BOX' or !pick.type.eq('SBFI'))then
+    if (!pick.hardType eq 'PANE' or !pick.type eq 'BOX' or !pick.type.eq('SBFI') or !pick.type.eq('HPLATE') )then
+      --<wd>may2007<mds12>
+
+      !plane = !testCe[2]
+      VAR !pDir CONST DIR $!plane
+    endif
+
+    !!mdsCreateMess(true)
+    -- Position pins
+
+    PIN 9 COPY P9 of $!datum
+    if (!support.rotateCur)then
+      PIN 9 COPY P11 of $!datum
+      !tempPin9Dir = !p11Dir
+      PIN 8 COPY P10 of $!datum
+      !tempPin8Dir = !p10Dir
+    else
+      PIN 9 COPY P10 of $!datum
+      !tempPin9Dir = !p10Dir
+      PIN 8 COPY P11 of $!datum
+      !tempPin8Dir = !p11Dir
+    endif
+
+    PIN 9 plane PIN 9 THRO P0 of $!datum
+    PIN 8 plane PIN 8 THRO P0 of $!datum
+
+    -- set first direction
+
+    PIN 7 COPY PIN 9
+    !dim = 0
+
+    -- direct pin 1 to !toVert which is the direction from the atta to V1
+    PIN 7 DIR $!toVert
+
+    --<k.pleschner>Apr06 CEND value of each object MDSANCGEOMDFLTS in a loop is used instead of general default !clearance
+    do !iref values !support.atta
+      -- avoid SREF atta
+      skip if !iref.name.substring(-1,-5).eq('/SREF')
+      !i = object MDSANCGEOMDFLTS(!iref)
+
+      --PIN 7 plane PIN 7 CLEAR $!clearance BEH $!i
+      if !i.clge.eq('GEOM') then
+        -- use clearance from geometry
+        PIN 7 plane PIN 7 CLEAR $!i.cend BEH $!i
+      else
+        -- use distance from centreline
+        PIN 7 plane PIN 7 thr $!i
+        PIN 7 plane PIN 7 DISTANCE $!i.cend
+      endif
+      handle (2,109)
+        break
+      endhandle
+      VAR !cDIR CONST DIR PIN 9 TO PIN 7
+      !cdim = !!kStrReal('CONST DIST PIN 9 TO PIN 7')
+      -- Set object definition
+      !direction = object KEQUALDIR()
+      !direction.directionA = !cDIR.direction()
+      !direction.directionB = !tempPin9Dir
+      !direction.tolerance  = 0.05
+
+      if (!cdim.gt(!dim) and !!kDirEqualDir(!direction)) then
+        PIN 7 AT $!datum
+        PIN 7 DIST $!cdim
+        !dim = !cdim
+      else
+        PIN 7 AT $!datum
+        PIN 7 DIST $!dim
+      endif
+    enddo
+
+
+    PIN 7 DIR $!dDir
+
+    --<wd>may2007<mds12>
+    --      if (!pick.hardType eq 'SCTN' or !pick.hardType.eq('GENSEC'))then
+    if (!pick.hardType eq 'SCTN' or !pick.hardType.eq('GENSEC') or !pick.hardType.eq('HSTIFF'))then
+      --<wd>may2007<mds12>
+
+      !start = plstart NA wrt world
+      !end   = plend NA wrt world
+      --        !start = PosStart wrt world
+      --        !end   = PosEnd wrt world
+      var !lineA CONS line JOIN $!start to $!end
+      if (!config.eq(4))then
+        var !lineB CONS line P9 of $!datum
+        var !lineC CONS line PAR $!lineB THROUGH PIN 7
+        var !tempInter CONS POS INT $!lineA $!lineC
+        !inter = !tempInter.position()
+        !intersection = !inter
+      else
+        var !lineB CONS line P10 of $!datum
+        var !lineC CONS line PAR $!lineB THROUGH P9 of $!datum
+        var !tempInter CONS POS INT $!lineA $!lineC
+        !inter = !tempInter.position()
+      endif
+      --<RM> 28/02/2011 P-26823 -- if !inter is unset try again - start
+      if (!inter.unset() and !config neq 4)then
+        var !lineB CONS line P9 of $!datum
+        var !tempInter CONS POS INT $!lineA $!lineB
+        !inter = !tempInter.position()
+      endif
+      --<RM> 28/02/2011 P-26823 -- if !inter is unset try again - end
+
+      PIN 1 AT $!inter
+      PIN 1 DIR $!dDir
+      PIN 1 plane PIN 1 THRO P9 OF $!datum
+
+
+      VAR !pin1Pos PIN 1 POS WRT WORLD
+      --        !array = !!kClosestPline(!pick, !pin1Pos.position(), !uDir)
+      --        !inter = !array[2]
+
+      !inter = !!kFlangeOrWeb(!pick, !pin1Pos.position(), !dDir)
+
+      ---------------****** Connexions ******----------------------
+      --$(
+      !support.connections[1] = !pick
+      -- !!mdsFt04.lineUp.active = True
+      ------------------this bit will stop clearance being used if support is not under picked sctn-----------------------
+      if(!haveJoints) then
+        !connected = !!mdsGetBeamConn(!support,!attributes[1][8].dbref())
+        if(!connected.unset()) then
+          !!alert.error('Support is not positioned correctly through the new joints. Position "Through", before continuing.')
+          !!ce = !refe
+          return
+        endif
+      endif
+      ------------------------take it out and it will create joints however far apart the support and steel is------------
+      --$)
+      --<tm>29/06/2005 11:37
+      -- try to get the correct position for pin 1
+      -------------------------------------------------------------
+
+      --<wd>may2007<mds12>
+      --     elseif (!pick.hardType eq 'PANE' or !pick.type eq 'BOX' or !pick.type.eq('SBFI'))then
+    elseif (!pick.hardType eq 'PANE' or !pick.type eq 'BOX' or !pick.type.eq('SBFI') or !pick.type.eq('HPLATE'))then
+      --<wd>may2007<mds12>
+
+      !plane = !testCe[2]
+      --pin 1 dir $!pDir wrt /*
+      --VAR !pDir CONST DIR $!plane
+      pin 1 copy pin 7
+      pin 1 $!plane
+      --pin 1 $!plane through $!pick
+      -- var !tempInter CONS POS INT PIN 1 $!plane
+      -- !inter = !tempInter.position()
+      var !ap pin 7 position
+      !inter = !ap.position()
+
+    else
+      --<tm>29/06/2005 15:43
+      --new bit to put pin 7 in the correct pleave for building to the plane
+      PIN 1 AT $!pick
+      PIN 1 DIR $!pDir wrt /*
+      VAR !tempInter CONS POS INT PIN 1 $!plane
+      !inter = !tempInter.position()
+    endif
+    if (!config.eq(4))then
+      pin 1 at $!intersection
+    else
+      pin 1 at $!inter
+    endif
+
+    PIN 7 plane PIN 7 THRO PIN 1
+    --<RM> 28/02/2011 P-26823 -- pin 7 dir was changed to be udir for config types 2 3 and 4 because it was producing
+    --incorrect dimensions for create by clearance previously - start
+    if !config.eq(1) then
+      PIN 7 DIR $!dDir
+    else
+    PIN 7 DIR $!uDir
+    endif
+    --<RM> 28/02/2011 P-26823 -- pin 7 dir was changed to be udir for config types 2 3 and 4 because it was producing
+    --incorrect dimensions for create by clearance previously - end
+    VAR !pin9Dir PIN 9 DIR WRT WORLD
+    PIN 9 plane PIN 9 THRO PIN 7
+    PIN 9 DIR $!dDir
+    PIN 9 plane PIN 9 THRO P9 OF $!datum
+    PIN 9 DIR $!pin9Dir WRT WORLD
+
+    --<tm>29/06/2005 15:52 key bit to position pin 7 on a plane
+    --<wd>may2007<mds12>
+    --      if (!pick.hardType eq 'PANE' or !pick.type eq 'BOX' or !pick.type.eq('SBFI'))then
+    if (!pick.hardType eq 'PANE' or !pick.type eq 'BOX' or !pick.type.eq('SBFI') or !pick.type.eq('HPLATE'))then
+      PIN 7 $!plane
+    endif
+    --<wd>may2007<mds12>
+
+    -- Set second direction
+
+    PIN 6 COPY PIN 8
+    !dim = 0
+
+
+    --<k.pleschner>Apr06 use !attaDflts instead of !atta and OEND member of MDSANCGEOMDFLTS instead of !clearance
+    do !iref values !atta
+      -- avoid SREF atta
+      skip if !iref.name.substring(-1,-5).eq('/SREF')
+      !i = object MDSANCGEOMDFLTS(!iref)
+
+      --PIN 6 plane PIN 6 CLEAR $!clearance BEH $!i
+      if !i.clge.eq('GEOM') then
+        -- use clearance from geometry
+        PIN 6 plane PIN 6 CLEAR $!i.oend BEH $!i
+      else
+        -- use distance from centreline
+        PIN 6 plane PIN 6 thr $!i
+        PIN 6 plane PIN 6 DISTANCE $!i.oend
+      endif
+      handle (2,109)
+        break
+      endhandle
+      VAR !cDIR CONST DIR PIN 8 TO PIN 6
+      !cdim = !!kStrReal('CONST DIST PIN 8 TO PIN 6')
+
+      -- Set object definition
+      !direction = object KEQUALDIR()
+      !direction.directionA = !cDIR.direction()
+      !direction.directionB = !tempPin8Dir
+      !direction.tolerance  = 0.05
+
+      if (!cdim.gt(!dim) and !!kDirEqualDir(!direction)) then
+        PIN 6 AT $!datum
+        PIN 6 DIST $!cdim
+        !dim = !cdim
+      else
+        PIN 6 AT $!datum
+        PIN 6 DIST $!dim
+      endif
+    enddo
+
+    PIN 6 DIR $!dDir
+    PIN 6 plane PIN 6 THRO PIN 9
+    PIN 6 DIR FROM PIN 6 TO PIN 9
+    PIN 8 DIR $!dDir
+    PIN 8 plane PIN 8 THRO P9 of $!datum
+    PIN 8 DIR FROM PIN 9 TO PIN 8
+    PIN 4 COPY PIN 6
+
+    --<kp>jan2012 Store pick for association
+    !picks[1] = !pick
+
+  endif
+
+  ----------------------------------------------------------------------
+  ----------------------------------------------------------------------
+
+  -- Create and ARRAY of Attas with Packing Pieces (PDMS Names ONLY)
+  -- and the Type and Size of the Packing Pieces to Recreate
+  !attapp = !!mdspackers(!support)
+
+  ----------------------------------------------------------------------
+  ---------------------------------------------------------------------
+
+  !!ce = !stru
+  --<RM> 30/06/11 P-38756 add function call to remove pnod and pjoi rules that are causing errors when delete stru mem is run - start
+  !!mdsRemoveAutoPadRules(!stru)
+  --<RM> 30/06/11 P-38756 add function call to remove pnod and pjoi rules that are causing errors when delete stru mem is run - end
+
+  -- Pins now in position create framework
+  delete STRU MEM
+  handle (41,66) (2,113) (2,113)
+  endhandle
+
+  --<wd>oct2000
+  if (!alias eq 'FT04') then
+    if (!support.pADir eq U or !support.pLDir eq U)then
+      if (!config.eq(2))then
+        !mdstemp = /MDS/FT04V/$!selection
+      else
+        !mdstemp = /MDS/FT04H/$!selection
+      endif
+    else
+      !mdstemp = /MDS/FT04H/$!selection
+    endif
+  elseif (!alias eq 'CT01' or !alias eq 'DT04') then
+    !mdstemp = /MDS/$!alias/$!selection
+  endif
+  :mdscheck $!mdstemp.:mdscheck
+  :mdsframirror $!mdstemp.:mdsframirror
+
+  --<wd>oct2000
+
+  --<wd>feb2004
+  -- Position the MDS STRU
+  --AT $!datum
+  if (!datum.styp inset ('AT60')) then
+    at p9 of $!datum
+  else
+    at $!datum
+  endif
+  --<wd>feb2004
+
+  NEW FRMW $!name/MAIN
+  !frmwSupport = !!ce
+
+  if (!alias eq 'FT04') then
+    if (!support.pADir eq U or !support.pLDir eq U)then
+      if (!config.eq(2))then
+        !!ce = /MDS/FT04V/$!selection
+        !desc = desc of /MDS/FT04V/$!selection
+        !mdsBars = :mdsbars of /MDS/FT04V/$!selection
+      else
+        !!ce = /MDS/FT04H/$!selection
+        !desc = desc of /MDS/FT04V/$!selection
+        !mdsBars = :mdsbars of /MDS/FT04V/$!selection
+      endif
+      !type = 'VERT'
+    else
+      !!ce = /MDS/FT04H/$!selection
+      !desc = desc of /MDS/FT04H/$!selection
+      !mdsBars = :mdsbars of /MDS/FT04H/$!selection
+      !type = 'HORI'
+    endif
+  elseif (!alias eq 'CT01' or !alias eq 'DT04') then
+    !!ce = /MDS/$!alias/$!selection
+    !desc = desc of /MDS/$!alias/$!selection
+    !mdsBars = :mdsbars of /MDS/$!alias/$!selection
+    !type = 'HORI'
+  endif
+
+  -- <k.pleschner>nov06
+  -- check for existence of !mdsTmplOri
+  if undefined(!mdsTmplOri) then
+    !mdsTmplOri = !stru.:Mdstmplori
+  endif
+
+  -- then try to select an "oriented" alternative of template
+  if !mdsTmplOri.boolean() then
+    !!ce = /MDS/$!alias/$!selection/$!mdsTmplOri
+    handle ANY
+    endhandle
+  endif
+
+  --<k.pleschner>Apr06
+  -- get :mdsbuildstyl (INSIDE/OUTSIDE/NONE) from template structure
+  !buildStyleNew = :mdsbuildstyl
+
+  !subs = !!kCollectAllFor('SUBS', '', !!ce)
+  !frmw = !!kCollectAllFor('FRMW', '', !!ce)
+  !frameFormat = before(!frmw[1].name, '-FRMW')
+
+  -- Navigate back to support and create template elements
+  !!ce = !frmwSupport
+  COPY ATTRIB OF $!frmw[1]
+  COPY MEM OF $!frmw[1] RENAME $!frameFormat $!name
+  do !i indices !subs
+    !sUFFIX = !subs[!i].name.aFTER('$!frameFormat').aFTER('-')
+    --NEW SUBS $!name/SUBS$!i COPY ATTRIB OF $!subs[$!i]
+    NEW SUBS $!name/$!sUFFIX COPY ATTRIB OF $!subs[$!i]
+    COPY MEM OF $!subs[$!i] RENAME $!frameFormat $!name
+  enddo
+
+  -- Get direction of P9 of datum atta and dist between p9 and p0
+
+  !!ce = !stru
+
+  -- Set stru description for template recognition
+
+  desc '$!desc'
+  :Mdsbars $!mdsBars
+  !moveDir = !support.p9dir
+
+  -- <k.pleschner>oct06 Set stru :mdstmplori
+  if !method.eq('CURSOR') then
+    !!ce.:mdstmplori = !mdsTmplOri
+  endif
+
+  -- <k.pleschner>Apr06 set stru :mdsbuildstyl
+  :mdsbuildstyl $!buildStyleNew
+
+  if (!config.eq(2)) then
+    !moveDir = !support.p9dir
+    MOVE $!moveDir thro p9 of $!datum
+  else
+    MOVE $!uDir THRO P9 OF $!datum
+  endif
+
+
+  if !datum.:mdsguideref.set() and !datum.:mdsguideref.badref().not() then
+    !mdsGuideRef = !datum.:mdsguideref
+    if (!config eq 2) then
+      --<wd>20may2004
+      --MOVE $!moveDir thro p9 of $!mdsGuideRef
+      -- Do NOT Move the STRU if the GUIDE is a TRUNNION GUIDE/STOP etc...
+      if (!datum.catref.owner.:mdstrun.not()) then
+        MOVE $!moveDir thro p9 of $!mdsGuideRef
+      endif
+    else
+      --MOVE $!uDir thro p9 of $!mdsGuideRef
+      -- Do NOT Move the STRU if the GUIDE is a TRUNNION GUIDE/STOP etc...
+      if (!datum.catref.owner.:mdstrun.not()) then
+        MOVE $!uDir thro p9 of $!mdsGuideRef
+      endif
+      --<wd>20may2004
+    endif
+  endif
+
+
+  --> Modified -<wd>- 4nov1998
+  if (!support.alias inset ('DT01','DT02','DT03','DT04')) then
+    -- For the 'NEW' HVAC Designer Only
+    !pplist   = pplst of prev of $!datum
+    !cadchvac = false
+    do !ppval values !pplist
+      if (!ppval.eq(61)) then
+        !cadchvac = true
+        break
+      else
+        skip
+      endif
+    enddo
+    if (!cadchvac) then
+      -- move $!support.p9dir dist ($!datum.despar[2] / 2 )
+    endif
+  endif
+  --< Modified -<wd>- 4nov1998
+
+  if (!config.eq(2))then
+    if (!support.rotateCur)then
+      VAR !oRIX CONST DIR PIN 9 TO PIN 8
+      !oRIZ = !dDir
+    else
+      VAR !oRIX CONST DIR PIN 8 TO PIN 9
+      !oRIZ = !dDir
+    endif
+  else
+    VAR !oRIX CONST DIR PIN 9 TO PIN 8
+    !oRIZ = !dDir
+  endif
+
+  !save = !!ce
+  --<RM> 28/02/2011 P-26823 -- reinstated the if/else/endif code block that was here in 11.6
+  --as the changes made at 12.0 have broken config 2,3 and 4 frames for vertical pipes - start
+  if !config.eq(1) then
+    -- Sloping and True Horizontal Pipes ONLY
+    --      !directions = !!mdsremovegrad(!datum)
+    !!ce = !save
+    !support.datumorthdirs = !directions
+    if (!support.rotateCur)then
+      !orixd = !directions[5]
+    else
+      !orixd = !directions[6]
+    endif
+    !orizd = !directions[4]
+    ori x is $!orixd and z is $!orizd
+  else
+    -- Vertical Pipes ONLY - Uses the Original ORIENTATION Code
+    ORI X IS $!oRIX wrt world AND Z IS $!oRIZ
+  endif
+  --<RM> 28/02/2011 P-26823 -- reinstated the if/else/endif code block that was here in 11.6
+  --as the changes made at 12.0 have broken config 2,3 and 4 frames for vertical pipes - start
+
+  -- If a trunnion is added to a support then we need to store the direction in a
+  -- uda for later use
+  var !oriFrame dir y wrt /*
+  :MdsFrameDir $!oriFrame
+
+  -- Set dimensions
+
+  if (!method eq |CURSOR| or !method eq |CLEARANCE|)then
+
+    -- Dimension 1
+    !dim1 = !!kStrReal('CONST DIST PIN 8 TO PIN 9')
+    !!mdsFt04.dim1.val = !dim1
+
+    -- Dimension 2
+    if (!type eq |VERT|)then
+      PIN 1 COPY PIN 7
+      PIN 1 plane PIN 1 CLEAR 0 INF $!name-BAR-1
+      !dim2 = !!kStrReal('CONST DIST PIN 7 TO PIN 1')
+      !!mdsFt04.dim2.val = !dim2
+    else
+      !dim2 = !!kStrReal('CONST DIST PIN 7 TO PIN 9')
+      !!mdsFt04.dim2.val = !dim2
+    endif
+
+  endif
+
+
+  -- Extend and move V1
+
+  !!ce = $!<name>-V1
+
+  EXTEND END THRO PIN 7
+
+  !flush = :MdsOlap
+  if !flush neq 'FLUSH' then
+    EXTEND START $!overlap
+  endif
+
+
+  -- If we are using FANP templates to a SBFI we need to centre the vertical leg with cursor mode
+
+  if ((desc of /MDS/TEMPLATES ) eq ('Framatome Templates') and !method.eq('CURSOR')) then
+    if !pick.type.eq('SBFI') then
+      var !savePin1Pos pin 1 pos
+      var !savePin1Dir pin 1 dir
+      new sctn copy prev
+      delete sctn mem
+      handle any
+      endhandle
+      pin 1 copy pin 9
+      pin 1 plane pin 1 clear 0 inf ce
+      var !xPin1Pos1 pin 1 pos
+      pin 1 plane pin 1 clear 0 beh ce
+      var !xPin1Pos2 pin 1 pos
+      var !sctnV1Dist const dist $!xPin1Pos1 to $!xPin1Pos2
+      pin 1 pos $!savePin1Pos
+      pin 1 dir $!savePin1Dir
+      delete sctn
+      !!ce = $!<name>-V1
+      pin 9 dist (-$!sctnV1Dist / 2)
+      !!mdsFt04.dim1.val = !!mdsFt04.dim1.val - (!sctnV1Dist.real() / 2)
+    endif
+  endif
+
+  -- If the flange gap toggle is switched on then adjust the positions
+  if !method.eq('CURSOR') then
+    -- The form is obviously this FORM, !pick1 is the first picked element
+    -- !pick2 is the second picked element, !vertLeg is a logical to see if
+    -- we have moved the pins onto the correct size or not
+    !!mdsGapFlange(!form,!pick,!pick,TRUE)
+  endif
+
+  VAR !dIR PIN 9 DIR WRT WORLD
+  MOVE $!dIR WRT WORLD THRO PIN 9
+
+  PIN 5 COPY PIN 9
+  PIN 3 COPY PIN 9
+  !realSctn = !!ce
+  new sctn copy prev
+  delete sctn mem
+  handle ANY
+  endhandle
+  PIN 5 plane PIN 5 CLEAR 0 BEH CE
+  PIN 3 plane PIN 3 CLEAR 0 INF CE
+  delete sctn
+  !!ce = !realSctn
+  !d59 = !!kStrReal('CONST DIST PIN 5 TO PIN 9')
+  !d39 = !!kStrReal('CONST DIST PIN 3 TO PIN 9')
+  !d35 = !!kStrReal('CONST DIST PIN 3 TO PIN 5')
+  !diff = ((!d39 - !d59) / 2)
+
+  -- Adjust for dimension 1
+  if (!method eq |CURSOR|)then
+
+    --<wd>may2007<mds12>
+    --      if (!pick.type eq 'SCTN' or defined(!bedplate))then
+    if (!pick.type eq 'SCTN' or !pick.type eq 'HSTIFF' or defined(!bedplate))then
+      --<wd>may2007<mds12>
+
+      MOVE $!dIR WRT WORLD DIST $!diff
+      -- Remove half of v1 from DIM1
+      !tempDim = !!mdsFt04.dim1.val - (!d35 / 2)
+      !!mdsFt04.dim1.val = !tempDim
+    else
+      MOVE $!dIR WRT WORLD DIST $!d39
+    endif
+  else
+    MOVE $!dIR WRT WORLD DIST $!d39
+    --<k.pleschner>Apr06
+    -- reflect INSIDE/OUTSIDE build style
+    if !buildStyleNew.eq('OUTSIDE').and(!method.eq('DIMENSION')) then
+      MOVE $!dIR wrt world distance -$!d35
+    endif
+  endif
+
+  --<k.pleschner>Apr06 modify Dim1 to reflect INSIDE/OUTSIDE build style when method is CLEARANCE or CURSOR
+  if !buildStyleNew.eq('OUTSIDE').and(!method.eq('CURSOR').or(!method.eq('CLEARANCE'))) then
+    !!mdsFt04.dim1.val = !!mdsFt04.dim1.val + !d35
+  endif
+
+  ------------------****** connexions *******----------------------
+  if(!support.connections.unset()) then
+    -- dimensions are being used first
+    :MDSConn default
+  else
+    !vertical1 = !!ce
+    !connected = !!mdsGetBeamConn(!support,!vertical1)
+    :MDSConn $!connected
+    handle any
+    endhandle
+  endif
+  --------------------*******************--------------------------
+
+  -- Extend and move bar 1
+  !!ce = $!<name>-BAR-1
+
+  !flush = :MDSOlap
+  if !flush eq 'OVERLAP' then
+    !oNum = :MDSOnum
+    PIN 9 plane PIN 9 CLEAR $!oNum BEH $!name-V1
+  else
+    PIN 9 plane PIN 9 CLEAR $!overlap BEH $!name-V1
+  endif
+
+  if (!config.eq(2))then
+    if (!support.rotateCur)then
+      EXTEND END THRO PIN 9
+      EXTEND START THRO PIN 4
+    else
+      EXTEND START THRO PIN 9
+      EXTEND END THRO PIN 4
+    endif
+  else
+    EXTEND START THRO PIN 9
+    EXTEND END THRO PIN 4
+  endif
+
+  -- For configuration 2 adjust height of vertical leg as dim2 is from
+  -- Top of cross member and not the center point of the datum atta
+  if (!config.eq(2))then
+    if (!method eq |DIMENSION|)then
+      PIN 7 plane PIN 7 CLEAR 0 BEH $!name-BAR-1
+      PIN 7 DIR U WRT WORLD
+      PIN 7 DIST $!d2
+      PIN 7 DIR D WRT WORLD
+      !!ce = $!<name>-V1
+      EXTEND END THRO PIN7
+      SAME
+    endif
+  endif
+
+  -- Copy end plate if exists
+
+  !!ce = $!<name>/SUBS1
+  handle none
+    VAR !p9DTemp PIN 9 DIR WRT WORLD
+    !p9D = !p9DTemp.direction()
+    MOVE $!p9D thro pin 4
+    PIN3 COPY PIN 4
+    pin 3 plane pin 3 clear 0 inf ce
+    MOVE $!p9D thro pin 3
+  elsehandle any
+  endhandle
+
+  !!ce = $!<name>/REEN1
+  handle none
+    MOVE $!dIR WRT WORLD THRO PIN 7
+  elsehandle any
+  endhandle
+
+  -- Select correct spref
+
+  !!ce = $!<name>/SREF
+
+  !!mdsDacControl(true)
+
+  --!styp = !alias & '-C-1-1'
+  !styp = !alias & '-C-1-' & !selection
+  !spec = /MDF
+  if (!alias eq 'FT04') then
+    --SEL SPREF WITH STYP '$!alias-C-1-$!selection' SPEC /MDF
+    !!mdsSelectAttaSpref(!styp,!spec)
+    !!mdsSetSuppCode('MODIFY',!name,!alias,'$!alias-C-1-1')
+  elseif (!alias eq 'CT01') then
+    --SEL SPREF WITH STYP '$!alias-C-1-$!selection' SPEC /MDF
+    !!mdsSelectAttaSpref(!styp,!spec)
+    !!mdsSetSuppCode('MODIFY',!name,!alias,'$!alias-C-1-1')
+    --!!mdsSetSuppCode('MODIFY',!name,!alias,'$!alias-C-1-1')
+  elseif (!alias eq 'DT04') then
+    --SEL SPREF WITH STYP '$!alias-C-$!selection' SPEC /MDF
+    !styp = !alias & '-C-1'
+    !!mdsSelectAttaSpref(!styp,!spec)
+    !!mdsSetSuppCode('MODIFY',!name,!alias,'$!alias-C-1-1')
+    handle (42,64) (42,66)
+      spref /MDF/DT04-C-$!selection
+    endhandle
+    !!mdsSetSuppCode('MODIFY',!name,!alias,'$!alias-C-1')
+    spkbrk false
+    handle ANY
+    endhandle
+  endif
+
+  !!mdsSetIspe()
+
+  !!mdsSelLstu(!!ce)
+
+  !!mdsDacControl(TRUE)
+
+  !!ce = !stru
+
+  -- Check to see if support is mirrored
+  if (!support.mirror)then
+    call !!mdsMirrorFt04()
+    !support.mirror = true
+  endif
+
+  -- If cross-bars existed replace them
+
+  if (!support.bars.empty().not())then
+    do !i indices !support.bars
+      skip if (!i eq 1)
+      call !!mdsAddBarFt04(!support, 'OLD', !method)
+    enddo
+    !support.barLen = !!mdsFt04.support.barLen
+  endif
+  !list = !support.bars[1]
+  !references = ''
+  do !i indices !list
+    !references = !references & ' ' & !list[!i].string()
+  enddo
+
+  -- Set atta reference to datum cross bar
+  !!ce = $!<name>-BAR-1
+  :MDSAttaRef $!references
+  !support.barLen[1] = deri length of CE
+  !!ce = !stru
+
+  -- Adjust for slope on horizontal lines only
+
+  if (!type eq |HORI|)then
+    -- Check to see if the line is sloping
+    !adjust = 0
+    do !v values !atta
+      !!ce = !v
+
+      --<wd>oct2004
+      skip if !!ce.name.match('/SREF').gt(0)
+      --<wd>oct2004
+
+      skip if !!ce.:mdsrotdir.east.set()
+
+      !grad = pl grad
+      handle ANY
+        !grad = p2 grad
+      endhandle
+      if (!grad neq 0)then
+
+        --<wd>oct2004
+        if (!!ce.pDir[9].wrt(/* ).east.abs().eq(1)) then
+          !vHeight = 0
+        elseif (!!ce.pDir[9].wrt(/* ).up.eq(0)) then
+          !vHeight = 0
+        else
+          --<wd>oct2004
+
+          !strucElement = ARRAY()
+          !ref = $!name-BAR-1
+          !strucElement.append(!ref)
+          !vHeight = !!mdsAdjustSlope(!strucElement, !v)
+
+          --<wd>oct2004
+        endif
+        --<wd>oct2004
+
+      else
+        !vHeight = 0
+      endif
+      if (!vHeight gt !adjust)then
+        !adjust = !vHeight
+      endif
+    enddo
+
+    -- Adjust required elements
+    !!ce = $!<name>-BAR-1
+
+    --<wd>oct2004
+    --MOVE D WRT WORLD DIST $!adjust
+    MOVE $!directions[3] DIST $!adjust
+    --<wd>oct2004
+
+    if (!alias eq 'FT04') then
+      !!ce = $!<name>/SUBS1
+      handle NONE
+        BY D $!adjust
+      elsehandle any
+      endhandle
+    endif
+
+    !!ce = $!<name>-V1
+    !start = Posend wrt world
+    !end   = Posstart wrt world
+
+    if (!support.mirror)then
+      PIN 7 AT $!end
+      PIN 8 AT $!start
+    else
+      PIN 7 AT $!start
+      PIN 8 AT $!end
+    endif
+
+    PIN 7 DIR TO PIN 8
+    !toBar = 0
+    do !indx indices !support.bars
+      PIN 8 COPY PIN 7
+      PIN 8 plane PIN 8 THRO $!<name>-BAR-$!indx
+      !toBar1 = !!kStrReal('CONST DIST PIN 7 TO PIN 8')
+      if (!toBar1 gt !toBar)then
+        !toBar = !toBar1
+        !index = !indx
+      endif
+    enddo
+
+    PIN 8 plane PIN 8 CLEAR 0 BEH $!<name>-BAR-$!index
+
+    --<tm>01/06/2005 09:17
+    -- previous pin command put V1 start above bar 1
+    if !method eq 'CLEARANCE' then
+      PIN 8 plane PIN 8 CLEAR 0 beh $!<name>-BAR-$!index
+    endif
+    !flush = :MDSOlap
+    -- This LINE has been added by Michel to satisfy the Overlap
+    if !!ce.:MdsOnum.neq(0) then
+      !overlap = :MDSOnum
+    endif
+    if (!support.mirror)then
+      EXTEND END THRO pin 8
+      if !flush neq 'FLUSH' then
+        EXTEND END $!overlap
+      endif
+    else
+      EXTEND START THRO pin 8
+      if !flush neq 'FLUSH' then
+        --<tm>01/06/2005 09:19
+        -- for some reason, cursor works ok but needed to add the test for clearance to
+        -- reverse the extend
+        if !method eq 'CLEARANCE' then
+          EXTEND START $!overlap
+        else
+          EXTEND START $!overlap
+        endif
+      endif
+    endif
+
+
+    ------------------****** connexions *******----------------------
+    --$(
+    if(!support.connections.unset()) then
+      -- dimensions are being used first
+      :MDSConn default
+    else
+      !vertical1 = !!ce
+      !connected = !!mdsGetBeamConn(!support,!vertical1)
+      :MDSConn $!connected
+      handle any
+      endhandle
+    endif
+    --$)
+    --------------------*******************--------------------------
+
+    if (!method eq |DIMENSION|)then
+      -- Extend vertical leg to account for the required adjustment
+
+      if (!support.mirror)then
+        !sctnEnd = 'START'
+      else
+        !sctnEnd = 'END'
+      endif
+
+      PIN 7 plane PIN 7 DIST -$!adjust
+      EXTEND $!sctnEnd THRO PIN 7
+
+    elseif (!method eq |CURSOR| or !method eq |CLEARANCE|) then
+
+      -- Adjust dimensions on form
+      !dim2Exist = (!!mdsFt04.dim2.val - !adjust)
+
+      -- reset dimensions on form
+      !!mdsFt04.dim2.val = !dim2Exist
+
+    endif
+  endif
+
+  -- Reset materials of sections
+
+  !!mdsResetMat(!storeMat)
+
+  !!ce = !stru
+
+  ----------------------------------------------------------------------
+  ----------------------------------------------------------------------
+
+  -- Set 'FT25' form Support Object to be the same as 'FT04' form Support Object
+  !!mdsFt25.support = !support
+
+  -- Clear packs from 'BOTH forms' Support Objects as the SCTNs have already been deleted
+  -- During the Framework Creation above
+  !!mdsFt25.support.packs.clear()
+  !support.packs.clear()
+
+  -- Create Required Packing Pieces(SCTNs) at the Necessary Attas
+  call !!mdscrpacksft25(!attapp, !!mdsFt04)
+
+  -- Update 'FT04' support.packs data to that held in form 'FT25'
+  !support.packs = !!mdsFt25.support.packs
+
+  -- If a joint is being used and it is handed then their will be a alternative spref of the
+  -- opposite hand joint and the bang to set separated by a ,
+
+  !!mdsSwapIntJoi(!support.stru,!support.mirror,!support.alias)
+
+  -- Reset the zdist for all joints
+
+  var !sjois coll all sjoi for $!name
+
+  do !resetZdist values !sjois
+    !!ce = !resetZdist.dbref()
+    snod
+    zdist thro cref of same
+    handle(2,360)
+    endhandle
+    --<dwjan2008-handle addition for Oglaend
+  enddo
+
+  -- Navigate to Main Structure of Framework
+  !!ce = !stru
+
+  ------------------------***** connexions *****--------------------------
+  --$(
+  if(!haveJoints) then
+    do !index indices !joints
+      -- if support cursor picking is too unlike the existing then the connections will fail
+      -- if(!joints[!index].badref()) then
+      --  !!alert.error('Reconnection is not possible, connections will be deleted.')
+      --!!mdsSelectJoints(!form,'DISCONNECT','')
+      --!support.joints.clear()
+      --  break
+      --endif
+      if(!joints[!index].badref().not() and !attributes[!index][8].dbref().:MDSConn.eq(!joints[!index].owner.owner)) then
+        !mainStl = !attributes[!index][8].dbref().:MDSConn
+        !support.joints[!index] =  !!mdsCreateJoint(!mainStl, !attributes[!index][8].dbref(),!joints[!index],!attributes[!index])
+      else
+        !dummy = object DBREF()
+        !dummyA = ARRAY()
+        !mainStl = !support.connections[!index]
+        !support.joints[!index] =  !!mdsCreateJoint(!mainStl, !attributes[!index][8].dbref(),!dummy,!dummyA)
+      endif
+    enddo
+  endif
+  --$)
+  ----------------------------------------------------------------------
+
+  -- If substructures exist and the :MDSCp1 attribute is set to 'MOVE'
+  -- then move SUBS1 thro V1 and SUBS2 thro V2
+
+  $!name/SUBS$n1
+  handle any
+  elsehandle none
+    if !!ce.:MDScp1.eq('MOVE') then
+      move $!p10Dir thro $!name-V1
+    endif
+  endhandle
+
+  --<wd>apr2004
+  -- Extra code added to locate the Stiffeners above the Vertical SCTN Flanges
+  !!ce = $!<name>/REEN1
+  handle none
+    MOVE $!dIR WRT WORLD THRO $!name-V1
+    pin 10 copy p10 of $!datum
+    pin 10 plane pin 10 thro $!name-V1
+    pin 10 dir to p10 of $!datum
+    var !pin10d cons dir pin 10 to p10 of $!datum
+    !pin10dir = !pin10d.direction()
+    -- Set object definition and Check which direction to move SUBS --> $!<name>/REEN1
+    !p10Direction = object KEQUALDIR()
+    !p10Direction.directionA = !p10Dir
+    !p10Direction.directionB = !pin10dir
+    !p10Direction.tolerance  = 0.05
+    if (!!kDirEqualDir(!p10Direction)) then
+      !sign = '+'
+    else
+      !sign = '-'
+    endif
+    !hcpar1 = ( cpar[1] of $!name-V1 / 2 )
+    move $!pin10dir dist $!<sign>$!<hcpar1>
+    MOVE $!moveDir THRO $!name-BAR-1
+  elsehandle any
+  endhandle
+  --<wd>apr2004
+
+  !!ce = !stru
+
+  -- Reset all pins associated with this support
+  call !!mdsResetPins(1,10)
+
+  -- Update support data held in form
+  !!mdsFt04.support = !support
+
+  !!mdsCreateMess(false)
+
+  -- For vertical config 2 make sure members are infront of the 9 of the datum
+
+  !iamHere = !!ce
+  if !config.eq(2) then
+    Stru
+    var !sctns coll all sctn with matchwild(name,'*BAR*') for ce
+    !p9Dir = p9 dir of $!support.datum
+    pin 8 copy p9 of $!support.datum
+    pin 7 copy pin 8
+    do !movesctns values !sctns
+      !!ce = !movesctns.dbref()
+      pin 7 plane pin 7 clear 0 inf ce
+      move $!p9Dir clear 0 beh p9 of $!support.datum
+      pin 8 plane pin 8 clear 0 inf ce
+    enddo
+    var !moved const dist pin 8 to pin 7
+    stru
+    var !sctns coll all sctn with matchwild(name,'*-V*') for ce
+    do !movesctns values !sctns
+      !!ce = !movesctns.dbref()
+      move $!p9Dir dist $!moved
+    enddo
+    stru
+    reconn recalc
+    pin 7 off
+    pin 8 off
+  endif
+  !!ce = !iamHere
+
+  -- Does the item require bearing plates (Framatome Only)
+
+  !!ce = !support.stru
+  !!mdsAddBearing(!support.datum)
+  !!ce = !support.stru
+
+  -- Make sure the overlap is maintained when bearing plates are added
+
+  if (desc of /MDS/TEMPLATES ) eq 'Framatome Templates' then
+    do !verts from 1 to 1
+      $!name-V$!verts
+      if !!ce.mcount.eq(0) then
+        if !!ce.:mdsolap.eq('OVERLAP') then
+          !num = !!ce.:mdsonum
+          !barNum = STRING()
+          !length = 0
+          do !loop from 1 to 6
+            extend start inf $!name-BAR-$!loop
+            handle ANY
+              break
+            endhandle
+            !nLength = deri leng
+            if !nLength.gt(!length) then
+              !barNum = !loop.string()
+              !length = !nLength
+            endif
+          enddo
+          extend start inf $!name-BAR-$!barNum
+          extend start $!num
+        endif
+      endif
+    enddo
+
+    -- If the cross bars have end plates they need resetting
+    if !config.eq(2) then
+      Stru
+      var !sctns coll all sctn with matchwild(name,'*BAR*') for ce
+      do !loop values !sctns
+        !!ce = !loop.dbref()
+        if !support.rotateCur then
+          goto jois
+          handle NONE
+            pnod
+            handle ANY
+            elsehandle NONE
+              rule set NPOS Dynamic ( ATTRIB POSE OF PREV  )
+              prev
+              joie pjoi 1 of next
+              if !!ce.joie.eq(!!ce.jois) then
+                jois def
+              endif
+            endhandle
+          elsehandle ANY
+          endhandle
+          goto joie
+          handle NONE
+            pnod
+            handle ANY
+            elsehandle NONE
+              rule set NPOS Dynamic ( ATTRIB POSS OF PREV  )
+              prev
+              jois pjoi 1 of next
+              if !!ce.joie.eq(!!ce.jois) then
+                joie def
+              endif
+            endhandle
+          elsehandle ANY
+          endhandle
+        else
+          goto jois
+          handle NONE
+            pnod
+            handle ANY
+            elsehandle NONE
+              rule set NPOS Dynamic ( ATTRIB POSS OF PREV  )
+              prev
+              jois pjoi 1 of next
+              if !!ce.joie.eq(!!ce.jois) then
+                joie def
+              endif
+            endhandle
+          elsehandle ANY
+          endhandle
+          goto joie
+          handle NONE
+            pnod
+            handle ANY
+            elsehandle NONE
+              rule set NPOS Dynamic ( ATTRIB POSE OF PREV  )
+              prev
+              joie pjoi 1 of next
+              if !!ce.joie.eq(!!ce.jois) then
+                jois def
+              endif
+            endhandle
+          elsehandle ANY
+          endhandle
+        endif
+      enddo
+    endif
+    --<dw>jan2008 Oglaend brackets
+  elseif ((desc of /MDS/TEMPLATES ) eq ('OGLAEND Templates')) then
+    $!name-BAR-1
+    !barSpre = !!ce.spre.fullname.part(3,'/').part(1,'-')
+    if (!barSpre eq 'MGOB') then
+      !barDesp = !!ce.desp[1]
+      extend end dist $!barDesp from posstart
+    endif
+  endif
+  --<dw>jan2008 End of Oglaend brackets
+
+  stru
+  reconn recalc
+  handle ANY
+  endhandle
+
+  -- if we are building by dimension and we have a saved plane, we need to adjust the end
+  -- to the correct dimension, parameter 2 of the call is the mdsoverdim method to be used
+  -- to check the dimension is correct
+  if !method.eq('DIMENSION') then
+    if defined(!saveV1) then
+      --<RM> 28/02/2011 P-26823 -- stopped config 2,3 and 4 frames from using the restoreplane function as
+      --it extends the v1 leg of the framework incorrectly for these types and is not valid for these vertical pipe configs - start
+      if !config.eq(1) then
+        !saveV1.restoreplane(!!mdsFt04.dim2.val ,0)
+      endif
+      --<RM> 28/02/2011 P-26823 -- stopped config 2,3 and 4 frames from using the restoreplane function as
+      --it extends the v1 leg of the framework incorrectly for these types and is not valid for these vertical pipe configs - end
+    endif
+  endif
+
+  !!ce = !support.stru
+  -- Test code for sloping decks
+  if defined(!testCe[3]) then
+    !!mdstrimplane($!name-V1 ,!support.mirror, !testCe[2],'end')
+    -- we have trimmed the length of the vertical section to suit the panel
+    -- now we need to reset the dimension
+    !!mdsFt04.dim2.val = !!mdsgetoverdim($!datum , $!name-V1 ,1)
+  else
+    if (!method eq |CLEARANCE|)then
+
+      --<wd>may2007<mds12>
+      --      if !pick.hardType.eq('SCTN') or !pick.hardType.eq('GENSEC') then
+      if !pick.hardType.eq('SCTN') or !pick.hardType.eq('GENSEC') or !pick.hardType.eq('HSTIFF')then
+        --<wd>may2007<mds12>
+
+        !x = object MDSPLINES(!pick,$!name-V1 ,true )
+      endif
+    elseif (!method eq |CURSOR|)then
+
+      --<wd>may2007<mds12>
+      --      if !pick.hardType.eq('SCTN') or !pick.hardType.eq('GENSEC') then
+      if !pick.hardType.eq('SCTN') or !pick.hardType.eq('GENSEC') or !pick.hardType.eq('HSTIFF')then
+        --<wd>may2007<mds12>
+
+        !x = object MDSPLINES(!pick,$!name-V1 ,true )
+      endif
+    endif
+    if !method neq |DIMENSION| then
+      --<RM> 28/02/2011 P-26823 -- stopped config 2,3 and 4 frames from using the !!mdsgetoverdim function as
+      --it produces an invalid intersection problem for these vertical pipe configs - start
+      if !config.eq(1) then
+        !!mdsFt04.dim2.val = !!mdsgetoverdim($!datum , $!name-V1 ,1)
+      endif
+      --<RM> 28/02/2011 P-26823 -- stopped config 2,3 and 4 frames from using the !!mdsgetoverdim function as
+      --it produces an invalid intersection problem for these vertical pipe configs - end
+    endif
+  endif
+
+  -- now reset the despars on the sref atta
+  !!ce = $!<name>/SREF
+  !!mdsDacControl(true)
+  DESPAR $!!mdsFt04.dim1.val  $!!mdsFt04.dim2.val
+  !!mdsDacControl(false)
+
+
+  !!ce = !support.stru
+
+  -- reset :mdsancref attributes if set
+  !support.plateconns.restoreconns()
+
+
+  !!ce = !support.stru
+
+  -- adjust ancillary welds to suit the beams they sit on
+  !!mdsWeldAdjust(!!mdsFt04)
+
+  -- restore compensation
+  -- We only need to restore the compensations if were re creating the framework by e.g. cursor, and not when were cancelling the form.
+  -- The global variable !!cancellingForm is set in !!mdsRestoreForm as this was the only way to do the check
+  if defined(!!cancellingForm) then
+    if !!cancellingForm.not() then
+      !!mdsCompplateDflts.compensatingPlates(!complates)
+    endif
+  else
+    !!mdsCompplateDflts.compensatingPlates(!complates)
+  endif
+
+  -- Show dimensions on graphics if required
+  if !!mdsFt04.graphicalDim then
+    !!mdsshowdim(!!mdsFt04)
+  endif
+
+  --<dw>sep2007 Restore bracing
+  !!mdsrestorebracing(!form)
+  --<dw>sep2007
+
+  --<.pleschner>Apr06 Message displayed if buildstyle has changed
+  if !buildStyle.neq(!buildStyleNew).and(!struIsOld) then
+    refresh
+    !!alert.warning('Building style of the support has been changed - check Dimension 1')
+  endif
+
+  --<kp>mar07 Handle snipes
+  !!mdsSnipe(!support.stru)
+
+  ---------------------------------------------------------------------------------------------------
+  --<wd>aug2007<mds12>
+  -- Update the MDSSCTN and MDSFITTING Objects to the latest DATA in the MDSSUPPORT object member .mdssctns,
+  -- i.e. !form.support.mdsctns, where any MDS SNIPES(FITTINGS) exist on the MDS SUPPORT SCTNS where the GTYP of CATREF is 'ANG'
+  -- and the MDS SNIPE/FITTING element PURPOSE attribute is set to 'XGUI'
+  --
+  -- ALL OTHER MDS SNIPES are generated automatically or from the MDS TEMPLATE during the MDS STRUCTURE creation/modification.
+  -- ** NOTE ** The SNIPE UPDATE applies to ALL METHODS(!method) of Creation,
+  -- i.e. 'CREATE by CURSOR/DIMENSION/CLEARANCE and RESIZING of the MDS TEMPLATE
+  !!mdsrestoresnipe(!form, 'DIMENSION')
+
+  -- REGENERATE the DATA stored in the FORM MDSSUPPORT object member "!form.support.mdssctns"
+  -- for ALL of the MDS Support SCTNS and ALL the associated MDS SNIPE(FITTING) members
+  !!mdssupportsctns(!form)
+  --<wd>aug2007<mds12>
+  ---------------------------------------------------------------------------------------------------
+
+  --<kp>jan2012 MDS associations
+  !form.support.associations(!picks)
+  !support = !form.support
+
+  -- Add pads if automatic pads option is on and a PANE or HPLATE has been picked
+
+  if !!mdsOptions.autopads.selection().eq('ON') then
+    !whichVerticals = 'ALL'
+    if !method.eq('CURSOR') or !method.eq('CLEARANCE') then
+      if !pick.hardType.eq('PANE') or !pick.hardType.eq('HPLATE') then
+        !!mdsaddpad(!support,!whichVerticals)
+      endif
+    elseif !method.eq('DIMENSION') and !padsExist then
+      !!mdsaddpad(!support,!whichVerticals)
+    endif
+  endif
+
+  --<kp>jan2012
+  -- Enhance elements
+  !support.enhance(on)
+
+  !!ce = !support.stru
+
+  -- Reset Units
+  !!kRestoreUnits(!currentUnits)
+
+  -- End function
+endfunction

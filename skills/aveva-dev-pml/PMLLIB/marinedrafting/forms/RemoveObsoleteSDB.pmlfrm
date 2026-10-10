@@ -1,0 +1,1214 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            RemoveObsoleteSDB.pmlfrm
+--    Type:          Form Definition
+--    Group:         Undefined
+--      Keyword:     Undefined
+--    Module:        Undefined
+--  Author:          Undefined
+--  Created:         Fri Mar  9  9:21:07 2012
+--
+-- Description:      Remove obsolete .SDB files
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  CheckSession()                   BOOLEAN             Check if there is another session to the same MDB
+--  EnableInput(BOOLEAN)             -                   Sets the "Activity" of certain controls on the dialog
+--  RemoveObsoleteSDB()              -                   Constructor
+--  ReportProgress(REAL,REAL,REAL,STRING,STRING,STRING) -                   Displays information about current operation
+--  buttExportCallback()             -                   Called when "Export list to CSV file" button is pressed
+--  buttMoveCallback(ANY,STRING)     -                   Called when "Move ALL" button is pressed.
+--  buttdelallCallback(ANY,STRING)   -                   Called when "Delete ALL obsolete SDB files" button is pressed
+--  buttsearchCallback(ANY,STRING)   -                   Called when "Search for obsolete .SDB files" button is pressed
+--  checkDBSessions(STRING,FILE)     BOOLEAN             Checks if given element existed in previous DBSES if so
+--  checkdb(FILE)                    BOOLEAN             Check to what database the referenced element belongs to
+--  checkoldattval(STRING,FILE)      BOOLEAN             Checks the value of the DOFilename attribute in all DBSES
+--  checkoldattvaldb(STRING,ARRAY)   ARRAY               Checks all old DBSES of the given DB against the list of
+--  checkref(STRING)                 BOOLEAN             Check the dbref
+--  checksdb(FILE)                   REAL                Check the .SDB file
+--  exportHeaders()                  -
+--  findobsoletesdb()                BOOLEAN             Scan the 32 directories below %<proj>DRG%
+--  getdb(FILE)                      STRING              Get the name of the database corresponding to SDB file.
+--  initCallback()                   -                   Init dialog.
+--  initdbmap()                      BOOLEAN             Init the map of the db numbers to databases
+--  onDeleteSelSDB()                 -                   Delete selected files from the list.
+--  onListPopupSort()                -                   Sort the list of sdb files
+--  reffromfname(STRING)             STRING              Extract dbref from the SDB file name.
+--
+import 'MarApi'
+handle (1000,0)
+endhandle
+
+
+
+setup form !!RemoveObsoleteSDB dialog noalign
+   !this.formTitle     = 'Remove obsolete .SDB files'
+   !this.iconTitle     = ''
+
+   --map dbnumbers -> DB
+   member .dbmapname is ARRAY
+   member .dbmapnumber is ARRAY
+
+   --list of databases for which the search for used SDBs was made
+   member .olddbs is ARRAY
+
+   --list of SDB files used by previous DBSES
+   member .olddoatt is ARRAY
+
+   member .aliendb is BOOLEAN
+   member .aliensdbnum is REAL
+   member .theproject is PROJECT
+   --set this nonzero value befor showing the form
+   --if you just wont to find out how many obsolete files exist in the project
+   member .devop is BOOLEAN
+
+
+
+   menu .listpopup popup
+
+
+   path down
+   frame .search 'Search for obsolete .SDB files' anchor left +bottom  +right at ymax+0.5 width 70
+      button   .SearchSDB    anchor left at x1.5 |Find obsolete SDB files| width 16 callback '!this.buttsearchCallback('
+      path right
+      valign centre
+      hdist 2
+      paragraph .label text |Obsolete .SDB files found:| width 18
+      hdist 0
+      paragraph .nofound text |0      |
+      path right
+      button .Stop at xmax.search-20 |Cancel Operation|
+   exit
+   path down
+
+   paragraph .status at 10 7 anchor none text |                                                        |
+   paragraph .progress at 10 8 anchor none text |                                                      |
+
+
+   frame .group 'Drawings to be checked' anchor left +bottom +right at xmin.search ymax.search+0.5 width.search
+      list  .ObsoleteSdbList anchor top +left +right columns multi width 66 length 20
+
+      button   .RemAll    anchor top +left +bottom at xmin ymax+0.5 |Delete ALL|   callback '!this.buttdelallCallback('
+      path right
+      button .MoveSDB anchor left at xmax+2 width.RemAll |Move ALL| callback '!this.buttMoveCallback('
+      paragraph .texttarget  text |Target path:| width 8
+      text .TargetPath anchor left at xmax+2 width 30 is STRING
+   exit
+
+   path down
+
+   frame .exportOutput  'Export list'    anchor left +right +bottom  width.group
+     button    .Export   anchor left  +bottom |Export list to CSV file| width 16 callback '!this.buttExportCallback('
+     paragraph .ttt  text | The file will be saved to 'c:\temp\obsoletesdb.csv'|
+   exit
+
+   path down
+   halign right
+   button .cancel anchor right +bottom |Close| width 10 CANCEL
+
+   !this.listpopup.Add( 'callback', 'Delete Selected Files', '!this.onDeleteSelSDB()')
+   !this.listpopup.Add( 'SEPARATOR')
+   !this.listpopup.Add( 'callback', 'Sort by file names', '!this.onListPopupSort()', 'BYNAME'  )
+   !this.listpopup.Add( 'callback', 'Sort by status', '!this.onListPopupSort()', 'BYSTATUS' )
+   !this.ObsoleteSdbList.SetPopup( !this.listpopup )
+
+
+exit
+-- End of form definition
+
+------------------------------------------------------------------------
+--
+-- Method:      RemoveObsoleteSDB
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .RemoveObsoleteSDB()
+   -- Object constructor
+
+   !this.theproject = CURRENT PROJECT
+   -- On closing the dialog clear up the graphics
+   !this.initCall                 = '!this.initCallback()'
+
+   -- Set the list components up
+   !this.exportHeaders()
+
+   -- init the map of DB numbers to DB
+   !this.initdbmap()
+   !this.aliensdbnum = 0
+   !this.devop = FALSE
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      initCallback
+--
+-- Description: Init dialog.
+--
+-- Method Type:
+-- Arguments:
+--
+-- Return:
+--
+--
+------------------------------------------------------------------------
+
+define method .initCallback()
+
+   --check if this is only session
+   if (!this.CheckSession() eq FALSE) then
+      return error 1 'There are other active users in this project. Deleting .SDB files is NOT SAFE.'
+   endif
+
+   --check who is running the script
+   !session = CURRENT SESSION
+   !usr = !session.User()
+
+   if !usr.Access.UpCase() NE 'FREE' then
+      return error 2 'Only users with FREE access can use this application!'
+   endif
+
+   !this.EnableInput(FALSE)
+   !this.aliendb = FALSE
+   !this.ObsoleteSdbList.Clear()
+   !this.nofound.Val = '0   '
+   !this.Stop.Visible = FALSE
+   !this.progress.Visible = FALSE
+   !this.status.Visible = FALSE
+
+
+   --get the path for moving SDB files from environment variable
+   using namespace 'Aveva.Marine.Utility'
+   !util = object MarUtil()
+	!path = !util.TBEnvironmentGet('SBB_OBSOLETE_SDB_BACKUP')
+	handle any
+		!path = ''
+	endhandle
+	
+	if !path.empty() then
+		VAR !envtemp EVAR TEMP
+		!this.TargetPath.Val = !envtemp
+	else
+		!this.TargetPath.Val = !path
+	endif
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      .buttdelallCallback
+--
+-- Description: Called when "Delete ALL obsolete SDB files" button is pressed
+--
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    !gadget    GADGET      calling gadget (button)
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .buttdelallCallback(!gadget    is ANY, !action    is STRING)
+   !rText = !this.ObsoleteSdbList.RText
+   !dText = !this.ObsoleteSdbList.DText
+   !update = 0
+
+   !this.EnableInput(FALSE)
+   !this.Stop.Visible = TRUE
+   !this.SearchSDB.Active = FALSE
+   !this.progress.Visible = TRUE
+   !this.status.Visible = TRUE
+   !!FMSYS.setInterrupt(!this.Stop)
+
+   do !filename values !rText
+      break if(!!FMSYS.Interrupt())
+
+      !update = !update + 1
+
+      !thefile = object FILE(!filename)
+
+      !this.ReportProgress(!update, !this.ObsoleteSdbList.DText.size(), !rText.size(), '', '','Deleting obsolete SDB files')
+
+      !thefile.DeleteFile()
+      handle ANY
+         !!Alert.Warning(!!error.text)
+      elsehandle NONE
+         !ind = !rText.find(!filename)
+         !dText.DeleteFrom(!ind[1], 1)
+         !rText.DeleteFrom(!ind[1], 1)
+      endhandle
+      !thefile.Delete()
+   enddo
+
+   !this.ObsoleteSdbList.Clear()
+   !this.ObsoleteSdbList.DText = !dText
+   !this.ObsoleteSdbList.RText = !rText
+
+   !this.Stop.Visible = FALSE
+   !this.SearchSDB.Active = TRUE
+   !this.EnableInput(TRUE)
+   !this.progress.Visible = FALSE
+   !this.status.Visible = FALSE
+
+   if(!this.ObsoleteSdbList.Count EQ 0)then
+      !this.Export.Active = FALSE
+   endif
+   !this.nofound.Val = !this.ObsoleteSdbList.DText.size().String()
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      .buttsearchCallback
+--
+-- Description: Called when "Search for obsolete .SDB files" button is pressed
+--
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    !gadget    GADGET      calling gadget (button)
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .buttsearchCallback(!gadget    is ANY, !action    is STRING)
+   !this.ObsoleteSdbList.Clear()
+   !task = !this.findobsoletesdb()
+   !this.EnableInput(!task)
+   if ( !task AND !this.aliendb ) then
+      !!Alert.Warning('Some files (' + !this.aliensdbnum.string() + ') have references from database that is not included in the current MDB or it is a foreign database. These files will not be processed.')
+   endif
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      .buttExportCallback
+--
+-- Description: Called when "Export list to CSV file" button is pressed
+--              Exports a list of obsolete .SDB files to a CSV file
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    !gadget    GADGET      calling gadget (button)
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .buttExportCallback(!gadget    is ANY, $
+                              !action    is STRING)
+
+   !exportDirectory           = 'c:\temp\obsoletesdb.csv'
+
+   !f = object FILE(!exportDirectory)
+   !f.WriteFile('OVERWRITE', !this.ObsoleteSdbList.rText )
+
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      .buttMoveCallback
+--
+-- Description: Called when "Move ALL" button is pressed.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    !gadget    GADGET      calling gadget (button)
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .buttMoveCallback(!gadget is ANY, !action is STRING)
+   !expath = object FILE (!this.TargetPath.Val)
+
+   --First check the path
+   if(!expath.Exists()) then
+      !ftype = !expath.Type()
+      if(NOT  !ftype EQ 'DIRECTORY') then
+         !!ALERT.Warning('The given path is not a directory')
+         !this.TargetPath.SetFocus()
+         return
+      endif
+   else
+      !!ALERT.Error('Given path doesn''t exist')
+      !this.TargetPath.SetFocus()
+      return
+   endif
+
+   !rText = !this.ObsoleteSdbList.RText
+   !dText = !this.ObsoleteSdbList.DText	
+   !update = 0
+
+   !this.EnableInput(FALSE)
+   !this.Stop.Visible = TRUE
+   !this.SearchSDB.Active = FALSE
+   !this.progress.Visible = TRUE
+   !this.status.Visible = TRUE
+   !!FMSYS.setInterrupt(!this.Stop)
+
+   --Move files
+   !overwrite = 0
+   do !filename values !rText
+      !update = !update + 1
+
+      !thefile = object FILE(!filename)
+
+      !this.ReportProgress(!update, !this.ObsoleteSdbList.DText.size(), !rText.size(), '', '','Moving obsolete SDB files')
+
+      !moved = object FILE(!expath.FullName() + '\' + !thefile.Entry())
+      --check if the target dir already has the same file
+      if(!moved.Exists()) then
+         if(!overwrite EQ 1)then
+            !moved.DeleteFile()
+         elseif(!overwrite EQ 0)then
+            if(!!ALERT.Confirm('The target folder contains ' + !thefile.Entry() + '. Do you want to replace all existing SDB files in that folder?') EQ 'YES') then
+               !moved.DeleteFile()
+               handle ANY
+                  !!Alert.Warning(!!error.text)
+               endhandle
+               !overwrite = 1
+            else
+               !overwrite = -1
+               !moved.Delete()
+               skip
+            endif
+         elseif(!overwrite EQ -1)then
+            !moved.Delete()
+            skip
+         endif
+         !moved.Delete()
+      endif
+
+      !thefile.Move(!expath)
+
+      handle ANY
+         !!Alert.Warning(!!error.text)
+      elsehandle NONE
+         !ind = !rText.find(!filename)
+         !dText.DeleteFrom(!ind[1], 1)
+         !rText.DeleteFrom(!ind[1], 1)
+      endhandle
+      !thefile.Delete()
+      break if(!!FMSYS.Interrupt())
+   enddo
+
+   !this.ObsoleteSdbList.Clear()
+   !this.ObsoleteSdbList.DText = !dText
+   !this.ObsoleteSdbList.RText = !rText
+
+   !this.Stop.Visible = FALSE
+   !this.SearchSDB.Active = TRUE
+   !this.EnableInput(TRUE)
+   !this.progress.Visible = FALSE
+   !this.status.Visible = FALSE
+
+   if(!this.ObsoleteSdbList.Count EQ 0)then
+      !this.Export.Active = FALSE
+   endif
+   !this.nofound.Val = !this.ObsoleteSdbList.DText.size().String()
+endmethod
+--End of Method
+
+------------------------------------------------------------------------
+--
+-- Method:      .onDeleteSelSDB
+--
+-- Description: Delete selected files from the list.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .onDeleteSelSDB()
+   !sender = !this.listpopup.popupGadget()
+   if !sender.set() and !sender eq !this.ObsoleteSdbList then
+      !files = !this.ObsoleteSdbList.Selection()
+      --Ask user befor deleting files
+      if !!ALERT.Question('Delete ' + !files.size().String() + ' file(s)?') EQ 'NO' then
+         return
+      endif
+
+      do !file values !files
+         !thefile = object FILE(!file)
+         !thefile.DeleteFile()
+         handle ANY
+            !!Alert.Warning(!!error.text)
+         elsehandle NONE
+            !ind = !this.ObsoleteSdbList.RText.find(!file)
+            !this.ObsoleteSdbList.Clear(!ind[1])
+         endhandle
+         !thefile.Delete()
+
+      enddo
+
+      if(!this.ObsoleteSdbList.Count EQ 0)then
+         !this.Export.Active = FALSE
+      endif
+      !this.nofound.Val = !this.ObsoleteSdbList.DText.size().String()
+
+   endif
+
+endmethod
+--End of Method
+
+------------------------------------------------------------------------
+--
+-- Method:      .onListPopupSort
+--
+-- Description: Sort the list of sdb files
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method  .onListPopupSort()
+   !sender = !this.listpopup.popupGadget()
+   if !sender NE !this.ObsoleteSdbList then
+      return
+   endif
+
+   !dtexts = !this.ObsoleteSdbList.DText
+   !rtexts = !this.ObsoleteSdbList.RText
+
+   !status = object ARRAY()
+   !names = object ARRAY()
+
+   !sorteddtext = object ARRAY()
+   !sortedrtext = object ARRAY()
+
+   --put the status and the name in the separate arrays.
+   do !dtext values !dtexts
+      !status.append(!dtext.Part(2, '	'))
+      !names.append(!dtext.Part(1, '	'))
+   enddo
+
+   if !this.listpopup.PickedFieldName EQ 'BYSTATUS' then
+      !si = !status.SortedIndices()
+      do !index from !si.MinIndex() to !si.MaxIndex() by 1
+         !sorteddtext[!index] = !dtexts[!si[!index]]
+         !sortedrtext[!index] = !rtexts[!si[!index]]
+      enddo
+      !this.ObsoleteSdbList.DText = !sorteddtext
+      !this.ObsoleteSdbList.RText = !sortedrtext
+
+   elseif !this.listpopup.PickedFieldName EQ 'BYNAME' then
+      !si = !names.SortedIndices()
+
+      do !index from !si.MinIndex() to !si.MaxIndex() by 1
+         !sorteddtext[!index] = !dtexts[!si[!index]]
+         !sortedrtext[!index] = !rtexts[!si[!index]]
+      enddo
+
+      !this.ObsoleteSdbList.DText = !sorteddtext
+      !this.ObsoleteSdbList.RText = !sortedrtext
+
+   endif
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      exportHeaders
+--
+-- Description:
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .exportHeaders()
+   -- Populate list of headings
+   !headings = object ARRAY()
+   !headings.append('SDB File')
+   !headings.append('Status')
+   !this.ObsoleteSdbList.SetHeadings(!headings)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      .findobsoletesdb
+--
+-- Description: Scan the 32 directories below %<proj>DRG%
+--              Check if the SHEE in any of the available sessions
+--              refers to the .SDB file
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN    TRUE if obsolete any .SDB file was found
+------------------------------------------------------------------------
+define method .findobsoletesdb() is BOOLEAN
+   if (NOT !this.checksession()) then
+      return error 1 'Another session to the same MDB is opened. Deleting SDB files is NOT SAFE.'
+   endif
+   !projvar = CURRENT PROJECT
+   !projcode = !projvar.Code()
+   !varname = !projcode + 'DRG'
+   !dirname = !!evarSplit(!varname)[1]
+   !sdbpath = object file(!dirname)
+   !dTextall = object ARRAY()
+
+   if (!sdbpath.Exists()) then
+      !alldirs = !sdbpath.SubDirs()
+
+      !this.EnableInput(FALSE)
+      !this.Stop.Visible = TRUE
+      !this.SearchSDB.Active = FALSE
+      !this.progress.Visible = TRUE
+      !this.status.Visible = TRUE
+      !!FMSYS.setInterrupt(!this.Stop)
+
+      --calculate number of elements
+      !files = 0
+      !progress = 0
+      do !dir values !alldirs
+         !files = !files + !dir.Files().size()
+      enddo
+
+      !sdbdata = object ARRAY()
+      !useddbs = object ARRAY()
+      !useddbsidx = object ARRAY()
+      !suspects = 0
+      !userabort = FALSE
+
+      do !item values !alldirs
+         do !sdbf values !item.Files()
+
+            break if(!!FMSYS.Interrupt())
+
+            !progress = !progress + 1
+            !this.ReportProgress(!progress, !files, !suspects, !sdbf.FullName(), ' .SDB files checked','Analyzing current session')
+
+            !sdbinfo = !this.checksdb(!sdbf)
+            if ( !sdbinfo gt 0 ) then
+               !sdbdata[1] = !sdbf.FullName()
+               !sdbdata[2] = !sdbinfo
+               !sdbdata[3] = !this.reffromfname(!sdbf.Entry())
+
+               !dbname = !this.getdb(!sdbf)
+               if(!dbname.Empty()) then
+                  !this.aliendb = TRUE
+                  !this.aliensdbnum = !this.aliensdbnum + 1
+                  skip
+               endif
+               !suspects  = !suspects + 1
+               !found = !useddbsidx.find(!dbname)
+               if (!found.Empty()) then
+
+                  !index = !useddbs.MaxIndex() + 1
+
+                  !useddbs[!index] = object ARRAY()
+                  !useddbs[!index].append(!sdbdata)
+                  !useddbsidx[!index] = !dbname
+               else
+                  --Check the database mapping
+                  if (!found.Size() GT 1) then
+                     return error 21 'Database map corrupted'
+                  endif
+
+                  !useddbs[!found[1]].append(!sdbdata)
+
+               endif
+            endif
+         enddo
+      enddo
+      if(NOT !!FMSYS.Interrupt())then
+         !dRow = object ARRAY()
+         !rText = object ARRAY()
+         do !index from 1 to !useddbsidx.MaxIndex() by 1
+            !osdb = !this.checkoldattvaldb(!useddbsidx[!index], !useddbs[!index])
+            handle -1
+               !userabort = TRUE
+               break
+            endhandle
+            do !sdb values !osdb
+               !dRow[1] = !sdb[1]
+               if(!sdb[2] EQ 1)then
+                  !dRow[2] = 'Missing element'
+               elseif(!sdb[2] EQ 2)then
+                  !dRow[2] = 'Not SHEE'
+               elseif(!sdb[2] EQ 3)then
+                  !dRow[2] = 'Replaced'
+               endif
+               !dTextall.Append(!dRow)
+               !rText.Append(!dRow[1])
+
+            enddo
+         enddo
+      else
+         !!Alert.Warning('User abort')
+         !userabort = TRUE
+      endif
+
+
+
+      !this.Stop.Visible = FALSE
+      !this.SearchSDB.Active = TRUE
+      !this.EnableInput(TRUE)
+      !this.progress.Visible = FALSE
+      !this.status.Visible = FALSE
+
+      --fill the lists
+      if (!dTextall.size() GT 0) then
+         !this.ObsoleteSdbList.SetRows(!dTextall)
+         !this.ObsoleteSdbList.RText = !rText
+         !this.nofound.Val = !dTextall.size().String()
+         return TRUE
+      endif
+      if not !userabort then
+         !!ALERT.Message('There are no obsolete SDB files in the project.')
+      endif
+      return FALSE
+   endif
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      .checksdb
+--
+-- Description: Check the .SDB file
+--              Extract dbref from the file name and check the referenced
+--              db element.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--   !sdb         FILE        the .SDB file
+-- Return:
+--   [Data Type] [Description]
+--    REAL    1 if dbref encoded in the file name doesn't exist in thr
+--            curren .SDB
+--            2 if the referenced element is not a SHEE
+--            3 if the DOFilename of the referenced element is set to
+--              another file.
+--            0 if the referenced element is correct SHEE element
+--            -1 error, that SDB has invalid name format
+------------------------------------------------------------------------
+define method .checksdb(!sdb is FILE) is REAL
+   !fname = !sdb.Entry()
+   --Extract the DBRef of the SHEE element
+   --from the file name
+
+   !sheeref = !this.reffromfname(!fname)
+   !result = 0
+
+   --Check the format of the file name first
+   if(!sheeref.Empty()) then
+      !mess = 'File: ' + !sdb.FullName() + ' is invalid.'
+      $p $!mess
+      return -1
+   endif
+
+   if ( NOT !this.checkref(!sheeref)) then
+      --Element with that dbref doesn't exists
+      !result = 1
+   else
+      !dbelem = object dbref(!sheeref)
+      !sdbeltype = !dbelem.Attribute('Type')
+      if ( NOT !sdbeltype eq 'SHEE' ) then
+         --element is not SHEE
+         !result = 2
+      else
+         !dwgfn = !dbelem.Attribute('DOFIL').After('/%MARDRG%/').Replace('/', '\')
+         handle ANY
+            !result = 3
+         endhandle
+         if (!result EQ 0) then
+            if ( !sdb.FullName().Match(!dwgfn) EQ 0 ) then
+               !result = 3
+            endif
+         endif
+      endif
+   endif
+
+   return !result
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      .checkref
+--
+-- Description: Check the dbref
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--   !ref         STRING        the dbref
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN    TRUE if the dbelement with that dbref exists
+------------------------------------------------------------------------
+define method .checkref(!ref is STRING) is BOOLEAN
+
+   !unusedtestref = object DBREF(!ref)
+   handle ANY
+      return FALSE
+   endhandle
+
+   return TRUE
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      .initdbmap
+--
+-- Description: Init the map of the db numbers to databases
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .initdbmap() is BOOLEAN
+   !alldbs = DBS
+   !index = 0
+   do !adb values !alldbs
+      !index = !index + 1
+      !this.dbmapnumber[!index] = !adb.Number
+      !this.dbmapname[!index] = !adb.Name
+   enddo
+
+   return TRUE
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      .getdb
+--
+-- Description: Get the name of the database corresponding to SDB file.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--   !sdb R      FILE       the sdb file
+-- Return:
+--   [Data Type] [Description]
+--   STRING      name of the DB
+------------------------------------------------------------------------
+define method .getdb(!sdb is FILE) is STRING
+   --Extract the DBRef of the SHEE element
+   --from the file name
+   !ref = !this.reffromfname(!sdb.Entry())
+
+   !num = !!refstringtodbno(!ref)
+   !found = !this.dbmapnumber.find(!num.string())
+   if ( NOT !found.Empty() AND !found.size() EQ 1) then
+      return !this.dbmapname[!found[1]]
+   endif
+   return ''
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .checkdb
+--
+-- Description: Check to what database the referenced element belongs to
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     TRUE if the database is in the current MDB and is not
+--                foreign
+------------------------------------------------------------------------
+define method .checkdb(!sdb is FILE) is BOOLEAN
+   --Get the current MDB
+   !session = CURRENT SESSION
+   !themdb = !session.MDB()
+
+   !dbname = !this.getdb(!sdb)
+   if (NOT !dbname.Empty()) then
+      !thedb = object DB(!dbname)
+      !dbavailable = FALSE
+
+      !mdbs = !thedb.MDBList()
+      do !amdb values !mdbs
+         if (!amdb EQ !themdb) then
+            !dbavailable = TRUE
+         endif
+      enddo
+      !local = !thedb.Foreign EQ 'LOCAL'
+
+      return !dbavailable AND !local
+   else
+      return FALSE
+   endif
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      .CheckSession
+--
+-- Description: Check if there is another session to the same MDB
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     TRUE if the current session is the only session
+------------------------------------------------------------------------
+define method .CheckSession() is BOOLEAN
+   if (!this.devop) then
+      return TRUE
+   endif
+
+   return NOT (!this.theproject.Sessions().Size() GT 1)
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      .EnableInput
+--
+-- Description: Sets the "Activity" of certain controls on the dialog
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--   !enable     BOOLEAN     if TRUE controls are set to active otherwise
+--                           they are disabled
+-- Return:
+--   [Data Type] [Description]
+------------------------------------------------------------------------
+define method .EnableInput(!enable is BOOLEAN)
+   !this.ObsoleteSdbList.Visible = !enable
+   !this.RemAll.Active = !enable
+   !this.Export.Active = !enable
+   !this.TargetPath.Active = !enable
+   !this.MoveSDB.Active = !enable
+   if(!this.devop)then
+      !this.RemAll.Active = FALSE
+      !this.MoveSDB.Active = FALSE
+      !this.TargetPath.Active = FALSE
+   endif
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .checkDBSessions
+--
+-- Description: Checks if given element existed in previous DBSES if so
+--              checks if the given SDB file is used in DOFilename attribute
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--   !ref R      STRING    reference of the element that does not exist
+--                         in the current session
+--   !sdb        FILE      SDB file
+-- Return:
+--   [Data Type] [Description]
+--   BOOLEAN      TRUE if the SDB file is used in any DBSES
+------------------------------------------------------------------------
+define method .checkDBSessions(!ref is STRING, !sdb is FILE) is BOOLEAN
+   !num = !!refstringtodbno(!ref)
+   !found = !this.dbmapnumber.find(!num.string())
+   if ( NOT !found.Empty() AND !found.size() EQ 1) then
+      !dbname = !this.dbmapname[!found[1]]
+
+      !thedb = object DB(!dbname)
+
+      !ses = !thedb.Sessions()
+      --store the current CE
+      !oldce = !!CE
+      !newce = object DBREF(!thedb.refno)
+      --set the DB to be the CE
+      !!CE = !newce
+      if(!this.olddbs.find(!thedb).empty()) then
+         --gather elements deleted in all sessions
+         do !cses values !ses
+            setcompdate for db $!dbname to session $!cses.Number
+            var !oldelem old collect all shee where (deleted())
+            do !el values !oldelem
+               var !olddo old dofile of  $!el
+               --if this file is not stored in the %MARDRG% it is
+               --not taken under consideration
+               if(!olddo.match('/%MARDRG%/') EQ 0) then
+                  skip
+               else
+                  !this.olddoatt.append(!olddo.After('/%MARDRG%/').Replace('/', '\'))
+               endif
+            enddo
+            setcompdate unset
+         enddo
+         !this.olddbs.append(!thedb)
+      endif
+      --restore the CE
+      !!CE = !oldce
+
+      --look for the SDB file in all old sessions
+      !fileval = !sdb.FullName().After('\mardrg\')
+      do !oldattval values !this.olddoatt
+         if( !fileval EQ !oldattval) then
+            return TRUE
+         endif
+      enddo
+  endif
+  return FALSE
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .checkoldattval
+--
+-- Description: Checks the value of the DOFilename attribute in all DBSES
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--   !ref R      DBREF     SHEE element in the current session
+--
+--   !sdb        FILE      SDB file
+-- Return:
+--   [Data Type] [Description]
+--   BOOLEAN      TRUE if the SDB file is used in any DBSES
+------------------------------------------------------------------------
+define method .checkoldattval(!refstr is STRING, !sdb is FILE) is BOOLEAN
+   !fileval = !sdb.FullName().After('\mardrg\')
+
+   !num = !!refstringtodbno(!refstr)
+   !found = !this.dbmapnumber.find(!num.string())
+   if ( NOT !found.Empty() AND !found.size() EQ 1) then
+      !dbname = !this.dbmapname[!found[1]]
+      !thedb = object DB(!dbname)
+
+      !ses = !thedb.Sessions()
+      --store the current CE
+      !oldce = !!CE
+      !newce = object DBREF(!thedb.refno)
+      --set the DB to be the CE
+      !!CE = !newce
+      do !cses values !ses
+         setcompdate for db $!dbname to session $!cses.Number
+         handle ANY
+         --(69,87) The DB does not exist in the current MDB
+            skip
+         endhandle
+
+         var !olddo old dofile of  $!refstr
+         handle ANY
+         -- (2,107) reference does not exist in this session
+         -- (2,201) attribute DOFIL not defined (not SHEE)
+            skip
+         endhandle
+
+         if(!fileval EQ !olddo.After('/%MARDRG%/').Replace('/', '\')) then
+            !!CE = !oldce
+            return TRUE
+         endif
+
+      enddo
+      setcompdate unset
+      !!CE = !oldce
+   endif
+   return FALSE
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .ReportProgress
+--
+-- Description: Displays information about current operation
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+--  !step   R     REAL     current element number
+--  !max    R     REAL     all elements count
+--  !found  R     REAL     number of obsolete SDB files found
+--  !fname  R     STRING   the name of curren element
+--  !label  R     STRING   description of the current operation
+--  !status R     STRING   status description
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .ReportProgress(!step is REAL, !max is REAL, !found is REAL, !fname is STRING, !label is STRING, !status is STRING)
+   if(!step GT 0) then
+      !progress = !step.string() + ' / '  + !max.string() + !label
+      !this.progress.Val = !progress
+   else
+      !this.progress.Val = ''
+   endif
+   !this.progress.Refresh()
+
+   !this.status.Val = !status
+
+   !this.status.Refresh()
+
+   --The below line must be there only when the script is used on Windows 7
+   !!fmsys.setProgress( 0 )
+
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .checkoldattvaldb
+--
+-- Description: Checks all old DBSES of the given DB against the list of
+--              given .SDB files
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#]       [R/RW] [Data Type] [Description]
+--   !dbname      R   DBREF        Name of the database
+--   !sdbdata     R   ARRAY        Array of SDB elements that are not used
+--                                 in the current session.
+--                                 The structure of this array is as fallows:
+--                                 Each element is an ARRAY with 3 elements:
+--                                 [1] STRING full name of the SDB file
+--                                 [2] REAL   status of the SDB (see .checksdb)
+--                                 [3] STRING the dbref as string
+--
+-- Return:
+--   [Data Type] [Description]
+--   ARRAY        List of elements from the given DB that are obsolete
+------------------------------------------------------------------------
+define method .checkoldattvaldb(!dbname is STRING, !sdbdata is ARRAY) is ARRAY
+   !result = object ARRAY()
+   !result.AppendArray(!sdbdata)
+   !this.ReportProgress(-1, 0, 0, '', '', 'Checking old database sessions...')
+
+
+   !thedb = object DB(!dbname)
+
+   !ses = !thedb.Sessions()
+   --store the current CE
+   !oldce = !!CE
+   !newce = object DBREF(!thedb.refno)
+   --set the DB to be the CE
+   !!CE = !newce
+   !progress = 0
+   do !cses values !ses
+
+      if(!!FMSYS.Interrupt()) then
+         !result.Clear()
+         !!Alert.Warning('User abort!')
+         return error -1 NOALERT
+         break
+      endif
+
+      !progress = !progress + 1
+      !this.ReportProgress(!progress, !ses.size(), -1, '', ' Database Sessions checked. (' + !result.size().String() + ' files left)'   ,'Checking DBSES number ' + !cses.Number.String()  + ' of database ' + !dbname)
+
+      setcompdate for db $!dbname to session $!cses.Number
+      handle ANY
+      --(69,87) The DB does not exist in the current MDB
+         skip
+      endhandle
+      !used = object ARRAY()
+      do !index from 1 to !result.MaxIndex() by 1
+         !sdb = !result[!index]
+         !refstr = !sdb[3]
+         !fileval = !sdb[1].After('\mardrg\')
+
+         var !olddo old dofile of  $!refstr
+         handle ANY
+         -- (2,107) reference does not exist in this session
+         -- (2,201) attribute DOFIL not defined (not SHEE)
+            skip
+         endhandle
+
+
+         if(!fileval EQ !olddo.After('/%MARDRG%/').Replace('/', '\')) then
+            !used.append(!index)
+         endif
+      enddo
+      --remove used SDB from that array
+      if(!used.size() GT 0) then
+         !used.sort()
+         !used.Invert()
+
+         do !index from !used.MinIndex() to !used.MaxIndex() by 1
+            !result.Remove(!used[!index])
+         enddo
+      endif
+
+      if(!result.Empty()) then
+         return !result
+      endif
+
+   enddo
+   setcompdate unset
+   !!CE = !oldce
+   return !result
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      .reffromfname
+--
+-- Description: Extract dbref from the SDB file name.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#]    [R/RW] [Data Type] [Description]
+--   !fname  R      STRING     SDB file name
+--
+-- Return:
+--   [Data Type] [Description]
+--   STRING      extracted dbref
+------------------------------------------------------------------------
+define method .reffromfname(!fname is STRING) is STRING
+   !ref1no = before(after(!fname, 'D'), '-')
+   !ref2no = before (after(!fname, 'D' + !ref1no + '-'), '-')
+   !dbrefstr = '=' + !ref1no + '/' + !ref2no
+
+   !check = !dbrefstr.DBREF()
+   handle (2,813)
+   --Cannot convert string to DBREF'
+      return ''
+   elsehandle (2,118)
+   --a reference to an illegal element
+      return !dbrefstr
+   elsehandle (2,107)
+      return !dbrefstr
+   elsehandle ANY
+      return ''
+   endhandle
+
+   return !check.STRING()
+endmethod

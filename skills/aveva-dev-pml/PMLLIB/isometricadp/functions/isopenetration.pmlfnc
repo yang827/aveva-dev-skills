@@ -1,0 +1,189 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            isopenetration.pmlfnc
+--   Type:          Function Definition
+--   Group:         ISOADP
+--     Keyword:     Isometric
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         25 March 2001
+--
+-- Description:
+-- Create a penetration symbol, label and dimension
+------------------------------------------------------------------------
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     ARRAY       Of STRINGs holding the Penetration reference and the
+--                           relevant component reference separated by a space ' '
+--                           This data was set in !!isoMain during the drawlist construction
+--    2    R     STRING      The type of drawing being processed, HVAC or CWAY
+--    3    R     ISODEFAULTS The defaults settings
+--
+------------------------------------------------------------------------
+define function !!isoPenetration(!penetrations is ARRAY,!components is ARRAY, !type is STRING, !defaults is ISODEFAULTS)
+
+  -- Initialise variables
+  !gadget    = !type & 'PeneTag'
+  !peneLaye  = !!ce
+  !sTemplate = !defaults.$!gadget$N.sTemplate
+  !scale     = !defaults.$!gadget$N.scale
+  !sFColour  = !defaults.$!gadget$N.sFColour
+  !sFStyle   = !defaults.$!gadget$N.sFStyle & !defaults.$!gadget$N.sFThickness.replace('Thin','')
+  !lTemplate = !defaults.$!gadget$N.lTemplate
+  !lTColour  = !defaults.$!gadget$N.lTColour
+  !lCHei     = !defaults.$!gadget$N.lCHei.queryString()
+  !lFColour  = !defaults.$!gadget$N.lFColour
+  !lFStyle   = !defaults.$!gadget$N.lFStyle & !defaults.$!gadget$N.lFThickness.replace('Thin','')
+  !lOffset   = !defaults.$!gadget$N.lOffset[1].queryString() & ' ' & !defaults.$!gadget$N.lOffset[2].queryString()
+  !dTColour  = !defaults.$!gadget$N.dTColour
+  !dChei     = !defaults.$!gadget$N.dChei.queryString()
+  !dFColour  = !defaults.$!gadget$N.dColour
+  !dStyle    = !defaults.$!gadget$N.dStyle & !defaults.$!gadget$N.dThickness.replace('Thin','')
+  !term      = !defaults.$!gadget$N.term
+  !dOffset   = !defaults.$!gadget$N.dOffset.queryString()
+  !relBore   = !defaults.$!gadget$N.relBore
+  !keep      = ARRAY()
+  !coordXYZ  = !!coords.xyzFlag
+
+  -- Get U and D directions for relevant coordinate system
+  if (!coordXYZ) then
+    !upDir   = 'Z'
+    !downDir = '-Z'
+  else
+    !upDir   = 'U'
+    !downDir = 'D'
+  endif
+
+  -- Get all existing label tags
+  VAR !existTags COLL ALL SLAB WITH TMRF EQ $!lTemplate FOR CE
+  VAR !existRefe EVAL REFE OF DDNM FOR ALL FROM !existTags
+  VAR !allExist COLL MEM OF CE
+
+  -- Delete the rest
+  do !exist val !allExist
+    !!ce = !exist.dbref()
+    if (!existTags.findFirst(!exist).unset()) then
+      DELETE $!!<ce.type>
+    endif
+  enddo
+
+  -- For each penetration component
+  do !index ind !penetrations
+
+    -- Initialise variables
+    !peneRefe = !penetrations[!index]
+    !compRefe = !components[!index]
+--    !createDimn = false
+
+    -- Build symbol
+    if (!defaults.$!gadget$N.drawSymbol) then
+      NEW SLAB ON $!peneRefe  TMRF $!sTemplate  XYPO 0 0  XYSC $!scale $!scale LLEA FALSE  BLNK TRUE
+        LFSTYLE $!sFStyle  LFCOLOUR $!sFColour
+    endif
+
+    -- Build label
+    if (!defaults.$!gadget$N.drawLabel) then
+
+      -- Check is a label already exists for this component
+      !find = !existRefe.findFirst(!peneRefe.string())
+      if (!find.unset()) then
+
+        -- Create a named label
+        NEW SLAB ON $!peneRefe  TMRF $!lTemplate  XYPO $!lOffset  OSET TRUE  CHEI $!lCHei  BLNK TRUE
+          TXCOLOUR $!lTColour  LFSTYLE $!sFStyle  LFCOLOUR $!sFColour  LLSTYLE $!lFStyle  LLCOLOUR $!lFColour
+
+        -- Keep this one
+        !keep.append(!!ce.string())
+
+      else
+        !keep.append(!existTags[!find])
+        !!ce = !existTags[!find].dbref()
+        TMRF $!lTemplate
+      endif
+
+    endif
+
+    -- Build dimension
+    if (!defaults.$!gadget$N.drawDimn) then
+
+      -- Determine the dimension offset
+      -- If the layer value is not the default then use that
+      if (!peneLaye.doff.neq(!dOffset.real())) then
+
+        !doff = !peneLaye.doff
+
+      -- Calculate the dimension offset depending on width
+      else
+
+        -- Set the doff relative to the bore size
+        if (!relBore) then
+
+          !bore       = !compRefe.abor.real()
+          !viewScale  = !peneLaye.owne.vsca
+          !doff       = !dOffset.real() + ((!bore / 2) * !viewScale)
+          !range      = !!isoedit.doffset.range
+          !units      = !doff.units().shortName()
+
+          -- Check that the value does not exceed the edit form doff gadget limit
+          if (!doff.gt(!range[2])) then
+            !doff = !!comConvertUnknownValue(!range[2],!units)
+          endif
+
+        -- Just use the default offset
+        else
+          !doff = !dimnDef.offset.queryString()
+
+        endif
+
+      endif
+
+      -- Get direction between arrive and leave points
+      -- For a STRT element
+      if (!compRefe.type.upCase().eq('STRT')) then
+        !testDir = !!isoDimnDir(!compRefe, !compRefe.arrive, !compRefe, !compRefe.leave, false)
+
+      -- For a FLEX element
+      else
+        !testDir = !!isoDimnDir(!compRefe, 0, !peneRefe, 0, false)
+      endif
+
+      -- Get the opposite so that the dimension is placed opposite to the standard dimensioning
+      !compDir = object DIRECTION(!testDir)
+      !ldimDir = !compDir.opposite().string().before(' WRT')
+
+      -- Create dimension
+      NEW LDIM  DIR $!ldimDir  DTCH $!dChei  DTAN PARA  DTER $!term  DOFF $!doff
+        DLSTYLE $!dStyle  PLSTYLE $!dStyle  DLCOLOUR $!dFColour  PLCOLOUR $!dFColour  DTCOLOUR $!dTColour  PTCOLOUR $!dTColour
+
+      -- Test for not vertical
+      if (!testDir.match(!upDir).eq(0) and !testDir.match(!downDir).eq(0)) then
+        PLDI U
+      endif
+
+      -- Create dimension points
+      FROM PA OF $!compRefe
+      TO $!peneRefe
+      TO PL OF $!compRefe
+
+      SORT DIM
+
+    endif
+
+  enddo
+
+  -- Remove any unwanted existing label tags
+  !remove = !existTags.difference(!keep)
+  do !delete val !remove
+    !!ce = !delete.dbref()
+    DELETE $!!<ce.type>
+  enddo
+
+  -- Return to laye
+  !!ce = !peneLaye
+
+endfunction

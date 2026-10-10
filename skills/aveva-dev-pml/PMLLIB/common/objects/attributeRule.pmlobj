@@ -1,0 +1,534 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            attributeRule.pmlobj
+--   Type:          Object Definition
+--   Group:         General Application
+--     Keyword:     GEN
+--   Module:        common
+--   Replaces:
+--
+-- Author:          M.Barlow
+-- Created:         Fri Oct 20 16:45:26 WAT 2006
+--
+-- Description:
+-- Attribute Rule definition
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  attributerule()                  -                   Constructor
+--  clear()                          -                   Load details of given attribute
+--  copyRuleTo(DBREF)                BOOLEAN             Write rule to given element - only if rule is set
+--  getDesparRules(DBREF)            -                   Load DESPARAM rules. PRIVATE method assuming all checks
+--  getRule(DBREF,STRING)            -                   Load rules of given attribute
+--  processRule(STRING)              STRING              Load rules of given attribute
+--  setRule(STRING)                  -                   Set rule
+--  testRule()                       -                   test the rule
+--  testRule(DBREF,STRING,STRING)    STRING              test the rule
+--
+
+define object ATTRIBUTERULE
+
+  -- Element
+  member .element        is DBREF
+  -- Attribute Name
+  member .attributeName  is STRING
+  -- Attribute attdef description
+  member .description    is STRING
+  -- Rule (raw unprocessed rule)
+  member .rawRule        is STRING
+  -- Rule
+  member .rule           is STRING
+  -- Data Type  -  Values are
+  -- 'All'
+  -- 'Integer'
+  -- 'Real'
+  -- 'Logical'
+  -- 'Text'
+  -- 'Reference'
+  -- 'Word'
+  -- 'Orientation'
+  -- 'Position'
+  -- 'Direction'
+  member .type           is STRING
+  -- Can this attribute have a rule
+  member .canHaveRule    is BOOLEAN
+  -- This attribute has a rule set
+  member .hasRule        is BOOLEAN
+  -- Special store for arrays (i.e. DESPARAM) - Array of strings
+  -- The index in the rule array corresponds to the index number
+  -- of the array element to which the rule applies. e.g. If there
+  -- are rules on DESP[1] and DESP[3] then ruleArray[1] and ruleArray[3]
+  -- will carry the corresponding rules
+  member .ruleArray      is ARRAY
+  -- Indicates that this object contains an array of rules
+  member .isRuleArray    is BOOLEAN
+
+endobject
+-- End of object definition
+
+------------------------------------------------------------------------
+--
+-- Method:      attributerule
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .attributerule()
+
+  -- Initialise Variables
+  !this.clear()
+
+endmethod
+-- End of function definition
+
+------------------------------------------------------------------------
+--
+-- Method:      getRule
+--
+-- Description: Load rules of given attribute
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Attribute represented by this object
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getRule(!element is DBREF, !attribute is STRING)
+
+  -- Initialise Variables
+  !this.clear()
+  if( badref(!element) ) then
+    return
+  endif
+
+  -- Member
+  !this.attributeName = !attribute
+  !this.element       = !element
+
+  !upcAttribute = !attribute.upcase().trim()
+  !attDef = object ATTDEFINITION()
+  !attDef.attlibGet(!upcAttribute)
+  if(!attDef.isValidAttribute.not()) then
+    return
+  endif
+  !type   = !attDef.typeCode.string()
+  !unit   = !attDef.units.upcase()
+
+  -- check for types that can be parameterised
+  -- most probably need other checks, like array size, read/write access, etc
+  !specialAttr  = ( !upcAttribute inset('ANGLE', 'DELANGLE', 'TEMPERATURE','PRESSURE','TPRESSURE') or !upcAttribute.subString(1,8) eq 'DESPARAM' or !attDef.description.upcase() inset('CAT.REF.',  'SPEC REF') )
+  !distanceAttr = ( !type eq !!CDINATYPREAL and !unit eq 'DISTANCE' )
+
+  if( !specialAttr or !distanceAttr or !type inset(!!CDINATYPPOS, !!CDINATYPORI, !!CDINATYPDIR) ) then
+
+    -- this attribute can have a rule
+    !this.canHaveRule = true
+    !this.description = !attDef.description
+    -- set the attribute type
+      if(!upcAttribute.subString(1,8) eq 'DESPARAM') then
+        -- special rules apply for array attributes
+        !this.type        = 'DESPARAM'
+      else
+        -- get the attribute object type
+        !temp = !element.attribute(!attribute)
+        !this.type = !temp.objectType()
+      endif
+
+    -- find out if this attribute has a rule
+    !ruleList = !element.rlis
+
+    if( !ruleList.findFirst(!attDef.name.subString(1,6)).set() ) then
+      -- Attribute has a rule
+      !this.hasRule = true
+
+      if(!upcAttribute.subString(1,8) eq 'DESPARAM') then
+        -- special rules apply for array attributes
+        !this.isRuleArray = true
+        !this.getDesparRules(!element)
+        !parameterNumber = !upcAttribute.part(-1).real()
+        handle any
+          -- failsafe
+          !parameterNumber = 1
+        endhandle
+        if( defined(!this.ruleArray[!parameterNumber]) ) then
+          !this.rawRule = !this.ruleArray[!parameterNumber]
+          -- compress expression to fit in the field
+          !this.rule = !this.processRule(!this.rawRule)
+        else
+          !this.rawRule = ''
+          !this.rule    = ''
+        endif
+      else
+        -- Show rule for normal attributes
+        !!ce = !element
+        -- get the rule
+        var !ruleQuery RULE of $!<attribute>
+        !this.rawRule = !ruleQuery.after('(').trim('R',')').trim()
+        -- compress expression to fit in the field
+        !this.rule = !this.processRule(!this.rawRule)
+      endif
+
+    else
+
+      !this.hasRule = false
+
+    endif
+
+  endif
+
+endmethod
+-- End of function definition
+
+------------------------------------------------------------------------
+--
+-- Method:      getDesparRules
+--
+-- Description: Load DESPARAM rules. PRIVATE method assuming all checks
+--              done by calling method. Special rules apply for array attributes
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF      Element with rules
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getDesparRules(!element is DBREF)
+
+  -- Initialise Variables
+  !this.type        = 'DESPARAM'
+  !this.isRuleArray = true
+  !!ce = !element
+  -- get the rule
+  var !ruleQuery RULE of DESPARAM
+  -- get raw rule string, which contains concatenated DESP rules
+  !this.rawRule = !ruleQuery
+  -- Split raw string into individual DESP rules
+  !temp = !this.rawRule.replace('DESP NUM','~').split('~')
+
+  -- process each rule to get DESP array index and the corresponding rule
+  do !despRuleString values !temp
+
+    -- avoid null strings resulting from the split
+    skip if( !despRuleString.trim().empty() )
+    -- separate rule number from rule string
+    !ruleTemp = !despRuleString.trim().replace(' ','~',1,1).split('~')
+    -- first element should be the DESP array index
+    !index = !ruleTemp[1].real()
+    -- get rid of the 'Static Rule'
+    !ruleTemp[2] = !ruleTemp[2].after('(').trim('R',')').trim()
+    -- second element should be the rule
+    !this.ruleArray[!index] = !this.processRule(!ruleTemp[2])
+
+  enddo
+
+endmethod
+-- End of function definition
+
+------------------------------------------------------------------------
+--
+-- Method:      copyRuleTo
+--
+-- Description: Write rule to given element - only if rule is set
+--              Rules are not deleted
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF      Try to write this rule to the given element
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     true if rule written - false otherwise
+--
+------------------------------------------------------------------------
+define method .copyRuleTo(!element is DBREF) is BOOLEAN
+
+  -- Test expression before replacing it
+  !attribute = !this.attributeName
+  !result = !this.testRule(!element, !this.rule, !attribute)
+--  q var !attribute !this.rule  !result
+  if( !result.empty().not() ) then
+    -- could not execute rule at new element
+    return false
+  endif
+
+  -- set the new rule
+  !!ce       = !element
+  !expression = !this.rule
+  if( !expression.empty() ) then
+    -- Rule empty - Attribute not set
+    return false
+  else
+--$P    RULE SET $!<attribute> STATIC RULE ( $!expression )
+    RULE SET $!<attribute> STATIC RULE ( $!expression )
+    handle any
+      return false
+    endhandle
+
+  endif
+
+  return true
+
+endmethod
+-- End of function definition
+
+------------------------------------------------------------------------
+--
+-- Method:      setRule
+--
+-- Description: Set rule
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Attribute represented by this object
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .setRule(!expression is STRING)
+
+  -- test to see if the rule has changed
+  if( !expression eq !this.rule ) then
+    -- take no action if rule unchanged
+    return
+  endif
+
+  -- Test expression before replacing it
+  !result = !this.testRule(!this.element, !expression, !this.attributeName)
+
+  if( !result.empty() ) then
+    -- rule is OK
+    !this.rule = !expression
+  else
+    -- could not evaluate rule
+    !!alert.warning(!result)
+    return
+  endif
+
+  -- set the new rule
+  !!ce       = !this.element
+  !attribute = !this.attributeName
+  if( !expression.empty() ) then
+    -- Delete the rule
+    RULE DELETE $!<attribute>
+    handle any
+      !!alert.warning(!!error.text)
+    endhandle
+  else
+    RULE SET $!<attribute> STATIC RULE ( $!expression )
+    handle any
+      !!alert.warning(!!error.text)
+    endhandle
+  endif
+
+  -- update the template parameters form
+  if( defined(!!tmplParamDefn) ) then
+    if( !!tmplParamDefn.shown() ) then
+      !!tmplParamDefn.populateRules()
+    endif
+  endif
+
+endmethod
+-- End of function definition
+
+------------------------------------------------------------------------
+--
+-- Method:      processRule
+--
+-- Description: Load rules of given attribute
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Attribute represented by this object
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .processRule(!rawRule is STRING) is STRING
+
+  -- compress expression to fit in the field
+  !expression = !rawRule.replace('ATTRIB ','')
+  -- don't why I have to do this but SET should actually be LOCATE - CODE FROM OLD PML 1 implementation
+  -- where variable !TEMP is the same as variable !expression in this method
+  -- if(match(|$!TEMP|,|SET PP|) neq 0) then
+  --     !TEMP = !TEMP.replace('SET PP','LOCATE P')
+  --     !TEMP = !TEMP.replace('TO','AT')
+  -- endif
+  var !coordinate coordinate
+  !expressionArray = !expression.split()
+  !newExpressionArray        = object ARRAY()
+  do !value values !expressionArray
+     if(!value.trim().length().eq(1) and !coordinate.eq('XYZ'))then
+       !newExpressionArray.append(!value.replace('E', 'X').replace('N', 'Y').replace('U', 'Z').replace('W', '-X').replace('S', '-Y').replace('D', '-Z') )
+      else
+       !newExpressionArray.append(!value)
+      endif
+  enddo
+  !expression = ''
+  do !val values !newExpressionArray
+     !expression = !expression + ' ' + !val
+  enddo
+  return !expression
+
+endmethod
+-- End of function definition
+
+------------------------------------------------------------------------
+--
+-- Method:      clear
+--
+-- Description: Load details of given attribute
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Attribute represented by this object
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .clear()
+
+  -- Element
+  !this.element       = object DBREF()
+  -- Name
+  !this.attributeName = ''
+  -- Attribute attdef description
+  !this.description   = ''
+  -- Raw Rule
+  !this.rawRule       = ''
+  -- Rule
+  !this.rule          = ''
+  -- Data Type
+  !this.type          = ''
+  -- Can this attribute have a rule
+  !this.canHaveRule   = false
+  -- This attribute has a rule set
+  !this.hasRule       = false
+  -- Rule array for array type attributes (e.g. DESPARAM)
+  !this.ruleArray     = object ARRAY()
+  -- Flag to indicate whether this object contains a rule array
+  !this.isRuleArray   = false
+
+endmethod
+-- End of function definition
+
+------------------------------------------------------------------------
+--
+-- Method:      .testRule
+--
+-- Description: test the rule
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+----
+------------------------------------------------------------------------
+
+define method .testRule()
+
+  -- check for DESPARAM rules
+  if( !this.isRuleArray ) then
+    -- Loop through DESP rules
+    do !despIndex indices !this.ruleArray
+      !message = !this.testRule(!this.element, attributeDefinition.ruleArray[!despIndex], 'DESPARAM')
+    enddo
+
+  else
+    -- ordinary rule
+    !message = !this.testRule(!this.element, !this.rule, !this.attributeName)
+  endif
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      .testRule
+--
+-- Description: test the rule
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .testRule(!element is DBREF, !expression is STRING, !attribute is STRING) is STRING
+
+  -- Initialise Variables
+  !return = ''
+
+  -- An empty expression is OK
+  if(!expression.trim().empty()) then
+    return !return
+  endif
+
+  -- had to use VAR here because some PML 1 expressions will not evaluate
+  -- in a PML 2 context (e.g. DISTCONVERT(PARAM[1]) )
+  !saveRef = !!ce
+  !!ce = !element
+  VAR !result ( $!<expression> )
+  -- mismatched string quote '
+  handle (47,15)
+    !syntaxError = !!error.command.after('(').replace(')','',-1,1).trim()
+    !return = 'Syntax error: ' + !syntaxError
+  elsehandle any
+    !return = 'Expression invalid: ' + !!error.text
+  elsehandle none
+    -- Can't do type check because all VAR results are string
+    -- try PML 2 method
+    !resultOfExpression = !element.evaluate(object BLOCK(!expression))
+  handle any
+      -- Cannot deal with expressions that cannot be evaluated in PML 2
+      !return = ''
+    elsehandle none
+      -- Design parameter can be set to any dimension. Does not check dimension of current value
+      if( !attribute.subString(1,4).upcase() neq 'DESP' ) then
+        -- get result of attribute to determine type
+        !temp           = !element.attribute(!attribute)
+        !expressionType = !resultOfExpression.objectType()
+        !attributeType  = !temp.objectType()
+        if( !expressionType neq !attributeType ) then
+          !return = 'Expression type (' + !expressionType + ') incorrect for this attribute (' + !attributeType + ')'
+        else
+          if( !resultOfExpression.objectType() eq 'REAL' ) then
+            -- check dimension of REAL
+            if( !temp.set() ) then
+              !dimensionOfExpression = !resultOfExpression.dimension().name()
+              if( !dimensionOfExpression neq 'NONE' and !temp.dimension().name() neq !dimensionOfExpression ) then
+                !return = 'Expression invalid: Dimension (' + !dimensionOfExpression + ') incorrect for this attribute (' + !temp.dimension().name() + ')'
+              endif
+            endif
+          endif
+        endif
+      endif
+    endhandle
+  endhandle
+  !!ce = !saveRef
+
+  return !return
+
+endmethod
+-- End of method definition

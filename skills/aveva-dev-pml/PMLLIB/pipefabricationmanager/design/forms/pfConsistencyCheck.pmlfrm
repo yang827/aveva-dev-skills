@@ -1,0 +1,1580 @@
+--------------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            pfConsistencyCheck.pmlfrm
+--   Type:          Form Definition
+--   Group:         Pipe Fabrication
+--     Keyword:     PF
+--   Module:        Design
+--   Replaces:
+--
+-- Author:          HyunJong ROH (Nick)
+--                  DoHyoung Kim (Bright)
+-- Last Modified    Jaehun Choi(Daniel)
+-- Created:         Tuesday 6th December 2011
+--
+-- Description:     Form for consistency check
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  addCE()                          -                   add branches under the given scope element
+--  applyOptions()                   -                   apply options
+--  check()                          -                   run consistency checks with the selected target branches
+--  checkBranch(DBREF)               -                   run consistency check against the branch in the given row
+--  checkCE(DBREF)                   -                   run 'CHECK CE' against the given branch element
+--  fix(GADGET,STRING)               -                   fix the selected inconsistency problem
+--  highlightSelectedBranches()      -                   highlight selected branches
+--  loadEnvironmentFile()            -                   load environment file
+--  navigate()                       -                   navigate to the selected element in the CHECK CE result list
+--  onClickAddBranchesTo3DView()     -                   add the selected branches to 3D view
+--  onClickNavigateToBranch()        -                   navigate the selected branch in the design hierarchy
+--  onClickRemoveAll()               -                   remove all branches from grid control
+--  onClickRemoveBranchesFrom3DView() -                   remove the selected branches from 3D view
+--  onClickRemoveSelected()          -                   remove selected branches from grid control
+--  onClickSelectAllBranches()       -                   select all rows in the branch grid control
+--  onClickSetToPassed(BOOLEAN)      -                   set the selected branches to passed or not passed
+--  onClickUnselectAllBranches()     -                   unselect all rows in the branch grid control
+--  onClickZoomToBranch()            -                   zoom to the selected pipe branch
+--  onGridBranchesAfterSelectChange(ARRAY) -                   show check results (if it is already checked) and enable/disable the 'check' button
+--  onGridResultsAfterSelectChange(ARRAY) -                   enable/disable the 'fix' button
+--  onInitialize()                   -                   initialize form
+--  onShowBranchPopupMenu(ARRAY)     -
+--  pfConsistencyCheck()             -                   constructor
+--  quit()                           -                   clear screen
+--  refreshBranches()                -                   refresh the grid control for branches
+--  saveEnvironmentFile()            -                   save environment file
+--  setupCheckGroups()               -                   initialize consistency check groups
+--  showDetailResults()              -                   refresh the detail result grid with the check result of the selected branch
+--  zoom(VOLUME)                     -                   zoom to the given volume
+--
+--------------------------------------------------------------------------------
+import 'GridControl'
+handle any
+endhandle
+
+import 'PMLFileBrowser'
+handle any
+endhandle
+-- Define form
+setup form !!pfConsistencyCheck dialog dock varchars
+
+  using namespace 'Aveva.Pdms.Presentation'
+
+  !this.formTitle  = 'Modelling Consistency Check'
+  !this.initcall   = |!this.onInitialize()|
+  !this.quitCall   = '!this.quit()'
+
+  -- Fix Issue 97671
+  --button .btnSelectCurrent 'CE' callback '!this.addCE(!!ce)' width 8
+  button .btnSelectCurrent 'Add CE' callback '!this.addCE()' width 8
+  --//
+  para   .parCE text '<none>' wid 25
+  button .btnCheck 'Check' at x 51.5 callback '!this.check()' anchor t+r width 8
+  button .btnStop  'Stop' anchor t+r width 8
+
+  path down
+  container .netControlBranches PMLNETCONTROL 'Branches' anchor all at xmin.btnSelectCurrent wid 70 hei 12
+
+  -- Fix Issue 96547
+  toggle .togHighlight 'Highlight selected elements' callback '!this.highlightSelectedBranches()' at xmin.netControlBranches anchor l+b
+  --//
+
+  frame .frameTabs tabset at xmin.netControlBranches anchor l+r+b wid 70 hei 12
+
+    frame .frameResult 'Results' dock fill
+      container .netControlResults nobox PMLNETCONTROL 'Results' dock fill
+    exit
+
+    frame .frameCheckCE 'Check CE' dock fill
+      -- Fix Issue 96905, Pipe Fabrication: Fabr.Consistency Check - navigating to element when selecting it
+      list .lstCheckCE '' dock fill callback '!this.navigate()'
+      --//
+    exit
+
+    frame .frameOption 'Options' dock fill
+      toggle .togCheckFull          'Full data consistency check'
+      toggle .togCheckBranch        'Branch consistency check'
+      toggle .togCheckSpecification 'Component spec. reference check'
+      toggle .togCheckModel         'Modelling consistency check'
+      toggle .togCheckAttribute     'Attribute consistency check'
+      toggle .togCheckValve         'Valve consistency check'
+      button .btnApplyCheckGroups   'Apply' callback '!this.applyOptions()' wid 8
+    exit
+
+  exit
+
+  --button .btnFix 'Fix' at xmin.frameTabs callback '!this.fix()' anchor l+b width 8
+  button .btnFix1 linkl '' callback '!this.fix(' anchor l+b+r wid 50
+  button .btnFix2 linkl '' at ymax.btnFix1 - 0.2 callback '!this.fix(' anchor l+b+r wid 50
+
+  member  .gridBranches     is NETGRIDCONTROL
+
+  member  .gridResults      is NETGRIDCONTROL
+
+  member  .checkGroups      is ARRAY
+
+  member  .checkResults     is ARRAY
+
+  member  .branRefs         is ARRAY
+
+  member  .undo             is UNDOABLE
+
+  member  .environmentFile  is FILE
+exit
+
+--------------------------------------------------------------------------------
+--
+-- Method:      pfConsistencyCheck
+--
+-- Description: constructor
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .pfConsistencyCheck()
+
+  -- initialise grid controls
+  using namespace 'Aveva.Pdms.Presentation'
+
+  !this.gridBranches = object NETGRIDCONTROL()
+  !this.gridBranches.allGridEvents(true)
+  !this.gridBranches.columnExcelFilter(false)
+  !this.gridBranches.outlookGroupStyle(false)
+  !this.gridBranches.fixedHeaders(false)
+  !this.gridBranches.fixedRows(false)
+  !this.gridBranches.autofitcolumns()
+  !this.gridBranches.addEventHandler('AfterSelectChange', !this, 'onGridBranchesAfterSelectChange')
+  --!this.gridBranches.addEventHandler('BeforeCellUpdate', !this, 'onGridBranchesBeforeCellUpdate')
+  !this.gridBranches.addEventHandler('OnPopup', !this, 'onShowBranchPopupMenu')
+  !this.netControlBranches.control = !this.gridBranches.handle()
+
+  !this.newMenu('branchPopup')
+  --Fix Issue 97612
+  --!this.branchPopup.add('CALLBACK', 'Check',                '!this.check()',                           'CHECK')
+  --!this.branchPopup.add('CALLBACK', 'Set to Passed',        '!this.onClickSetToPassed(true)',          'SET_TO_PASSED')
+  --!this.branchPopup.add('CALLBACK', 'Set to Not Passed',    '!this.onClickSetToPassed(false)',         'SET_TO_NOTPASSED')
+  --!this.branchPopup.add('SEPARATOR')
+  --//
+  --Fix Issue 97671
+  !this.branchPopup.add('CALLBACK', 'Add CE',               '!this.addCE()',                           'ADD_CE')
+  !this.branchPopup.add('CALLBACK', 'Remove Selected',      '!this.onClickRemoveSelected()',           'REMOVE_SELECTED')
+  !this.branchPopup.add('CALLBACK', 'Remove All',           '!this.onClickRemoveAll()',                'REMOVE_ALL')
+  !this.branchPopup.add('CALLBACK', 'Refresh',              '!this.refreshBranches()',                 'REFRESH')
+  !this.branchPopup.add('SEPARATOR')
+  --//
+  !this.branchPopup.add('CALLBACK', 'Select All',           '!this.onClickSelectAllBranches()',        'SELECT_ALL')
+  !this.branchPopup.add('CALLBACK', 'Unselect All',         '!this.onClickUnselectAllBranches()',      'UNSELECT_ALL')
+  !this.branchPopup.add('SEPARATOR')
+  !this.branchPopup.add('CALLBACK', 'Add to 3D View',       '!this.onClickAddBranchesTo3DView()',      'ADD_TO_3DVIEW')
+  !this.branchPopup.add('CALLBACK', 'Remove from 3D View',  '!this.onClickRemoveBranchesFrom3DView()', 'REMOVE_FROM_3DVIEW')
+  !this.branchPopup.add('SEPARATOR')
+  !this.branchPopup.add('CALLBACK', 'Zoom To',              '!this.onClickZoomToBranch()',             'ZOOM_TO')
+  !this.branchPopup.add('CALLBACK', 'Navigate To',          '!this.onClickNavigateToBranch()',         'NAVIGATE_TO')
+  !this.netControlBranches.popup = !this.branchPopup
+
+  !this.togCheckBranch.val = true
+  !this.togCheckSpecification.val = true
+  !this.togCheckModel.val = true
+  !this.togCheckAttribute.val = true
+  !this.togCheckValve.val = true
+
+  -------------------------------------------------------------------------------------------------------
+  !this.gridResults = object NETGRIDCONTROL()
+  !this.gridResults.allGridEvents(true)
+  !this.gridResults.columnExcelFilter(false)
+  !this.gridResults.outlookGroupStyle(false)
+  !this.gridResults.fixedHeaders(false)
+  !this.gridResults.fixedRows(false)
+  !this.gridResults.addEventHandler('AfterSelectChange', !this, 'onGridResultsAfterSelectChange')
+  !this.netControlResults.control = !this.gridResults.handle()
+  --!this.gridResults.addEventHandler('BeforeCellUpdate', !this, 'onGridResultsBeforeCellUpdate')
+
+  !this.setupCheckGroups()
+  !this.refreshBranches()
+
+  !envFilePath = !!evarSplit('PDMSUSER')[1] & 'pfConsEnv.pmldat'
+  !this.environmentFile    = object FILE(!envFilePath)
+endmethod
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onInitialize
+--
+-- Description: initialize this form
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onInitialize()
+
+  -- if there are no branches, then select branches from CE
+  --!count = !this.gridBranches.getNumberRows()
+  --if !count.eq(0) then
+  --  !this.addCE()
+  --endif
+
+  !this.loadEnvironmentFile()
+
+  if (!this.gridBranches.getRows().unset()) then
+    !this.branRefs.clear()
+    !this.refreshBranches()
+    !this.addCE()
+  endif
+endmethod
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      addCE
+--
+-- Description: add branches under the given scope element and populate the grid control for branches
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .addCE()
+
+  !scopeRef = BRAN
+  handle ANY
+    !scopeRef = PIPE
+    handle ANY
+      !scopeRef = ZONE
+      handle ANY
+        !!alert.message('Select zone or element below zone!')
+        return
+      endhandle
+    endhandle
+  endhandle
+
+  -- set paragraph control text for ce
+  !this.parCE.val = !scopeRef.flnm
+
+  !branRefs = !!collectAllFor('BRAN', '', !scopeRef)
+  if !branRefs.empty() then
+    return
+  endif
+
+  !refNos = !this.gridBranches.getColumn('REF_NO')
+
+  -- add new rows
+  do !branRef values !branRefs
+
+    !index = !refNos.findFirst(!branRef.refNo.string())
+    skip if !index.set()
+
+    !row = object ARRAY()
+    !row[1] = !branRef.refNo.string()
+    !row[2] = !branRef.owner.flnm
+    !row[3] = !branRef.flnm
+
+    if !branRef.:PFConsChk then
+      !row[4] = 'Passed'
+    else
+      !row[4] = 'Not Checked'
+    endif
+
+    do !j indices !this.checkGroups
+      !row.append('-')
+    enddo
+
+    !this.gridBranches.addRow(!row)
+
+    -- add branch to branch list
+    !this.branRefs.append(!branRef)
+
+  enddo
+
+  -- set status image
+  !refNos = !this.gridBranches.getColumn('REF_NO')
+  do !branRef values !branRefs
+    !index = !refNos.findFirst(!branRef.refNo.string())
+    skip if !index.unset()
+
+    if !branRef.:PFConsChk then
+      !image = !!pml.getPathname('valid12.png')
+    else
+      !image = !!pml.getPathname('requires12.png')
+    endif
+    !this.gridBranches.setCellImage(!index, 3, !image)
+  enddo
+
+  !this.gridBranches.autoFitColumns()
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      refreshBranches
+--
+-- Description: populate the grid control for branches
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .refreshBranches()
+
+  !this.checkResults.clear()
+
+  -- headings
+  !headings = object ARRAY()
+  !headings.append('REF_NO')
+  !headings.append('Pipe')
+  !headings.append('Branch')
+  --Fix Issue 97612
+  !headings.append('Status')
+  --//
+  do !i indices !this.checkGroups
+    !headings.append(!this.checkGroups[!i].getTitle())
+  enddo
+
+  -- rows
+  !rows = object ARRAY()
+
+  do !branRef values !this.branRefs
+
+    skip if !branRef.badref()
+
+    !row = object ARRAY()
+    !row[1] = !branRef.refNo.string()
+    !row[2] = !branRef.owner.flnm
+    !row[3] = !branRef.flnm
+
+    --Fix Issue 97612
+    if !branRef.:PFConsChk then
+      !row[4] = 'Passed'
+    else
+      !row[4] = 'Not Checked'
+    endif
+    --//
+
+    do !j indices !this.checkGroups
+      !row.append('-')
+    enddo
+    !rows.append(!row)
+
+  enddo
+
+  using namespace 'Aveva.Pdms.Presentation'
+  !dataSource = object NETDATASOURCE('Branches', !headings, !rows)
+  !this.gridBranches.bindToDataSource(!dataSource)
+  !this.gridBranches.setColumnVisibility(1, false)
+
+  --Fix Issue 97612
+  !rowCount = !this.gridBranches.getNumberRows()
+  do !i to !rowCount
+    !branchName = !this.gridBranches.getCell(!i, 1)
+    !branRef = !branchName.dbref()
+    handle ANY
+      !branRef = object DBREF()
+    endhandle
+
+    skip if !branRef.badref()
+
+    if !branRef.:PFConsChk then
+      !image = !!pml.getPathname('valid12.png')
+    else
+      !image = !!pml.getPathname('requires12.png')
+    endif
+    !this.gridBranches.setCellImage(!i, 3, !image)
+  enddo
+  --//
+
+  !this.gridBranches.autoFitColumns()
+
+  !this.btnCheck.active = false
+  -- Issue 95114, Stop button disabled initially
+  !this.btnStop.active  = false
+
+  !this.btnFix1.visible = false
+  !this.btnFix2.visible = false
+endmethod
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onGridBranchesAfterSelectChange
+--
+-- Description: called when the selection of the grid control for branches is changed
+--              refresh the grid control for detail result and enable/disable 'check' button
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onGridBranchesAfterSelectChange(!args is ARRAY)
+
+  AID CLEAR ALL
+  handle ANY
+  endhandle
+  UNENHANCE ALL
+  handle ANY
+  endhandle
+
+  if !args.unset() or !args[0].unset() then
+    !this.btnCheck.active = false
+    !this.gridResults.clearGridData()
+    return
+  endif
+
+  !this.showDetailResults()
+
+  !this.btnCheck.active = true
+
+  -- Fix Issue 96547
+  if !this.togHighlight.val then
+    !this.highlightSelectedBranches()
+  endif
+  --//
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onGridResultsAfterSelectChange
+--
+-- Description: called when the selection of the grid control for check result is changed
+--              display the result in the 3D view and enable/disable the 'fix' button
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onGridResultsAfterSelectChange(!args is ARRAY)
+
+  UNENHANCE ALL
+  handle ANY
+  endhandle
+  AID CLEAR ALL
+  handle ANY
+  endhandle
+
+  !rowTags = !this.gridBranches.getSelectedRowTags()
+  if !rowTags.empty() then
+    return
+  endif
+
+  !rowTag = !rowTags.first()
+
+  !branRef = !this.gridBranches.getCell(!rowTag, 'REF_NO').dbref()
+  handle ANY
+    !branchName = !this.gridBranches.getCell(!rowTag, 'Branch')
+    !!alert.error('Cannot get BRAN ' + !branchName)
+    return
+  endhandle
+
+  !branchIndex = !this.branRefs.findFirst(!branRef)
+  if !branchIndex.unset() then
+    return
+  endif
+
+  !rowTags = !this.gridResults.getSelectedRowTags()
+  if !rowTags.empty() then
+    return
+  endif
+
+  !resultIndex = !this.gridResults.getCell(!rowTags.last(), 'INDEX').real()
+  handle ANY
+    return
+  endhandle
+
+  !this.checkResults[!branchIndex][!resultIndex].display()
+
+  --!this.btnFix.active = !this.checkResults[!branchIndex][!resultIndex].isFixable()
+  !methods = !this.checkResults[!branchIndex][!resultIndex].getSolutionMethods()
+
+  if !methods.size().gt(0) then
+    !this.btnFix1.tag = !methods[1]
+    !this.btnFix1.visible = true
+  else
+    !this.btnFix1.tag = ''
+    !this.btnFix1.visible = false
+  endif
+
+  if !methods.size().gt(1) then
+    !this.btnFix2.tag = !methods[2]
+    !this.btnFix2.visible = true
+  else
+    !this.btnFix2.tag = ''
+    !this.btnFix2.visible = false
+  endif
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      fix
+--
+-- Description: fix the selected inconsistency problem
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      GADGET      event originator
+--    2   R      STRING      action string
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .fix(!gadget is GADGET, !dummyAction is STRING)
+
+  !rowTags = !this.gridBranches.getSelectedRowTags()
+  if !rowTags.empty() then
+    return
+  endif
+
+  !rowTag = !rowTags.last()
+  !branRef = !this.gridBranches.getCell(!rowTag, 'REF_NO').dbref()
+  handle ANY
+    !!alert.error('Cannot get the selected BRAN')
+    !this.refreshBranches()
+    return
+  endhandle
+
+  !branchIndex = !this.branRefs.findFirst(!branRef)
+  if !branchIndex.unset() then
+    return
+  endif
+
+  !rowTags = !this.gridResults.getSelectedRowTags()
+  if !rowTags.empty() then
+    return
+  endif
+
+  !rowTag = !rowTags.last()
+  !resultIndex = !this.gridResults.getCell(!rowTag, 'INDEX').real()
+  handle ANY
+    return
+  endhandle
+
+  --!this.undo.description('PF - Fix Inconsistency')
+  --!this.undo.add()
+
+  !recheck = !this.checkResults[!branchIndex][!resultIndex].fix(!gadget.tag)
+  handle ANY
+    !!alert.error(!!error.text)
+    !recheck = true
+  endhandle
+
+  --!this.undo.endUndoable()
+
+  if !recheck and !branRef.badref().not() then
+    !this.checkBranch(!branRef)
+    !this.showDetailResults()
+    !this.onGridResultsAfterSelectChange(object ARRAY())
+  endif
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      check
+--
+-- Description: run consistency check against the selected branches
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .check()
+
+  !rowTags = !this.gridBranches.getSelectedRowTags()
+  if !rowTags.empty() then
+    !!alert.message('Select branches')
+    return
+  endif
+
+  -- initialize check items
+  do !i indices !this.checkGroups
+    !this.checkGroups[!i].initialize()
+    handle ANY
+      !!alert.error(!!error.text)
+      return
+    endhandle
+  enddo
+
+  !this.btnStop.active = true
+  !!fmSys.setInterrupt(!!pfConsistencyCheck.btnStop)
+
+  !!fmSys.setProgress(0)
+
+  !size = 100 / !rowTags.size()
+
+  !progress = 1
+  do !rowTag values !rowTags
+
+    if !!fmSys.interrupt() then
+       break
+    endif
+
+    !!fmSys.setProgress(!size * !progress)
+    !progress = !progress + 1
+
+    !branRef = !this.gridBranches.getCell(!rowTag, 'REF_NO').dbref()
+    handle ANY
+      !branRef = object DBREF()
+    endhandle
+
+    if !branRef.badref().not() then
+      !this.checkBranch(!branRef)
+    endif
+  enddo
+
+  !!fmSys.setProgress(0)
+
+  !this.btnStop.active = false
+
+  !this.gridBranches.autoFitColumns()
+
+  !this.showDetailResults()
+
+  !branRef = !this.gridBranches.getCell(!rowTags.last(), 'REF_NO').dbref()
+  handle ANY
+    !branRef = object DBREF()
+  endhandle
+
+  if !branRef.badref().not() then
+    !this.checkCE(!branRef)
+  endif
+
+  !this.btnFix1.visible = false
+  !this.btnFix2.visible = false
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      checkBranch
+--
+-- Description: run consistency check against the branch in the given row
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .checkBranch(!branRef is DBREF)
+
+  !errorLevel = 0
+
+  -- get row index
+  !refNos = !this.gridBranches.getColumn('REF_NO')
+  !rowIndex = !refNos.findFirst(!branRef.refNo.string())
+  if !rowIndex.unset() then
+    return
+  endif
+
+  -- get branch index
+  !branchIndex = !this.branRefs.findFirst(!branRef)
+  if !branchIndex.unset() then
+    return
+  endif
+
+  !this.checkResults[!branchIndex] = object ARRAY()
+  do !j indices !this.checkGroups
+
+    !results = object ARRAY()
+    !this.checkGroups[!j].check(!branRef, !results)
+    handle ANY
+      !!alert.error(!!error.text)
+    endhandle
+    !this.checkResults[!branchIndex].appendArray(!results)
+
+    -- get error level
+    !groupLevel = 0
+    do !k indices !results
+      !level = !results[!k].getResultLevel()
+      if !level.gt(!groupLevel) then
+        !groupLevel = !level
+      endif
+      break if !groupLevel.eq(3)
+    enddo
+
+    if !groupLevel.gt(!errorLevel) then
+      !errorLevel = !groupLevel
+    endif
+
+    -- set image according to the error level
+    if !groupLevel.eq(0) then
+      !resultString = 'Valid'
+      !image = !!pml.getPathname('greenball12.png')
+    elseif !groupLevel.eq(2) then
+      !resultString = 'Warning'
+      !image = !!pml.getPathname('yellowball12.png')
+    elseif !groupLevel.eq(3) then
+      !resultString = 'Invalid'
+      !image = !!pml.getPathname('redball12.png')
+    endif
+
+    !this.gridBranches.setCellImage(!rowIndex, 4 + !j, !image)
+    !this.gridBranches.setCellValue(!rowIndex, 4 + !j, !resultString)
+  enddo
+
+  -- set the result to attribute
+  !branRef.:PFConsChk = !errorLevel.eq(0)
+  handle ANY
+    !!alert.error(!!error.text)
+  endhandle
+
+  --Fix Issue 97612
+  if !branRef.:PFConsChk then
+    !image = !!pml.getPathname('valid12.png')
+    !statusString = 'Passed'
+  else
+    !image = !!pml.getPathname('requires12.png')
+    !statusString = 'Not passed'
+  endif
+  !this.gridBranches.setCellValue(!rowIndex, 4, !statusString)
+  !this.gridBranches.setCellImage(!rowIndex, 3, !image)
+  --//
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      showDetailResults
+--
+-- Description: populate the grid control with the check result of the selected branch
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .showDetailResults()
+
+  !rowTags = !this.gridBranches.getSelectedRowTags()
+  if !rowTags.empty() then
+    return
+  endif
+
+  !rowTag = !rowTags.first()
+  !branRef = !this.gridBranches.getCell(!rowTag, 'REF_NO').dbref()
+  handle ANY
+    !!alert.error('Cannot get the selected BRAN')
+    !this.refreshBranches()
+    return
+  endhandle
+
+  !branchIndex = !this.branRefs.findFirst(!branRef)
+  if !branchIndex.unset() then
+    return
+  endif
+
+  !rows = object ARRAY()
+  if defined(!this.checkResults[!branchIndex]) then
+    !resultGroup = !this.checkResults[!branchIndex]
+
+    do !i indices !resultGroup
+      !row = object ARRAY()
+      !row.append(!i)
+      !row.append(!resultGroup[!i].getMessage())
+      !rows.append(!row)
+    enddo
+
+  endif
+
+  !headings = object ARRAY()
+  !headings.append('INDEX')
+  !headings.append('Description')
+
+  using namespace 'Aveva.Pdms.Presentation'
+  !dataSource = object NETDATASOURCE('Results', !headings, !rows)
+  !this.gridResults.bindToDataSource(!dataSource)
+  !this.gridResults.setColumnVisibility(1, false)
+
+  !rowCount = !rows.size()
+  do !rowIndex to !rowCount
+    !index = !this.gridResults.getCell(!rowIndex, 1).real()
+    !errorLevel = !this.checkResults[!branchIndex][!index].getResultLevel()
+    if !errorLevel.eq(1) then
+      !image = !!pml.getPathname('greenball12.png')
+    elseif !errorLevel.eq(2) then
+      !image = !!pml.getPathname('yellowball12.png')
+    elseif !errorLevel.eq(3) then
+      !image = !!pml.getPathname('redball12.png')
+    endif
+    !this.gridResults.setCellImage(!rowIndex, 2, !image)
+  enddo
+
+  !this.gridResults.autoFitColumns()
+
+  -- run check ce
+  !this.checkCE(!branRef)
+
+  !this.btnFix1.visible = false
+  !this.btnFix2.visible = false
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      checkCE
+--
+-- Description: run 'CHECK CE' against the given branch element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .checkCE(!branRef is DBREF)
+  !pfConsistencyCheckObject = object PFPIPECONSISTENCYCHECK()
+  !unusedCheckResult = !pfConsistencyCheckObject.check(!branRef, !this.togCheckFull.val)
+  !this.lstCheckCE.dtext = !pfConsistencyCheckObject.resultMessage
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      setupCheckGroups
+--
+-- Description: initialize consistency check groups
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .setupCheckGroups()
+
+  !this.checkGroups.clear()
+
+  if !this.togCheckBranch.val then
+    !group = object PFCONSISTENCYCHECKGROUP('Bran.')
+    !group.checks.append(object PFBRANCHECK())
+    --!group.checks.append(object PFALIGNCHECK())
+    --!group.checks.append(object PFBRANDIRECTIONCHECK())
+    --!group.checks.append(object PFCONSISTENTBORECHECK())
+    !this.checkGroups.append(!group)
+  endif
+
+  if !this.togCheckSpecification.val then
+    !group = object PFCONSISTENCYCHECKGROUP('Spec.')
+    !group.checks.append(object PFSPECCHECK())
+    !this.checkGroups.append(!group)
+  endif
+
+  if !this.togCheckModel.val then
+    !group = object PFCONSISTENCYCHECKGROUP('Model')
+    --!group.checks.append(object PFGHOSTGASKETCHECK())
+    !group.checks.append(object PFFLANGEROTATIONCHECK())
+    --!group.checks.append(object PFFLANGEDIRCHECK())
+    !group.checks.append(object PFWELDGAPCHECK())
+    !group.checks.append(object PFBRANTEECHECK())
+    --!group.checks.append(object PFBENDINTERFERECHECK())
+    --!group.checks.append(object PFBENDINGCHECK())
+    --!group.checks.append(object PFMAXANGLECHECK())
+    !this.checkGroups.append(!group)
+  endif
+
+  if !this.togCheckAttribute.val then
+    -- no checks currently
+    !group = object PFCONSISTENCYCHECKGROUP('Attribute')
+    !this.checkGroups.append(!group)
+  endif
+
+  if !this.togCheckValve.val then
+    !group = object PFCONSISTENCYCHECKGROUP('Valve')
+    !group.checks.append(object PFVALVEDIRCHECK())
+    !this.checkGroups.append(!group)
+  endif
+
+  -- re-setup grid control for branches
+  !this.refreshBranches()
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      quit
+--
+-- Description: clear screen
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .quit()
+  UNENHANCE ALL
+  handle ANY
+  endhandle
+  AID CLEAR ALL
+  handle ANY
+  endhandle
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onShowPipePopupMenu
+--
+-- Description: shows a context menu for pipes
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onShowBranchPopupMenu(!data is ARRAY)
+
+  !rowTags = !this.gridBranches.getSelectedRowTags()
+
+  !branchSelected = !rowTags.size().gt(0)
+
+  !enableSetToPassed = !branchSelected
+  !validBranExists = false
+
+  !refNos = !this.gridBranches.getColumn('REF_NO')
+
+  do !rowTag values !rowTags
+    !row = !this.gridBranches.getRow(!rowTag)
+    !branRef = !row[1].dbref()
+    handle ANY
+      !!alert.error('Cannot get BRAN ' + !row[3])
+      break
+    endhandle
+
+    if !branRef.:PFConsChk then
+      !validBranExists = true
+    endif
+
+    if !enableSetToPassed then
+
+      !branchIndex = !this.branRefs.findFirst(!branRef)
+
+      if !branchIndex.unset() or undefined(!this.checkResults[!branchIndex]) then
+        -- check must be ran before setting branches to passed
+        !enableSetToPassed = false
+        skip
+      endif
+
+      -- let's check the error level
+      !resultGroup = !this.checkResults[!branchIndex]
+      do !i indices !resultGroup
+        !errorLevel = !resultGroup[!i].getResultLevel()
+        if !errorLevel.gt(2) then
+          -- error
+          !enableSetToPassed = false
+          break
+        endif
+      enddo
+    endif
+  enddo
+
+  -- Fix Issue 97671
+  -- check if current element is zone or under zone
+  !zoneRef = ZONE
+  handle ANY
+    !zoneRef = object DBREF()
+  endhandle
+  --//
+
+  !rowCount = !this.gridBranches.getNumberRows()
+
+  --!this.branchPopup.setFieldProperty('SET_TO_PASSED',       'ACTIVE', !enableSetToPassed)
+  --!this.branchPopup.setFieldProperty('SET_TO_NOTPASSED',    'ACTIVE', !validBranExists)
+  !this.branchPopup.setFieldProperty('ADD_CE',              'ACTIVE', !zoneRef.badref().not())
+  !this.branchPopup.setFieldProperty('REMOVE_SELECTED',     'ACTIVE', !branchSelected)
+  !this.branchPopup.setFieldProperty('REMOVE_ALL',          'ACTIVE', !rowCount.gt(0))
+  !this.branchPopup.setFieldProperty('ADD_TO_3DVIEW',       'ACTIVE', !branchSelected)
+  !this.branchPopup.setFieldProperty('REMOVE_FROM_3DVIEW',  'ACTIVE', !branchSelected)
+  !this.branchPopup.setFieldProperty('ZOOM_TO',             'ACTIVE', !branchSelected)
+  !this.branchPopup.setFieldProperty('NAVIGATE_TO',         'ACTIVE', !branchSelected)
+
+  !this.netControlBranches.showPopup(!data[0], !data[1])
+endmethod
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onClickSelectAllBranches
+--
+-- Description: select all rows in the branch grid control
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onClickSelectAllBranches()
+  !this.gridBranches.selectAllRows()
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onClickUnselectAllBranches
+--
+-- Description: unselect all rows in the branch grid control
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onClickUnselectAllBranches()
+  !this.gridBranches.clearRowSelection()
+endmethod
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onClickAddBranchesTo3DView
+--
+-- Description: add the selected branches to 3D view
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onClickAddBranchesTo3DView()
+
+  --!branRefs = object ARRAY()
+
+  !rowTags = !this.gridBranches.getSelectedRowTags()
+  do !rowTag values !rowTags
+    !branRefNo = !this.gridBranches.getCell(!rowTag, 'REF_NO')
+    !branRef = !branRefNo.dbref()
+    handle ANY
+      !branRef = object DBREF()
+    endhandle
+
+    if !branRef.set() then
+      ADD $!branRef
+      --!branRefs.append(!branRef)
+    endif
+  enddo
+
+  --if !branRefs.empty().not() then
+  --  !this.zoom(object VOLUME(!branRefs))
+  --endif
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onClickRemoveBranchesFrom3DView
+--
+-- Description: remove the selected branches from 3D view
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onClickRemoveBranchesFrom3DView()
+  !rowTags = !this.gridBranches.getSelectedRowTags()
+  do !rowTag values !rowTags
+    !branRefNo = !this.gridBranches.getCell(!rowTag, 'REF_NO')
+    !branRef = !branRefNo.dbref()
+    handle ANY
+    elsehandle NONE
+      if !branRef.set() then
+        REM $!branRef
+      endif
+    endhandle
+  enddo
+endmethod
+
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onClickZoomToBranch
+--
+-- Description: zoom to the selected pipe branch
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]   [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onClickZoomToBranch()
+  !branRefs = object ARRAY()
+
+  !rowTags = !this.gridBranches.getSelectedRowTags()
+  do !rowTag values !rowTags
+    !branRefNo = !this.gridBranches.getCell(!rowTag, 'REF_NO')
+    !branRef = !branRefNo.dbref()
+    handle ANY
+    elsehandle NONE
+      if !branRef.set() then
+        !branRefs.append(!branRef)
+      endif
+    endhandle
+  enddo
+
+  if !branRefs.empty().not() then
+    !this.zoom(object VOLUME(!branRefs))
+  endif
+endmethod
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onClickNavigateToBranch
+--
+-- Description: navigate the selected branch in the design hierarchy
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onClickNavigateToBranch()
+  !rowTags = !this.gridBranches.getSelectedRowTags()
+  if !rowTags.empty().not() then
+    !branRefNo = !this.gridBranches.getCell(!rowTags.last(), 'REF_NO')
+    !branRef = !branRefNo.dbref()
+    handle ANY
+    elsehandle NONE
+      if !branRef.set() then
+        !!ce = !branRef
+      endif
+    endhandle
+  endif
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      zoom
+--
+-- Description: zoom to the given volume
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]   [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .zoom(!volume is VOLUME)
+  !from = !volume.from
+  !to   = !volume.to
+
+  -- Through Point
+  !throughPoint   = !from.midPoint(!to)
+  handle ANY
+    return
+  endhandle
+
+  -- Set through point
+  !through[1] = !!comValueConvert(!throughPoint.east, 'MM')
+  !through[2] = !!comValueConvert(!throughPoint.north, 'MM')
+  !through[3] = !!comValueConvert(!throughPoint.up, 'MM')
+  !!fmSys.currentDocument().view.through = !through
+
+  -- Set view radius
+  !radius = !!comValueConvert(!from.distance(!to), 'MM') * 0.5
+  --!radius = !radius.max(500mm)
+  !!fmSys.currentDocument().view.radius  = !radius
+endmethod
+
+-- Fix Issue 96905, Pipe Fabrication: Fabr.Consistency Check - navigating to element when selecting it
+--------------------------------------------------------------------------------
+--
+-- Method:      navigate
+--
+-- Description: navigate to the selected element in the CHECK CE result list
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]   [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .navigate()
+
+  !index = !this.lstCheckCE.val
+  if !index.eq(0) then
+    return
+  endif
+
+  !element = object DBREF()
+
+  do !i from !index to 1 by -1
+    !text = !this.lstCheckCE.dtext[!i]
+    !element = !text.dbref()
+    handle ANY
+      !element = object DBREF()
+    endhandle
+
+    if !element.badref().not() then
+      !!ce = !element
+      break
+    endif
+  enddo
+endmethod
+--//
+
+-- Fix Issue 96547
+--------------------------------------------------------------------------------
+--
+-- Method:      highlightSelectedBranches
+--
+-- Description: highlight selected branches
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]   [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .highlightSelectedBranches()
+
+  UNENHANCE ALL
+  handle ANY
+  endhandle
+
+  if !this.togHighlight.val.not() then
+    return
+  endif
+
+  !rowTags = !this.gridBranches.getSelectedRowTags()
+  if !rowTags.empty() then
+    return
+  endif
+
+  do !rowTag values !rowTags
+    !branRefNo = !this.gridBranches.getCell(!rowTag, 'REF_NO')
+    !branRef = !branRefNo.dbref()
+    handle ANY
+      !branRef = object DBREF()
+    endhandle
+
+    if !branRef.badref().not() then
+      ENHANCE $!branRef COLOUR $!!gphColOpt.highlight
+      handle ANY
+      endhandle
+    endif
+  enddo
+
+endmethod
+--//
+
+
+--Fix Issue 97612
+--------------------------------------------------------------------------------
+--
+-- Method:      onClickSetToPassed
+--
+-- Description: set the selected branches to passed or not passed
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]   [Description]
+--    1   R      BOOLEAN       true : passed, false : not passed
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onClickSetToPassed(!passed is BOOLEAN)
+
+  !rowTags = !this.gridBranches.getSelectedRowTags()
+  if !rowTags.empty() then
+    !!alert.message('Select branches!')
+    return
+  endif
+
+  !refNos = !this.gridBranches.getColumn('REF_NO')
+
+  do !rowTag values !rowTags
+    !row = !this.gridBranches.getRow(!rowTag)
+    !branRef = !row[1].dbref()
+    handle ANY
+      !!alert.error('Cannot get BRAN ' + !row[3])
+      skip
+    endhandle
+
+    !rowIndex = !refNos.findFirst(!row[1])
+    if !rowIndex.set() then
+      if !passed then
+
+        !branchIndex = !this.branRefs.findFirst(!branRef)
+        skip if !branchIndex.unset()
+
+        if defined(!this.checkResults[!branchIndex]) then
+
+          -- let's check the error level
+          !resultGroup = !this.checkResults[!branchIndex]
+
+          !validOrWarning = true
+          do !i indices !resultGroup
+            !errorLevel = !resultGroup[!i].getResultLevel()
+            if !errorLevel.gt(2) then
+              -- error
+              !validOrWarning = false
+              break
+            endif
+          enddo
+
+          -- set to passed
+          if !validOrWarning then
+            !branRef.:PFConsChk = true
+            handle ANY
+              !!alert.error(!!error.text)
+            endhandle
+          endif
+
+        endif
+      else
+        if !branRef.:PFConsChk then
+          !branRef.:PFConsChk = false
+          handle ANY
+            !!alert.error(!!error.text)
+          endhandle
+        endif
+      endif
+
+      -- refresh grid row
+      if !branRef.:PFConsChk then
+        !image = !!pml.getPathname('valid12.png')
+        !statusString = 'Passed'
+      else
+        !image = !!pml.getPathname('requires12.png')
+        !statusString = 'Not passed'
+      endif
+      !this.gridBranches.setCellValue(!rowIndex, 4, !statusString)
+      !this.gridBranches.setCellImage(!rowIndex, 3, !image)
+
+    endif
+  enddo
+
+endmethod
+--//
+
+-- Fix Issue 97671
+--------------------------------------------------------------------------------
+--
+-- Method:      onClickRemoveSelected
+--
+-- Description: remove selected branches from grid control
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]   [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onClickRemoveSelected()
+
+  !rowTags = !this.gridBranches.getSelectedRowTags()
+  if !rowTags.empty() then
+    !!alert.message('Select branches!')
+    return
+  endif
+
+  -- remove BRAN element
+  do !rowTag values !rowTags
+    !branRef = !this.gridBranches.getCell(!rowTag, 'REF_NO').dbref()
+    handle ANY
+      -- invalid branch reference, just ignore it
+      skip
+    endhandle
+
+    -- remove the branch from local storage and check result
+    !index = !this.branRefs.findFirst(!branRef)
+    if !index.set() then
+      !this.branRefs.removeFrom(!index, 1)
+      !this.checkResults.removeFrom(!index, 1)
+    endif
+  enddo
+
+  -- delete selected rows
+  !this.gridBranches.deleteSelectedRows()
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onClickRemoveAll
+--
+-- Description: remove all branches from grid control
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]   [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onClickRemoveAll()
+
+  !this.gridBranches.clearGridData()
+  !this.branRefs.clear()
+  !this.checkResults.clear()
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      applyOptions
+--
+-- Description: apply options
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]   [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .applyOptions()
+  !this.saveEnvironmentFile()
+  !this.setupCheckGroups()
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      loadEnvironmentFile
+--
+-- Description: load environment file
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]   [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .loadEnvironmentFile()
+  !readData = !this.environmentFile.readFile()
+  handle any
+    return
+  endhandle
+
+  !this.togCheckFull.val          = !readData[1].boolean()
+  handle (61,618)
+  endhandle
+  !this.togCheckBranch.val        = !readData[2].boolean()
+  handle (61,618)
+  endhandle
+  !this.togCheckSpecification.val = !readData[3].boolean()
+  handle (61,618)
+  endhandle
+  !this.togCheckModel.val         = !readData[4].boolean()
+  handle (61,618)
+  endhandle
+  !this.togCheckAttribute.val     = !readData[5].boolean()
+  handle (61,618)
+  endhandle
+  !this.togCheckValve.val         = !readData[6].boolean()
+  handle (61,618)
+  endhandle
+
+  !this.setupCheckGroups()
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      saveEnvironmentFile
+--
+-- Description: save environment file
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type]   [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .saveEnvironmentFile()
+  !table = object ARRAY()
+  !table.append(!this.togCheckFull.val.string())
+  !table.append(!this.togCheckBranch.val.string())
+  !table.append(!this.togCheckSpecification.val.string())
+  !table.append(!this.togCheckModel.val.string())
+  !table.append(!this.togCheckAttribute.val.string())
+  !table.append(!this.togCheckValve.val.string())
+
+  !this.environmentFile.writeFile('OVER', !table)
+  handle any
+  endhandle
+
+  !this.environmentFile.close()
+endmethod

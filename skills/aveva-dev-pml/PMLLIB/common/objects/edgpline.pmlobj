@@ -1,0 +1,1086 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            edgpline.pmlobj
+--   Type:          Object Definition
+--   Group:         Database routines
+--     Keyword:     DTB
+--   Module:        common
+--   Replaces:
+--
+-- Author:          N.Holmes
+-- Created:         Wed Mar 11 16:21:25 WAT 1998
+--
+--
+-- Description:
+-- Nozzle Handles
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  arc(DBREF,STRING)                ARC                 Pline of item as arc object (only relevant for gensecs)
+--  arc(DBREF,STRING,POINTVECTOR)    ARC                 Pline of item as arc object (only relevant for gensecs)
+--  distance(DBREF,STRING,REAL,LINE,BOOLEAN) POSITION            Return position of specified distance from nearest end/snap to point vector on the section
+--  distance(DBREF,STRING,REAL,POINTVECTOR,BOOLEAN) POSITION            Return position of specified distance from nearest end/snap to point vector on the section
+--  edgPline()                       -                   Constructor
+--  exact(DBREF,STRING,LINE)         POSITION            Return the intersection of the passed point vector with the section
+--  exact(DBREF,STRING,POINTVECTOR)  POSITION            Return the intersection of the passed point vector with the section
+--  fraction(DBREF,STRING,REAL,LINE,BOOLEAN) POSITION            Return position of specified proportion from nearest end/snap to point vector on the section
+--  fraction(DBREF,STRING,REAL,POINTVECTOR,BOOLEAN) POSITION            Return position of specified proportion from nearest end/snap to point vector on the section
+--  line(DBREF,STRING)               LINE                Pline of item as line object
+--  line(DBREF,STRING,POINTVECTOR)   LINE                Pline of item as line object
+--  pLinePosition(DBREF,STRING,POINTVECTOR) POSITION            Return the 3D position on the passed pline using the passed curve as the reference point
+--  proportion(DBREF,STRING,REAL,LINE,BOOLEAN) POSITION            Return position of specified proportion from nearest end/snap to point vector on the section
+--  proportion(DBREF,STRING,REAL,POINTVECTOR,BOOLEAN) POSITION            Return position of specified proportion from nearest end/snap to point vector on the section
+--  snap(DBREF,STRING,LINE,BOOLEAN)  POSITION            Return nearest snap point on line using a passed line
+--  snap(DBREF,STRING,POINTVECTOR,BOOLEAN) POSITION            Return nearest snap point on line using a passed point vector
+--  snapLine(DBREF,STRING,POSITION)  LINE                Returns the "snap" line of the pline for the passed position
+--
+------------------------------------------------------------------------
+
+define object EDGPLINE
+
+  -- Cut or uncut pline position
+  member .cut        is BOOLEAN
+
+  -- Snap considerations
+  member .fitting    is BOOLEAN
+  member .joint      is BOOLEAN
+  member .node       is BOOLEAN
+
+endobject
+-- End of object definition for EDGPLINE
+
+-----------------------------------------------------------------------
+--
+-- Method:      edgPline
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .edgPline()
+
+  -- Initialise Variables
+  !this.cut       = false
+  !this.fitting   = false
+  !this.joint     = false
+  !this.node      = false
+
+endmethod
+-- End of method definition for .edgPline()
+
+------------------------------------------------------------------------
+--
+-- Method:      line
+--
+-- Description: Pline of item as line object
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Database Element
+--    2   R      STRING      Pline key
+-- Return:
+--   [Data Type] [Description]
+--    LINE        Defined Line
+--
+------------------------------------------------------------------------
+
+define method .line(!dbRef is DBREF, !pLine is STRING) is LINE
+
+  -- Initialise Variables
+  !return               = object LINE()
+
+  -- Use profile
+  if(!dbRef.spref.set()) then
+
+    -- Hard types of SCTN
+    if(!dbRef.hardType eq 'SCTN') then
+
+      -- Cut plines
+      if(!this.cut) then
+        !return.startPosition = !dbRef.plStCut.attribute(!pLine).wrt(World)
+        !return.endPosition   = !dbRef.plEnCut.attribute(!pLine).wrt(World)
+      else
+        !return.startPosition = !dbRef.plStart.attribute(!pLine).wrt(World)
+        !return.endPosition   = !dbRef.plEnd.attribute(!pLine).wrt(World)
+      endif
+
+    else
+
+      -- try p-line for other types (e.g. hull stiffener)
+      !startPosition          = !dbRef.plStart.attribute(!pLine).wrt(World)
+      handle any
+        -- can't do pline query on given element
+        return !return
+      endhandle
+      !endPosition            = !dbRef.plEnd.attribute(!pLine).wrt(World)
+      handle any
+        -- can't do pline query on given element
+        return !return
+      endhandle
+      -- return line
+      !return.startPosition = !startPosition
+      !return.endPosition   = !endPosition
+
+    endif
+
+  endif
+
+  -- Return
+  return !return
+
+endmethod
+-- End of method definition for .line(DBREF, STRING) LINE
+
+------------------------------------------------------------------------
+--
+-- Method:      line
+--
+-- Description: Pline of item as line object
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Database Element
+--    2   R      STRING      Pline key
+--    3   R      POINTVECTOR Point vector
+-- Return:
+--   [Data Type] [Description]
+--    LINE        Defined Line
+--
+------------------------------------------------------------------------
+
+define method .line(!dbRef is DBREF, !pLine is STRING, !pointVector is POINTVECTOR) is LINE
+
+  -- Initialise Variables
+  !return               = object LINE()
+
+  -- Use profile
+  if(!dbRef.spref.set()) then
+
+    -- Hard types of SCTN
+    if(!dbRef.hardType eq 'SCTN') then
+      return !this.line(!dbRef, !pLine)
+
+    -- Hard type of GENSEC
+    elseif (!dbRef.hardType eq 'GENSEC') then
+
+      -- If flagged as a RING, then we can't interpret the pline as a line
+      if(!dbRef.function eq 'RING') then
+        return object LINE()
+
+      else
+        -- Get curve segment nearest to pick
+        !curve = !!edgTypes.gensec.curve(!dbRef, !pointVector)
+
+        -- If curve if a POINSP, then we have a straight gensec
+        if(!curve.type eq 'POINSP') then
+
+          -- Cut plines
+          if(!this.cut) then
+            !return.startPosition = !dbRef.plStCut.attribute(!pLine).wrt(World)
+            !return.endPosition   = !dbRef.plEnCut.attribute(!pLine).wrt(World)
+          else
+            !return.startPosition = !dbRef.plStart.attribute(!pLine).wrt(World)
+            !return.endPosition   = !dbRef.plEnd.attribute(!pLine).wrt(World)
+          endif
+
+          return !return
+
+        else
+
+          -- Plane
+          !plane = object PLANE(!dbRef.position, !dbRef.orientation)
+
+          -- Segment line
+          !lines      = !!edgTypes.gensec.segmentLines(!curve)
+
+          -- Determine the line to use
+          !line       = !!edgTypes.gensec.selectLine(!lines, !plane.intersection(!pointVector))
+
+          -- Check for line
+          if(!line.unset()) then
+            return object LINE()
+          endif
+
+          -- Determine the position on the pline
+          !position  = !this.pLinePosition(!curve, !pLine, !pointVector)
+
+          -- Define parallel line through the position
+          !return    = !line.parallel(!position.wrt(World))
+
+        endif
+      endif
+
+    else
+
+      -- handle other types (e.g. hull stiffener)
+      return !this.line(!dbRef, !pLine)
+
+    endif
+
+  endif
+
+  -- Return
+  return !return
+
+endmethod
+-- End of method definition for .line(DBREF, STRING, POINTVECTOR) LINE
+------------------------------------------------------------------------
+--
+-- Method:      arc
+--
+-- Description: Pline of item as arc object (only relevant for gensecs)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Database Element
+--    2   R      STRING      Pline key
+-- Return:
+--   [Data Type] [Description]
+--    LINE        Defined Line
+--
+------------------------------------------------------------------------
+
+define method .arc(!dbRef is DBREF, !pLine is STRING) is ARC
+
+  -- Initialise Variables
+  !arc = object ARC()
+
+  -- Use profile
+  if(!dbRef.spref.set()) then
+
+    -- If gensec is flagged as a "RING", then return the arc of the ring
+    if(!dbRef.function eq 'RING') then
+
+      -- Cut plines
+      var !startString PPLINE $!<pLine> OF $!<dbRef> NORMAL START WRT World
+      var !endString PPLINE $!<pLine> OF $!<dbRef> NORMAL END WRT World
+      !start  = !startString.position()
+      !end    = !endString.position()
+
+      -- Mid point of
+      var !midPointStr PPLINE $!<pLine> OF $!<dbRef> PROPORTION 0.5 WRT World
+      !midPoint = !midPointStr.position()
+
+      -- Define an arc passing through the three points
+      !arc = !!appMathLib.gmfArc.through3Points(!start, !midPoint, !end)
+
+      -- If generating an arc failed, assume it must have been a complete circle
+      handle any
+        var !endStr PPLINE $!<pLine> OF $!<dbRef> PROPORTION 0.8 WRT World
+        !end            = !endStr.position()
+        !arc            = !!appMathLib.gmfArc.through3Points(!start, !midPoint, !end)
+        !arc.startAngle = 0
+        !arc.endAngle   = 360
+      endhandle
+    endif
+  endif
+
+  return !arc
+
+endmethod
+-- End of method definition for .arc(DBREF, STRING) ARC
+
+------------------------------------------------------------------------
+--
+-- Method:      arc
+--
+-- Description: Pline of item as arc object (only relevant for gensecs)
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Database Element
+--    2   R      STRING      Pline key
+--    3   R      POINTVECTOR Point vector
+-- Return:
+--   [Data Type] [Description]
+--    LINE        Defined Line
+--
+------------------------------------------------------------------------
+
+define method .arc(!dbRef is DBREF, !pLine is STRING, !pointVector is POINTVECTOR) is ARC
+
+  -- Initialise Variables
+  !arc = object ARC()
+
+  -- Use profile
+  if(!dbRef.spref.set()) then
+
+    -- Generic section
+    if(!dbRef.hardType eq 'GENSEC') then
+
+      -- If flagged as a RING, then we can't interpret the pline as a line
+      if(!dbRef.function eq 'RING') then
+        return !this.arc(!dbRef, !pLine)
+
+      -- Other generic section definitions
+      else
+
+        -- Get curve segment nearest to pick
+        !curve = !!edgTypes.gensec.curve(!dbRef, !pointVector)
+
+        -- If curve if a POINSP, then we have a straight gensec
+        if(!curve.type eq 'POINSP') then
+          return !arc
+
+        -- Gensec with curves in
+        else
+
+          -- Arc definition
+          !arc       = !!edgTypes.gensec.segmentArc(!curve)
+
+          -- Determine the position on the pline
+          !position  = !this.pLinePosition(!curve, !pLine, !pointVector)
+
+          -- If position is out of bound of the arc, then we can't use it
+          if(!arc.onProjected(!position).not()) then
+            return object ARC()
+          endif
+
+          -- We now need to modify the arc so that it is origin plane passes
+          -- through the new position and the radius is from the centre to
+          -- the new position
+          !near      = !arc.plane().near(!position)
+          !distance  = !near.distance(!position)
+          if(!distance gt 0) then
+            !arc.position = !arc.position.offset(!near.direction(!position), !distance).wrt(World)
+          endif
+
+          -- New radius
+          !arc.radius = !arc.position.distance(!position)
+
+        endif
+      endif
+    endif
+  endif
+
+  -- Return
+  return !arc
+
+endmethod
+-- End of method definition for .arc(DBREF, STRING, POINTVECTOR) ARC
+
+------------------------------------------------------------------------
+--
+-- Method:      pLinePosition
+--
+-- Description: Return the 3D position on the passed pline using the passed curve as the reference point
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Curve DBREF
+--    2   R      STRING      Pline on section
+--    3   R      POINTVECTOR Point vector
+-- Return:
+--   [Data Type] [Description]
+--    LINE        Line between snap items
+--
+------------------------------------------------------------------------
+
+define method .pLinePosition(!curve is DBREF, !pLine is STRING, !pointVector is POINTVECTOR) is POSITION
+
+  -- Initialise Variables
+  !reference = !!ce
+
+  -- Plane of gensec
+  !plane     = object PLANE(!curve.owner.owner.position, !curve.owner.owner.orientation)
+  !position  = !plane.intersection(!pointVector)
+
+  -- Get the zdist along the segment
+  !!ce       = !curve.owner.owner
+
+  var !zDistanceString PLDIST PPLINE $!<pLine> THROUGH $!<position> VIA PLINE BOUND
+  handle any
+   !!ce     = !reference
+    return object POSITION()
+  endhandle
+
+  -- Get 3D position
+  var !positionString PPLINE $!<pLine> DISTANCE $!<zDistanceString> FROM START OF $!<curve> WRT World
+  handle any
+    !!ce     = !reference
+    return object POSITION()
+  endhandle
+
+  -- This is the initial position, but as we mapped onto the gensec plane to get
+  -- the position we need now to move the plane through the new position and
+  -- get the new intersection onto the new plane position
+  !position       = !positionString.position()
+  !plane.position = !position
+  !position  = !plane.intersection(!pointVector)
+
+  -- Calculate with new position
+  var !zDistanceString PLDIST PPLINE $!<pLine> THROUGH $!<position> VIA PLINE BOUND
+  handle any
+   !!ce     = !reference
+    return object POSITION()
+  endhandle
+
+  -- Get 3D position
+  var !positionString PPLINE $!<pLine> DISTANCE $!<zDistanceString> FROM START OF $!<curve> WRT World
+  handle any
+    !!ce     = !reference
+    return object POSITION()
+  endhandle
+
+  -- Return
+  !!ce       = !reference
+  return !positionString.position().wrt(World)
+
+endmethod
+-- End of method definition for .pLinePosition(DBREF, STRING, POINTVECTOR) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      snapLine
+--
+-- Description: Returns the "snap" line of the pline for the passed position
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Section DBREF
+--    2   R      STRING      Pline on section
+--    3   R      POSITION    Position on line to determine snap line
+-- Return:
+--   [Data Type] [Description]
+--    LINE        Line between snap items
+--
+------------------------------------------------------------------------
+
+define method .snapLine(!dbRef is DBREF, !pLine is STRING, !position is POSITION) is LINE
+
+  -- Convert section into a line
+  !sectionLine = !this.line(!dbRef, !pLine)
+
+  -- No snapping elements set
+  if(!this.fitting.not() and !this.joint.not() and !this.node.not()) then
+    return !sectionLine
+  endif
+
+  -- Collect all items to be considered as "snap" points
+  !searchList = ''
+  if(!this.fitting) then
+    !searchList = !searchList & ' FITT'
+  endif
+  if(!this.joint) then
+    !searchList = !searchList & ' SJOI SUBJ'
+  endif
+  if(!this.node) then
+    !searchList = !searchList & ' SNOD'
+  endif
+
+  -- Collect all items for section
+  var !collection COLLECT ALL ($!searchList) for $!dbRef
+
+  -- Get distance of each item from startPosition of line
+  if(!collection.size() gt 0) then
+
+    -- Distance
+    !positions    = ARRAY()
+    !distances    = ARRAY()
+    !positions[1] = !sectionLine.startPosition
+    !distances[1] = 0
+
+    -- Loop through snap elements
+    do !i indices !collection
+      !positions.append(!sectionLine.near(!collection[!i].dbRef().position))
+      !distances.append(!sectionLine.startPosition.distance(!sectionLine.near(!collection[!i].dbRef().position)))
+    enddo
+
+    !positions.append(!sectionLine.endPosition)
+    !distances.append(!sectionLine.length())
+
+    -- Sort into order
+    !sortA = !distances.sortedIndices()
+
+    do !i from 2 to !sortA.size()
+      !newLine = !positions[!sortA[!i - 1]].line(!positions[$!sortA[$!i]])
+      if(!newLine.onProjected(!position)) then
+        return !newLine
+      endif
+    enddo
+
+  endif
+
+  return !sectionLine
+
+endmethod
+-- End of method definition for .snapLine(DBREF, STRING, POSITION) LINE
+
+------------------------------------------------------------------------
+--
+-- Method:      snap
+--
+-- Description: Return nearest snap point on line using a passed point vector
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Section DBREF
+--    2   R      STRING      Pline on section
+--    3   R      POINTVECTOR Point vector to nearest to snap point
+--    4   R      BOOLEAN     Intermediate snaps (considers elements within)
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    Snap position on line
+--
+------------------------------------------------------------------------
+
+define method .snap(!dbRef is DBREF, !pLine is STRING, !pointVector is POINTVECTOR, !intermediates is BOOLEAN) is POSITION
+
+  -- Convert point vector into a line and use snap line method
+  return !this.snap(!dbRef, !pLine, !pointVector.line(1000mm), !intermediates)
+
+endmethod
+-- End of method definition for .snap(DBREF, STRING, POINTVECTOR, BOOLEAN) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      snap
+--
+-- Description: Return nearest snap point on line using a passed line
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Section DBREF
+--    2   R      STRING      Pline on section
+--    3   R      LINE        Line to nearest to snap point
+--    4   R      BOOLEAN     Intermediate snaps (considers elements within)
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    Snap position on line
+--
+------------------------------------------------------------------------
+
+define method .snap(!dbRef is DBREF, !pLine is STRING, !refLine is LINE, !intermediates is BOOLEAN) is POSITION
+
+  -- Section
+  if(!dbRef.hardType eq 'SCTN') then
+
+    -- Convert section into a line
+    !sectionLine = !this.line(!dbRef, !pLine)
+
+    -- Intersection of lines
+    !iPosition   = !sectionLine.intersection(!refLine)
+
+    -- Consider intermediate snap points
+    if(!intermediates) then
+      -- Get the snap Line
+      !snapLine  = !this.snapLine(!dbRef, !pLine, !iPosition)
+    else
+      !snapLine  = !sectionLine
+    endif
+
+    !line        = object GMFLINE(!snapLine)
+    !position    = !line.snap(!iPosition)
+
+  -- Generic Sections
+  elseif (!dbRef.hardType eq 'GENSEC') then
+
+    -- Handle RING gensecs
+    if(!dbRef.function.upcase() eq 'RING') then
+      !gmfArc         = object GMFARC(!this.arc(!dbRef, !pLine))
+      !position    = !gmfArc.snap(!refLine.pointVector())
+
+    -- Spine defined as a generic section
+    else
+      !sectionLine = !this.line(!dbRef, !pLine, !refLine.pointVector())
+
+      -- Snap to line
+      if(!sectionLine.set()) then
+        !line      = object GMFLINE(!sectionLine)
+        !position  = !line.snap(!sectionLine.intersection(!refLine))
+
+      -- Snap to arc
+      else
+        !arc       = !this.arc(!dbRef, !pLine, !refLine.pointVector())
+        !gmfArc    = object GMFARC(!arc)
+        !position  = !gmfArc.snap(!refLine.pointVector())
+
+      endif
+    endif
+
+  else
+
+    -- try p-line for other types (e.g. hull stiffener)
+
+    -- Convert into a line
+    !snapLine    = !this.line(!dbRef, !pLine)
+
+    -- Intersection of lines
+    !iPosition   = !snapLine.intersection(!refLine)
+
+    !line        = object GMFLINE(!snapLine)
+    !position    = !line.snap(!iPosition)
+
+  endif
+
+  -- Get intersection point on section line of reference line
+  return !position.wrt(World)
+
+endmethod
+-- End of method definition for .snap(DBREF, STRING, LINE, BOOLEAN) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      distance
+--
+-- Description: Return position of specified distance from nearest end/snap to point vector on the section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Section DBREF
+--    2   R      STRING      Pline on section
+--    3   R      REAL        Distance
+--    4   R      POINTVECTOR Point vector
+--    5   R      BOOLEAN     Intermediate snaps (considers elements within)
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    Distance position on line
+--
+------------------------------------------------------------------------
+
+define method .distance(!dbRef is DBREF, !pLine is STRING, !distance is REAL, !pointVector is POINTVECTOR, !intermediates is BOOLEAN) is POSITION
+
+   -- Convert point vector into a line and use snap line method
+  return !this.distance(!dbRef, !pLine, !distance, !pointVector.line(1000mm), !intermediates)
+
+endmethod
+-- End of method definition for .distance(DBREF, STRING, REAL, POINTVECTOR, BOOLEAN) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      distance
+--
+-- Description: Return position of specified distance from nearest end/snap to point vector on the section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Section DBREF
+--    2   R      STRING      Pline on section
+--    3   R      REAL        Distance
+--    4   R      LINE        Line to nearest to snap point
+--    5   R      BOOLEAN     Intermediate snaps (considers elements within)
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    Distance position on line
+--
+------------------------------------------------------------------------
+
+define method .distance(!dbRef is DBREF, !pLine is STRING, !distance is REAL, !refLine is LINE, !intermediates is BOOLEAN) is POSITION
+
+  -- Section
+  if(!dbRef.hardType eq 'SCTN') then
+
+    -- Convert section into a line
+    !sectionLine = !this.line(!dbRef, !pLine)
+
+    -- Intersection of lines
+    !iPosition   = !sectionLine.intersection(!refLine)
+
+    -- Consider intermediate snap points
+    if(!intermediates) then
+      -- Get the snap Line
+      !snapLine  = !this.snapLine(!dbRef, !pLine, !iPosition)
+    else
+      !snapLine  = !sectionLine
+    endif
+
+    !line        = object GMFLINE(!snapLine)
+    !position    = !line.distance(!distance, !iPosition)
+
+  -- Generic Sections
+  elseif (!dbRef.hardType eq 'GENSEC') then
+
+    -- Handle RING gensecs
+    if(!dbRef.function.upcase() eq 'RING') then
+      !gmfArc         = object GMFARC(!this.arc(!dbRef, !pLine))
+      !position    = !gmfArc.distance(!distance, !refLine.pointVector())
+
+    -- Spine defined as a generic section
+    else
+      !sectionLine = !this.line(!dbRef, !pLine, !refLine.pointVector())
+
+      -- Snap to line
+      if(!sectionLine.set()) then
+        !line      = object GMFLINE(!sectionLine)
+        !position  = !line.distance(!distance, !sectionLine.intersection(!refLine))
+
+      -- Snap to arc
+      else
+        !arc       = !this.arc(!dbRef, !pLine, !refLine.pointVector())
+        !gmfArc    = object GMFARC(!arc)
+        !position  = !gmfArc.distance(!distance, !refLine.pointVector())
+
+      endif
+    endif
+
+  else
+
+    -- try p-line for other types (e.g. hull stiffener)
+
+    -- Convert into a line
+    !snapLine    = !this.line(!dbRef, !pLine)
+
+    -- Intersection of lines
+    !iPosition   = !snapLine.intersection(!refLine)
+
+    !line        = object GMFLINE(!snapLine)
+    !position    = !line.distance(!distance, !iPosition)
+
+  endif
+
+  return !position.wrt(World)
+
+endmethod
+-- End of method definition for .distance(DBREF, STRING, REAL, LINE, BOOLEAN) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      proportion
+--
+-- Description: Return position of specified proportion from nearest end/snap to point vector on the section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Section DBREF
+--    2   R      STRING      Pline on section
+--    3   R      REAL        Proportion
+--    4   R      POINTVECTOR Point vector
+--    5   R      BOOLEAN     Intermediate snaps (considers elements within)
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    Position on line
+--
+------------------------------------------------------------------------
+
+define method .proportion(!dbRef is DBREF, !pLine is STRING, !proportion is REAL, !pointVector is POINTVECTOR, !intermediates is BOOLEAN) is POSITION
+
+   -- Convert point vector into a line and use snap line method
+  return !this.proportion(!dbRef, !pLine, !proportion, !pointVector.line(1000mm), !intermediates)
+
+endmethod
+-- End of method definition for .proportion(DBREF, STRING, REAL, POINTVECTOR, BOOLEAN) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      proportion
+--
+-- Description: Return position of specified proportion from nearest end/snap to point vector on the section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Section DBREF
+--    2   R      STRING      Pline on section
+--    3   R      REAL        Proportion
+--    4   R      LINE        Line to nearest to snap point
+--    5   R      BOOLEAN     Intermediate snaps (considers elements within)
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    Position on line
+--
+------------------------------------------------------------------------
+
+define method .proportion(!dbRef is DBREF, !pLine is STRING, !proportion is REAL, !refLine is LINE, !intermediates is BOOLEAN) is POSITION
+
+  -- Section
+  if(!dbRef.hardType eq 'SCTN') then
+
+    -- Convert section into a line
+    !sectionLine = !this.line(!dbRef, !pLine)
+
+    -- Intersection of lines
+    !iPosition   = !sectionLine.intersection(!refLine)
+
+    -- Consider intermediate snap points
+    if(!intermediates) then
+      -- Get the snap Line
+      !snapLine  = !this.snapLine(!dbRef, !pLine, !iPosition)
+    else
+      !snapLine  = !sectionLine
+    endif
+
+    !line        = object GMFLINE(!snapLine)
+    !position    = !line.proportion(!proportion, !iPosition)
+
+  -- Generic Sections
+  elseif (!dbRef.hardType eq 'GENSEC') then
+
+    -- Handle RING gensecs
+    if(!dbRef.function.upcase() eq 'RING') then
+      !gmfArc         = object GMFARC(!this.arc(!dbRef, !pLine))
+      !position    = !gmfArc.proportion(!proportion, !refLine.pointVector())
+
+    -- Spine defined as a generic section
+    else
+      !sectionLine = !this.line(!dbRef, !pLine, !refLine.pointVector())
+
+      -- Snap to line
+      if(!sectionLine.set()) then
+        !line      = object GMFLINE(!sectionLine)
+        !position  = !line.proportion(!proportion, !sectionLine.intersection(!refLine))
+
+      -- Snap to arc
+      else
+        !arc       = !this.arc(!dbRef, !pLine, !refLine.pointVector())
+        !gmfArc    = object GMFARC(!arc)
+        !position  = !gmfArc.proportion(!proportion, !refLine.pointVector())
+
+      endif
+    endif
+
+  else
+
+    -- try p-line for other types (e.g. hull stiffener)
+
+    -- Convert into a line
+    !snapLine    = !this.line(!dbRef, !pLine)
+
+    -- Intersection of lines
+    !iPosition   = !snapLine.intersection(!refLine)
+
+    !line        = object GMFLINE(!snapLine)
+    !position    = !line.proportion(!proportion,!iPosition)
+
+  endif
+
+  return !position.wrt(World)
+
+endmethod
+-- End of method definition for .proportion(DBREF, STRING, REAL, LINE, BOOLEAN) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      fraction
+--
+-- Description: Return position of specified proportion from nearest end/snap to point vector on the section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Section DBREF
+--    2   R      STRING      Pline on section
+--    3   R      REAL        Fraction
+--    4   R      POINTVECTOR Point vector
+--    5   R      BOOLEAN     Intermediate snaps (considers elements within)
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    Position on line
+--
+------------------------------------------------------------------------
+
+define method .fraction(!dbRef is DBREF, !pLine is STRING, !fraction is REAL, !pointVector is POINTVECTOR, !intermediates is BOOLEAN) is POSITION
+
+   -- Convert point vector into a line and use snap line method
+  return !this.fraction(!dbRef, !pLine, !fraction, !pointVector.line(1000mm), !intermediates)
+
+endmethod
+-- End of method definition for .fraction(DBREF, STRING, REAL, POINTVECTOR, BOOLEAN) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      fraction
+--
+-- Description: Return position of specified proportion from nearest end/snap to point vector on the section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Section DBREF
+--    2   R      STRING      Pline on section
+--    3   R      REAL        Fraction
+--    4   R      LINE        Line to nearest to snap point
+--    5   R      BOOLEAN     Intermediate snaps (considers elements within)
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    Position on line
+--
+------------------------------------------------------------------------
+
+define method .fraction(!dbRef is DBREF, !pLine is STRING, !fraction is REAL, !refLine is LINE, !intermediates is BOOLEAN) is POSITION
+
+  -- Section
+  if(!dbRef.hardType eq 'SCTN') then
+
+    -- Convert section into a line
+    !sectionLine = !this.line(!dbRef, !pLine)
+
+    -- Intersection of lines
+    !iPosition   = !sectionLine.intersection(!refLine)
+
+    -- Consider intermediate snap points
+    if(!intermediates) then
+      -- Get the snap Line
+      !snapLine  = !this.snapLine(!dbRef, !pLine, !iPosition)
+    else
+      !snapLine  = !sectionLine
+    endif
+
+    !line        = object GMFLINE(!snapLine)
+    !position    = !line.fraction(!fraction, !iPosition)
+
+  -- Generic Sections
+  elseif (!dbRef.hardType eq 'GENSEC') then
+
+    -- Handle RING gensecs
+    if(!dbRef.function.upcase() eq 'RING') then
+      !gmfArc         = object GMFARC(!this.arc(!dbRef, !pLine))
+      !position    = !gmfArc.fraction(!fraction, !refLine.pointVector())
+
+    -- Spine defined as a generic section
+    else
+      !sectionLine = !this.line(!dbRef, !pLine, !refLine.pointVector())
+
+      -- Snap to line
+      if(!sectionLine.set()) then
+        !line      = object GMFLINE(!sectionLine)
+        !position  = !line.fraction(!fraction, !sectionLine.intersection(!refLine))
+
+      -- Snap to arc
+      else
+        !arc       = !this.arc(!dbRef, !pLine, !refLine.pointVector())
+        !gmfArc    = object GMFARC(!arc)
+        !position  = !gmfArc.fraction(!fraction, !refLine.pointVector())
+
+      endif
+    endif
+
+  else
+
+    -- try p-line for other types (e.g. hull stiffener)
+
+    -- Convert into a line
+    !snapLine    = !this.line(!dbRef, !pLine)
+
+    -- Intersection of lines
+    !iPosition   = !snapLine.intersection(!refLine)
+
+    !line        = object GMFLINE(!snapLine)
+    !position    = !line.fraction(!fraction, !iPosition)
+
+  endif
+
+  return !position.wrt(World)
+
+endmethod
+-- End of method definition for .fraction(DBREF, STRING, REAL, LINE, BOOLEAN) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      exact
+--
+-- Description: Return the intersection of the passed point vector with the section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Section DBREF
+--    2   R      STRING      Pline on section
+--    3   R      POINTVECTOR Point vector
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    Position on line
+--
+------------------------------------------------------------------------
+
+define method .exact(!dbRef is DBREF, !pLine is STRING, !pointVector is POINTVECTOR) is POSITION
+
+   -- Convert point vector into a line and use snap line method
+  return !this.exact(!dbRef, !pLine, !pointVector.line(1000mm))
+
+endmethod
+-- End of method definition for .exact(DBREF, STRING, POINTVECTOR) POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      exact
+--
+-- Description: Return the intersection of the passed point vector with the section
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Section DBREF
+--    2   R      STRING      Pline on section
+--    3   R      LINE        Line
+--
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    Position on line
+--
+------------------------------------------------------------------------
+
+define method .exact(!dbRef is DBREF, !pLine is STRING, !refLine is LINE) is POSITION
+
+  -- Section
+  if(!dbRef.hardType eq 'SCTN') then
+
+    -- Convert section into a line
+    !sectionLine = !this.line(!dbRef, !pLine)
+
+    -- Intersection of lines
+    !position    = !sectionLine.intersection(!refLine)
+
+  -- Generic Sections
+  elseif (!dbRef.hardType eq 'GENSEC') then
+
+    -- Handle RING gensecs
+    if(!dbRef.function.upcase() eq 'RING') then
+      !gmfArc         = object GMFARC(!this.arc(!dbRef, !pLine))
+      !position    = !gmfArc.exact(!refLine.pointVector())
+
+    -- Spine defined as a generic section
+    else
+      !sectionLine = !this.line(!dbRef, !pLine, !refLine.pointVector())
+
+      -- Snap to line
+      if(!sectionLine.set()) then
+        !position  = !sectionLine.intersection(!refLine)
+
+      -- Snap to arc
+      else
+        !arc       = !this.arc(!dbRef, !pLine, !refLine.pointVector())
+        !gmfArc    = object GMFARC(!arc)
+        !position  = !gmfArc.exact(!refLine.pointVector())
+
+      endif
+    endif
+
+  else
+
+    -- try p-line for other types (e.g. hull stiffener)
+
+    -- Convert into a line
+    !snapLine    = !this.line(!dbRef, !pLine)
+
+    -- Intersection of lines
+    !position    = !snapLine.intersection(!refLine)
+
+  endif
+
+  return !position.wrt(World)
+
+endmethod
+-- End of method definition for .exact(DBREF, STRING, LINE) POSITION

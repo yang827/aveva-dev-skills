@@ -94,7 +94,9 @@ enddo
 | `VAR !a EVAL (expr) FOR ...` | `ARRAY of STRING/REAL` | Mathematical / string formula | Mass arithmetic on element dimensions |
 | `object COLLECTION()` | `ARRAY of DBREF` | `object EXPRESSION(...)` | Robust application code, object method chaining |
 | `!ref.mcount()` | `REAL` | Optional element type string | Fast count of immediate children |
-| `!ref.attribute('NAME')` | `ANY` | Attribute name string | Dynamic access to schema attributes |
+| `!ref.attribute('NAME')` | `ANY`¹ | Attribute name string | Dynamic access to schema attributes |
+
+¹ The `ANY` in this table is shorthand meaning "the returned value's type depends on the attribute's schema" — it is **not** a type declaration. `ANY` may legally appear only in formal-parameter and supported return-type declaration positions (see Ch 5 "ANY Type Usage Restrictions (MANDATORY)").
 
 ## Key Takeaways
 1. PML 1 `COLL` returns `STRING` arrays; PML 2 `COLLECTION()` returns `DBREF` arrays.

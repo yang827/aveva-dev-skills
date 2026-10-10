@@ -1,0 +1,1621 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--      Keyword:     Undefined
+--    Module:        Undefined
+--------------------------------------------------------------------------------
+--
+--  File: MdsPlines.pmlobj
+--   Type: Object Definition
+--   Group: Multi Discipline Supports Application
+-- Author: T.Martin
+-- Created: Wed 19th Nov 2003
+--
+--
+-- Description:
+-- Object to find the nearest pline to the passed atta
+-- and calculate the direction and distance to position the section with a clearance
+--
+-- methods .mdsdisciplines(dbref of section) Constructor method
+--         .getnearest(dbref of atta)        returns the name of the nearest pline
+--         .getfurthest(dbref of atta)       returns the name of the furthest pline
+--         .setclearance(dbref of atta, clearance value) returns a direction and value
+--                                                       for moving the vertical section
+--         .setdistance(dbref of atta, distance value)   returns a direction and value
+--                                                       for moving the vertical section
+--                                                       to give a distance/dimension move
+--         .clashcheck(!sctn, !atta)is real              checks if a proposed atta clashes with
+--                                                       an existing joint
+--
+--         .getdistance(!atta is dbref)                  returns a real number
+--                                                       equivalent to dimension 1
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  clashcheck(DBREF,DBREF)          REAL
+--  clashfr03bracket(DBREF,DBREF)    BOOLEAN
+--  clashfr12bracket(DBREF,DBREF,DBREF) BOOLEAN
+--  getallplines()                   -
+--  getangle(DBREF)                  ARRAY
+--  getbarlength(DBREF)              REAL
+--  getdistance(DBREF)               REAL
+--  getfurthest(DBREF)               STRING
+--  getnearest(DBREF)                STRING
+--  getnearest(DBREF,DIRECTION)      STRING
+--  getnearest(PLANE)                STRING
+--  getnearest(POINTVECTOR)          STRING
+--  getnearestend(DBREF)             -
+--  getplateoffset(POSITION)         ARRAY
+--  init()                           -
+--  isonplate(DBREF,STRING)          BOOLEAN
+--  mdsplines(ARRAY)                 -
+--  mdsplines(DBREF)                 -
+--  mdsplines(DBREF,ARRAY)           -
+--  mdsplines(DBREF,DBREF)           -
+--  mdsplines(DBREF,DBREF,BOOLEAN)   -
+--  mdsplines(DBREF,PLANE,REAL)      -
+--  setH1length(STRING,REAL,REAL)    -
+--  setH1offset(DBREF,REAL,REAL)     -
+--  setH81length(STRING,REAL,REAL)   -
+--  setH81offset(DBREF,REAL,REAL)    -
+--  setclearance(DBREF,REAL)         STRING
+--  setdistance(DBREF,REAL)          STRING
+--  setedgedistance(DBREF,REAL)      STRING
+--  trimplane(DBREF)                 -
+--
+
+
+define object MDSPLINES
+
+  member .plines is ARRAY
+  member .pldir is ARRAY
+  member .plpos is ARRAY
+  member .planes is ARRAY
+  member .sctn is DBREF
+  member .nearest is STRING
+  member .length is REAL
+  member .start is POSITION
+  member .end is POSITION
+  member .drns is DIRECTION
+  member .drne is DIRECTION
+  member .dim1 is REAL
+  member .atta is DBREF
+  member .bearinglength is REAL
+  member .bearingoffset is REAL
+  member .mindist is REAL
+  member .possible is BOOLEAN
+  member .endpos is POSITION
+  member .nearestend is STRING
+  member .cutplane is PLANE
+endobject
+
+---------------------------------------------------------------------------------
+-- constructor method to find the sctn which is nearest to the passed atta
+-- and the minimum distance to the beam
+define method .mdsplines(!atta is DBREF, !sctns is ARRAY)
+
+-- loop through the sections to find the one closest to the passed atta
+-- also set the minimum distance so that we can decide if the atta is too
+-- far from the beam
+
+  !sctn = object DBREF()
+  !mindist = 100000
+  do !a values !sctns
+     !this.sctn = !a.dbref()
+     -- call the init method to get all of the plines on the centre line of the RHS
+     !this.init()
+     -- now find the nearest plane to the atta
+     !pv = object POINTVECTOR()
+     !pv.position = !atta.ppos[9].wrt(/* )
+     !pv.direction = !atta.pdir[9].wrt(/* )
+     -- find the nearest appropriate pline
+     if !this.getnearest(!pv).neq('unset') then
+       if !this.mindist.lt(!mindist) then
+          !mindist = !this.mindist
+          !sctn = !a.dbref()
+       endif
+     endif
+  enddo
+
+  if !sctn.unset().not() and !mindist.lt(50) then
+    !this.sctn = !sctn
+  else
+    !this.sctn = object DBREF()
+  endif
+
+endmethod
+----------------------------------------------------------------------------------
+
+
+---------------------------------------------------------------------------------
+-- constructor method to evaluate positions of all plines
+define method .mdsplines(!sctn is DBREF)
+
+  !this.sctn = !sctn
+  !this.init()
+
+endmethod
+----------------------------------------------------------------------------------
+
+
+----------------------------------------------------------------------------------
+-- alternative constructor method. Supply the vertical member and the offset member
+-- and it will set a direction and length for the connected section
+-- passed object is a support atta
+define method .mdsplines(!sctn is DBREF, !object is DBREF)
+
+   !this.sctn = !sctn
+   !this.init()
+
+   !this.nearest = !this.getnearest(!object)
+     handle ANY
+       !!alert.error('Problem with Atta Position')
+       return
+     endhandle
+   !plane = object PLANE()
+   !plane.position = !this.sctn.plst.$!this.nearest
+   !plane.orientation = !this.sctn.plor.$!this.nearest
+   !npos = !plane.near(!object.position.wrt( /* ))
+   !line1 = object LINE()
+   !line1.startposition = !npos
+   !line1.endposition = !object.ppos[10].wrt( /* )
+   !line2 = !line1
+   !line2.endposition = !object.ppos[11].wrt( /* )
+   if !line1.length() gt !line2.length() then
+     !this.end = !line1.endposition
+   else
+      !this.end = !line2.endposition
+   endif
+   !this.length = max(!line1.length(), !line2.length())
+   !this.start = !npos
+   !this.drns = !plane.direction().wrt(/* )
+   !this.drne = !plane.direction().wrt(/* ).opposite()
+
+endmethod
+----------------------------------------------------------------------------------
+
+
+----------------------------------------------------------------------------------
+-- third constructor method.
+-- Supply the vertical member the plane on the face to be connected to and elevation of member
+-- and it will set a direction and length for the connected section
+-- passed object is a support atta
+define method .mdsplines(!sctn is DBREF,!iplane is PLANE,!elevation is REAL)
+
+   !this.sctn = !sctn
+   !this.init()
+
+   -- find the nearest centre pline pointing opposite to the plane
+   !this.nearest = !this.getnearest(!iplane)
+--   $P nearest
+--   q var !this.nearest
+   -- we now have the nearest pline to the plane and the direction of poss of the section
+   -- create a plane at the pline
+   !pv = object POINTVECTOR()
+   -- !pv.position = !this.sctn.plst.$!<this.nearest>.wrt(/* )
+   !pv.position = !this.sctn.poss.wrt(/* )
+   --- errors here
+   !pv.direction = !this.sctn.plor.$!<this.nearest>.zdir().wrt(/* )
+   !endpos = !pv.intersection(!iplane)
+   -- construct the distance between the two plane s
+   !line1 = object LINE()
+   !line1.startposition = !pv.position.wrt(/* )
+   !line1.endposition = !endpos.wrt(/* )
+   !this.dim1 = !line1.length()
+   !this.drne = !pv.direction.opposite()
+   !this.drns = !pv.direction
+   !this.end = !endpos
+   !this.start = !pv.position
+   !this.start.up = !elevation
+   !this.end.up = !elevation
+
+endmethod
+----------------------------------------------------------------------------------
+
+
+----------------------------------------------------------------------------------
+-- fourth constructor method for adjusting weld parameters
+-- Supply an array containing an atta and a section and check if
+-- the welds need adjusting
+define method .mdsplines(!data is ARRAY )
+
+
+  -- this is the sctn we are aligning with
+  !this.sctn = !data[1]
+  -- This is the atta to calculate the assignment
+  !this.atta = !data[2]
+
+  !!ce = !this.atta
+
+  !lenpar = !!mdsgetdesp('LEN')
+  --$p lenpar is $!lenpar
+  !len = desp $!lenpar
+  handle ANY
+    !length = 0
+  elsehandle NONE
+    !length = !len[1]
+  endhandle
+
+  -- go and list the plines
+  !this.getallplines()
+
+  -- create a vector at p1 of the atta
+  !pvec = object POINTVECTOR()
+  !pvec.position  = !this.atta.ppos[1].wrt(/* )
+  !pvec.direction = !this.atta.pdir[1].wrt(/* )
+
+  -- get a pointvector through p9 (centre) of the atta
+  !ppos9 = !this.atta.ppos[9].wrt(/* )
+  !newvec = !pvec.through(!ppos9)
+  --$p length is $!length
+
+  !attastart = !newvec.position.component(!pvec.direction) - 0.5 * !length
+  !attaend   = !newvec.position.component(!pvec.direction) + 0.5 * !length
+  --$p attastart is $!attastart
+  --$p attaend is $!attaend
+
+  !pv = ARRAY()
+  do !a index !this.plines
+    !pv[!a] = !pvec.through(!this.plpos[!a])
+  enddo
+
+  -- loop through the planes and find the ones furthest apart
+
+  --q var !pv
+  !lowpos = !pv[1].position.component(!pv[1].direction)
+  !highpos = !pv[1].position.component(!pv[1].direction)
+  do !a values !pv
+    if !a.position.component(!a.direction).leq(!lowpos) then
+       !lowpos  = !a.position.component(!a.direction)
+       !unusedlowpoint = !a
+    elseif !a.position.component(!a.direction).geq(!highpos) then
+       !highpos = !a.position.component(!a.direction)
+       !unusedhighpoint = !a
+    endif
+  enddo
+
+  --$p highpos is $!highpos
+  --$p lowpos  is $!lowpos
+
+  -- now check if the atta is completely on the beam or if its part way off the beam
+  if !lowpos lt !attastart then
+     !lowpos = !attastart
+  endif
+  if !highpos gt !attaend then
+     !highpos = !attaend
+  endif
+  --$p highpos is now $!highpos
+  --$p lowpos  is now $!lowpos
+
+  !this.bearinglength = !highpos - !lowpos
+
+  -- now we have found the high and low points for the point vectors
+  -- we need to work out the offset of p9 from the two points
+
+
+  -- now we have 3 pointvectors
+  -- we need to work out the offset
+  -- the offset is the difference between the two offsets
+
+  --$p atta start is $!attastart
+  --$p highpos is $!highpos
+  !offset = -1 * (!newvec.position.component(!pvec.direction) - !highpos + !this.bearinglength / 2)
+
+  !this.bearingoffset = !offset
+
+endmethod
+---------------------------------------------------------------------------
+
+---------------------------------------------------------------------------------
+--sixth  constructor method to evaluate positions of all plines and trim a sect back
+define method .mdsplines(!sctn is DBREF, !connected is DBREF,!dummy is BOOLEAN )
+
+  !this.sctn = !sctn
+  !this.init()
+  -- get the end to be trimmed
+  !this.getnearestend(!connected)
+  !line = object LINE()
+  !line.startposition = !connected.poss.wrt(/* )
+  !line.endposition   = !connected.pose.wrt(/* )
+  !trimdir = !line.direction()
+  !this.nearest = !this.getnearest(!connected,!trimdir)
+  if !this.nearest.eq('unset') then
+     !!alert.error('Unable to find Pline to cut back to - Check SCTN Plines')
+     return
+  endif
+
+--$P================
+--q var !trimdir !connected.name !this.nearest !this.nearestend
+
+  !this.trimplane(!connected)
+
+endmethod
+----------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------
+-- method to find the nearest end of the passed section to the connected section
+define method .getnearestend(!sctn is DBREF)
+
+  --<RM> get the current element here so that we can navigate back to it after
+  --the line object has been instantiated. we need to do this because there is a core defect that
+  --navigates internally to a hstiff element (if !this.sctn is a hstiff) which leads to errors
+  --later on in the mds code. P-36468 - start of workaround
+  !currentElement = !!ce
+  !line = object LINE()
+  !line.startposition = !this.sctn.poss.wrt(/* )
+  !line.endposition   = !this.sctn.pose.wrt(/* )
+  !!ce = !currentElement
+  --<RM> get the current element here so that we can navigate back to it after
+  --the line object has been instantiated. we need to do this because there is a core defect that
+  --navigates internally to a hstiff element (if !this.sctn is a hstiff) which leads to errors
+  --later on in the mds code. P-36468 - end of workaround
+
+  !poss = !sctn.poss.wrt(/* )
+  !pose = !sctn.pose.wrt(/* )
+  if !poss.distance(!line.near(!poss)).lt(!pose.distance(!line.near(!pose))) then
+        !this.nearestend = 'start'
+        !this.endpos = !poss
+  else
+        !this.nearestend = 'end'
+        !this.endpos = !pose
+  endif
+
+endmethod
+
+---------------------------------------------------------------------------
+-- method to get all of the pline data for all plines except na
+define method .getallplines()
+
+  -- get all the plines
+  !plines = ARRAY()
+
+--<wd>may2007<mds12>
+--  !this.plines = !this.sctn.plna
+  if !this.sctn.type.eq('HSTIFF') then
+    !xce = !!ce
+    !!ce = !this.sctn
+    var !plnames plna
+    !this.plines = !plnames.split(' ')
+    !!ce = !xce
+  else
+    !this.plines = !this.sctn.plna
+  endif
+--<wd>may2007<mds12>
+
+  !pv = object POINTVECTOR()
+  !pv.position = !this.sctn.poss.wrt(/* )
+  !pv.direction = u
+  do !a values !this.plines
+     -- get the orientation of y and z of the pline
+     -- y is the direction of the section end
+     -- z is the direction of the section pline out of the section face
+     !s = !this.sctn.plor.$!<a>.wrt(/* )
+     -- get the position of the pline start
+     !t = !this.sctn.plstart.$!<a>.wrt(/* )
+     -- discount the neutral axis
+     if !t eq !pv.position then $* its the neutral axis
+       skip
+     endif
+     -- now we need to work out the face of the section and its relation to the atta
+     !pv1 = !pv.towards(!t)
+     !plines.append(!a)
+     !this.pldir.append(!s.zdir().wrt( /* ))
+     !this.plpos.append(!t)
+
+  enddo
+
+  !this.plines = !plines
+
+endmethod
+----------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+-- method used by all of the constructors to set the basic attributes
+define method .init()
+
+  !this.plines.clear()
+  !this.pldir.clear()
+  !this.plpos.clear()
+  !this.planes.clear()
+
+  -- get all the plines
+  !plines = ARRAY()
+
+--<wd>may2007<mds12>
+  --!this.plines = !this.sctn.plna
+  if !this.sctn.type.eq('HSTIFF') then
+    !xce = !!ce
+    !!ce = !this.sctn
+    var !plnames plna
+    !this.plines = !plnames.split(' ')
+    !!ce = !xce
+  else
+    !this.plines = !this.sctn.plna
+  endif
+--<wd>may2007<mds12>
+
+--$P !this.plines array is:-
+--q var !this.plines
+
+  !pv = object POINTVECTOR()
+--<wd>sep2007 -- Always try and use the NA pline unless it doesn't exist
+--  !pv.position = !this.sctn.poss.wrt(/* )
+  !pv.position = !this.sctn.plstart.na.wrt(/* )
+  handle ANY
+    !pv.position = !this.sctn.poss.wrt(/* )
+  endhandle
+--<wd>sep2007
+  !pv.direction = u
+
+  do !a values !this.plines
+
+--$P PLINE is = $!a
+
+--<GE>19/10/06 >>>> Fix for HPD0033317 where Gensec's don't have a plor (Pline Orientation)
+-- for a PKEY i.e. the orientation returns unset
+
+    if !this.sctn.type eq 'GENSEC' then
+      !ce = !!ce
+      $!this.sctn
+      var !unusedsx ppline $!a X dir wrt /*
+      var !sz ppline $!a Z dir wrt /*
+-- var !unusedsx ppline NA z dir THROUGH E 40300 N 18950 U 10834 WRT /*  via pline unbound
+      var !sy ppline $!a Y dir wrt /*
+      !s = object ORIENTATION('Z is ' & !sz & ' and Y is  ' & !sy)
+      $!ce
+
+    else
+--$P
+--$P===========================SCTN PLINE ORI etc...
+--$P Current pline is $!a
+      !s = !this.sctn.plor.$!a
+--q var !this.sctn.fullname !s
+    endif
+--<GE>19/10/06 <<<<
+
+     !t = !this.sctn.plstart.$!<a>.wrt(/* )
+
+--<wd>sep2007 -- Always try and use the NA pline unless it doesn't exist
+     --!sctnposs = !this.sctn.poss.wrt(/* )
+     !sctnposs = !this.sctn.plstart.na.wrt(/* )
+     handle ANY
+       !sctnposs = !this.sctn.poss.wrt(/* )
+     endhandle
+     --!sctnline = !sctnposs.line(!this.sctn.pose.wrt(/* ))
+     !sctnline = !sctnposs.line(!this.sctn.plend.na.wrt(/* ))
+     handle ANY
+       !sctnline = !sctnposs.line(!this.sctn.pose.wrt(/* ))
+     endhandle
+--<wd>sep2007
+
+     !sctncldir = !sctnline.direction()
+
+--$P ** q var !t !sctnposs !sctnline !sctncldir
+--q var !t !sctnposs !sctnline !sctncldir
+
+     if !t eq !pv.position then   $* its the neutral axis
+-- <wd>apr2006
+-- This can be the pline 'TOS' on a "UNIVERSAL BEAM/WIDE FLANGE" type of SCTN
+-- Therefore ONLY SKIP the NEUTRAL AXIS pline 'NA'
+       --skip
+       skip if !a.eq('NA')
+-- <wd>apr2006
+     endif
+
+     !tpv = object POINTVECTOR()
+     !tpv.position = !t
+     !tpv.direction = !sctncldir
+     !tpvt = !tpv.through(!pv.position)
+
+     !pv1 = !pv.towards(!tpvt.position)
+-- <wd>apr2006 -- Handle CODE added below
+     handle ANY
+-- (2,891)   An invalid zero direction has been obtained
+-- when '!t eq !pv.position' at approx. line 372 above and the pline is NOT 'NA',
+-- the ERROR (2,891) is raised with the syntax -> !pv1 = !pv.towards(!tpvt.position)
+-- Therefore create the Point Vector !pv1 using the point vector method ".through(position)"
+       !pv.direction = !s.zdir().wrt( /* )
+       !pv1 = !pv.through(!tpvt.position)
+     endhandle
+-- <wd>apr2006
+--
+-- <wd>apr2006 -- Comment added
+-- The ".lt(5)" is less than a 5 degree angle Tolerance applied to ANGLE between the
+-- PLINE, e.g. The ANGLE  between pline 'TOS' Direction ZDIR() wrt /* and the POINT VECTOR, !pv1, Direction  WRT /*
+-- <wd>apr2006
+
+--<wd>apr2006 TEMPORARY CODE for BUG FIXING
+--if (!a.eq('TOS')) then
+--  $P
+--  $P q var !pv1.direction.angle(!s.zdir().wrt( /* ))
+--  q var !pv1.direction.angle(!s.zdir().wrt( /* ))
+-- !!pv1 = !pv1
+-- $P PLINE is ** $!a ** q var !pv1
+-- q var !pv1
+--endif
+--<wd>apr2006 TEMPORARY CODE for BUG FIXING
+--$P==============
+--q var !a
+--q var !pv1.direction
+--q var !s.zdir().wrt( /* )
+--!wdt = !pv1.direction.angle(!s.zdir().wrt( /* ))
+--q var !wdt
+--$P==============
+
+--<wd>dec2007 -- DUN767 -- P-4271 -- For AVEVA MARINE HSTIFF "ANGLE" with a GTYP of CATREF inset 'UEAN' or 'EANG' elements ONLY the .lt(25) !plineangle angle has been raised to .lt(45)
+--<wd>sep2007 -- For AVEVA MARINE HSTIFF "ANGLE" elements ONLY the .lt(5) angle has been raised to .lt(25)
+     if (!this.sctn.type.eq('HSTIFF')) then
+--       !plineangle = 25
+       if (!this.sctn.catref.gtype.eq('EANG') or !this.sctn.catref.gtype.eq('UEAN')) then
+         !plineangle = 45
+       else
+-- All other HSTIFF types to use the previous value of 25
+         !plineangle = 25
+       endif
+--<wd>dec2007 -- DUN767 -- P-4271 -- For AVEVA MARINE HSTIFF "ANGLE" with a GTYP of CATREF inset 'UEAN' or 'EANG' elements ONLY the .lt(25) !plineangle angle has been raised to .lt(45)
+
+     else
+--<wd>dec2007 The Original TEST is for an OFFSET ANGLE of 5 degrees
+       !plineangle = 5
+     endif
+
+--!test = !pv1.direction.angle(!s.zdir().wrt( /* ))
+--$P**** q var !test !plineangle
+--q var !test !plineangle
+
+--     if !pv1.direction.angle(!s.zdir().wrt( /* )).lt(5) then
+     if !pv1.direction.angle(!s.zdir().wrt( /* )).lt(!plineangle) then
+--<wd>sep2007
+       !plines.append(!a)
+       !pvtemp = object POINTVECTOR()
+       !pvtemp.direction = !s.zdir().wrt( /* )
+       !pvtemp.position = !t
+--<RM> P-40539 removed the modification below as it is stopping frameworks from being able to cut back to the web of a column. there is no comment in the lines below to indicate
+--what this modification was for so for now i have kept the commented pml here just in case further errors are reported - start
+$(
+-- GE 26/05/06 Modified the direction of the plane for the following Plines
+         if (!a inset('NAR','NARO')) then
+           !pvtemp.direction = !s.xdir().wrt( /* )
+         endif
+         if (!a inset('NAL','NALO')) then
+           !pvtemp.direction = !s.xdir().wrt( /* ).opposite()
+         endif
+-- GE 26/05/06
+$)
+--<RM> P-40539 removed the modification below as it is stopping frameworks from being able to cut back to the web of a column. there is no comment in the lines below to indicate
+--what this modification was for so for now i have kept the commented pml here just in case further errors are reported - end
+       !this.planes.append(!pvtemp.plane())
+       !this.pldir.append(!s.zdir().wrt( /* ))
+       !this.plpos.append(!t)
+     endif
+  enddo
+  !this.plines = !plines
+!!plines = !this.plines
+!!planes = !this.planes
+endmethod
+
+----------------------------------------------------------------------------------
+-- method to get the nearest central pline to the passed plane
+define method .getnearest(!plane is PLANE) is STRING
+  !possible = ARRAY()
+   !unusedx = !plane.direction()
+   do !a index !this.plines
+     if !this.pldir[!a].wrt(/* ).opposite().eq(!plane.direction()) then
+       !possible.append(!this.plines[!a])
+     endif
+   enddo
+   !dir = !plane.direction().opposite()
+   if !possible.size() eq 0 then
+    !!alert.error('No plines found with direction =  $!dir')
+    return ''
+   endif
+   !min = 10000
+   do !a index !possible
+     !line = object LINE()
+     !line.startposition = !this.sctn.plstart.$!this.plines[$!a]
+     !line.endposition = !this.sctn.poss
+     if !line.length().leq(!min) and !line.length().neq(0) then
+        !min = !line.length()
+        !pline = !possible[!a]
+     endif
+   enddo
+   return !pline
+endmethod
+  -- q var !!ce.plstart.na.wrt(/* )
+----------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------
+-- method to get the nearest pline to the passed item pointvector
+-- used to find the nearest surface on which to sit an atta
+-- the pointvector represents p9 of the atta
+define method .getnearest(!pvpassed is POINTVECTOR)is STRING
+
+  -- const plane thro sctn
+  !plane = !pvpassed.plane()
+  -- !plane.orientation = z is $!ldir
+  -- !plane.position = !this.sctn.poss.wrt( /* )
+  -- project the atta position onto the plane
+  -- !pv = object POINTVECTOR()
+  --!pv.position = !plane.near(!object.position.wrt( /* ))
+  !possible = ARRAY()
+  !distance = ARRAY()
+  do !a index !this.planes
+    !newvector = !this.planes[!a].pointvector()
+    -- !newvector.direction = !newvector.direction.opposite()
+    !angle = !pvpassed.direction.angle(!newvector.direction.opposite())
+     -- $p pldir is $!this.pldir[$!a]
+     -- $p line direction is $!unuseddl
+     if !angle.lt(15) then $* its a possible pline
+        !possible.append(!this.plines[!a])
+        !distance.append(!pvpassed.position.wrt(/* ).distance(!this.planes[!a].near(!pvpassed.position.wrt(/* ))))
+        -- q var !pvpassed.position.wrt(/* ).distance(!this.planes[!a].near(!pvpassed.position.wrt(/* )))
+     endif
+  enddo
+
+  if undefined(!possible[1]) then
+    !this.mindist = 10000
+    return 'unset'
+  else
+      -- now sort out which pline is nearest
+      !index = !distance.sortedindices()
+      !possible.reindex(!index)
+      !this.mindist = !distance[1]
+      return !possible[1]
+  endif
+
+endmethod
+-----------------------------------------------------------------------------------
+
+
+----------------------------------------------------------------------------------
+-- method to get the nearest pline to the passed sctn end or start
+-- used to trim HHI sctns back to the connected SCTN
+-- passed SCTN is the SCTN to be trimmed
+define method .getnearest(!trimsctn is DBREF,!sctndir is DIRECTION)is STRING
+
+  !pline = 'unset'
+  !possible = ARRAY()
+  !distance = ARRAY()
+  !mindist = 100000
+  !testvector = object POINTVECTOR()
+  !testvector.position = !this.endpos
+  !testvector.direction = !sctndir
+
+--<wd>apr2006
+-- This FIX has been done to try and ENSURE that the MDS "-V1" vertical SCTN elements
+-- are trimmed back to the "CORRECT Pline PLANE", e.g to the TOS and not the BOS Pline PLANE.
+  if (!this.nearestend.eq('end')) then
+    !farposition = !trimsctn.poss.wrt(/* )
+  else
+    !farposition = !trimsctn.pose.wrt(/* )
+  endif
+
+--***********************************************************************************
+-- GE 22/05/06 -- Project a line to see which is the furthest end from the DATUM atta
+-- and use the closest position
+  !lastplace = !!ce
+  STRU
+  $!!ce.name/DATUM
+  !datumposition = !!ce.pos.wrt(/* )
+  !linedim1 = object LINE()
+  !linedim1.startposition = !datumposition
+  !linedim1.endposition = !trimsctn.poss.wrt(/* )
+  !linedim2 = object LINE()
+  !linedim2.startposition = !datumposition
+  !linedim2.endposition = !trimsctn.pose.wrt(/* )
+
+  if !linedim1.length() leq !linedim2.length() then
+   !farposition = !trimsctn.poss.wrt(/* )
+  else
+   !farposition = !trimsctn.pose.wrt(/* )
+  endif
+  $!lastplace
+-- GE 22/05/06
+---***********************************************************************************
+
+  !possvector = object POINTVECTOR()
+  !possvector.position = !farposition
+  !possvector.direction = !sctndir
+--<wd>apr2006
+--q var !this.plines !this.planes
+-- Loop Through ALL the VALID PLANES found via the VALID PLINES
+  do !a index !this.planes
+--<wd>apr2006
+-- This FIX has been done to try and ENSURE that the MDS "-V1" vertical SCTN elements
+-- are trimmed back to the "CORRECT Pline PLANE", e.g to the TOS and not the BOS Pline PLANE
+--
+-- GE 25/05/06 Put back original code as I think I have fixed it on 22/05/06 and the
+-- fix below just causes problems with joining onto sctn's not orthogonal
+-- ori Y is W 80 U and Z is N
+
+   !dist = !testvector.position.distance(!testvector.intersection(!this.planes[!a]))
+   -- !dist = !possvector.position.distance(!possvector.intersection(!this.planes[!a]))
+-- GE 25/05/06
+--<wd>apr2006
+
+    handle ANY
+       skip
+    endhandle
+
+-- Determine the CUTPLANE from the "CORRECT" Pline PLANE etc...
+    if !dist.lt(!mindist) then
+       !mindist = !dist
+       !pline = !this.plines[!a]
+       !this.cutplane = !this.planes[!a]
+    endif
+--$P===========
+--q var !this.planes[!a] !pline !dist !mindist
+  enddo
+
+  return !pline
+
+endmethod
+-----------------------------------------------------------------------------------
+
+
+----------------------------------------------------------------------------------
+-- method to get the nearest pline on the object section to the passed item
+define method .getnearest(!object is DBREF) is STRING
+
+  -- const plane thro sctn
+  !plane = object PLANE()
+  !ldir = !object.ldir.wrt( /* )
+  -- if the tray is sloping, the plane orientation needs to be horizontal
+  -- take out any slope on the ldir
+  if !ldir.string().neq('U WRT /*') and !ldir.string().neq('D WRT /*') and !ldir.string().neq('Z WRT /*') and !ldir.string().neq('-Z WRT /*') then
+    !ldir.up = 0
+  endif
+
+  !plane.orientation = z is $!ldir
+  !plane.position = !this.sctn.poss.wrt( /* )
+  --q var !plane
+  -- project the atta position onto the plane
+  --q var !this.plines
+  !pv = object POINTVECTOR()
+  !pv.position = !plane.near(!object.position.wrt( /* ))
+  !possible = ARRAY()
+  !distance = ARRAY()
+  do !a index !this.plines
+     !linear = object LINE()
+     !linear.startposition = !this.sctn.plst.$n$!this.plines[$!a]
+     !linear.endposition   = !this.sctn.plen.$n$!this.plines[$!a]
+     -- $p linear is  $!linear
+     !pos = !linear.near(!pv.position)
+     !line = object LINE()
+     !line.startposition = !pos
+     !line.endposition   = !pv.position
+     -- $p line is  $!line
+     !unuseddl = !line.direction()
+
+--$P Pline $!a pldir is $!this.pldir[$!a]
+--$P line direction is $!unuseddl
+     if !this.pldir[!a].angle(!line.direction()).lt(5) then $* its a possible pline
+        !possible.append(!this.plines[!a])
+        !distance.append(!line.length())
+     endif
+  enddo
+ --q var !possible
+-- now sort out which pline is nearest
+!index = !distance.sortedindices()
+!possible.reindex(!index)
+
+return !possible[1]
+
+endmethod
+-----------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------
+-- method to get the furthest pline on the object section to the passed item
+define method .getfurthest(!object is DBREF) is STRING
+
+
+  -- const plane thro sctn
+ !plane = object PLANE()
+ !ldir = !object.ldir.wrt( /* )
+ -- if the tray is sloping, the plane orientation needs to be horizontal
+ -- take out any slope on the ldir
+ if !ldir.string().neq('U WRT /*') and !ldir.string().neq('D WRT /*') and !ldir.string().neq('Z WRT /*') and !ldir.string().neq('-Z WRT /*') then
+   !ldir.up = 0
+ endif
+ !plane.orientation = z is $!ldir
+ !plane.position = !this.sctn.poss.wrt( /* )
+ -- project the atta position onto the plane
+ !pv = object POINTVECTOR()
+ !pv.position = !plane.near(!object.position.wrt( /* ))
+ !possible = ARRAY()
+ !distance = ARRAY()
+  do !a index !this.plines
+     !linear = object LINE()
+     !linear.startposition = !this.sctn.plst.$n$!this.plines[$!a]
+     !linear.endposition   = !this.sctn.plen.$n$!this.plines[$!a]
+     !pv.position = !object.position.wrt( /* )
+     !pos = !linear.near(!pv.position)
+     !line = object LINE()
+     !line.startposition = !pv.position
+     !line.endposition   = !pos
+     if !this.pldir[!a].angle(!line.direction()).lt(5) then $* its a possible pline
+        !possible.append(!this.plines[!a])
+        !distance.append(!line.length())
+     endif
+
+     !distance[!a] = !line.length()
+  enddo
+
+  -- now sort out which pline is furthest
+  !index = !distance.sortedindices()
+  !possible.reindex(!index)
+  !possible.invert()
+return !possible[1]
+
+endmethod
+-----------------------------------------------------------------------------------
+-- method to define a direction and distance to set the beam clearance
+define method .setclearance(!object is DBREF,!clearance is REAL) is STRING
+
+  !current = !!ce
+  !!ce = !object
+  -- first of all find the nearest pline to the object
+  !pline = !this.getnearest(!object)
+  -- $p pline is $!pline
+  !movedir = !this.pldir[!this.plines.findfirst(!pline)]
+  -- $p movedir is $!movedir
+  !pv = object POINTVECTOR()
+  !pv.position = !object.position.wrt(/* )
+  !pv.direction = !movedir
+  !distance = !object.ppos[11].distance(!object.ppos[10]) / 2
+  -- $p distance is $!distance
+  !pv = !pv.offset(!distance + !clearance)
+  -- create a line
+  !line = object LINE()
+  !line.startposition = !object.position.wrt( /* )
+  !line.endposition = !pv.position
+  !plane = object PLANE()
+  !plane.position = !this.sctn.plst.$!pline
+  !plane.orientation = !this.sctn.plor.$!pline
+  !newline = !line.extendend(!plane)
+  !distance = !newline.length() - !line.length()
+  !!ce = !current
+  return  !movedir.string().before('WRT') & 'WRT WORLD DIST ' & !distance
+
+endmethod
+--------------------------------------------------------------------------------------
+
+
+-----------------------------------------------------------------------------------
+-- method to define a direction and distance to set the beam distance
+-- works with the dimension method
+define method .setdistance(!object is DBREF,!distance is REAL) is STRING
+
+  !current = !!ce
+  !!ce = !object
+  -- first of all find the nearest pline to the object
+  !pline = !this.getnearest(!object)
+  -- get the direction for the m
+  !movedir = !this.pldir[!this.plines.findfirst(!pline)]
+  !pv = object POINTVECTOR()
+  !pv.position = !object.position.wrt(/* )
+  !pv.direction = !movedir
+  !pv = !pv.offset(!distance)
+  !line = object LINE()
+  !line.startposition = !object.position.wrt( /* )
+  !line.endposition = !pv.position
+  !plane = object PLANE()
+  -- build the distance back to the na of the section
+  !plane.position = !this.sctn.plst.na
+  -- use the direction of the nearest pline to build the plane
+  !plane.orientation = !this.sctn.plor.$!pline
+  !newline = !line.extendend(!plane)
+  !return = !newline.length() - !line.length()
+  !!ce = !current
+  return  !movedir.string().before('WRT') & 'WRT WORLD DIST ' & !return
+
+endmethod
+--------------------------------------------------------------------------------------
+
+-----------------------------------------------------------------------------------
+--
+-- method to define a direction and distance to set the beam distance
+-- works from the edge of the beam
+-- not used???
+define method .setedgedistance(!object is DBREF,!distance is REAL) is STRING
+  !current = !!ce
+  !!ce = !object
+  -- first of all find the nearest pline to the object
+  !pline = !this.getnearest(!object)
+  !movedir = !this.pldir[!this.plines.findfirst(!pline)]
+  pin 3 at $!object
+  pin 3 dir $!movedir
+  pin 3 distance $!distance
+  !line = object LINE()
+  !line.startposition = !object.position.wrt( /* )
+  var !pos pin 3 position
+  pin 3 off
+  !line.endposition = !pos.position()
+  !plane = object PLANE()
+  !plane.position = !this.sctn.plst.$!pline
+  !plane.orientation = !this.sctn.plor.$!pline
+  !newline = !line.extendend(!plane)
+  !return = !newline.length() - !line.length()
+  !!ce = !current
+  return  !movedir.string().before('WRT') & 'WRT WORLD DIST ' & !return
+
+endmethod
+
+--------------------------------------------------------------------------------------
+--
+-- method to get the distance between the vertical member and the datum atta
+-- returns a real equivalent to dimension 1
+define method .getdistance(!atta is DBREF) is REAL
+
+  !pline = !this.getnearest(!atta)
+  !plane = object PLANE()
+  !plane.position = !this.sctn.plst.na
+  !plane.orientation = !this.sctn.plor.$!pline
+  !line = object LINE()
+  !line.startposition = !atta.position.wrt( /* )
+  !line.endposition = n0e0u0
+  !dir = !this.sctn.plor.$!pline$n.zdir().opposite()
+  !line2 = !line.direction(!dir)
+  !newline = !line2.extendend(!plane)
+  return !newline.length()
+
+endmethod
+--------------------------------------------------------------------------------------
+--
+-- method to get the distance between the vertical member and the datum atta
+-- returns a real equivalent to dimension 1
+define method .getbarlength(!atta is DBREF) is REAL
+
+  !pline = !this.getnearest(!atta)
+  handle ANY
+     !!alert.error('Problem with Atta Position')
+     return
+  endhandle
+  !plane = object PLANE()
+  !plane.position = !this.sctn.plst.na
+  !plane.orientation = !this.sctn.plor.$!pline
+  !line = object LINE()
+  !line.startposition = !atta.position.wrt( /* )
+  !line.endposition = n0e0u0
+  !dir = !this.sctn.plor.$!pline$n.zdir().opposite()
+  !line2 = !line.direction(!dir)
+  !newline = !line2.extendend(!plane)
+  !extra = !atta.ppos[11].distance(!atta.ppos[10]) / 2 - 50
+  !return = !newline.length() + !extra
+  return !return
+
+endmethod
+
+--------------------------------------------------------------------------------------
+-- method to check if the extent of a proposed joint encroaches vertically on an existing joint
+-- returns 1 if it clashes 0 if it does not and 2 if the joints are opposite and level
+-- can only check against joints which have been built - ie where there is a valid crossbar
+-- could get rid of input parameters as they are the same as the constructor
+define method .clashcheck(!sctn is DBREF, !atta is DBREF) is REAL
+
+  -- set up variables
+  !jdirs = ARRAY() !start = ARRAY() !end = ARRAY() !longlines = ARRAY() !shortlines = ARRAY() !ubolts = ARRAY()
+  !ubolte = ARRAY()  !positions = ARRAY() !return =  true
+   var !joints coll all sjoi for $!sctn
+   do !a values !joints
+     !unusedz = !a.dbref().pdir[3]
+     handle ANY  $* handle joints which are not set correctly such as main bars
+      skip
+     endhandle
+     !jdirs.append(!a.dbref().pdir[3])
+     !positions.append(!a.dbref().position.wrt(/* ))
+     -- the plate vertical obstruction is defined by the distance between p10 and p11
+     !start.append(!a.dbref().ppos[11].wrt( /* ))
+     !end.append(!a.dbref().ppos[10].wrt( /* ))
+     -- the ubolt vertical positions are defined by p12 and p13
+     !ubolts.append(!a.dbref().ppos[13].wrt( /* ))
+     !ubolte.append(!a.dbref().ppos[12].wrt( /* ))
+   enddo
+
+   -- now build a vertical line for each possible joint
+   -- lines run bottom to top elevation
+   do !i index !start
+     !line = object LINE()
+     !line.startposition = U $!start[$!i].up n0 e0
+     !line.endposition   = U $!end[$!i].up n0 e0
+     !longlines.append(!line)
+     !line.startposition = U $!ubolts[$!i].up n0 e0
+     !line.endposition   = U $!ubolte[$!i].up n0 e0
+     !shortlines.append(!line)
+   enddo
+
+   -- now work out the offset of the origin from its volume
+   !position = U $!positions[1].up n0e0
+   handle any
+     return
+   endhandle
+
+   -- get the vertical part of the offsetfrom beam tos to top of bracket
+   !distance = !longlines[1].endposition.up - !position.up
+   -- now work out where the new beam will go vertically
+   !newpos = !atta.position.wrt( /* )
+   !newline = object LINE()
+   !newline.startposition = U $!newpos.up n0 e0
+   !newup = !newpos.up - !longlines[1].length()
+   !newline.endposition =  U $!newup n0 e0
+   !newline = !newline.extendstart(!distance)
+   !newline = !newline.extendend(-!distance)
+   !distance = !shortlines[1].endposition.up - !position.up
+   !altline = object LINE()
+   !altline.startposition = U $!newpos.up n0 e0
+   !newup = !newpos.up - !shortlines[1].length()
+   !altline.endposition =  U $!newup n0 e0
+   !altline = !altline.extendstart(!distance)
+   !altline = !altline.extendend(!distance)
+
+   do !a index !longlines
+     if !longlines[!a].overlap(!newline).set() then
+       -- if its an opposite level atta we need to swap the joint
+       if !positions[!a].up eq !newpos.up and !jdirs[!a] eq !this.sctn.plor.$!this.nearest$n.zdir().wrt( /* ).opposite() then $* its the same level
+         return 2
+       endif
+
+       -- it clashes with an existing longline
+       -- now check the short line and long line alternatives
+       -- check if each ubolt misses the opposite plate
+       -- this is !altline against longline and shortlines against newline
+       if !shortlines[!a].overlap(!newline).set() or !longlines[!a].overlap(!altline).set() then
+          return 1  $* it clashes
+       else $* one side does not clash, so the directions need to be opposite to be valid
+          -- find the direction for the new joint and the test joint
+          -- if they are opposite, pass the clash
+          if !jdirs[!a] eq !this.sctn.plor.$!this.nearest$n.zdir().wrt( /* ).opposite() then
+            -- return FALSE
+          else
+            return 1
+          endif
+       endif
+     endif
+   enddo
+   return 0
+
+endmethod
+----------------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------------
+-- method to check if the support bracket encroaches vertically on an existing joint
+-- returns true if it clashes false if it does not
+define method .clashfr03bracket(!sctn is DBREF, !bracket is DBREF) is BOOLEAN
+
+  !jdirs = ARRAY() !ubolts = ARRAY() !ubolte = ARRAY() !positions = ARRAY() !lines = ARRAY()
+  !return =  true
+   var !joints coll all sjoi for $!sctn
+   do !a values !joints
+     !jdirs.append(!a.dbref().pdir[3])
+     !positions.append(!a.dbref().position.wrt(/* ))
+     !ubolts.append(!a.dbref().ppos[13].wrt( /* ))
+     !ubolte.append(!a.dbref().ppos[12].wrt( /* ))
+   enddo
+
+   -- now build a vertical line for each possible joint
+   -- lines run bottom to top elevation
+   do !i index !ubolts
+     !line = object LINE()
+     !line.startposition = U $!ubolts[$!i].up n0 e0
+     !line.endposition   = U $!ubolte[$!i].up n0 e0
+     !lines.append(!line)
+   enddo
+
+   -- get the lines appropriate to the bracket
+   -- the bracket ppoints define a vertical offset between p2 and p3 and p6 and p7
+   !bline[1] = object LINE()
+   !bline[2] = object LINE()
+   !bline[1].startposition = !bracket.ppos[2].wrt( /* )
+   !bline[1].endposition   = !bracket.ppos[3].wrt( /* )
+   !bline[2].startposition = !bracket.ppos[6].wrt( /* )
+   !bline[2].endposition   = !bracket.ppos[7].wrt( /* )
+
+   do !a index !lines
+     if !lines[!a].overlap(!bline[1]).set() or !lines[!a].overlap(!bline[2]).set() then $* it clashes
+         return TRUE
+     endif
+   enddo
+   return FALSE
+
+endmethod
+
+--------------------------------------------------------------------------------------
+-- method to check if the support bracket encroaches vertically on an existing joint
+-- returns true if it clashes false if it does not
+define method .clashfr12bracket(!sctn is DBREF, !bracket1 is DBREF, !bracket2 is DBREF)is BOOLEAN
+
+  !jdirs = ARRAY() !ubolts = ARRAY() !ubolte = ARRAY() !positions = ARRAY() !lines = ARRAY()
+  !return =  true
+   var !joints coll all sjoi for $!sctn
+   do !a values !joints
+     !jdirs.append(!a.dbref().pdir[3])
+     !positions.append(!a.dbref().position.wrt(/* ))
+     !ubolts.append(!a.dbref().ppos[10].wrt( /* ))
+     !ubolte.append(!a.dbref().ppos[11].wrt( /* ))
+   enddo
+
+   -- now build a vertical line for each possible joint
+   -- lines run bottom to top elevation
+   do !i index !ubolts
+     !line = object LINE()
+     !line.startposition = U $!ubolts[$!i].up n0 e0
+     !line.endposition   = U $!ubolte[$!i].up n0 e0
+     !lines.append(!line)
+   enddo
+
+   -- get the lines appropriate to the bracket
+   -- the bracket ppoints define a vertical offset between p2 and p3 and p6 and p7
+   !bline[1] = object LINE()
+   !bline[2] = object LINE()
+   !pos1 = !bracket1.position.wrt(/* )
+   !pos1.up = !pos1.up + 33
+   !pos2 = !pos1
+   !pos2.up = !pos2.up - 66
+   !bline[1].startposition = u $!pos1.up n0 e0
+   !bline[1].endposition   = u $!pos2.up n0 e0
+   -- get the second bracket data
+   !pos1 = !bracket2.position.wrt(/* )
+   !pos1.up = !pos1.up + 33
+   !pos2 = !pos1
+   !pos2.up = !pos2.up - 66
+   !bline[2].startposition = u $!pos1.up n0 e0
+   !bline[2].endposition   = u $!pos2.up n0 e0
+
+
+   do !a index !lines
+     if !lines[!a].overlap(!bline[1]).set() or !lines[!a].overlap(!bline[2]).set() then $* it clashes
+         return TRUE
+     endif
+   enddo
+   return FALSE
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- method to define an offset from the vertical member to a position
+-- used to calculate the length of the offset member from the vertical member
+-- calculates the distance in two horizontal planes from the vertical member
+-- there are a number of situations in which need to be dealt with.
+-- 1) it needs to find the correct pline to offset from
+-- 2) if the offset in one direction is zero, the direction of the member is the other offset
+-- 3) if the minimum offset is zero then the longest one is selected
+-- 4) if the plate is very large, the offset may be inappropriate
+-- 5) there needs to be a default length on the template in case the plate is too large
+define method .setH1offset(!plate is DBREF,!offset1 is REAL,!offset2 is REAL)
+
+   !platepos = !plate.position.wrt(/* )
+   !possible = !this.getplateoffset(!platepos)
+   if !possible.size().eq(1) then $* only one possible option
+        !this.setH1length(!possible[1],!offset1,!offset2)
+   else                           $* two possible options found
+     if !this.isonplate(!plate,!possible[1]) and !this.isonplate(!plate,!possible[2]).not() then
+          -- it is offset 1
+          !this.setH1length(!possible[1],!offset1,!offset2)
+     elseif !this.isonplate(!plate,!possible[1]).not() and !this.isonplate(!plate,!possible[2]) then
+          -- its offset 2
+          !this.setH1length(!possible[2],!offset1,!offset2)
+     elseif !this.isonplate(!plate,!possible[1]) and !this.isonplate(!plate,!possible[2]) then
+          -- both options are on the plate so we need to choose one
+          -- for now, choose the longest
+          if !possible[1].split(',')[3].real().gt(!possible[2].split(',')[3].real()) then
+            if !possible[1].split(',')[3].real().lt(0) then
+                !!alert.error('Invalid offset')
+            endif
+            !this.setH1length(!possible[1],!offset1,!offset2)
+          else
+            if !possible[2].split(',')[3].real().lt(0) then
+                !!alert.error('Invalid offset')
+            endif
+            !this.setH1length(!possible[2],!offset1,!offset2)
+          endif
+     elseif !this.isonplate(!plate,!possible[1]).not() and !this.isonplate(!plate,!possible[2]).not() then
+          -- both options miss the plate so we need to choose one
+          -- again, choose the longest
+          if !possible[1].split(',')[3].real().gt(!possible[2].split(',')[3].real()) then
+            !this.setH1length(!possible[1],!offset1,!offset2)
+          else
+            !this.setH1length(!possible[2],!offset1,!offset2)
+          endif
+     endif
+  endif
+
+endmethod
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- method to set the values for H1 length
+define method .setH1length(!values is STRING,!minlen is REAL,!maxlen is REAL)
+
+  -- make sure that the length is between min an max lengths
+  !length = !values.split(',')[3].real()
+  if !values.split(',')[3].real().lt(!minlen) then
+    !length = !minlen
+  elseif !values.split(',')[3].real().gt(!maxlen) then
+    !!alert.error('Required length is Greater than Maximum of $!maxlen - Reset to $!minlen')
+    !length = !minlen
+  endif
+--  $p 3
+  !this.drns = !values.split(',')[2].direction()
+  !this.drne = !values.split(',')[2].direction().opposite()
+  !pline =  !values.split(',')[1]
+  !this.dim1 =  !length
+  !pv = object POINTVECTOR()
+  !pv.position = !this.sctn.poss
+  !pv.direction = !this.drns
+  !pvend = !pv.offset(!this.dim1 + 150)
+  !pvstart = !pv.offset(-100)
+  !this.start = !pvstart.position.wrt(/* )
+  !this.end = !pvend.position.wrt(/* )
+
+endmethod
+-----------------------------------------------------------------------
+-- method to get two possible x y directions and offsets for the given position
+-- offsets are from the poss of the vertical member
+define method .getplateoffset(!pos is POSITION) is ARRAY
+
+   !position = !pos
+   !position.up = !this.sctn.poss.wrt(/* ).up
+   !poss = !this.sctn.poss.wrt(/* )
+   !possible = ARRAY()
+   !line = object LINE()
+   !line.startposition = !this.sctn.poss.wrt(/* )
+   !line.endposition = !position
+   !linedir = !line.direction()
+   do !a index !this.plines
+        !angle = !linedir.angle($!this.pldir[$!a] )
+     if !angle.gt(0) and !angle.lt(90) then
+        !len = !line.length() * cos(!angle)
+        !possible.append(!this.plines[!a] & ',' & !this.pldir[!a] & ',' & !len )
+     elseif !angle.nint().eq(0) then
+        !possible.append(!this.plines[!a] & ',' & !this.pldir[!a] & ',' & !line.length())
+     endif
+   enddo
+   if !possible.size().eq(0) then
+     !!alert.error('error in plines object cannot find direction to point')
+   endif
+   return !possible
+endmethod
+
+
+--------------------------------------------------------------------------------
+-- method to test if the passed position data is on the defined plate
+-- used for fr05 fr06 fr08
+define method .isonplate(!plate is DBREF,!test is STRING) is BOOLEAN
+
+
+    !direction = !test.split(',')[2].direction()
+    !distance = !test.split(',')[3].real()
+    !vol = !plate.wvol
+    !pv = object POINTVECTOR()
+    !pv.direction = !direction
+    !pv.position = !this.sctn.poss.wrt(/* )
+    !pv1 = !pv.offset(!distance)
+    !pos = !pv1.position.wrt(/* )
+    if !pos.east gt !vol[1] and !pos.east lt !vol[4] and !pos.north gt !vol[2] and !pos.north lt !vol[5] then
+      return TRUE
+    else
+      return FALSE
+    endif
+
+endmethod
+
+------------------------------------------------------------------------------------------
+-- method to define an offset from the vertical member to a position
+-- used to calculate the length of the offset member from the vertical member
+-- calculates the distance in two horizontal planes from the vertical member
+-- there are a number of situations in which need to be dealt with.
+-- 1) it needs to find the correct pline to offset from
+-- 2) if the offset in one direction is zero, the direction of the member is the other offset
+-- 3) if the minimum offset is zero then the longest one is selected
+-- 4) if the plate is very large, the offset may be inappropriate
+-- 5) there needs to be a default length on the template in case the plate is too large
+define method .setH81offset(!plate is DBREF,!offset1 is REAL,!offset2 is REAL)
+
+   !platepos = !plate.position.wrt(/* )
+   !possible = !this.getplateoffset(!platepos)
+   if !possible.size().eq(1) then $* only one possible option
+        !this.setH81length(!possible[1],!offset1,!offset2)
+   else                           $* two possible options found
+     if !this.isonplate(!plate,!possible[1]) and !this.isonplate(!plate,!possible[2]).not() then
+          -- it is offset 1
+          !this.setH81length(!possible[1],!offset1,!offset2)
+     elseif !this.isonplate(!plate,!possible[1]).not() and !this.isonplate(!plate,!possible[2]) then
+          -- its offset 2
+          !this.setH81length(!possible[2],!offset1,!offset2)
+     elseif !this.isonplate(!plate,!possible[1]) and !this.isonplate(!plate,!possible[2]) then
+          -- both options are on the plate so we need to choose one
+          -- for now, choose the longest
+          if !possible[1].split(',')[3].real().gt(!possible[2].split(',')[3].real()) then
+            if !possible[1].split(',')[3].real().lt(100) then
+                !!alert.error('Invalid offset')
+            endif
+            !this.setH81length(!possible[1],!offset1,!offset2)
+          else
+            if !possible[2].split(',')[3].real().lt(100) then
+                !!alert.error('Invalid offset')
+            endif
+            !this.setH81length(!possible[2],!offset1,!offset2)
+          endif
+     elseif !this.isonplate(!plate,!possible[1]).not() and !this.isonplate(!plate,!possible[2]).not() then
+          -- both options miss the plate so we need to choose one
+          -- again, choose the longest
+          if !possible[1].split(',')[3].real().gt(!possible[2].split(',')[3].real()) then
+            !this.setH81length(!possible[1],!offset1,!offset2)
+          else
+            !this.setH81length(!possible[2],!offset1,!offset2)
+          endif
+     endif
+  endif
+
+endmethod
+-----------------------------------------------------------------------
+
+-----------------------------------------------------------------------
+-- method to set the values for H1 length
+define method .setH81length(!values is STRING,!minlen is REAL,!maxlen is REAL)
+
+  -- make sure that the length is between min an max lengths
+  !length = !values.split(',')[3].real()
+  if !values.split(',')[3].real().lt(!minlen) then
+    !length = !minlen
+  elseif !values.split(',')[3].real().gt(!maxlen) then
+    !!alert.error('Required length is Greater than Maximum of $!maxlen - Reset to $!minlen')
+    !length = !minlen
+  endif
+--$p 4
+  !this.drns = !values.split(',')[2].direction()
+  !this.drne = !values.split(',')[2].direction().opposite()
+  !pline =  !values.split(',')[1]
+  !this.dim1 =  !length
+  !pv = object POINTVECTOR()
+  !pv.position = !this.sctn.poss
+  !pv.direction = !this.drns
+  !pvend = !pv.offset(!this.dim1 + 60)
+  !pvstart = !pv.offset(70)
+  !this.start = !pvstart.position.wrt(/* )
+  !this.end = !pvend.position.wrt(/* )
+
+endmethod
+------------------------------------------------------------------------------------------------
+
+
+------------------------------------------------------------------------------------------------
+-- method for cable tray bends to return data for positioning the datum atta in the centre of the radius
+define method .getangle(!element is DBREF)is ARRAY
+
+   if !element.type.neq('BEND') then
+    !!alert.error('Selected element is not a Bend')
+    return
+   endif
+   -- build an arc between p1 to p0 and p0 to p2
+   !apos = !element.apos.wrt(/* )
+   !lpos = !element.lpos.wrt(/* )
+   !pos  = !element.pos.wrt(/* )
+   !dir  = !element.pdir[0].wrt(/* )
+   !ori  = !element.orientation.wrt(/* )
+
+   -- !arc = !apos.arcthru(!pos,!lpos,!dir)
+   !arc = !pos.arcfillet(!apos,!lpos,!dir,500)
+   !adir = !element.adir
+   !ldir = !element.ldir
+   !angle = 180 - !adir.angle(!ldir)
+   -- work out the radius
+   -- the radius is the adjacent side of the triangle
+   -- where the opposite side is the distance between p0 and p1
+   -- and the angle is half the included angle of the bend
+   !radius = !pos.distance(!lpos) / tan(!angle / 2)
+
+   !arc = !pos.arcfillet(!apos,!lpos,!dir,!radius)
+   !datumpos = !arc.angleposition(!arc.startangle - !angle / 2).wrt(/* )
+   !datumdirection =  !arc.angletangent(!arc.startangle - !angle / 2).wrt(/* )
+   !raddirection   =  !arc.angledirection(!arc.startangle - !angle / 2).wrt(/* )
+   if !datumpos.distance(!pos).gt(!apos.distance(!pos)) then
+    !datumpos = !arc.angleposition(!arc.startangle + !angle / 2).wrt(/* )
+    !datumdirection =  !arc.angletangent(!arc.startangle + !angle / 2).wrt(/* )
+    !raddirection   =  !arc.angledirection(!arc.startangle + !angle / 2).wrt(/* )
+   endif
+   pin 1 at $!datumpos
+   pin 1 dir $!datumdirection
+   pin 2 at $!datumpos
+   pin 2 dir $!raddirection
+
+   -- bend radius
+   !array[1] = !radius
+   -- included angle of the bend
+   !array[2] = !angle
+   -- position for the centre of the bend on the radius
+   !array[3] = !datumpos
+   -- orientation of pleave of the datum atta
+   !array[4] = !datumdirection
+   -- orientation for the p11 of the atta
+   !array[5] = !raddirection.opposite()
+   -- orientation of the z component of the bend
+   !array[6] = !ori.string().after('Z')
+
+   return !array
+
+
+endmethod
+------------------------------------------------------------------------------------------------
+
+define method  .trimplane(!sctn is DBREF)
+
+  -- use this.nearest
+  --  planestring is in the old pml1 format so needs converting
+  -- 'PLANE W 7.99824 N 12.6496 U  through E 471800.28125 N 117809.320312 U 3269.427001 '
+
+  !!ce = !sctn
+  !pvstart = !sctn.poss.wrt(/* ).line(!sctn.pose.wrt(/* )).pointvector()
+  !start = !sctn.poss.wrt(/* )
+  !end   = !sctn.pose.wrt(/* )
+  !planeposition = !pvstart.intersection(!this.cutplane)
+  handle ANY
+     !!alert.error(!!error.text)
+     return
+  endhandle
+  !cutdirection = !this.cutplane.direction()
+
+--***********************************************************************************
+-- GE 22/05/06 -- Check type of FT and see if it has been mirrored before extending the
+-- correct end and set the cut direction
+ stru
+ !datum = $!!ce.name/DATUM
+ !type = '!!mds' & !!ce.:MDSSuppType
+--<wd>02jan08 -- Variable !supptype is NOT USED below in ACTIVE CODE any longer -- !supptype = !!ce.:MDSSuppType
+ !mdstype = $!type
+  handle ANY
+    !alias = !!mdsaliaslist('$!!ce.:MDSSuppType')
+    !type = '!!mds' & !alias
+    !mdstype = $!type
+  endhandle
+ !mirror = !mdstype.support.mirror
+ !!ce = !sctn
+
+ !positionp0 = !datum.pos.wrt(/* )
+ pin 9 copy p9 of $!datum
+ var !pin9 pin 9 position wrt /*
+
+ !linedim1 = object LINE()
+ !linedim1.startposition = !positionp0
+ !linedim1.endposition = !planeposition
+
+ !linedim2 = object LINE()
+ !linedim2.startposition = !pin9.position()
+ !linedim2.endposition = !planeposition
+
+--q var !linedim1.length()
+--q var !linedim2.length()
+
+ !drnstart = !!ce.drnstart
+ !drnend   = !!ce.drnend
+
+ if !mirror then
+   -- if (!supptype inset('FT08','FT12','FT35')) then
+    if !linedim1.length() gt !linedim2.length() then
+      -- $P $!supptype mirror works with extend end
+      -- extend end thro $!planeposition
+      -- drne $!cutdirection
+      pin 3 at poss
+      var !pin3 pin 3 position wrt /*
+      pin 4 at pose
+      var !pin4 pin 4 position wrt /*
+      !linedim3 = object LINE()
+      !linedim3.startposition = !pin3.position()
+      !linedim3.endposition = !positionp0
+      !linedim4 = object LINE()
+      !linedim4.startposition = !pin4.position()
+      !linedim4.endposition = !positionp0
+      if !linedim4.length() gt !linedim3.length() then
+        extend end thro $!planeposition
+        !extend = TRUE
+        drne $!cutdirection
+      else
+        extend start thro $!planeposition
+        !extend = FALSE
+        drns $!cutdirection
+      endif
+    else
+    -- $P $!supptype mirror works with extend start
+    -- extend start thro $!planeposition
+    -- drns $!cutdirection
+      pin 3 at poss
+      var !pin3 pin 3 position wrt /*
+      pin 4 at pose
+      var !pin4 pin 4 position wrt /*
+      !linedim3 = object LINE()
+      !linedim3.startposition = !pin3.position()
+      !linedim3.endposition = !positionp0
+      !linedim4 = object LINE()
+      !linedim4.startposition = !pin4.position()
+      !linedim4.endposition = !positionp0
+      if !linedim4.length() gt !linedim3.length() then
+        extend end thro $!planeposition
+        !extend = TRUE
+        drne $!cutdirection
+      else
+        extend start thro $!planeposition
+        !extend = FALSE
+        drns $!cutdirection
+      endif
+    endif
+ else
+ --$P**else1
+   --  if (!supptype inset('FT08','FT12','FT35')) then
+   if !linedim1.length() gt !linedim2.length() then
+     -- $P $!supptype works with extend end not mirror
+     -- extend start thro $!planeposition
+     -- drns $!cutdirection
+     pin 3 at poss
+     var !pin3 pin 3 position wrt /*
+     pin 4 at pose
+     var !pin4 pin 4 position wrt /*
+     !linedim3 = object LINE()
+     !linedim3.startposition = !pin3.position()
+     !linedim3.endposition = !positionp0
+     !linedim4 = object LINE()
+     !linedim4.startposition = !pin4.position()
+     !linedim4.endposition = !positionp0
+     if !linedim4.length() gt !linedim3.length() then
+       extend end thro $!planeposition
+       !extend = TRUE
+       drne $!cutdirection
+     else
+       extend start thro $!planeposition
+       !extend = FALSE
+       drns $!cutdirection
+     endif
+   else
+--$P **else2
+     -- $P $!supptype works with extend end not mirror
+     -- extend end thro $!planeposition
+     -- drne $!cutdirection
+     pin 3 at poss
+     var !pin3 pin 3 position wrt /*
+     pin 4 at pose
+     var !pin4 pin 4 position wrt /*
+     !linedim3 = object LINE()
+     !linedim3.startposition = !pin3.position()
+     !linedim3.endposition = !positionp0
+     !linedim4 = object LINE()
+     !linedim4.startposition = !pin4.position()
+     !linedim4.endposition = !positionp0
+     if !linedim4.length() gt !linedim3.length() then
+       extend end thro $!planeposition
+       !extend = TRUE
+       drne $!cutdirection
+     else
+       extend start thro $!planeposition
+       !extend = FALSE
+       drns $!cutdirection
+     endif
+   endif
+ endif
+
+ !derlen = der len
+
+-- if !derlen.eq(0) then
+ if !derlen.leq(25) then
+-- just need to work which is which
+   if !extend then
+     !!ce.pose = $!end
+     extend start thro $!planeposition
+     drns $!cutdirection
+     drne $!drnend
+   else
+     !!ce.poss = $!start
+     extend end thro $!planeposition
+     drne $!cutdirection
+     drns $!drnstart
+   endif
+ endif
+
+call !!mdsresetpins(1,9)
+-- GE 22/05/06
+--***********************************************************************************
+
+endmethod

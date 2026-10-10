@@ -1,0 +1,2163 @@
+--------------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--   File:          pfAssemblyActivityManager.pmlobj
+--   Type:          Object Definition
+--   Group:         Pipe Fabrication
+--     Keyword:     PF
+--   Module:        Design
+--   Replaces:
+--
+-- Author:          DoHyoung Kim (Bright)
+-- Created:         Monday 11st June 2012
+--
+-- Description:     object for getting assembly activity table from pipe spool element
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  addSegmentPart(DBREF)            -
+--  checkFlangeReferenceComponent(DBREF,REAL) DBREF               resets the reference and plane if the rotation component is a tee
+--  clearActivityVariables()         -                   reinitialise the activity arrays at the start of a new spool evaluation
+--  closeSegment(DBREF)              -                   closes the current segment and copies the data to the segment variables start and end
+--  findSegments()                   -                   loop through all components and find segments
+--  getAssemblyActivities(DBREF)     ARRAY               return assembly activity tables from the given pipe spool
+--  getBossComponentByBranch(DBREF,BOOLEAN) DBREF               get boss component by branch at head or tail
+--  getBranchActivities(REAL)        -                   get all assembly activities for branch connection
+--  getBranchConnections()           -                   get branch connection information from the given pipe spool
+--  getConnectedPipePiece(DBREF,REAL) DBREF               return pipe piece element which is connected to the given component at the given ppoint
+--  getElbowActivity(REAL,DBREF)     -                   get an assembly activity for elbow
+--  getEyeDirection(PFBRANCHCONNECTION) DIRECTION           return the direction from the branch to the reference component
+--  getFlangeActivity(REAL,REAL,DBREF) -                   get an assembly activity for the given flange component
+--  getMitreAssemblyActivities(REAL,DBREF) -                   get assembly activities for mitre bend
+--  getNextReferencePlane(REAL,REAL) -                   get next reference plane information
+--  getPipePieceActivities()         -                   get assembly activities in the current pipe piece
+--  getPipePieceByBoundary(DBREF,BOOLEAN) DBREF               return pipe piece element by the given boundary element
+--  getPipePieceByBranch(DBREF,BOOLEAN) DBREF               get pipe piece by branch at head or tail
+--  getPipePieces()                  -                   populates !this.pipePieces, !this.pparefs and !this.pplrefs
+--  getReferencePlaneDirection(DBREF,BOOLEAN) DIRECTION           return the direction of reference plane of the given component
+--  getSlantedPipeEndActivity(REAL,REAL,DBREF) -                   get an assembly activity for slanted pipe end
+--  getTeeActivity(REAL,REAL,DBREF)  -                   get an assembly activity for the given tee component
+--  getThreadActivities()            -                   get an assembly activity for thread connection
+--  pfAssemblyActivityManager()      -                   constructor
+--  processCurrentSegments()         -                   The previous method findSegments loops through each branch and builds
+--  sortPartsByBran()                -                   sort the parts into arrays of individual branch parts
+--  startNewSegment(DBREF)           -
+--  tidyCurrentSegments()            -                   after we have finished looping round the current branch we need to tidy the segments
+--
+--------------------------------------------------------------------------------
+define object PFASSEMBLYACTIVITYMANAGER
+
+  member  .pipeSpool            is DBREF
+
+  member  .pipePieces           is ARRAY
+
+  member  .pparefs              is ARRAY
+
+  member  .pplrefs              is ARRAY
+
+  member  .parts                is ARRAY
+
+  member  .partsByBranch        is ARRAY
+
+  member  .branRefs             is ARRAY
+
+  member  .headBranCons         is ARRAY
+
+  member  .tailBranCons         is ARRAY
+
+  member  .segments             is ARRAY
+
+  member  .segStartParts         is ARRAY
+
+  member  .segEndParts           is ARRAY
+
+  -- branch connection information
+  member  .branConParts         is ARRAY
+
+  member  .branchConnections    is ARRAY
+
+  -- members for processing segments including tees
+  member  .segmentParts         is ARRAY
+  member  .segStartRef          is DBREF
+
+  --//
+
+  -- reference plane information
+  -- 1 : BEND, ELBOW, MITRE BEND, BRANCH START/LEAVE
+  -- 2 : BRANCH
+  -- 3 : TEE, OLET, CROS...
+  -- 4 : FLAN, SEND
+  member  .refLevel             is REAL
+
+  member  .refComponent         is DBREF
+
+  -- actually, this is right direction of plane, not normal direction of plane
+  member  .planeDirection       is DIRECTION
+
+  member  .eyeDirection         is DIRECTION
+
+  member  .branConPart          is DBREF
+
+  member  .activities           is ARRAY
+
+  member  .branchActivities     is ARRAY
+
+  member  .componentActivities  is ARRAY
+
+  member  .flangeUtility        is PFFLANGEUTILITY
+
+  -- thread table ---------------------------------------------------------------
+  member  .threadTable          is PFTHREADENGAGEMENTTABLE
+
+endobject
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      pfAssemblyActivityManager
+--
+-- Description: constructor
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .pfAssemblyActivityManager()
+
+  !this.threadTable.load()
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getAssemblyActivities
+--
+-- Description: return assembly activity tables for the given pipe spool
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type] [Description]
+--    1    R      DBREF       pipe spool
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       assembly activity table
+--------------------------------------------------------------------------------
+define method .getAssemblyActivities(!pipeSpool is DBREF) is ARRAY
+
+  -- initialise the variables to the passed spool
+  !this.clearActivityVariables()
+  !this.pipeSpool = !pipeSpool
+  !this.parts = !pipeSpool.belrfa
+  !this.parts.unique()
+
+  --get the pipe pieces
+  !this.getPipePieces()
+
+  -- sort parts by branch
+  !this.sortPartsByBran()
+
+  -- get the branch end connection
+  !this.getBranchConnections()
+
+  -- go and find any threaded connections
+  !this.getThreadActivities()
+
+  -- activities for 'BUTT', 'CUT'
+  !this.getPipePieceActivities()
+  handle ANY
+    -- ignore
+  endhandle
+  --//
+
+  -- loop through the spool components and find segments
+  !this.findSegments()
+
+  !this.activities.appendArray(!this.branchActivities)
+  !this.activities.appendArray(!this.componentActivities)
+
+  return !this.activities
+
+endmethod
+
+---------------------------------------------------------------------------------------
+--
+-- Method:      .clearActivityVariables()
+--
+-- Description: reinitialise the activity arrays at the start of a new spool evaluation
+--
+----------------------------------------------------------------------------------------
+define method .clearActivityVariables()
+
+  !this.activities.clear()
+  !this.branchActivities.clear()
+  !this.componentActivities.clear()
+  !this.partsByBranch.clear()
+  !this.branRefs.clear()
+  !this.headBranCons.clear()
+  !this.tailBranCons.clear()
+  !this.pparefs.clear()
+  !this.pplrefs.clear()
+  !this.pipePieces.clear()
+  !this.branConParts.clear()
+  !this.branchConnections.clear()
+
+endmethod
+
+---------------------------------------------------------------------------------------
+--
+-- Method:      .getPipePieces()
+--
+-- Description: populates !this.pipePieces, !this.pparefs and !this.pplrefs
+--
+----------------------------------------------------------------------------------------
+define method .getPipePieces()
+
+do !pipePiece values !this.pipeSpool.pprfa
+    !pparef = !pipePiece.pparef
+    !pplref = !pipePiece.pplref
+    -- let's exclude pure mitre piece
+    if !pparef.type.neq('BEND') or !pparef.neq(!pplref) then
+      !this.pipePieces.append(!pipePiece)
+      !this.pparefs.append(!pipePiece.pparef)
+      !this.pplrefs.append(!pipePiece.pplref)
+    endif
+  enddo
+endmethod
+
+---------------------------------------------------------------------------------------
+--
+-- Method:      .sortPartsByBran()
+--
+-- Description: sort the parts into arrays of individual branch parts
+-- One array for each branch
+--
+----------------------------------------------------------------------------------------
+define method .sortPartsByBran()
+
+!branIndex = 0
+  !currentBran = object DBREF()
+
+  do !part values !this.parts
+
+    !type = !part.hardType
+    -- loose components
+    if !type.neq('TUBI') then
+      !loose = !part.loose
+      handle ANY
+      elsehandle NONE
+        if !loose then
+          if (!part.hardType eq 'FLAN' and !part.compType eq 'ALLO' and !part.aExcess eq 0 and !part.lExcess eq 0) then
+          else
+            !this.activities.append(object PFASSEMBLYACTIVITY('LOOSE', !part))
+          endif
+        endif
+      endhandle
+    endif
+
+    !branRef = !part.owner
+    if !branRef.neq(!currentBran) then
+      !branIndex = !this.branRefs.findFirst(!branRef)
+      if !branIndex.unset() then
+        !this.branRefs.append(!branRef)
+        !this.partsByBranch.append(object ARRAY())
+        !branIndex = !this.branRefs.size()
+      endif
+      !currentBran = !branRef
+    endif
+
+    !this.partsByBranch[!branIndex].append(!part)
+
+  enddo
+
+endmethod
+
+---------------------------------------------------------------------------------------
+--
+-- Method:      .findSegments()
+--
+-- Description: loop through all components and find segments
+-- Questions
+-- what is a segment?
+-- a segment is a list of components
+-- a bend or elbo forms the segstart element
+-- what is a segend part how is it used?
+-- what is reflevel for
+--
+----------------------------------------------------------------------------------------
+define method .findSegments()
+
+-- loop by branch first
+-- split segments
+do !i indices !this.partsByBranch
+  -- the parts by branch array is one element per branch
+  -- clearing the segments segstartparts and segendparts implies that segments are generated separately for each branch
+  -- if this is the case, segments do not persist for later analysis
+    !this.segments.clear()
+    !this.segStartParts.clear()
+    !this.segEndParts.clear()
+
+    -- start new arrays for each branch
+    !this.segmentParts   = object ARRAY()
+    !this.segStartRef    = object DBREF()
+    --!branRef = !this.partsByBranch[!i][1].owner
+    -- loop through the individual branch members
+    do !part values !this.partsByBranch[!i]
+        !hardType = !part.hardType
+        if !hardType.eq('BEND') or !hardType.eq('ELBO') then
+        -- if we are not in a segment we need to start one
+        if !this.segStartRef.set() or !this.segmentParts.empty().not() then
+          !this.closeSegment(!part)
+          !this.segStartRef = !part
+        else
+           !this.startNewSegment(!part)
+        endif
+
+      elseif !hardType.neq('TUBI') and !hardType.neq('WELD') and !hardType.neq('ATTA') then
+        -- add all other parts to the segments excluding welds tube and attas
+        !this.addSegmentPart(!part)
+      endif
+    enddo
+
+    -- tidy up any loose ends
+    !this.tidyCurrentSegments()
+
+    -- what does this mean?
+    !this.refLevel = 5
+
+    -- process the current branch segments
+    !this.processCurrentSegments()
+
+  enddo
+
+endmethod
+
+---------------------------------------------------------------------------------------
+--
+-- Method:      .closeSegment
+--
+-- Description: closes the current segment and copies the data to the segment variables start and end
+--
+----------------------------------------------------------------------------------------
+define method .closeSegment(!part is DBREF)
+
+
+   -- add all the current segment parts as a new segment and make the current elbo or bend the end of a segment
+   !this.segments.append(!this.segmentParts)
+   !this.segStartParts.append(!this.segStartRef)
+   !this.segEndParts.append(!part)
+   !this.segmentParts.clear()
+
+endmethod
+
+---------------------------------------------------------------------------------------
+--
+-- Method:      .startNewSegment
+--
+-- Description: sets the start part for a new segment after closing the previous one
+--
+----------------------------------------------------------------------------------------
+define method .startNewSegment(!part is DBREF)
+
+  -- start of a new segment
+  !this.segStartRef = !part
+
+endmethod
+
+---------------------------------------------------------------------------------------
+--
+-- Method:      .addSegmentPart
+-- Description:
+--
+----------------------------------------------------------------------------------------
+define method  .addSegmentPart(!part is DBREF)
+
+    !this.segmentParts.append(!part)
+
+endmethod
+---------------------------------------------------------------------------------------
+--
+-- Method:      .tidyCurrentSegments
+--
+-- Description: after we have finished looping round the current branch we need to tidy the segments
+--
+----------------------------------------------------------------------------------------
+define method .tidyCurrentSegments()
+
+  -- after we have finished looping round the branch we need to tidy the segment
+    if !this.segStartRef.set() or !this.segmentParts.empty().not() then
+      !this.segments.append(!this.segmentParts)
+      !this.segStartParts.append(!this.segStartRef)
+      !this.segEndParts.append(object DBREF())
+    else
+      if !this.segEndParts.empty().not() then
+        !lastEndPart = !this.segEndParts.last()
+        if !lastEndPart.set() then
+          !this.segments.append(object ARRAY())
+          -- make a new segment
+          !this.segStartParts.append(!lastEndPart)
+          !this.segEndParts.append(object DBREF())
+        endif
+      endif
+    endif
+
+endmethod
+
+---------------------------------------------------------------------------------------
+--
+-- Method:      .processCurrentSegments()
+--
+-- Description: The previous method findSegments loops through each branch and builds
+-- !this.segments for extraction of activity data.
+-- this method processes the segments
+--
+---------------------------------------------------------------------------------------
+define method .processCurrentSegments()
+
+  do !segIndex indices !this.segments
+
+
+      !startPart = !this.segStartParts[!segIndex]
+      !endPart = !this.segEndParts[!segIndex]
+
+      if !startPart.set() then
+
+        !startType = !startPart.hardType
+        if !startType.eq('ELBO') then
+          !this.getElbowActivity(!segIndex, !startPart)
+        elseif !startType.eq('BEND') then
+          !mitreCut = !startPart.actNCuts
+          if !mitreCut.gt(0) then
+            !this.getMitreAssemblyActivities(!segIndex, !startPart)
+          endif
+        endif
+
+        !this.refLevel = 1
+        !this.refComponent = !startPart
+        -- the plane direction for a bend is the direction from component lpos to component Apos
+        !this.planeDirection = !this.getReferencePlaneDirection(!startPart, true)
+        !this.eyeDirection = !startPart.lDir.opposite()
+
+      elseif !endPart.set() then
+        -- startpart is not set and endpart is I think this means that we have an elbo and it before the bend it is referencing
+
+        !this.refLevel = 1
+        !this.refComponent = !endPart
+        --at this point the segstartref is set
+        if !this.segStartRef.set() and (!endPart.order.leq(!this.segStartRef.order)) then
+          !this.eyeDirection = !endPart.lDir
+        else
+          !this.eyeDirection = !endPart.lDir.opposite()
+        endif
+
+
+
+        -- the plane direction for a bend is the direction from component apos to component lpos
+        !this.planeDirection = !this.getReferencePlaneDirection(!endPart, false)
+
+      else
+        if defined(!this.headBranCons[!i]) then
+          !this.refLevel = 1
+          !this.refComponent = !this.headBranCons[!i][1]
+          !this.planeDirection = !this.headBranCons[!i][2]
+          !this.eyeDirection = !branRef.hdir.opposite()
+        elseif defined(!this.tailBranCons[!i]) then
+          !this.refLevel = 1
+          !this.refComponent = !this.tailBranCons[!i][1]
+          !this.planeDirection = !this.tailBranCons[!i][2]
+          !this.eyeDirection = !branRef.tdir.opposite()
+        endif
+
+      endif
+
+      !this.getBranchActivities(!segIndex)
+
+      -- get activities for parts between start and end parts
+      do !partIndex indices !this.segments[!segIndex]
+
+        !part = !this.segments[!segIndex][!partIndex]
+
+        if !this.refLevel.eq(2) and !this.branConPart.eq(!part) then
+          !this.eyeDirection = !this.eyeDirection.opposite()
+        else
+
+          !partType = !part.hardType
+
+          if !partType.eq('FLAN') and !part.loose.not() and !part.flallowance.eq(0) then
+              !this.getFlangeActivity(!segIndex, !partIndex, !part)
+          elseif !partType.eq('TEE') or !partType.eq('OLET') or !partType.eq('CROS') then
+            if !part.nvol.value().gt(0) then
+              !this.getTeeActivity(!segIndex, !partIndex, !part)
+            endif
+          elseif !partType.eq('FTUB') and !part.compType.eq('SEND') then
+            !this.getSlantedPipeEndActivity(!segIndex, !partIndex, !part)
+          endif
+
+        endif
+
+      enddo
+   enddo
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getElbowActivity
+--
+-- Description: return assembly activity for elbow
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type] [Description]
+--    1    R      REAL        segment index
+--    2    R      DBREF       elbow component
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .getElbowActivity(!segIndex is REAL, !part is DBREF)
+
+  if !this.refLevel.eq(1) and !this.refComponent.neq(!part) then
+    -- create a base assembly activity object this object has no code!
+    !activity = object PFASSEMBLYACTIVITY('ELBOW', !part)
+    !activity.referencePlaneComponent = !this.refComponent
+    !activity.inclination = !part.aDir.angle(!part.lDir)
+     !activity.turning = !!pfAngleBetweenDirsWithSign(!this.planeDirection, !part.lDir, !this.eyeDirection.opposite())
+    !this.componentActivities.append(!activity)
+  else
+    -- reflevel is 5
+    !endPart = !this.segEndParts[!segIndex]
+    if !endPart.set() then
+      !this.planeDirection = !this.getReferencePlaneDirection(!endPart, false)
+      !activity = object PFASSEMBLYACTIVITY('ELBOW', !part)
+      !activity.referencePlaneComponent = !endPart
+      !activity.inclination = !part.aDir.angle(!part.lDir)
+      if (!this.eyeDirection.set()) then
+        !activity.turning = !!pfAngleBetweenDirsWithSign(!this.planeDirection, !part.aDir, !this.eyeDirection.opposite())
+      else
+        !activity.turning = !!pfAngleBetweenDirsWithSign(!this.planeDirection, !part.aDir, !part.lDir.opposite())
+      endif
+      !this.componentActivities.append(!activity)
+
+    endif
+  endif
+endmethod
+
+-------------------------------------------------------------------------------
+--
+-- Method:      getFlangeActivity
+--
+-- Description: get an assembly activity for the given flange
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type] [Description]
+--    1    R      REAL        segment index
+--    2    R      REAL        part index
+--    3    R      DBREF       flange
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .getFlangeActivity(!segIndex is REAL, !partIndex is REAL, !part is DBREF)
+
+  if !this.refLevel.eq(5) then
+    !this.getNextReferencePlane(!segIndex, !partIndex + 1)
+  endif
+  !activity = object PFASSEMBLYACTIVITY('FLANGE', !part)
+  if !this.refLevel.lt(5) then
+    -- if the current part is not adjacent to this .referenceComponent then we need to swap it
+    -- if the flange leaves at 2 and the next component is not the reference component
+    -- check if its a tee which turns through 90 degrees
+    !testComponent = !this.checkFlangeReferenceComponent(!part, !partIndex)
+
+    if !testComponent.set() then
+      !activity.referencePlaneComponent = !testComponent
+      !this.planeDirection = !testComponent.pdir[1].cross(!testComponent.pdir[3])
+    else
+      !activity.referencePlaneComponent = !this.refComponent
+    endif
+
+    !refType = !this.refComponent.hardType
+    if !this.eyeDirection.dot(!part.aDir).gt(0) then
+      -- looking back down the spool to the previous component
+      --            |                       |
+      --            +-----------------------+    <--- look
+      --            |                       |
+      --            arrive                  leave
+
+      if !refType.eq('FLAN') then
+        !activity.rotation = !this.flangeUtility.getAlignmentOffsetAngle(!part, !this.refComponent, !part.leave, !this.refComponent.arrive, !part.lDir)
+      else
+        !activity.rotation = !this.flangeUtility.getAlignmentOffsetAngle(!part, !part.leave, !this.planeDirection, !part.lDir)
+      endif
+
+      -- no need to set reference plane information because current part is the last component
+    else
+      --      look  |                       |
+      --      --->  +-----------------------+
+      --            |                       |
+      --            arrive                  leave
+      if !refType.eq('FLAN') then
+        !activity.rotation = !this.flangeUtility.getAlignmentOffsetAngle(!part, !this.refComponent, !part.arrive, !this.refComponent.leave, !part.aDir)
+      else
+        !activity.rotation = !this.flangeUtility.getAlignmentOffsetAngle(!part, !part.arrive, !this.planeDirection, !part.aDir)
+      endif
+
+      -- set reference plane information
+      if !this.refLevel.gt(3) then
+        !this.refLevel = 4
+        !this.refComponent = !part
+        !this.eyeDirection = !part.lDir.opposite()
+        !this.planeDirection = !this.flangeUtility.getAlignmentDirection(!part, !part.leave)
+      endif
+    endif
+  endif
+
+  !this.componentActivities.append(!activity)
+
+endmethod
+--------------------------------------------------------------------------------
+--
+-- Method:     .checkFlangeReferenceComponent
+-- Description: resets the reference and plane if the rotation component is a tee
+-- if the current part is not adjacent to this .refereneccomponent then we need to swap it
+-- if the flange leaves at 2 and the next component is not the reference component
+-- check if its a tee which turns through 90 degrees
+--------------------------------------------------------------------------------
+define method .checkFlangeReferenceComponent(!part is DBREF, !partIndex is REAL)is DBREF
+
+  if !this.eyeDirection.dot(!part.aDir).gt(0) then
+    -- working against flow in the parts list
+    do !a from !partIndex - 1
+      !next = !this.parts[!a]
+      handle any
+        return object DBREF()
+      endhandle
+      break if !next.type.neq('TUBI')
+    enddo
+    if !next.type inset('TEE','OLET','CROS') then
+      if !next.aDir.neq(!next.lDir.opposite()) then
+        -- it turns thro 90 degrees and therfore becomes a reference element
+        return !next
+      endif
+    endif
+  else
+    -- working with flow
+    do !a from !partIndex + 1
+      !next = !this.parts[!a]
+      handle any
+        return object DBREF()
+      endhandle
+      break if !next.type.neq('TUBI')
+    enddo
+    if !next.type inset('TEE','OLET','CROS') then
+      if !next.aDir.neq(!next.lDir.opposite()) then
+        -- it turns thro 90 degrees and therfore becomes a reference element
+        return !next
+      endif
+    endif
+  endif
+
+  return object DBREF()
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getThreadActivities
+--
+-- Description: get assembly activities for thread connection
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .getThreadActivities()
+
+  do !pipePiece values !this.pipePieces
+
+    -- arrive side
+    !arriveRef = !pipePiece.pparef
+    !bore = !pipePiece.abore
+    !acon = !pipePiece.acon
+
+    !firstComponent = object DBREF()
+    !threadData = !this.threadTable.lookup(!acon, !bore)
+    if !threadData.unset() and !arriveRef.type.eq('BRAN') and !arriveRef.mcount().gt(0) then
+      -- try to find a FTUB with compType == THRD
+      !firstComponent = !arriveRef.members[1]
+      if !firstComponent.type.eq('FTUB') and !firstComponent.compType.eq('THRD') then
+        !acon = !firstComponent.prop.ccon
+        !threadData = !this.threadTable.lookup(!acon, !bore)
+      endif
+    endif
+
+    if !threadData.set() then
+      !activity = object PFASSEMBLYACTIVITY('THRD', !pipePiece)
+      !activity.remarks.append('ARRIVE')
+      !activity.remarks.append(!threadData.length)
+      !activity.remarks.append(!firstComponent)
+      !activity.remarks.append(!threadData.description)
+      !activity.remarks.append(!threadData.connection)
+      !this.activities.append(!activity)
+    endif
+
+    -- leave side
+    !leaveRef = !pipePiece.pplref
+    !lcon = !pipePiece.lcon
+    -- fix for pseudo attribute LCON problem
+    if (!leaveRef.type.eq('BRAN')) then
+      !leaveConn = !leaveRef.tcon
+    else
+      !leaveConn = !leaveRef.acon
+    endif
+    if (!leaveConn.neq(!lcon)) then
+      !lcon = !leaveConn
+    endif
+
+    !lastComponent = object DBREF()
+    !threadData = !this.threadTable.lookup(!lcon, !bore)
+    if !threadData.unset() and !leaveRef.type.eq('BRAN') and !leaveRef.mcount().gt(0) then
+      !lastComponent = !leaveRef.members.last()
+      if !lastComponent.type.eq('FTUB') and !lastComponent.compType.eq('THRD') then
+        !lcon = !lastComponent.prop.ccon
+        !threadData = !this.threadTable.lookup(!lcon, !bore)
+      endif
+    endif
+
+    if !threadData.set() then
+      !activity = object PFASSEMBLYACTIVITY('THRD', !pipePiece)
+      !activity.remarks.append('LEAVE')
+      !activity.remarks.append(!threadData.length)
+      !activity.remarks.append(!lastComponent)
+      !activity.remarks.append(!threadData.description)
+      !activity.remarks.append(!threadData.connection)
+      !this.activities.append(!activity)
+    endif
+  enddo
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getMitreAssemblyActivities
+--
+-- Description: return assembly activities for mitre bend
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type] [Description]
+--    1    R      REAL        segment index
+--    2    R      DBREF       mitre bend component
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .getMitreAssemblyActivities(!segIndex is REAL, !part is DBREF)
+  !arrivePiece = !this.getPipePieceByBoundary(!part, false)
+  if !arrivePiece.set() then
+
+    !od       = !part.aod
+    !radius   = !part.radius
+    !angle    = !part.angle
+    !mitreCut = !part.actNCuts
+    !mitreLength = !radius * TAN(!angle * 0.5 / !mitreCut)
+
+    !collateralLength = (!od * 0.5) * TAN(!angle * 0.5 / !mitreCut)
+
+    !leavePiece = !this.getPipePieceByBoundary(!part, true)
+
+    !endPart = !this.segEndParts[!segIndex]
+
+    !activity = object PFASSEMBLYACTIVITY('MITRE', !arrivePiece)
+    !activity.inclination = !angle / (!mitreCut * 2)
+
+    if !this.refLevel.eq(1) and !this.refComponent.neq(!part) then
+      !activity.referencePlaneComponent = !this.refComponent
+      !activity.turning = !!pfAngleBetweenDirsWithSign(!this.planeDirection, !part.lDir, !this.eyeDirection.opposite())
+    else
+      if !endPart.set() then
+        !activity.referencePlaneComponent = !endPart
+
+        !eyeDirection = !part.lDir
+        !planeDirection = !this.getReferencePlaneDirection(!endPart, false)
+        !activity.turning = !!pfAngleBetweenDirsWithSign(!planeDirection, !part.aDir, !eyeDirection.opposite())
+      endif
+    endif
+
+    !activity.remarks.append(!part)
+    !activity.remarks.append(!leavePiece)
+    !this.activities.append(!activity)
+
+    -- cut information for arrive piece
+    !towardPart = object DBREF()
+    !pparef = !arrivePiece.pparef
+
+    if !segIndex.gt(1) and !this.segStartParts[!segIndex - 1].set() then
+
+      !startPart = !this.segStartParts[!segIndex - 1]
+
+      if !pparef.type.neq('BRAN') and !pparef.seq.gt(!startPart.seq) then
+
+        -- START PART -------- PPAREF ------- MITRE
+        !finalLength = !pparef.lpos.distance(!part.apos) + !mitreLength
+        !towardPart = !pparef
+
+      else
+        -- PPAREF ---- START PART --------- MITRE
+        if !startPart.hardType.eq('BEND') then
+
+          !mitreCut1 = !startPart.actNCuts
+          if !mitreCut1.gt(1) then
+
+            -- MITRE ------------- MITRE
+            !radius1 = !startPart.radius
+            !angle1  = !startPart.angle
+            !od1     = !startPart.aod
+            !finalLength = !radius1 * TAN(!angle1 * 0.5 / !mitreCut1) + !startPart.lpos.distance(!part.apos) + !mitreLength
+
+          else
+
+            -- BEND ------------ MITRE
+            !finalLength = !startPart.pos.distance(!part.apos) + !mitreLength
+
+          endif
+
+        else
+
+          -- ELBO -------------- MITRE
+          !finalLength = !startPart.lpos.distance(!part.apos) + !mitreLength
+
+        endif
+
+        !towardPart = !startPart
+
+      endif
+    else
+      if !pparef.type.eq('BRAN') then
+        !finalLength = !pparef.hpos.distance(!part.apos) + !mitreLength
+      else
+        !finalLength = !pparef.lpos.distance(!part.apos) + !mitreLength
+        if !this.parts.findFirst(!pparef).set() then
+          !towardPart = !pparef
+        endif
+      endif
+    endif
+
+    !activity = object PFASSEMBLYACTIVITY('MCUT', !arrivePiece)
+    !activity.remarks.append('ARRIVE')
+    !activity.remarks.append(!finalLength + !collateralLength)
+    !activity.remarks.append(!leavePiece)
+    !activity.remarks.append(!towardPart)
+    !activity.remarks.append(!part)
+    !this.activities.append(!activity)
+
+    -- cut information for leave piece
+    !towardPart = object DBREF()
+    !pplref = !leavePiece.pplref
+    handle ANY
+    elsehandle NONE
+    if !endPart.set() then
+      if !pplref.type.neq('BRAN') and !pplref.seq.lt(!endPart.seq) then
+
+        -- MITRE -------- PPLREF ---- END PART
+
+        !finalLength = !mitreLength + !part.lpos.distance(!pplref.apos)
+        !towardPart = !pplref
+      else
+        if !endPart.hardType.eq('BEND') then
+          !mitreCut1 = !endPart.actNCuts
+          if !mitreCut1.gt(0) then
+
+            -- MITRE ------------- MITRE
+            !radius1 = !endPart.radius
+            !angle1  = !endPart.angle
+            !od1     = !endPart.aod
+            !finalLength = !mitreLength + !part.lpos.distance(!endPart.apos) + !radius1 * TAN(!angle1 * 0.5 / !mitreCut1)
+
+          else
+
+            -- MITRE ------------- BEND
+            !finalLength = !mitreLength + !part.lpos.distance(!endPart.pos)
+
+          endif
+        else
+
+          -- MITRE --------------- ELBO
+          !finalLength = !mitreLength + !part.lpos.distance(!endPart.apos)
+
+        endif
+        !towardPart = !endPart
+      endif
+    else
+      if !pplref.type.eq('BRAN') then
+        !finalLength = !mitreLength + !part.lpos.distance(!pplref.tpos)
+      else
+        !finalLength = !mitreLength + !part.lpos.distance(!pplref.apos)
+        if !this.parts.findFirst(!pplref).set() then
+          !towardPart = !pplref
+        endif
+      endif
+
+    endif
+
+
+    !activity = object PFASSEMBLYACTIVITY('MCUT', !leavePiece)
+    !activity.remarks.append('LEAVE')
+    !activity.remarks.append(!finalLength + !collateralLength)
+    !activity.remarks.append(!arrivePiece)
+    !activity.remarks.append(!towardPart)
+    !activity.remarks.append(!part)
+    !this.activities.append(!activity)
+    endhandle
+
+  endif
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getPipePieceByBoundary
+--
+-- Description: return pipe piece element by the given boundary element
+--
+-- Method Type: Function
+-- Arguments:
+--   [#]  [R/RW] [Data Type] [Description]
+--    1    R      DBREF       boundary element
+--    2    R      BOOLEAN     if true, the given boundary is arrive boundary
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       pipe piece element
+--------------------------------------------------------------------------------
+define method .getPipePieceByBoundary(!boundary is DBREF, !arrive is BOOLEAN) is DBREF
+
+  if !arrive then
+--    do !ppieceRef values !this.pipePieces
+--      if !boundary.eq(!ppieceRef.pparef) and !boundary.neq(!ppieceRef.pplref) then
+--        return !ppieceRef
+--      endif
+--    enddo
+    !index = !this.pparefs.findFirst(!boundary)
+    if !index.set() then
+      return !this.pipePieces[!index]
+    endif
+  else
+--    do !ppieceRef values !this.pipePieces
+--      if !boundary.eq(!ppieceRef.pplref) and !boundary.neq(!ppieceRef.pparef) then
+--        return !ppieceRef
+--      endif
+--    enddo
+    !index = !this.pplrefs.findFirst(!boundary)
+    if !index.set() then
+      return !this.pipePieces[!index]
+    endif
+  endif
+
+  return object DBREF()
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getBranchActivities
+--
+-- Description: get all assembly activities for branches
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .getBranchActivities(!segIndex is REAL)
+
+  -- activities for segment start boundary
+  !startPart = !this.segStartParts[!segIndex]
+
+  if !startPart.set() then
+    !index = !this.branConParts.findFirst(!startPart)
+    if !index.set() then
+
+      !arriveDirection = !startPart.aDir
+      !eyeDirection = !arriveDirection.opposite()
+      !planeDirection = !startPart.lDir
+
+      do !branchConnection values !this.branchConnections[!index]
+
+        !pipePiece = !branchConnection.pipePiece
+        !branchDirection = !branchConnection.getBranchDirection()
+
+
+        -- eye direction
+        --      --->       / branch
+        --                /
+        --   ----------+-+--+
+        --      main branch |
+        --                  |
+        --                  +
+
+
+        !activity = object PFASSEMBLYACTIVITY('BRANCH', !pipePiece)
+        !activity.referencePlaneComponent = !startPart
+        !activity.inclination = !arriveDirection.angle(!branchDirection)
+
+        !activity.turning = !!pfAngleBetweenDirsWithSign(!planeDirection, !branchDirection, !eyeDirection.opposite())
+        handle any
+          -- zero degree error
+        endhandle
+
+        !activity.remarks.append(object DBREF())
+        !activity.remarks.append(!branchConnection.getConnectionType())
+        !activity.remarks.append(!branchConnection.getConnectionExcess())
+        !this.branchActivities.append(!activity)
+
+        if !pipePiece.type.eq('PPIECE') then
+          !pparef = !pipePiece.pparef
+          if !pparef.type.eq('BRAN') then
+            !branRef = !pparef
+          else
+            !branRef = !pparef.owner
+          endif
+        else
+          -- boss component
+          !branRef = !pipePiece.owner
+        endif
+
+        !branIndex = !this.branRefs.findFirst(!branRef)
+        if !branIndex.set() then
+          !refData = object ARRAY()
+          !refData[1] = !pipePiece
+          !refData[2] = !eyeDirection
+          if !branchConnection.head then
+            !this.headBranCons[!branIndex] = !refData
+          else
+            !this.tailBranCons[!branIndex] = !refData
+          endif
+        endif
+      enddo
+    endif
+  endif
+
+  -- get activities for branch located between segment boundaries
+  !prevPart = object DBREF()
+  !nextPart = object DBREF()
+
+  !branchConnections = object ARRAY()
+  do !part values !this.segments[!segIndex]
+    !index = !this.branConParts.findFirst(!part)
+    if !index.set() then
+      do !i indices !this.branchConnections[!index]
+        if !this.branchConnections[!index][!i].conPart.nvol.value().eq(0) then
+          !branchConnections.append(!this.branchConnections[!index][!i])
+        elseif !branchConnections.empty() then
+          !prevPart = !part
+        elseif !prevPart.unset() then
+          !nextPart = !part
+        endif
+      enddo
+    elseif !branchConnections.empty() then
+      !prevPart = !part
+    elseif !prevPart.unset() then
+      !nextPart = !part
+    endif
+  enddo
+
+  if !branchConnections.empty() then
+    return
+  endif
+
+  !start = 1
+
+  !branchConnection = !branchConnections[1]
+  !branchDirection = !branchConnection.getBranchDirection()
+  !pipePiece = !branchConnection.pipePiece
+
+  if !this.refLevel.gt(1) or !this.refComponent.eq(!pipePiece) then
+
+    !part = !branchConnection.conPart
+    if !part.type.eq('PIPCA') then
+      !part = !part.owner
+    endif
+
+    !towardPart = object DBREF()
+    if !prevPart.set() then
+      !rightDirection = !prevPart.lDir.opposite()
+      !towardPart = !prevPart
+    elseif !nextPart.set() then
+      !rightDirection = !nextPart.aDir.opposite()
+      !towardPart = !nextPart
+    else
+      !rightDirection = !part.aDir
+    endif
+
+    -- activity for the first branch
+    !activity = object PFASSEMBLYACTIVITY('BRANCH', !pipePiece)
+    !activity.referencePlaneComponent = !pipePiece
+    !activity.inclination = !rightDirection.angle(!branchDirection)
+    !activity.turning = 0degree
+    !activity.remarks.append(!towardPart)
+    !activity.remarks.append(!branchConnection.getConnectionType())
+    !activity.remarks.append(!branchConnection.getConnectionExcess())
+    !this.branchActivities.append(!activity)
+
+    if !pipePiece.type.eq('PPIECE') then
+      !pparef = !pipePiece.pparef
+      if !pparef.type.eq('BRAN') then
+        !branRef = !pparef
+      else
+        !branRef = !pparef.owner
+      endif
+    else
+      -- boss component
+      !branRef = !pipePiece.owner
+    endif
+
+    !branIndex = !this.branRefs.findFirst(!branRef)
+    if !branIndex.set() then
+      !refData = object ARRAY()
+      !refData[1] = !pipePiece
+      !refData[2] = !branchDirection.cross(!rightDirection)
+      if !branchConnection.head then
+        !this.headBranCons[!branIndex] = !refData
+      else
+        !this.tailBranCons[!branIndex] = !refData
+      endif
+    endif
+
+    !this.refLevel = 2
+    !this.refComponent = !pipePiece
+    !this.eyeDirection = !part.lDir.opposite()
+    !this.planeDirection = !branchDirection
+    !this.branConPart = !part
+
+    !start = 2
+
+  endif
+
+  !count = !branchConnections.size()
+  do !i from !start to !count
+
+    !branchConnection = !branchConnections[!i]
+    !branchDirection = !branchConnection.getBranchDirection()
+    !pipePiece = !branchConnection.pipePiece
+
+    -- bend or elbow exists
+    !activity = object PFASSEMBLYACTIVITY('BRANCH', !pipePiece)
+    !this.eyeDirection = !this.getEyeDirection(!branchConnection)
+    !activity.referencePlaneComponent = !this.refComponent
+    !activity.inclination = !this.eyeDirection.angle(!branchDirection)
+    !activity.turning = !!pfAngleBetweenDirsWithSign(!this.planeDirection, !branchDirection, !this.eyeDirection.opposite())
+    !activity.remarks[1] = object DBREF()
+    !activity.remarks[2] = !branchConnection.getConnectionType()
+    !activity.remarks[3] = !branchConnection.getConnectionExcess()
+    !this.branchActivities.append(!activity)
+
+    -- get reference plane for branch head or tail
+    if !pipePiece.type.eq('PPIECE') then
+      !pparef = !pipePiece.pparef
+      if !pparef.type.eq('BRAN') then
+        !branRef = !pparef
+      else
+        !branRef = !pparef.owner
+      endif
+    else
+      -- boss component
+      !branRef = !pipePiece.owner
+    endif
+
+    !branIndex = !this.branRefs.findFirst(!branRef)
+    if !branIndex.set() then
+      !refData = object ARRAY()
+      !refData[1] = !pipePiece
+      !refData[2] = !this.eyeDirection
+      if !branchConnection.head then
+        !this.headBranCons[!branIndex] = !refData
+      else
+        !this.tailBranCons[!branIndex] = !refData
+      endif
+    endif
+
+  enddo
+
+  if !this.refLevel.eq(2) then
+    !this.eyeDirection = !this.eyeDirection.opposite()
+  endif
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getPipePieceActivities
+--
+-- Description: get assembly activities for pipe pieces (CUT, BUTT)
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .getPipePieceActivities()
+
+  -- get 'CUT' and 'BUTT' assembly activities
+  do !i indices !this.pipePieces
+
+    !pipePiece = !this.pipePieces[!i]
+    !arriveComponent = !this.pparefs[!i]
+    !leaveComponent  = !this.pplrefs[!i]
+
+    -- FLFRM
+    if !arriveComponent.type.eq('FLAN') and !arriveComponent.flallowance.gt(0mm) then
+      !activity = object PFASSEMBLYACTIVITY('FLFRM', !pipePiece)
+      !activity.remarks.append(!arriveComponent)
+      !activity.remarks.append(!arriveComponent.flallowance)
+      !this.activities.append(!activity)
+    endif
+
+
+    -- FLFRM for leave
+    if !leaveComponent.type.eq('FLAN') and !leaveComponent.flallowance.gt(0mm) then
+      !activity = object PFASSEMBLYACTIVITY('FLFRM', !pipePiece)
+      !activity.remarks.append(!leaveComponent)
+      !activity.remarks.append(!leaveComponent.flallowance)
+      !this.activities.append(!activity)
+    endif
+
+    !arriveRef = !pipePiece.pparef
+    !leaveRef = !pipePiece.pplref
+
+    -- if the given pipe piece has bends
+    if !pipePiece.ppcnbd then
+
+      !bendRefs = object ARRAY()
+      do !partRef values !pipePiece.cmprfa
+        if !partRef.type.eq('BEND') then
+          !bendRefs.append(!partRef)
+        endif
+      enddo
+
+      -- 'CUT' for arrive
+      if !pipePiece.awdarr.not() then
+
+        !fabricationExcess = !pipePiece.baexss.max(!pipePiece.aExcess)
+        if !fabricationExcess.gt(0mm) and !pipePiece.uaexss.eq(0mm) then
+
+          if !arriveRef.type.eq('BRAN') then
+            !arrivePosition = !arriveRef.hpos
+          else
+            !arrivePosition = !arriveRef.lpos
+          endif
+
+          !firstBendRef = !bendRefs.first()
+          !finalLength = !firstBendRef.pos.distance(!arrivePosition)
+          if !arriveComponent.type.eq('FLAN') then
+            !finalLength = !finalLength + !arriveComponent.flallowance
+          endif
+
+          !activity = object PFASSEMBLYACTIVITY('CUT', !pipePiece)
+          !activity.remarks.append('ARRIVE')
+          !activity.remarks.append(!finalLength)
+          !activity.remarks.append(!firstBendRef)
+          !this.activities.append(!activity)
+
+        endif
+      endif
+
+      -- 'CUT' for leave
+      if !pipePiece.awdlev.not() then
+
+        !fabricationExcess = !pipePiece.blexss.max(!pipePiece.lExcess)
+        if !fabricationExcess.gt(0mm) and !pipePiece.ueexss.eq(0) then
+
+          if !leaveRef.type.eq('BRAN') then
+            !leavePosition = !leaveRef.tpos
+          else
+            !leavePosition = !leaveRef.apos
+          endif
+
+          !lastBendRef = !bendRefs.last()
+          !finalLength = !lastBendRef.pos.distance(!leavePosition)
+          if !leaveComponent.type.eq('FLAN') then
+            !finalLength = !finalLength + !leaveRef.flallowance
+          endif
+
+          !activity = object PFASSEMBLYACTIVITY('CUT', !pipePiece)
+          !activity.remarks.append('LEAVE')
+          !activity.remarks.append(!finalLength)
+          !activity.remarks.append(!lastBendRef)
+          !this.activities.append(!activity)
+        endif
+      endif
+
+      -- 'BUTT' ------------------------------------------------------------------
+      !machineFeeds = !pipePiece.fedexs
+      !userFeeds = !pipePiece.minfed
+      !machineCount = !machineFeeds.size()
+      !userCount = !userFeeds.size()
+      !count = !machineCount.max(!userCount)
+
+      do !j to !count
+
+        if !machineCount.lt(!j) then
+          !machineFeed = 0mm
+        else
+          !machineFeed = !machineFeeds[!j]
+        endif
+
+        if !userCount.lt(!j) then
+          !userFeed = 0mm
+        else
+          !userFeed = !userFeeds[!j]
+        endif
+
+        !feedExcess = !machineFeed.max(!userFeed)
+        if !feedExcess.gt(0mm) then
+          !activity = object PFASSEMBLYACTIVITY('BUTT', !pipePiece)
+          !activity.remarks.append(!feedExcess)
+          !activity.remarks.append(!machineFeed)
+          !activity.remarks.append(!bendRefs[!j])
+          !this.activities.append(!activity)
+        endif
+      enddo
+    endif
+  enddo
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      .getEyeDirection
+--
+-- Description: return the direction from the branch to the reference component
+--
+--------------------------------------------------------------------------------
+define method .getEyeDirection(!connection is PFBRANCHCONNECTION) is DIRECTION
+
+  -- The eye direction is derived from the arrive or leave of the reference component
+  -- the branch connection tee looks back toward the reference component and is expected to be in line
+  -- The eye direction should be the direction from the tee to the reference component.
+  -- if we get an error we return the existing eye direction.
+
+  !direction = !connection.conPart.position.direction(!this.refComponent.position)
+  handle any
+    return !this.eyeDirection
+  endhandle
+  return !direction
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getReferencePlaneDirection
+--
+-- Description: return the direction of reference plane made by the given component
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type] [Description]
+--    1    R      DBREF       component
+--    2    R      BOOLEAN     arrive or leave
+-- Return:
+--   [Data Type] [Description]
+--    DIRECTION   the direction of reference plane
+--------------------------------------------------------------------------------
+define method .getReferencePlaneDirection(!part is DBREF, !flow is BOOLEAN) is DIRECTION
+
+  if !flow then
+    !planeDirection = !part.lpos.direction(!part.apos)
+  else
+    !planeDirection = !part.apos.direction(!part.lpos)
+  endif
+
+  return !planeDirection
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getPipePieceByBranch
+--
+-- Description: get pipe piece by branch at head or tail position
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type] [Description]
+--    1    R      DBREF       branch
+--    2    R      BOOLEAN     true : head, false : tail
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .getPipePieceByBranch(!branRef is DBREF, !head is BOOLEAN) is DBREF
+
+  !boundary = !branRef
+  !count = !branRef.mcount()
+  if !count.gt(0) then
+
+    if !head then
+
+      !firstMember = !branRef.members[1]
+      if !firstMember.shop and !firstMember.type.eq('WELD') and !this.parts.findFirst(!firstMember).set() and !branRef.hpos.distance(!firstMember.apos).lt(1mm) then
+        !boundary = !firstMember
+      endif
+
+    else
+      !lastMember = !branRef.members[!count]
+      if !lastMember.shop and !lastMember.type.eq('WELD') and !this.parts.findFirst(!lastMember).set() and !branRef.tpos.distance(!lastMember.lpos).lt(1mm) then
+        !boundary = !lastMember
+      endif
+    endif
+  endif
+
+  return !this.getPipePieceByBoundary(!boundary, !head)
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getBossComponentByBranch
+--
+-- Description: get boss component by branch at head or tail position
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type] [Description]
+--    1    R      DBREF       branch
+--    2    R      BOOLEAN     true : head, false : tail
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .getBossComponentByBranch(!branRef is DBREF, !head is BOOLEAN) is DBREF
+
+  !count = !branRef.mcount()
+  if !count.gt(0) then
+
+    if !head then
+      !firstMember = !branRef.members[1]
+      if !firstMember.shop and !this.parts.findFirst(!firstMember).set() and !branRef.hpos.distance(!firstMember.apos).lt(1mm) then
+
+        if !firstMember.type.eq('WELD') then
+          if !count.gt(1) then
+            !nextMember = !branRef.members[2]
+            if !nextMember.shop and !nextMember.compType.eq('PTAP') and !firstMember.lpos.distance(!nextMember.apos).lt(1mm) and !this.parts.findFirst(!nextMember).set() then
+              return !nextMember
+            endif
+          endif
+        elseif !firstMember.compType.eq('PTAP') then
+          return !firstMember
+        endif
+      endif
+    else
+      !lastMember = !branRef.members[!count]
+      if !lastMember.shop and !this.parts.findFirst(!lastMember).set() and !branRef.tpos.distance(!lastMember.lpos).lt(1mm) then
+        if !lastMember.type.eq('WELD') then
+          if !count.gt(1) then
+            !prevMember = !branRef.members[!count - 1]
+            if !prevMember.shop and !prevMember.compType.eq('PTAP') and !lastMember.apos.distance(!prevMember.lpos).lt(1mm) and !this.parts.findFirst(!prevMember).set() then
+              return !prevMember
+            endif
+          endif
+        elseif !lastMember.compType.eq('PTAP') then
+          return !lastMember
+        endif
+      endif
+    endif
+  endif
+
+  return object DBREF()
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getBranchConnections
+--
+-- Description: get all branch connection information
+--
+--
+--------------------------------------------------------------------------------
+define method .getBranchConnections()
+
+  !psarfa = !this.pipeSpool.psarfa
+  !pslrfa = !this.pipeSpool.pslrfa
+
+  do !i indices !psarfa
+
+    !arriveBoundary = !psarfa[!i]
+    if !arriveBoundary.type.eq('BRAN') then
+      !href = !arriveBoundary.href
+      if !href.badref().not() and !href.shop and !this.parts.findFirst(!href).set() then
+
+        !hrefType = !href.type
+        if !hrefType.eq('PIPCA') then
+          if !href.purpose.eq('TAP') then
+            !bossComponent = !this.getBossComponentByBranch(!arriveBoundary, true)
+            if !bossComponent.set() then
+              !part = !href.owner
+              !index = !this.branConParts.findFirst(!part)
+              if !index.unset() then
+                !this.branConParts.append(!part)
+                !this.branchConnections.append(object ARRAY())
+                !index = !this.branConParts.size()
+              endif
+
+              !this.branchConnections[!index].append(object PFBRANCHCONNECTION(!part, 0, !bossComponent, true))
+
+              !index = !this.branRefs.findFirst(!arriveBoundary)
+              if !index.set() then
+                !refData = object ARRAY()
+                !refData[1] = !part
+                !refData[2] = !part.aDir
+                !this.headBranCons[!index] = !refData
+              endif
+            endif
+          else
+            !pipePiece = !this.getPipePieceByBranch(!arriveBoundary, true)
+            if !pipePiece.set() then
+              !part = !href.owner
+              !index = !this.branConParts.findFirst(!part)
+              if !index.unset() then
+                !this.branConParts.append(!part)
+                !this.branchConnections.append(object ARRAY())
+                !index = !this.branConParts.size()
+              endif
+
+              !this.branchConnections[!index].append(object PFBRANCHCONNECTION(!part, 0, !pipePiece, true))
+
+              !index = !this.branRefs.findFirst(!arriveBoundary)
+              if !index.set() then
+                !refData = object ARRAY()
+                !refData[1] = !part
+                !refData[2] = !part.aDir
+                !this.headBranCons[!index] = !refData
+              endif
+            endif
+          endif
+        elseif !hrefType.eq('PTAP') then
+
+          if !href.mcount().gt(0) then
+            if !href.members[1].purpose.eq('TAP') then
+              !bossComponent = !this.getBossComponentByBranch(!arriveBoundary, true)
+              if !bossComponent.set() then
+                !index = !this.branConParts.findFirst(!href)
+                if !index.unset() then
+                  !this.branConParts.append(!href)
+                  !this.branchConnections.append(object ARRAY())
+                  !index = !this.branConParts.size()
+                endif
+
+                !this.branchConnections[!index].append(object PFBRANCHCONNECTION(!href, 3, !bossComponent, true))
+
+                !index = !this.branRefs.findFirst(!arriveBoundary)
+                if !index.set() then
+                  !refData = object ARRAY()
+                  !refData[1] = !href
+                  !refData[2] = !href.aDir
+                  !this.headBranCons[!index] = !refData
+                endif
+              endif
+            else
+              !pipePiece = !this.getPipePieceByBranch(!arriveBoundary, true)
+              if !pipePiece.set() then
+                !index = !this.branConParts.findFirst(!href)
+                if !index.unset() then
+                  !this.branConParts.append(!href)
+                  !this.branchConnections.append(object ARRAY())
+                  !index = !this.branConParts.size()
+                endif
+
+                !this.branchConnections[!index].append(object PFBRANCHCONNECTION(!href, 3, !pipePiece, true))
+
+                !index = !this.branRefs.findFirst(!arriveBoundary)
+                if !index.set() then
+                  !refData = object ARRAY()
+                  !refData[1] = !href
+                  !refData[2] = !href.aDir
+                  !this.headBranCons[!index] = !refData
+                endif
+              endif
+            endif
+          endif
+
+        else
+
+          !cref = !href.cref
+          handle ANY
+
+            !crfarray = !href.crfarray
+            handle ANY
+            elsehandle NONE
+
+              do !ppoint indices !crfarray
+                if !href.ppos[!ppoint].distance(!arriveBoundary.hpos).lt( 1mm ) and !href.pdir[!ppoint].dot(!arriveBoundary.hdir).gt( 0.99 ) then
+
+                  !pipePiece = !this.getPipePieceByBranch(!arriveBoundary, true)
+                  if !pipePiece.set() then
+                    !index = !this.branConParts.findFirst(!href)
+                    if !index.unset() then
+                      !this.branConParts.append(!href)
+                      !this.branchConnections.append(object ARRAY())
+                      !index = !this.branConParts.size()
+                    endif
+
+                    !this.branchConnections[!index].append(object PFBRANCHCONNECTION(!href, !ppoint, !pipePiece, true))
+
+                    !index = !this.branRefs.findFirst(!arriveBoundary)
+                    if !index.set() then
+                      !refData = object ARRAY()
+                      !refData[1] = !href
+                      !refData[2] = !href.aDir
+                      !this.headBranCons[!index] = !refData
+                    endif
+
+                    break
+                  endif
+
+                endif
+              enddo
+            endhandle
+
+          elsehandle NONE
+
+            if !href.arrive.neq(3) and !href.leave.neq(3) and !href.ppos[3].distance(!arriveBoundary.hpos).lt( 1mm ) and !href.pdir[3].dot(!arriveBoundary.hdir).gt( 0.99 ) then
+
+              !pipePiece = !this.getPipePieceByBranch(!arriveBoundary, true)
+              if !pipePiece.set() then
+                !index = !this.branConParts.findFirst(!href)
+                if !index.unset() then
+                  !this.branConParts.append(!href)
+                  !this.branchConnections.append(object ARRAY())
+                  !index = !this.branConParts.size()
+                endif
+
+                !this.branchConnections[!index].append(object PFBRANCHCONNECTION(!href, 3, !pipePiece, true))
+
+                !index = !this.branRefs.findFirst(!arriveBoundary)
+                if !index.set() then
+                  !refData = object ARRAY()
+                  !refData[1] = !href
+                  !refData[2] = !href.aDir
+                  !this.headBranCons[!index] = !refData
+                endif
+              endif
+
+            endif
+          endhandle
+
+        endif
+      endif
+    endif
+
+
+    !leaveBoundary = !pslrfa[!i]
+    if !leaveBoundary.type.eq('BRAN') then
+      !tref = !leaveBoundary.tref
+      if !tref.badref().not() and !tref.shop and !this.parts.findFirst(!tref).set() then
+
+        !trefType = !tref.type
+        if !trefType.eq('PIPCA') then
+          if !tref.purpose.eq('TAP') then
+            !bossComponent = !this.getBossComponentByBranch(!leaveBoundary, false)
+            if !bossComponent.set() then
+              !part = !tref.owner
+              !index = !this.branConParts.findFirst(!part)
+              if !index.unset() then
+                !this.branConParts.append(!part)
+                !this.branchConnections.append(object ARRAY())
+                !index = !this.branConParts.size()
+              endif
+
+              !this.branchConnections[!index].append(object PFBRANCHCONNECTION(!part, 0, !bossComponent, false))
+
+              !index = !this.branRefs.findFirst(!leaveBoundary)
+              if !index.set() then
+                !refData = object ARRAY()
+                !refData[1] = !part
+                !refData[2] = !part.aDir
+                !this.tailBranCons[!index] = !refData
+              endif
+            endif
+          else
+            !pipePiece = !this.getBossComponentByBranch(!leaveBoundary, false)
+            if !pipePiece.set() then
+              !part = !tref.owner
+              !index = !this.branConParts.findFirst(!part)
+              if !index.unset() then
+                !this.branConParts.append(!part)
+                !this.branchConnections.append(object ARRAY())
+                !index = !this.branConParts.size()
+              endif
+
+              !this.branchConnections[!index].append(object PFBRANCHCONNECTION(!part, 0, !pipePiece, false))
+
+              !index = !this.branRefs.findFirst(!leaveBoundary)
+              if !index.set() then
+                !refData = object ARRAY()
+                !refData[1] = !part
+                !refData[2] = !part.aDir
+                !this.tailBranCons[!index] = !refData
+              endif
+            endif
+          endif
+        elseif !trefType.eq('PTAP') then
+
+          if !tref.mcount().gt(0) then
+            if !tref.members[1].purpose.eq('TAP') then
+              !bossComponent = !this.getBossComponentByBranch(!leaveBoundary, false)
+              if !bossComponent.set() then
+                !index = !this.branConParts.findFirst(!tref)
+                if !index.unset() then
+                  !this.branConParts.append(!tref)
+                  !this.branchConnections.append(object ARRAY())
+                  !index = !this.branConParts.size()
+                endif
+
+                !this.branchConnections[!index].append(object PFBRANCHCONNECTION(!tref, 3, !bossComponent, false))
+
+                !index = !this.branRefs.findFirst(!leaveBoundary)
+                if !index.set() then
+                  !refData = object ARRAY()
+                  !refData[1] = !tref
+                  !refData[2] = !tref.aDir
+                  !this.tailBranCons[!index] = !refData
+                endif
+              endif
+            else
+              !pipePiece = !this.getPipePieceByBranch(!leaveBoundary, false)
+              if !pipePiece.set() then
+                !index = !this.branConParts.findFirst(!tref)
+                if !index.unset() then
+                  !this.branConParts.append(!tref)
+                  !this.branchConnections.append(object ARRAY())
+                  !index = !this.branConParts.size()
+                endif
+
+                !this.branchConnections[!index].append(object PFBRANCHCONNECTION(!tref, 3, !pipePiece, false))
+
+                !index = !this.branRefs.findFirst(!leaveBoundary)
+                if !index.set() then
+                  !refData = object ARRAY()
+                  !refData[1] = !tref
+                  !refData[2] = !tref.aDir
+                  !this.tailBranCons[!index] = !refData
+                endif
+              endif
+            endif
+          endif
+
+        else
+
+          !cref = !tref.cref
+          handle ANY
+
+            !crfarray = !tref.crfarray
+            handle ANY
+            elsehandle NONE
+
+              do !ppoint indices !crfarray
+                if !tref.ppos[!ppoint].distance(!leaveBoundary.tpos).lt( 1mm ) and !tref.pdir[!ppoint].dot(!leaveBoundary.tdir).gt( 0.99 ) then
+
+                  !pipePiece = !this.getPipePieceByBranch(!leaveBoundary, false)
+                  if !pipePiece.set() then
+                    !index = !this.branConParts.findFirst(!tref)
+                    if !index.unset() then
+                      !this.branConParts.append(!tref)
+                      !this.branchConnections.append(object ARRAY())
+                      !index = !this.branConParts.size()
+                    endif
+
+                    !this.branchConnections[!index].append(object PFBRANCHCONNECTION(!tref, !ppoint, !pipePiece, false))
+
+                    !index = !this.branRefs.findFirst(!leaveBoundary)
+                    if !index.set() then
+                      !refData = object ARRAY()
+                      !refData[1] = !tref
+                      !refData[2] = !tref.aDir
+                      !this.tailBranCons[!index] = !refData
+                    endif
+
+                    break
+                  endif
+
+                endif
+              enddo
+            endhandle
+
+          elsehandle NONE
+
+            if !tref.arrive.neq(3) and !tref.leave.neq(3) and !tref.ppos[3].distance(!leaveBoundary.tpos).lt( 1mm ) and !tref.pdir[3].dot(!leaveBoundary.tdir).gt( 0.99 ) then
+
+              !pipePiece = !this.getPipePieceByBranch(!leaveBoundary, false)
+              if !pipePiece.set() then
+                !index = !this.branConParts.findFirst(!tref)
+                if !index.unset() then
+                  !this.branConParts.append(!tref)
+                  !this.branchConnections.append(object ARRAY())
+                  !index = !this.branConParts.size()
+                endif
+
+                !this.branchConnections[!index].append(object PFBRANCHCONNECTION(!tref, 3, !pipePiece, false))
+
+                !index = !this.branRefs.findFirst(!leaveBoundary)
+                if !index.set() then
+                  !refData = object ARRAY()
+                  !refData[1] = !tref
+                  !refData[2] = !tref.aDir
+                  !this.tailBranCons[!index] = !refData
+                endif
+              endif
+
+            endif
+          endhandle
+
+        endif
+      endif
+    endif
+
+  enddo
+
+endmethod
+$(
+--------------------------------------------------------------------------------
+--
+-- Method:      getConnectedPipePiece
+--
+-- Description: return the pipe piece which is connected to the given component at the given ppoint
+--
+-- Method Type: Function
+-- Arguments:
+--   [#]  [R/RW] [Data Type] [Description]
+--    1    R      DBREF       component
+--    2    R      REAL        ppoint number
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       pipe piece
+--------------------------------------------------------------------------------
+define method .getConnectedPipePiece(!partRef is DBREF, !ppoint is REAL) is DBREF
+
+  !pdir = !partRef.pdir[!ppoint]
+  !ppos = !partRef.ppos[!ppoint]
+
+  do !ppieceRef values !this.pipePieces
+
+    if !pparef.type.eq('BRAN') then
+      if !pparef.hpos.distance(!ppos).lt( 1mm ) and !pparef.hdir.dot(!pdir).gt( 0.99 ) then
+        return !ppieceRef
+      endif
+    endif
+
+    !pplref = !ppieceRef.pplref
+    if !pplref.type.eq('BRAN') then
+      if !pplref.tpos.distance(!ppos).lt( 1mm ) and !pplref.tdir.dot(!pdir).gt( 0.99 ) then
+        return !ppieceRef
+      endif
+    endif
+  enddo
+
+  return object DBREF()
+
+endmethod
+$)
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getNextReferencePlane
+--
+-- Description: get the next reference plane after the given component in the given branch
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type] [Description]
+--    1    R      REAL        segment index
+--    2    R      REAL        next part index
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .getNextReferencePlane(!segIndex is REAL, !nextIndex is REAL)
+
+  !this.refLevel = 5
+
+  !count = !this.segments[!segIndex].size()
+  do !partIndex from !nextIndex to !count
+
+    !part = !this.segments[!segIndex][!partIndex]
+
+    if !part.nvol.value().eq(0) then
+      !index = !this.branConParts.findFirst(!part)
+
+      if !index.set() then
+        !branchConnection = !this.branchConnections[!index][1]
+        !this.refLevel = 2
+        !this.refComponent = !branchConnection.pipePiece
+        !this.eyeDirection = !part.aDir.opposite()
+        !this.planeDirection = !branchConnection.getBranchDirection()
+        return
+      endif
+    endif
+
+    !partType = !part.hardType
+
+    if !this.refLevel.gt(3) and !partType.eq('TEE') or !partType.eq('OLET') or !partType.eq('CROS') then
+      if !part.nvol.value().gt(0) then
+
+       $(
+        if !part.aDir.neq(!part.lDir.opposite()) then
+           -- its a tee which branches
+           $p adjusting
+           !this.refLevel = 3
+           !this.refComponent = !part
+           !this.eyeDirection = !part.pdir[3]
+           !this.planeDirection = !part.pdir[3].cross(!part.pdir[1])
+           q var !this.planedirection !this.eyedirection
+        else
+          $)
+           !this.refLevel = 3
+           !this.refComponent = !part
+           !this.eyeDirection = !part.aDir.opposite()
+           !this.planeDirection = !part.pdir[3]
+        --endif
+      endif
+    elseif !partIndex.gt(1) and !this.refLevel.gt(3) then
+
+      if !partType.eq('FLAN') then
+        !this.refLevel = 4
+        !this.refComponent = !part
+        !this.eyeDirection = !part.aDir.opposite()
+        !this.planeDirection = !this.flangeUtility.getAlignmentDirection(!part, !part.arrive)
+
+      elseif !partType.eq('FTUB') and !part.compType.eq('SEND') then
+
+        !desp = !part.desp
+        if !desp[1].gt(0) and !desp[3].lt(0) then
+
+          !this.refLevel = 4
+          !this.refComponent = !part
+          !this.eyeDirection = !part.aDir.opposite()
+
+          !od    = !part.aod
+          !pdir0 = !part.pdir[0]
+          !p4    = !part.ppos[4].offset(!pdir0, -!od)
+          !p5    = !part.ppos[5].offset(!pdir0,  !od)
+          !this.planeDirection = !part.pdir[4].cross(!p4.direction(!p5))
+        endif
+      endif
+    endif
+  enddo
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getSlantedPipeEndActivity
+--
+-- Description: get an assembly activity for the given slanted pipe end
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type] [Description]
+--    1    R      REAL        segment index
+--    2    R      REAL        part index
+--    3    R      DBREF       slanted pipe end
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .getSlantedPipeEndActivity(!segIndex is REAL, !partIndex is REAL, !part is DBREF)
+
+  if !this.refLevel.eq(5) then
+    !this.getNextReferencePlane(!segIndex, !partIndex + 1)
+  endif
+
+  !activity = object PFASSEMBLYACTIVITY('SEND', !part)
+
+  !desp = !part.desp
+  if !desp[3].lt(0) then
+
+    !od    = !part.aod
+    !pdir0 = !part.pdir[0]
+    !p4    = !part.ppos[4].offset(!pdir0, -!od)
+    !p5    = !part.ppos[5].offset(!pdir0,  !od)
+    !normalDirection = !part.pdir[4].cross(!p4.direction(!p5))
+
+    !activity.inclination = !part.aDir.angle(!normalDirection)
+
+    if !this.refLevel.lt(5) then
+      !activity.referencePlaneComponent = !this.refComponent
+
+      !eyeDirection = !part.aDir
+      !refType = !this.refComponent.hardType
+
+      if !refType.eq('FLAN') then
+        !projectedDirection = !normalDirection.cross(!eyeDirection).cross(!eyeDirection)
+
+        !activity.turning = !this.flangeUtility.getAlignmentOffsetAngle(!this.refComponent, !this.refComponent.arrive, !projectedDirection, !eyeDirection)
+      else
+        !activity.turning = !!pfAngleBetweenDirsWithSign(!this.planeDirection, !normalDirection, !part.lDir)
+      endif
+    endif
+
+  else
+
+    !normalDirection = !part.pdir[4].cross(!part.ppos[4].direction(!part.ppos[5]))
+    !activity.inclination = !part.lDir.angle(!normalDirection)
+    if !this.refLevel.lt(5) then
+      !activity.referencePlaneComponent = !this.refComponent
+      !eyeDirection = !part.lDir
+      !refType = !this.refComponent.hardType
+      if !refType.eq('FLAN') then
+        !projectedDirection = !normalDirection.cross(!eyeDirection).cross(!eyeDirection)
+        !activity.turning = !this.flangeUtility.getAlignmentOffsetAngle(!this.refComponent, !this.refComponent.leave, !projectedDirection, !eyeDirection)
+      else
+        !activity.turning = !!pfAngleBetweenDirsWithSign(!this.planeDirection, !normalDirection, !part.aDir)
+      endif
+    endif
+
+    if !this.refLevel.gt(3) then
+      !this.refLevel = 4
+      !this.refComponent = !part
+      !this.eyeDirection = !part.lDir.opposite()
+      !this.planeDirection = !normalDirection
+    endif
+  endif
+
+  !this.componentActivities.append(!activity)
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getTeeActivity
+--
+-- Description: get an assembly activity for the given tee component
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#]  [R/RW] [Data Type] [Description]
+--    1    R      REAL        branch index
+--    2    R      REAL        component index
+--    3    R      DBREF       tee component
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .getTeeActivity(!segIndex is REAL, !partIndex is REAL, !part is DBREF)
+
+  if !this.refLevel.gt(3) or !part.eq(!this.refComponent) then
+    !this.getNextReferencePlane(!segIndex, !partIndex + 1)
+  endif
+
+  if !this.refLevel.lt(4) then
+
+      --    *arrive
+      --    |   3
+      --    +---*
+      --    |
+      --    *leave
+      --    |
+      --    |
+
+    !activity = object PFASSEMBLYACTIVITY('TEE', !part)
+    !activity.referencePlaneComponent = !this.refComponent
+
+    if !this.eyeDirection.dot(!part.aDir).gt(0) then
+      -- looking previous
+      if !part.arrive.eq(3) then
+         !activity.inclination = !part.aDir.angle(!part.pdir[!part.leave])
+         !activity.turning = !!pfAngleBetweenDirsWithSign(!this.planeDirection, !part.pdir[!part.leave], !part.lDir.opposite())
+      else
+         !activity.inclination = !part.aDir.angle(!part.pdir[3])
+         !activity.turning = !!pfAngleBetweenDirsWithSign(!this.planeDirection, !part.pdir[3], !part.aDir.opposite())
+      endif
+    else
+      -- looking next
+      if !part.arrive.eq(3) then
+         !activity.inclination = !part.aDir.angle(!part.pdir[!part.leave])
+         !activity.turning = !!pfAngleBetweenDirsWithSign(!this.planeDirection, !part.pdir[3], !part.lDir.opposite())
+      else
+         !activity.inclination = !part.lDir.angle(!part.pdir[3])
+         !activity.turning = !!pfAngleBetweenDirsWithSign(!this.planeDirection, !part.pdir[3], !part.aDir)
+      endif
+    endif
+
+    !this.componentActivities.append(!activity)
+
+    if !part.arrive.lt(3) and !part.leave.lt(3) then
+      !cref = !part.cref
+      handle ANY
+
+        !crfarray = !part.crfarray
+        handle ANY
+          -- ignore
+        elsehandle NONE
+
+          do !ppoint indices !crfarray
+            !cref = !crfarray[!ppoint]
+            if !cref.badref().not() and !cref.type.eq('BRAN') then
+              !branIndex = !this.branRefs.findFirst(!cref)
+              if !branIndex.set() then
+                !pdir = !part.pdir[!ppoint]
+                !refData = object ARRAY()
+                !refData[1] = !part
+                !refData[2] = !this.eyeDirection
+                if !pdir.dot(!cref.hdir).gt(!pdir.dot(!cref.tdir)) then
+                  !this.headBranCons[!branIndex] = !refData
+                else
+                  !this.tailBranCons[!branIndex] = !refData
+                endif
+              endif
+            endif
+          enddo
+
+        endhandle
+
+      elsehandle NONE
+
+        if !cref.badref().not() and !cref.type.eq('BRAN') then
+          !branIndex = !this.branRefs.findFirst(!cref)
+          if !branIndex.set() then
+            !pdir = !part.pdir[3]
+            !refData = object ARRAY()
+            !refData[1] = !part
+            !refData[2] = !this.eyeDirection
+            if !pdir.dot(!cref.hdir).gt(!pdir.dot(!cref.tdir)) then
+              !this.headBranCons[!branIndex] = !refData
+            else
+              !this.tailBranCons[!branIndex] = !refData
+            endif
+          endif
+        endif
+      endhandle
+    endif
+  endif
+
+  -- Fix issue 104239
+  --if !this.refLevel.gt(2) and !this.eyeDirection.dot(!part.lDir).gt(0) then
+  if !this.refLevel.gt(3) or (!this.refLevel.eq(3) and !this.eyeDirection.dot(!part.lDir).gt(0)) then
+
+    !this.refLevel = 3
+    !this.refComponent = !part
+    !this.planeDirection = !part.pdir[3]
+    !this.eyeDirection = !part.aDir
+  endif
+endmethod
+
+--define method .getPlaneForTee(!tee is DBREF)is DIRECTION
+
+ -- !direction = !tee.pdir[1].cross(!tee.pdir[3])

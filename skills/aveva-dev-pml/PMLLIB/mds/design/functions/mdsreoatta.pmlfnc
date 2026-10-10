@@ -1,0 +1,614 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            mdsreoatta.pmlfnc
+--    Type:          Function Definition
+--    Group:         Undefined
+--      Keyword:     Undefined
+--    Module:        Undefined
+--------------------------------------
+--   Type           : Function Definition
+--   Group          : Multi Discipline Supports Application
+--     Keyword      : MDS
+--   Module         : design
+--   Replaces       :
+--
+-- Author:          : Steve Robinson
+-- Created:         : Sep  4 1997
+--
+--
+-- Description:
+-- reorder pipework attas following a support copy operation
+--
+----------------------------------------------------------------------------------
+-- Arguments:
+--    [#]   [R/RW] [Data Type] [Description]
+--     1     R      DBREF       Reference of BRAN containing ATTAs to be reordered
+--
+-- Return:
+--    [Data Type]   [Description]
+--
+----------------------------------------------------------------------------------
+-- Define Function
+define function !!mdsReoAtta(!branch is DBREF)
+
+  !currentUnits = !!kGetSetUnits()
+
+-- Initialise variables
+  !bran = !branch
+  !errors = ARRAY()
+  !hangerAtta = FALSE
+  if !!ce.type.eq('ATTA') then
+    if !!ce.styp.eq('MH01') then
+      !hangerAtta = TRUE
+--<wd>07aug2008 - HPD0038306 - Other existing MDS HANGER TEMPLATE STYPES added
+    elseif (!!ce.styp.matchwild('FH*') or !!ce.styp.matchwild('VH*') ) then
+      !hangerAtta = TRUE
+--<wd>07aug2008 - HPD0038306 - Other existing MDS HANGER TEMPLATE STYPES added
+    endif
+  endif
+
+  if (!bran.type.eq('WORL')) then
+    !!alert.error('Could not navigate to Branch "$!bran"')
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+-- Function main
+-- check that passed branch exists
+  if (!bran.badRef()) then
+    !!alert.error('Could not navigate to Branch "$!bran"')
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+-- check passed element type is a bran
+  if (!bran.type neq 'BRAN') then
+    if (!bran.owner.type.neq('BRAN')) then
+      !name = !bran.fullname
+      !!alert.error('''$!name''- or it''s owner is NOT of the type BRANCH')
+      !!kRestoreUnits(!currentUnits)
+      return
+    else
+-- Elements Owner is a Branch
+      !bran = !bran.owner
+    endif
+  endif
+
+-- generate array of all branch ATTAs
+  var !sAttas collect all ATTA for $!bran
+
+-- Collect all olets (LUG) for later use
+  var !sOlets collect all OLET for $!bran
+
+-- check we have some ATTAs to work with
+  if (!sAttas.empty()) then
+    !!kRestoreUnits(!currentUnits)
+    return
+  endif
+
+-- check we have at least 2 ATTAs to reorder
+-- Removed because of the addition of reorder olets (LUGS)
+  --if (!sAttas.maxIndex() eq 1) then
+  --!!kRestoreUnits(!currentUnits)
+    --return
+  --endif
+-- loop through all branch members and generate array of ATTAs & other in-line components
+-- that are adjacent to each other in the hierarchy
+  !adjElements = ARRAY()
+  !origins = ARRAY()
+  !reorderRefs = ARRAY()
+  !reorderModes = ARRAY()
+  !aCnt = 0
+  !bcnt = 0
+  !inAttaGroup = FALSE
+
+-- navigate to branch
+  $!bran
+  !purp = purp of pspec
+  do !i from 1 to !bran.mcount()
+    bran
+    $!i
+    if (TYPE eq 'ATTA' and !inAttaGroup) then
+-- we are at the next adjacent atta in a group
+      !bcnt = !bcnt + 1
+      !adjElements[!aCnt][!bcnt] = !!ce
+    elseif (TYPE eq 'ATTA' and !inAttaGroup.not()) then
+-- we are at the start of the next possible group of adjacent attas
+      !inAttaGroup = true
+      !aCnt = !aCnt + 1
+      !bcnt = 1
+-- determine PL pos or HPOS from which to measure distance along tune centre line
+      if (ORDER eq 1) then
+        !originPos = !bran.hpos.wrt(/* )
+        !reorderRef = REF
+        !reorderMode = 'HEAD'
+      else
+--<wd>aug2006
+        -- Added the DEFAULT SETTINGS for the variables "!originPos, !reorderRef and !reorderMode"
+-- This ensures the variables are always SET when there is a PIPING Component before the FIRST ATTA
+-- These variables are always RESET below if LUGS defined as OLETS etc... EXIST.
+        !originPos = PL Pos of Prev wrt /*
+        !reorderRef = Prev
+        !reorderMode = 'INLINE'
+--<wd>aug2006
+        !attan = !!ce
+        do !iii from 1 to 99
+          !previtem =  prev $!iii
+          handle ANY
+            !originPos = !bran.hpos.wrt(/* )
+            !reorderRef = REF
+            !reorderMode = 'HEAD'
+            break
+          elsehandle NONE
+            if !previtem.name.match(!attan.name).gt(0) and !previtem.type.eq('OLET') then
+              -- Lugs attached to atta
+              skip
+            else
+              !originPos = PL Pos of Prev $!iii wrt /*
+              handle ANY
+                !errname = NAME OF Prev $!iii
+                write 'Error with component $!errname'
+                skip
+              endhandle
+              !reorderRef = Prev $!iii
+              !reorderMode = 'INLINE'
+              break
+            endif
+          endhandle
+        enddo
+      endif
+      !origins[!aCnt] = !originPos
+      !reorderRefs[!aCnt] = !reorderRef
+      !reorderModes[!aCnt] = !reorderMode
+      !adjElements[!aCnt][!bcnt] = !!ce
+    else
+-- we are at the end of an atta group or at the next component that is not an atta
+-- check if this component involves a change in direction
+      pin 1 at pa
+      handle ANY
+        !errname = !!ce.name
+        write 'Error with component $!errname'
+        end
+        skip
+      endhandle
+      pin 2 at pl
+      pin 1 dir to pin 2
+      handle (61,52) $* unable to orientate pin 1 (zero thickness component e.g. WELD)
+-- pins at same position
+        pin 1 dir pl
+        pin 1 off
+        pin 2 off
+        if (!inAttaGroup) then
+          !bcnt = !bcnt + 1
+          !adjElements[!aCnt][!bcnt] = !!ce
+        endif
+      elsehandle NONE
+        pin 1 off
+        pin 2 off
+        var !dir pin 1 dir
+        !tubeArriveDir = !dir.direction()
+        !tubeLeaveDir = PL DIR
+        if (!tubeArriveDir neq !tubeLeaveDir) then
+-- we are at a new section of tube having different centre line direction
+          !inAttaGroup = false
+        elseif (!inAttaGroup) then
+          !bcnt = !bcnt + 1
+          !adjElements[!aCnt][!bcnt] = !!ce
+        else
+          --loop forwards along branch, if atta exists before direction change, then add CE to attagroup and set
+          --inattagroup to true
+          !attaFound = FALSE
+          do !j from !i to !bran.mcount()
+            !k = !j + 1
+            bran
+            $!k
+            handle any
+              skip
+            endhandle
+            if (TYPE eq 'ATTA') then
+              !attaFound = TRUE
+              break
+            else
+              --Not an atta - check if change in direction first
+              pin 1 at pa
+              handle ANY
+                !errname = !!ce.name
+                write 'Error with component $!errname'
+                --END
+                skip
+              endhandle
+              pin 2 at pl
+              pin 1 dir to pin 2
+              handle (61,52) $* unable to orientate pin 1 (zero thickness component e.g. WELD)
+                -- pins at same position
+                pin 1 dir pl
+                pin 1 off
+                pin 2 off
+              elsehandle none
+                pin 1 off
+                pin 2 off
+                var !dir pin 1 dir
+                !tubeArriveDir = !dir.direction()
+                !tubeLeaveDir = PL DIR
+                if (!tubeArriveDir neq !tubeLeaveDir) then
+                  --found change in direction so skip this component
+                  break
+                endif
+              endhandle
+            endif
+          enddo
+
+          bran
+          $!i
+
+          if !attaFound then
+
+            -- add to attagroup, set inattagroup true
+            !inAttaGroup = true
+            !aCnt = !aCnt + 1
+            !bcnt = 1
+
+            if (ORDER eq 1) then
+              !originPos = !bran.hpos.wrt(/* )
+              !reorderRef = REF
+              !reorderMode = 'HEAD'
+            else
+              !originPos = PL Pos of Prev wrt /*
+              handle ANY
+            	  skip
+              endhandle
+              !reorderRef = Prev
+              !reorderMode = 'INLINE'
+            endif
+            !origins[!aCnt] = !originPos
+            !reorderRefs[!aCnt] = !reorderRef
+            !reorderModes[!aCnt] = !reorderMode
+            !adjElements[!aCnt][!bcnt] = !!ce
+          endif
+
+        endif
+
+      endhandle
+    endif
+    END
+  enddo
+
+----------------------------------------------------------------------------
+
+-- print out test data
+$(do !a index !adjElements
+do !b index !adjElements[!a]
+!xxx = !adjElements[!a][!b].fullName
+$p $!a,$!b - $!xxx
+  enddo
+enddo
+$)
+
+----------------------------------------------------------------------------
+  -- loop through adjacent attas which are all in same length of tube
+  -- and reorder with respect to the distance along tube centre line
+do !a index !adjElements
+
+    -- determine distance of attas from origin for this section of tube
+  !originPos = !origins[!a]
+  !reorderRef = !reorderRefs[!a]
+  !reorderMode = !reorderModes[!a]
+
+  !dists = ARRAY()
+  !attas = ARRAY()
+  do !b index !adjElements[!a]
+    --xxx      !attaPos = !adjElements[!a][!b].position
+    !attaPos = !adjElements[!a][!b].position.wrt(/* )
+    var !dist construct distance $!originPos To $!attaPos
+    !dists.append(!dist.real())
+    !attas.append(!adjElements[!a][!b])
+    enddo
+    -- sort the distances in order of magnitude (ascending)
+  !sortOrder = !dists.sortedIndices()
+  !sortOrder.invert()
+
+    -- reorder the branch members for this group of adjacent attas
+----------------------------------------------------------------------------
+  do !i values !sortOrder
+    if (!reorderMode eq 'HEAD') then
+      if (!i eq 1) then
+        REORDER $!attas[$!i] BEFORE $!reorderRef
+            handle ANY
+              claim ce
+          REORDER $!attas[$!i] BEFORE $!reorderRef
+            endhandle
+        !reorderRef = !attas[$!i]
+        else
+        REORDER $!attas[$!i] AFTER $!reorderRef
+        handle ANY
+          REORDER $!attas[$!i] AFTER $!reorderRef
+          handle (2,18)
+            -- ATTA elements locked
+            !attaname = !attas[!i].name
+            !errors.append('$!!error.text')
+          endhandle
+        endhandle
+      endif
+    elseif (!reorderMode eq 'INLINE') then
+      REORDER $!attas[$!i] AFTER $!reorderRef
+      handle ANY
+        claim ce
+        handle ANY
+          break
+        elsehandle NONE
+          REORDER $!attas[$!i] AFTER $!reorderRef
+          handle (2,18)
+            -- ATTA elements locked
+            !attaname = !attas[!i].name
+                !errors.append('$!!error.text')
+              endhandle
+            endhandle
+          endhandle
+      endif
+    enddo
+----------------------------------------------------------------------------
+  enddo
+
+
+-->> GE 11/10/2005 Fix for HPD0030084
+  if !purp eq 'TRAY' then
+    !datumorder = ARRAY()
+    !ftuborder = ARRAY()
+    var !datums collect all ATTA with (matchwild(NAME,'*/DATUM')) for ce
+    var !coll collect bran mem for ce
+    do !datum values !datums
+    !attaPos = !datum.dbref().position.wrt(/* )
+     do !item values !coll
+        if !item.dbref().type eq 'FTUB' then
+         !pa = pa Pos of $!item wrt /*
+         !pl = pl Pos of $!item wrt /*
+        !patopl = object LINE(!pa,!pl)
+        !checkproj = !patopl.onprojected(!attaPos)
+        !checkon = !patopl.on(!attaPos)
+          if (!checkproj and !checkon)  then
+            REORDER $!datum AFTER $!item
+            handle ANY
+           endhandle
+           break
+          endif
+         elseif (!item.dbref().type NEQ 'FTUB' and !item.dbref().type NEQ 'ATTA') then
+         !pa = pa Pos of $!item wrt /*
+         !pl = pl Pos of $!item wrt /*
+         !p0 = p0 Pos of $!item wrt /*
+          !patop0 = object LINE(!pa,!p0)
+          !pltop0 = object LINE(!pl,!p0)
+          !checkprojpa = !patop0.onprojected(!attaPos)
+          handle (2,785)
+            if !pa.eq(!p0) then
+              !checkprojpa = TRUE
+            else
+              !checkprojpa = FALSE
+            endif
+          endhandle
+
+          !checkprojpl = !pltop0.onprojected(!attaPos)
+          handle (2,785)
+            if !pl.eq(!p0) then
+              !checkprojpl = TRUE
+            else
+              !checkprojpl = FALSE
+            endif
+          endhandle
+
+          !checkonpa = !patop0.on(!attaPos)
+          handle (2,785)
+            if !pl.eq(!p0) then
+              !checkonpa = TRUE
+            else
+              !checkonpa = FALSE
+            endif
+          endhandle
+
+          !checkonpl = !pltop0.on(!attaPos)
+          handle (2,785)
+            if !pl.eq(!p0) then
+              !checkonpl = TRUE
+            else
+              !checkonpl = FALSE
+            endif
+          endhandle
+
+          if (!checkprojpa and !checkprojpl and !checkonpa and !checkonpl)  then
+            REORDER $!datum AFTER $!item
+            handle ANY
+           endhandle
+           break
+          endif
+        endif
+     enddo
+   enddo
+  endif
+--<< EOF GE 11/10/2005
+
+-->> GE 11/10/2005 Fix for HPD0030084
+  if !purp eq 'HVAC' then
+    !datumorder = ARRAY()
+    !ftuborder = ARRAY()
+    var !datums collect all ATTA with (matchwild(NAME,'*/DATUM')) for ce
+    var !coll collect bran mem for ce
+    do !datum values !datums
+    !attaPos = !datum.dbref().position.wrt(/* )
+     do !item values !coll
+        if !item.dbref().type eq 'STRT' then
+         !pa = pa Pos of $!item wrt /*
+         !pl = pl Pos of $!item wrt /*
+        !patopl = object LINE(!pa,!pl)
+        !checkproj = !patopl.onprojected(!attaPos)
+        !checkon = !patopl.on(!attaPos)
+          if (!checkproj and !checkon)  then
+          REORDER $!datum AFTER $!item
+          handle any
+           endhandle
+           break
+          endif
+         elseif (!item.dbref().type NEQ 'STRT' and !item.dbref().type NEQ 'ATTA') then
+         !pa = pa Pos of $!item wrt /*
+         !pl = pl Pos of $!item wrt /*
+         !p0 = p0 Pos of $!item wrt /*
+          !patop0 = object LINE(!pa,!p0)
+          !pltop0 = object LINE(!pl,!p0)
+          !checkprojpa = !patop0.onprojected(!attaPos)
+          handle (2,785)
+            if !pa.eq(!p0) then
+              !checkprojpa = TRUE
+            else
+              !checkprojpa = FALSE
+            endif
+          endhandle
+
+          !checkprojpl = !pltop0.onprojected(!attaPos)
+          handle (2,785)
+            if !pl.eq(!p0) then
+              !checkprojpl = TRUE
+            else
+              !checkprojpl = FALSE
+            endif
+          endhandle
+
+          !checkonpa = !patop0.on(!attaPos)
+          handle (2,785)
+            if !pl.eq(!p0) then
+              !checkonpa = TRUE
+            else
+              !checkonpa = FALSE
+            endif
+          endhandle
+
+          !checkonpl = !pltop0.on(!attaPos)
+          handle (2,785)
+            if !pl.eq(!p0) then
+              !checkonpl = TRUE
+            else
+              !checkonpl = FALSE
+            endif
+          endhandle
+
+          if (!checkprojpa and !checkprojpl and !checkonpa and !checkonpl)  then
+            REORDER $!datum AFTER $!item
+            handle ANY
+           endhandle
+           break
+          endif
+        endif
+     enddo
+   enddo
+  endif
+--<< EOF GE 11/10/2005
+
+  -- now loop through all attas and reorder to ensure that
+  -- pairs of /DATUM and /SREF attas are in correct list order
+var !datums collect all ATTA with (matchwild(NAME,'*/DATUM')) for ce
+do !datum values !datums
+  !support = !datum.dbref().name.before('/DATUM')
+  !sref = !support & '/SREF'
+    -- attempt reorder
+  REORDER $!sref AFTER $!datum
+  handle any
+      endhandle
+  enddo
+-- In the case of lugs being created for attas we need to make sure we have then in the right order
+  !ce = !!ce
+  !supportsWithOlets = ARRAY()
+  do !sortOlets values !sOlets
+    !oletSupp = !!mdsGetSuppName(!sortOlets.dbref())
+    if  !oletSupp.neq('ABORT') then
+      !supportsWithOlets.append(!oletSupp.before('/LUG'))
+    endif
+  enddo
+
+  !supportsWithOlets.unique()
+
+  do !loopThroOlets values !supportsWithOlets
+    !oletSuppName = !!mdsGetSuppName(!loopThroOlets.dbref())
+    !maxLugs = 0
+    !test1 = $!loopThroOlets/LUG1
+    handle ANY
+    elsehandle NONE
+      !maxLugs = 1
+    endhandle
+    !test2 = $!loopThroOlets/LUG2
+    handle ANY
+    elsehandle NONE
+      !maxLugs = 2
+    endhandle
+    !test3 = $!loopThroOlets/LUG3
+    handle ANY
+    elsehandle NONE
+      !maxLugs = 3
+    endhandle
+    !test4 = $!loopThroOlets/LUG4
+    handle ANY
+    elsehandle NONE
+      !maxLugs = 4
+    endhandle
+    skip if !maxLugs.eq(0)
+    if !maxLugs.eq(4) then
+      reorder $!oletSuppName/LUG2 before $!oletSuppName
+      handle (2,18)
+        -- elements locked
+        !errors.append('$!!error.text')
+      endhandle
+      reorder $!oletSuppName/LUG1 before $!oletSuppName/LUG2
+      handle (2,18)
+        -- elements locked
+        !errors.append('$!!error.text')
+      endhandle
+      reorder $!oletSuppName/LUG3 after $!oletSuppName
+      handle (2,18)
+        -- elements locked
+        !errors.append('$!!error.text')
+      endhandle
+      reorder $!oletSuppName/LUG4 after $!oletSuppName/LUG3
+      handle (2,18)
+        -- elements locked
+        !errors.append('$!!error.text')
+      endhandle
+    elseif !maxLugs.eq(3) then
+    elseif !maxLugs.eq(2) then
+      reorder $!oletSuppName/LUG1 before $!oletSuppName
+      handle (2,18)
+        -- elements locked
+        !errors.append('$!!error.text')
+      endhandle
+      reorder $!oletSuppName/LUG2 after $!oletSuppName
+      handle (2,18)
+        -- elements locked
+        !errors.append('$!!error.text')
+      endhandle
+    else
+      reorder $!oletSuppName/LUG1 after $!oletSuppName
+      handle (2,18)
+        -- elements locked
+        !errors.append('$!!error.text')
+      endhandle
+    endif
+  enddo
+
+--<wd>07aug2008 - HPD0038306 - ONLY RESTORES the pins 1 and 2 used in this function
+    !!mdspoppin(1)
+    !!mdspoppin(2)
+--<wd>07aug2008 - HPD0038306 - ONLY RESTORES the pins 1 and 2 used in this function
+
+-- dtf >> mod 27.06.06 Return lock errors if not at Hanger Atta
+-- If at hanger ATTA it has been called form MDSHANG and causes
+-- the object to exit, but the warnings are required from the
+-- Reorder Utility.
+if !hangerAtta.not() and !errors.size().eq(1) then
+  !!alert.warning('$!errors[1]')
+elseif !hangerAtta.not() and !errors.size().gt(1) then
+  !!alert.warning('Attas Reordered, but some ATTA or OLET elements were locked and ignored, $!errors[1]')
+  endif
+-- End of Mod
+
+  !!ce = !ce
+
+!!kRestoreUnits(!currentUnits)
+
+endfunction

@@ -1,0 +1,920 @@
+--------------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            pfGalvanizationTankCheck.pmlfrm
+--   Type:          Form Definition
+--   Group:         Pipe Fabrication
+--     Keyword:     PF
+--   Module:        Design
+--   Replaces:
+--
+-- Author:          HyunJong Roh (Nick)
+-- Last Modified:   Jaehun.Choi (Daniel)
+-- Created:         Tuesday 6th December 2012
+--
+-- Description:     Form for galvanization tank volume check
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  addGraphicalView(BOOLEAN)        -
+--  checkVolume()                    -                   run volume check against the selected pipe spools
+--  displayTankVolume()              -                   display the selected tank volume
+--  getDistanceValue(DBREF)          REAL                return distance value of the given DDAT element
+--  getSelectedSpool()               DBREF
+--  getSelectedTankVolume()          ARRAY               return tank volume of the selected tank
+--  initialize()                     -                   initialize form
+--  navigateSpoolOnExplorer()        -
+--  onGridSpoolsAfterSelectChange(ARRAY) -                   zoom and highlight the selected pipe spool
+--  onGridSpoolsPopup(ARRAY)         -                   show context menu for spools
+--  pfGalvanizationTankCheck()       -                   constructor
+--  populateSpools()                 -                   populate the grid control with spools
+--  populateTanks()                  -                   populate the option gadget with tanks
+--  quit()                           -                   clear screen
+--  saveToExcel()                    -                   save the spools and check result into excel file
+--  selectAll()                      -                   select all spools in the grid
+--  selectCE()                       -                   populate the spool grid control with spools under CE
+--  showSpoolVolume()                -
+--  zoom(DBREF)                      -                   zoom the given element
+--  zoomSpoolOnGraphicalView()       -
+--
+--------------------------------------------------------------------------------
+import 'GridControl'
+handle any
+endhandle
+
+setup form !!pfGalvanizationTankCheck dialog dock resize varchars
+
+  using namespace 'Aveva.Pdms.Presentation'
+
+  !this.formTitle = 'Galvanization Tank Check'
+  !this.initCall  = '!this.initialize()'
+  !this.quitCall  = '!this.quit()'
+
+  path right
+  button .btnCE |CE| callback '!this.selectCE()' width 5
+  para   .parCE anchor l+t+r width 35
+
+  path down
+  container .pncSpools PMLNETCONTROL 'Spools' at xmin.btnCE anchor all width 80 height 15
+
+  frame  .frameCheck 'Select Galvanization Tank' anchor l+b+r width 50
+    option .optTanks callback '!this.displayTankVolume()' anchor l+r width 50
+    para   .parTank at xmin.optTanks anchor l+r text 'No tanks' width 50
+  exit
+
+  toggle .zoomSpool 'Zoom when Selected' anchor l+b callback |!this.zoomSpoolOnGraphicalView()|
+  path right
+  toggle .showVolume 'Show Spool Volume'  anchor l+b callback |!this.showSpoolVolume()|
+
+  path down
+
+  button .btnCheck 'Check' at xmax.frameCheck - 22.5 callback '!this.checkVolume()' anchor b+r width 10
+  path right
+  button .btnStop  'Stop' anchor b+r width 10
+
+  member .gridSpools      is NETGRIDCONTROL
+
+  member .scopeRef        is DBREF
+
+  member .pspoolRefs      is ARRAY
+
+  member .results         is ARRAY
+
+  member .validImage      is STRING
+
+  member .invalidImage    is STRING
+
+  member .galvChecker     is PFGALVANIZATIONTANKCHECKER
+
+  member .aidNumber       is REAL
+  member .galvCheck       is BOOLEAN
+
+  member .pspoolRefsArr   is ARRAY
+
+  member .resultsArray    is ARRAY
+
+exit
+
+--------------------------------------------------------------------------------
+--
+-- Method:      pfGalvanizationTankCheck
+--
+-- Description: constructor
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .pfGalvanizationTankCheck()
+
+  using namespace 'Aveva.Pdms.Presentation'
+
+  !this.gridSpools = object NETGRIDCONTROL()
+  !this.gridSpools.columnExcelFilter(true)
+  !this.gridSpools.setNameColumnImage()
+  !this.gridSpools.outlookGroupStyle(false)
+  !this.gridSpools.fixedHeaders(false)
+  !this.gridSpools.fixedRows(false)
+
+  !this.pncSpools.control = !this.gridSpools.handle()
+  !this.gridSpools.addEventHandler('AfterSelectChange',  !this, 'onGridSpoolsAfterSelectChange')
+  !this.gridSpools.addEventHandler('OnPopup', !this, 'onGridSpoolsPopup')
+
+  !contextMenu = !this.newMenu('popupGrid')
+  !contextMenu.add( 'CALLBACK', 'Check',            '!this.checkVolume()',  'CHECK')
+  !contextMenu.add( 'separator' )
+  !contextMenu.add( 'CALLBACK',  'Add to 3D View',      '!this.addGraphicalView(TRUE)','')
+  !contextMenu.add( 'CALLBACK',  'Remove from 3D View', '!this.addGraphicalView(FALSE)','')
+  !contextMenu.add( 'separator' )
+  !contextMenu.add( 'toggle',   'Navigate on Explorer', '!this.navigateSpoolOnExplorer()','')
+  !contextMenu.add( 'separator' )
+  !contextMenu.add( 'CALLBACK', 'Select All',       '!this.selectAll()',    'SELECT_ALL')
+  !contextMenu.add( 'CALLBACK', 'Save to Excel...', '!this.saveToExcel()',  'EXPORT' )
+  !this.pncSpools.popup = !contextMenu
+
+  !this.validImage   = !!pml.getPathName('greenball12.png')
+  !this.invalidImage = !!pml.getPathName('redball12.png')
+
+  !this.aidNumber = !!aidNumbers.add('pf_galv_checker')
+
+  !this.galvChecker.aidNumber = !this.aidNumber
+
+  !this.selectCE()
+  !this.populateTanks()
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      initialize
+--
+-- Description: initialize form
+--              populate the tank option gadget and spool grid control
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .initialize()
+  !this.selectCE()
+  !this.populateTanks()
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      quit
+--
+-- Description: called when the form is quit
+--              clear screen
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .quit()
+
+  AID CLEAR ALL $!<this.aidNumber>
+  UNENHANCE ALL
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      populateTanks
+--
+-- Description: populate the tank option gadget
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .populateTanks()
+
+  !appdarRefs = !!collectAllFor('APPDAR', |FUNC EQ 'GVTANK' AND UPCASE(FUNC OF APPLDW) EQ 'PIPEFABRICATION'|, WORLD)
+
+  !dtext = object ARRAY()
+  !rtext = object ARRAY()
+
+  if !appdarRefs.empty().not() then
+    do !appdarRef values !appdarRefs
+      !ddseRefs = !!collectAllFor('DDSE', '', !appdarRef)
+      do !ddseRef values !ddseRefs
+        !dtext.append(!ddseRef.name)
+        !rtext.append(!ddseRef.refNo.string())
+      enddo
+    enddo
+  endif
+
+  !this.optTanks.dtext = !dtext
+  !this.optTanks.rtext = !rtext
+
+  if !dtext.empty() then
+    !this.parTank.val = 'No tanks'
+  else
+    !this.optTanks.val = 1
+    !this.displayTankVolume()
+  endif
+
+  !this.btnCheck.active = false
+  !this.btnStop.active = false
+
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      displayTankVolume
+--
+-- Description: display the volume of the selected tank
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .displayTankVolume()
+
+  !volume = !this.getSelectedTankVolume()
+  !volumeString = '(W x H x D) ' + !volume[1].string(!!distanceFmt) + ' x ' + !volume[2].string(!!distanceFmt) + ' x ' + !volume[3].string(!!distanceFmt)
+  !this.parTank.val = !volumeString
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getDistanceValue
+--
+-- Description: return distance value of the given DDAT element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       DDAT element
+-- Return:
+--   [Data Type] [Description]
+--    REAL        distance value
+--------------------------------------------------------------------------------
+define method .getDistanceValue(!ddatRef is DBREF) is REAL
+  !block = object BLOCK(!ddatRef.ddProperty)
+  !value = !block.evaluate()
+  handle ANY
+    return 0
+  endhandle
+
+  if !value.objectType().eq('REAL') then
+    if !value.leq(0) then
+      return 0
+    endif
+
+    return !value
+  endif
+
+  return 0
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onGridSpoolsPopup
+--
+-- Description: show context menu for the spool grid control
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       event data
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onGridSpoolsPopup(!data is ARRAY)
+
+  !rowTags = !this.gridSpools.getSelectedRowTags()
+  !this.popupGrid.setFieldProperty('CHECK', 'ACTIVE', !rowTags.empty().not())
+  !this.pncSpools.showPopup(!data[0], !data[1])
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      selectCE
+--
+-- Description: populate grid with all spools under CE
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .selectCE()
+
+  AID CLEAR ALL $!<this.aidNumber>
+  UNENHANCE ALL
+
+  !pipeRef = PIPE OF CE
+  handle ANY
+    -- ignore
+    !this.scopeRef = !!ce
+  elsehandle NONE
+    !this.scopeRef = !pipeRef
+  endhandle
+
+  !this.parCE.val = !this.scopeRef.name
+
+  !this.populateSpools()
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      getSelectedTankVolume
+--
+-- Description: return the volume of the selected tank
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       volume, array of width, height, depth of the selected tank
+--------------------------------------------------------------------------------
+define method .getSelectedTankVolume() is ARRAY
+
+  !width  = 0mm
+  !height = 0mm
+  !depth  = 0mm
+
+  if !this.optTanks.val.gt(0) then
+    !rtext = !this.optTanks.selection('rtext')
+    !ddseRef = !rtext.dbref()
+    handle ANY
+      !!alert.error('Cannot get the selected DDSE')
+    elsehandle NONE
+
+      do !ddatRef values !ddseRef.members
+
+        !dkey = !ddatRef.dkey.upCase()
+        if !dkey.eq('WIDT') then
+          !width = !this.getDistanceValue(!ddatRef)
+        elseif !dkey.eq('DEPT') then
+          !depth = !this.getDistanceValue(!ddatRef)
+        elseif !dkey.eq('HEIG') then
+          !height = !this.getDistanceValue(!ddatRef)
+        endif
+      enddo
+    endhandle
+  endif
+
+  !volume = object ARRAY()
+  !volume[1] = !width
+  !volume[2] = !height
+  !volume[3] = !depth
+
+  return !volume
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      checkVolume
+--
+-- Description: return the volume check
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .checkVolume()
+
+  --AID CLEAR ALL
+  --UNENHANCE ALL
+
+  !rowTags = !this.gridSpools.getSelectedRowTags()
+  if !rowTags.empty() then
+    !!alert.message('Select spools')
+    return
+  endif
+
+  if !this.optTanks.val.eq(0) then
+    !!alert.message('Select tank')
+    return
+  endif
+
+  !tankVolume = !this.getSelectedTankVolume()
+  if !tankVolume[1].leq(0) or !tankVolume[2].leq(0) or !tankVolume[3].leq(0) then
+    !!alert.message('Invalid tank volume')
+    return
+  endif
+--  !tankVolume.sort()
+
+  !this.btnStop.active = true
+
+  pause 0.5
+
+  !!fmSys.setInterrupt(!!pfGalvanizationTankCheck.btnStop)
+  !!fmSys.setProgress(0)
+
+  !spoolIndices = !this.gridSpools.getColumn('INDEX')
+  !this.galvChecker.resultArray.clear()
+
+  do !i indices !rowTags
+    !spoolIndex = !this.gridSpools.getCell(!rowTags[!i], 'INDEX').real()
+    !pspoolRef  = !this.pspoolRefs[!spoolIndex]
+
+    if !pspoolRef.badref() then
+      !name = !this.gridSpools.getCell(!rowTag, 'Spool')
+      !!alert.error('Cannot get PSPOOL ' + !name)
+      skip
+    endif
+
+    !!fmSys.setStatusText('Checking PSPOOL ' + !pspoolRef.name)
+
+    --!spoolVolume = !pspoolRef.wvol
+    !result = !this.galvChecker.check(!pspoolRef, !tankVolume)
+    handle ANY
+      !result = object ARRAY()
+      !result[4] = ''
+    endhandle
+
+    !this.results[!spoolIndex] = !result
+
+    -- Anoop 116477(12.1.SP4.4 - PF - Galvinization Tank Check Results Not Stored)
+    -----------------------------------------------------------
+    !spoolRefFound = !this.pspoolRefsArr.findFirst(!pspoolRef)
+    if(!spoolRefFound.set()) then
+      !this.resultsArray[!spoolRefFound] = !result
+    endif
+    -----------------------------------------------------------
+
+
+    !rowIndex = !spoolIndices.findFirst(!spoolIndex.string())
+    if !rowIndex.set() then
+
+      !galvTank = !this.optTanks.selection('rtext')
+      !pspoolRef.vckwt = !galvTank.dbref()
+
+      if !result[4].eq('Pass') then
+        !image      = !this.validImage
+        !pspoolRef.vcks = 'Valid'
+      else
+        !image      = !this.invalidImage
+        !pspoolRef.vcks = 'Invalid'
+      endif
+
+	  if (!this.galvCheck) then
+      !this.gridSpools.setCellValue(!rowIndex, 6, !this.galvChecker.splVolume.width.string(!!distanceFmt))
+      !this.gridSpools.setCellValue(!rowIndex, 7, !this.galvChecker.splVolume.height.string(!!distanceFmt))
+      !this.gridSpools.setCellValue(!rowIndex, 8, !this.galvChecker.splVolume.depth.string(!!distanceFmt))
+
+      !this.gridSpools.setCellValue(!rowIndex, 9, !pspoolRef.vckwt.name)
+      !this.gridSpools.setCellValue(!rowIndex, 10, !pspoolRef.vcks)
+      !this.gridSpools.setCellImage(!rowIndex, 10, !image)	
+	  else
+      !this.gridSpools.setCellValue(!rowIndex, 5, !this.galvChecker.splVolume.width.string(!!distanceFmt))
+      !this.gridSpools.setCellValue(!rowIndex, 6, !this.galvChecker.splVolume.height.string(!!distanceFmt))
+      !this.gridSpools.setCellValue(!rowIndex, 7, !this.galvChecker.splVolume.depth.string(!!distanceFmt))
+      !this.gridSpools.setCellValue(!rowIndex, 8, !pspoolRef.vckwt.name)
+      !this.gridSpools.setCellValue(!rowIndex, 9, !pspoolRef.vcks)
+      !this.gridSpools.setCellImage(!rowIndex, 9, !image)
+	  endif
+    endif
+
+    if !!fmSys.interrupt() then
+      !!alert.message('Processing aborted')
+      break
+    else
+      !!fmSys.setProgress(100 * (!i / !rowTags.size()))
+    endif
+  enddo
+
+  !!fmSys.setProgress(0)
+  !!fmSys.setStatusText('')
+
+  !this.showSpoolVolume()
+  !this.btnStop.active = false
+
+endmethod
+
+define method .getSelectedSpool() is DBREF
+  !result = object DBREF()
+
+  !selectedRows = !this.gridSpools.getSelectedRows()
+  if (!selectedRows.unset()) then
+    return !result
+  endif
+
+  !result = !selectedRows[1][2].dbref()
+  handle any
+  endhandle
+
+  if (!result.badref()) then
+    !!alert.message('Invalid reference : ' & !selectedRows[1][2])
+  endif
+
+  return !result
+endmethod
+
+define method .addGraphicalView(!addFlag is BOOLEAN)
+  !selectedRows = !this.gridSpools.getSelectedRows()
+  if (!selectedRows.unset()) then
+    !!alert.message('Select spools')
+    return !result
+  endif
+
+  if (!addFlag) then
+    !command = 'ADD'
+  else
+    !command = 'REMOVE'
+  endif
+
+  do !rowData values !selectedRows
+    !spoolRef = !rowData[2].dbref()
+    handle any
+      skip
+    endhandle
+
+    $!<command> $!<spoolRef>
+  enddo
+endmethod
+
+define method .zoomSpoolOnGraphicalView()
+  if (!this.zoomSpool.val.not()) then
+    return
+  endif
+
+  !selectedSpool = !this.getSelectedSpool()
+  if (!selectedSpool.badref()) then
+    return
+  endif
+
+  !!zoomToPipeElement(!selectedSpool)
+  handle any
+  endhandle
+endmethod
+
+define method .showSpoolVolume()
+  if (!this.showVolume.val.not()) then
+    AID CLEAR ALL $!<this.aidNumber>
+    return
+  endif
+
+  !selectedSpool = !this.getSelectedSpool()
+  if (!selectedSpool.badref()) then
+    return
+  endif
+
+  !tankVolume = !this.getSelectedTankVolume()
+  !this.galvChecker.showVolume(!selectedSpool)
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      populateSpools
+--
+-- Description: populate the spool grid control with spools under the current scope element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .populateSpools()
+  if (defined(!!pfContext)) then
+    !!pfContext.delete()
+  endif
+  !defVal = object pfContext()
+  !defVal.globalInstance()
+  !this.galvCheck = !!pfContext.defaultGalvanizationCheck
+  if (!this.galvCheck) then
+    !headings = split('INDEX,Spool,Pipe,Outside Punch Code, Inside Punch Code,X Length,Y Length,Z Length,Checked With Tank,Result',',')
+  else
+    !headings = split('INDEX,Spool,Pipe,:GALV,X Length,Y Length,Z Length,Checked With Tank,Result',',')
+  endif
+
+  !this.pspoolRefs.clear()
+
+  !rows = ARRAY()
+
+  !spoolVolume = object PFSPOOLVOLUME()
+
+  -- Anoop 116477(12.1.SP4.4 - PF - Galvinization Tank Check Results Not Stored)
+  -------------------------------------------------------------------
+  if !this.scopeRef.badref().not() then
+    !this.pspoolRefs = !!collectAllFor('PSPOOL', '', !this.scopeRef)
+    if !this.pspoolRefsArr.unset() then
+      do !index indices !this.pspoolRefs
+        !this.pspoolRefsArr.append(!this.pspoolRefs[!index])
+      enddo
+    else
+      do !index indices !this.pspoolRefs
+        !spoolIndex = !this.pspoolRefsArr.findFirst(!this.pspoolRefs[!index])
+        if(!spoolIndex.unset()) then
+          !this.pspoolRefsArr.append(!this.pspoolRefs[!index])
+        endif
+      enddo
+    endif
+   --------------------------------------------------------------------
+    do !i indices !this.pspoolRefs
+
+      !pspoolRef = !this.pspoolRefs[!i]
+      !pipeRef = !pspoolRef.owner.owner
+
+      !row = object ARRAY()
+      !row[1] = !i.string()
+      !row[2] = !pspoolRef.name
+      !row[3] = !pipeRef.name
+      !spoolVolume.getVolume(!pspoolRef)
+
+      if (!this.galvCheck) then
+        !row[4] = !pspoolRef.PUOUCD
+        handle ANY
+          !row[4] = ''
+        endhandle
+        !row[5] = !pspoolRef.PUINCD
+        handle ANY
+          !row[5] = ''
+        endhandle	
+
+        !row[6] = !spoolVolume.width.string(!!distanceFmt)
+        !row[7] = !spoolVolume.height.string(!!distanceFmt)
+        !row[8] = !spoolVolume.depth.string(!!distanceFmt)
+
+        !row[9] = ''		
+		
+	  else
+        !row[4] = !pspoolRef.:GALV
+        handle ANY
+          !row[4] = ''
+        endhandle
+		
+        !row[5] = !spoolVolume.width.string(!!distanceFmt)
+        !row[6] = !spoolVolume.height.string(!!distanceFmt)
+        !row[7] = !spoolVolume.depth.string(!!distanceFmt)
+
+        !row[8] = ''		
+	  endif
+	
+
+
+      !rows.append(!row)
+    enddo
+  endif
+
+  using namespace 'Aveva.Pdms.Presentation'
+
+  !dataSource = object NETDATASOURCE('Spools', !headings, !rows)
+  !this.gridSpools.bindToDataSource(!dataSource)
+  !this.gridSpools.setColumnVisibility(1, false)
+  if !rows.empty().not() then
+    !this.gridSpools.autoFitColumns()
+  endif
+
+  do !i indices !this.pspoolRefs
+    if (!this.pspoolRefs[!i].vcks eq 'Valid') then
+      !image      = !this.validImage
+    elseif (!this.pspoolRefs[!i].vcks eq 'Invalid') then
+      !image      = !this.invalidImage
+    else
+      !this.pspoolRefs[!i].vcks = 'Not Checked'
+      !image = ''
+    endif
+
+    if(!this.pspoolRefs[!i].vckwt.badref()) then
+      !galvTankName = ''
+    else
+      !galvTankName = !this.pspoolRefs[!i].vckwt.name
+    endif
+
+    if (!this.galvCheck) then
+      !this.gridSpools.setCellValue(!i, 9, !galvTankName)
+      !this.gridSpools.setCellValue(!i, 10, !this.pspoolRefs[!i].vcks)
+      !this.gridSpools.setCellImage(!i, 10, !image)
+    else
+      !this.gridSpools.setCellValue(!i, 8, !galvTankName)
+      !this.gridSpools.setCellValue(!i, 9, !this.pspoolRefs[!i].vcks)
+      !this.gridSpools.setCellImage(!i, 9, !image)
+    endif
+  enddo
+  -------------------------------------------------------------------
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      onGridSpoolsAfterSelectChange
+--
+-- Description: zoom the selected spool
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       event data
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .onGridSpoolsAfterSelectChange(!data is ARRAY)
+
+  !this.navigateSpoolOnExplorer()
+  !this.zoomSpoolOnGraphicalView()
+  !this.showSpoolVolume()
+
+  UNENHANCE ALL
+
+  !rowTags = !this.gridSpools.getSelectedRowTags()
+
+  !pspoolRefs = object ARRAY()
+  do !rowTag values !rowTags
+    !spoolIndex = !this.gridSpools.getCell(!rowTag, 'INDEX').real()
+    !pspoolRef = !this.pspoolRefs[!spoolIndex]
+    if !pspoolRef.badref() then
+      !spoolName = !this.gridSpools.getCell(!rowTag, 'Spool')
+      !!alert.error('Cannot get selected PSPOOL ' + !spoolName)
+      !this.populateSpools()
+      return
+    endif
+
+    !pspoolRefs.append(!pspoolRef)
+  enddo
+
+  if !pspoolRefs.empty() then
+    !this.btnCheck.active = false
+    return
+  endif
+
+  !this.btnCheck.active = !this.optTanks.val.neq(0)
+
+  --!this.zoom(!pspoolRef)
+
+--  !tankVolume = !this.getSelectedTankVolume()
+--  if !tankVolume[1].leq(0) or !tankVolume[2].leq(0) or !tankVolume[3].leq(0) then
+--    !!alert.message('Invalid tank volume')
+--    return
+--  endif
+--  !tankVolume.sort()
+
+  do !pspoolRef values !pspoolRefs
+
+--    !this.galvChecker.drawResult(!pspoolRef, !tankVolume)
+    do !partRef values !pspoolRef.belrfa
+      ENHANCE $!partRef COLOUR $!!gphColOpt.highlight
+    enddo
+  enddo
+endmethod
+
+
+--------------------------------------------------------------------------------
+--
+-- Method:      zoom
+--
+-- Description: zoom the given element
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       target element
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .zoom(!element is DBREF)
+
+  !volume = object VOLUME(!element)
+
+  !from         = !volume.from
+  !to           = !volume.to
+
+  -- Through Point
+  !throughPoint   = !from.midPoint(!to)
+  handle ANY
+    return
+  endhandle
+
+  -- Set metric format
+  !format           = object FORMAT()
+  !format.units     = 'MM'
+  !format.dp        = 0
+  !format.dimension = 'L'
+
+  -- Set through point
+  !through[1]     = !throughPoint.east.string(!format).real()
+  !through[2]     = !throughPoint.north.string(!format).real()
+  !through[3]     = !throughPoint.up.string(!format).real()
+  !!fmSys.currentDocument().view.through = !through
+
+  -- Set view radius
+  !radius         = !from.distance(!to).string(!format).real() / 2 * 1.25
+  !radius         = !radius.max(500mm)
+  !!fmSys.currentDocument().view.radius  = !radius
+
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      selectAll
+--
+-- Description: select all spools in the grid
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .selectAll()
+  !this.gridSpools.selectAllRows()
+endmethod
+
+define method .navigateSpoolOnExplorer()
+  !runFlag = !this.pncSpools.popup.selected('Navigate on Explorer')
+  handle any
+    !runFlag = false
+  endhandle
+
+  if (!runFlag.not()) then
+    return
+  endif
+
+  !spoolRef = !this.getSelectedSpool()
+  if (!spoolRef.badref()) then
+    return
+  endif
+
+  !!ce = !spoolRef
+endmethod
+
+--------------------------------------------------------------------------------
+--
+-- Method:      saveToExcel
+--
+-- Description: save the spool grid data into excel file
+--
+-- Method Type: Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+--------------------------------------------------------------------------------
+define method .saveToExcel()
+  import 'PMLFileBrowser'
+  handle ANY
+  endhandle
+  using namespace 'Aveva.Pdms.Presentation'
+  !browser = object PMLFILEBROWSER('SAVE')
+  !browser.show('C:\', 'Results.xls', 'Save Results to Excel', false, 'Excel Documents|*.xls', 1)
+
+  -- Fix Issue 94887
+  !path = !browser.file().trim()
+  if !path.empty() then
+    return
+  endif
+  --//
+
+  -- Fix Issue 96897, An error message is displayed on clicking 'Cancel' button in the Save Results to Excel window.
+  --!file = !!file(!path)
+  --if !file.unset() then
+  --  return
+  --endif
+  --!this.gridSpools.saveGridToExcel(!file)
+  !this.gridSpools.saveGridToExcel(!path)
+  handle ANY
+    !!alert.error(!!error.text)
+  endhandle
+  --//
+endmethod

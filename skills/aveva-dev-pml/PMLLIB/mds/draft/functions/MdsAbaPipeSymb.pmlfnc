@@ -1,0 +1,230 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--------------------------------------------------------------------------------
+--
+-- File: MdsAbaPipeSymb.pmlfnc
+--   Type: Function Definition
+--   Group: Multi Discipline Supports Application
+--     Keyword: MDS
+--   Module: Draft MDS using ABA for Drawing production
+--   Replaces:
+--
+-- Author: Steve Robinson
+-- Created: 5th July 2002
+--
+--
+-- Description:
+-- ------------
+-- This function generates pipe end symbols on MDS support attas.
+--
+--
+-- Using this function:
+-- --------------------
+-- For each view to be annotated call this function with the stru/hang DBREF
+-- and the view DBREF.
+-- The function creates a pipe end SLAB for each atta in the support that
+-- is orthogonal to the view direction
+--
+-- The SLAB is created under a layer named MDS_PipeSymb and positioned at the
+-- intersection of the atta leave direction and the front section plane assoc
+-- with the given view
+--
+-- IMPERIAL UNITS:
+-- ---------------
+-- The code should work in both metric and imperial units...
+--
+--
+--
+--
+--------------------------------------------------------------------------------
+-- Define Function
+
+----------------------------------------------------------
+-- Arguments:
+-- desItem = DBREF of support/hanger to be processed
+-- view    = DBREF of view where hanger will be dimensioned
+----------------------------------------------------------
+
+--<wd>feb2005 -- Pass the MDS ABA SUPPORT OBJECT with the INTRODUCTION of MDS GROUPS
+--  define function !!mdsabapipesymb(!desitem is DBREF, !view is DBREF)
+define function !!mdsabapipesymb(!mdsobject is MDSABASUPPORT, !view is DBREF)
+  !desitem  = !mdsobject.support
+  !mdsgroup = !mdsobject.mdsdata.mdsgroup
+  --<wd>feb2005
+
+  !saveRef = !!ce
+
+  -- note layer suffix
+  !noteLayer = 'MDS_PipeSymb'
+
+  -- navigate to view
+  !!ce = !view
+  view
+
+    if !!ce.title.upcase().match('ISO').gt(0) then
+      return
+    endif
+    !vdir = !!ce.dir
+    !vsca = !!ce.vscale
+    var !vvol vvol
+    !fromString = !vvol.upcase().before(' TO').after('FROM ')
+
+    --<wd>29feb2008 -- DUN824, Defect No. P4405 -- for XYZ COORD System
+    --    !from = $!fromString
+    !from = !fromString.position()
+    --<wd>29feb2008 -- DUN824, Defect No. P4405
+
+  -- check label layer exists
+  set
+
+  */$!noteLayer
+  handle any
+    new layer */$!noteLayer
+  endhandle
+  !layer = !!ce
+
+  -- clear any existing SLABS
+  delete LAYER MEMBERS
+  handle any
+  endhandle
+
+  !items = ARRAY()
+  --<wd>feb2005
+  -- Modified because MDS HANGER Pipes NEVER had a PIPE SYMBOL on the MDS ABA Drawing
+  --    if (!desitem.type.eq('HANG')) then
+  if (!desitem.type.eq('ATTA')) then
+    $!desitem
+    if (!mdsobject.mdsdata.supptype.neq('ATTA')) then
+      if (!desitem.cref.type.eq('HANG')) then
+      endif
+    endif
+    !items.append(!!ce)
+    --<wd>feb2005
+
+  else
+    --<wd>feb2005 -- CODE below Modified to handle MDS GROUPS
+    -- MDS FRAMEWORK STRUCTURE either "INDIVIDUAL" or "MDS GROUP MASTER"
+
+    -- get all sctns and attas to be processed
+    var !sctns coll all sctn for $!desitem
+    if !desitem.type.eq('STRU') and !desitem.:MdsSuppType.eq('SPECIAL') then
+      -- MDS SPECIAL STRUCTURE
+      !nameofsupp = !desitem.name
+      !items.append($!nameofsupp/DATUM )
+      do !count from 1 to 100
+        $!nameofsupp$n.$n$!count
+        handle none
+          !items.append(!!ce)
+          same
+        elsehandle any
+          break
+        endhandle
+      enddo
+
+    else
+      -- MDS STANDARD TEMPLATE STRUCTURE
+      do !sctn values !sctns
+        $!sctn
+        !items.appendarray(!!ce.:mdsattaref)
+        handle any
+        endhandle
+      enddo
+    endif
+
+    --<wd>feb2005 -- ADD MDS HANGER ATTAS to the ARRAY if Support is a MDS GROUP
+    if (!mdsgroup) then
+      do !indx indices !mdsobject.mdsdata.maingroupmem
+        skip if !mdsobject.mdsdata.maingroupmem[!indx].type.eq('STRU')
+        !items.append(!mdsobject.mdsdata.maingroupmem[!indx])
+      enddo
+    endif
+    --<wd>feb2005
+
+  endif
+
+
+  !!itemposarray = ARRAY()
+
+
+  -- generate all pipe symbols for pipes normal to view plane
+  do !itemind indices !items
+    $!items[$!itemind]
+
+    --<GE> 09/03/07 LOP 80: Fix for pipe symbols being placed twice on the pipe in support groups.
+    !itempos = !!ce.position.wrt(world)
+    !!itemposarray.append(!itempos)
+    !foundyou = !!itemposarray.findfirst(!itempos)
+
+    if !itemind neq !items.size() then
+      if !foundyou.real().eq(1) then
+        skip
+      endif
+    endif
+    --<GE> 09/03/07
+
+    if (!!ce.type.eq('PCLA')) then
+      HANG
+      GOTO HREF
+      handle any
+        skip
+      endhandle
+    endif
+
+    if !!ce.type.eq('SCTN') then
+      skip
+    elseif !!ce.type.eq('CTSUPP') then
+      skip
+    elseif !!ce.owner.pspe.purp.neq('PIPE') then
+      skip
+    endif
+    !units = object COMUNITS(TRUE)
+    units mm bore units mm dist
+    !bore = PL OD
+    !units.restoreSavedBoreDist()
+    !itemdir    = !!ce.ldir.wrt(world)
+    -- get the angular difference E, N and U between the atta leave
+    -- and the view direction - if all angles are within 10 degrees of
+    -- the view direction then add a pipe end SLAB at the intersection
+    -- of the pipe centre line and the front view plane.
+    !angle = !vdir.angle(!itemdir)
+    if (!angle.gt(90)) then
+      !angle = 180 - !angle
+    endif
+    if ($!angle gt 10) then
+      return
+    endif
+
+    -- get intersection point of LDIR of atta and front plane of view
+    !viewPlane = object PLANE()
+    !viewPlane.orientation = Z is $!vdir
+    !viewPlane.position = !from
+    !pipecl = object LINE()
+    !pvec = object POINTVECTOR()
+    !pvec.position = !itempos
+    !pvec.direction = !itemdir
+    !pipecl = !pvec.line(1000)
+    $!layer
+
+    NEW SLAB on $!items[$!itemind]
+    oset true
+    XYPO 0 0
+    llead false
+    tmrf /DRA/MAS/SYMBOLS/GEN/BREAKS/BB-1
+
+    --convert whatever the bore value is in terms of current units to 'mm'
+    --so that we can scale the pipe symbol correctly. the mds pipe symbol
+    --was drawn in an inch scale originally so we need to scale it to suit the input bore accordingly
+    !boreMM = !!comValueConvert(!bore, 'MM')
+    !scale = ((!boreMM - 3) / 25.4 * $!vsca)
+    !scaleNumber = !scale.real().value()
+    !!ce.xysc[1] = !scaleNumber
+    !!ce.xysc[2] = !scaleNumber
+  enddo
+
+  $!saveRef
+  handle any
+  endhandle
+
+endfunction

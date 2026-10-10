@@ -1,0 +1,2032 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            stlbentpanel.pmlobj
+--   Type:          Object Definition
+--   Group:         Marine pack
+--     Keyword:    STL
+--   Module:        common
+--
+--  Author:          Undefined
+--  Created:         Mon Apr 12 15:47:30 2010
+--
+--  Description:     -- Merge planar shapes into bent panel--
+--
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  blendProfiles(ARRAY,REAL)        BOOLEAN             Calculate path of generator curve for the bent panel
+--  calculateExtrusion()             PROFILE             Calculate profile representing the bent panel edge
+--  coincidentLines(LINE,LINE)       BOOLEAN             Calculate if two lines are coincident within a tolerance
+--  constructLoop(DBREF,STRING,STRING) -                   Calculate PLOOP for the given profile
+--  decomposeToPanels(DBREF)         REAL                Create planar panel elements from stored vertices
+--  decomposeToVertices(DBREF)       BOOLEAN             Analyse panel geometry to find vertices of bent panel
+--  display()                        -                   Highlight bent planel edges as a series of aid boxes
+--  display(PROFILE)                 -                   Highlight selected profile as a series of aid boxes
+--  displayStyle()                   -                   Sets the default style of the graphical item
+--  displayStyle(REAL,REAL)          -                   Sets the style of the graphical item
+--  extrusionExtents(PROFILE,LINE)   ARRAY               Find length and width of a leg of the bent plate
+--  filled()                         BOOLEAN             Return current aid fill setting
+--  filled(BOOLEAN)                  -                   Sets aid fill start of plane
+--  getGeneratorObjects()            ARRAY               Return array of objects (Planes & Panels) used
+--  getProfile(DBREF)                PROFILE             Find a profile in the given element
+--  isBPanelType(STRING)             BOOLEAN             True if type is BPANEL
+--  isParallel(DIRECTION,DIRECTION)  BOOLEAN             Find if direction are parallel within a tolerance
+--  isTrimmed()                      BOOLEAN             True if last object used to trim curve.
+--  mergeElement(ARRAY,REAL)         BOOLEAN             Merge two or more planar profiles into a bent panel object
+--  orientation()                    ORIENTATION         Return orientation
+--  plane()                          PLANE               Return plane
+--  position()                       POSITION            Return position
+--  stlBentPanel()                   -                   Constructor
+--  stlBentPanel(DBREF)              -                   Constructor
+--  tidy()                           -                   Tidy
+--  validate()                       BOOLEAN             Test validity of bent panel
+--  writeGensec()                    DBREF               Create GENSEC representing a bent panel
+--  writePanel(STRING,STRING)        DBREF               Create PANEL/BPANEL element for bent panel
+--  writePlanarPanel(DBREF,LINE,REAL,REAL,ORIENTATION,BOOLEAN,STRING) DBREF               Create planar PANEL element from decomposed bent panel
+--  writeWall()                      DBREF               Create CTWALL representing bent panel
+--
+------------------------------------------------------------------------
+--
+------------------------------------------------------------------------
+
+-- Define object
+define object STLBENTPANEL
+
+  -- panel thickness
+  member .thickness        is REAL
+
+  -- bend radius
+  member .bendRadius       is REAL
+
+  -- line at the intersection of the first and second leg of the curved panel
+  -- This defines the width of the panel
+  member .bendLine         is LINE
+
+  -- Plane in which the generator curve lies
+  member .plane            is PLANE
+
+  -- generator curve as PROFILE
+  member .pCurve           is PROFILE
+
+  -- original data for curve generation
+  member .originalData     is ARRAY
+
+  -- flag to indicate if  last leg includes last panel (false) or bounded by last profile (true)
+  member .lastLegTrimmed   is BOOLEAN
+
+  -- generator curve as array of vertex position and array of FRAD
+  member .vertexPosition   is ARRAY
+  member .vertexRadius     is ARRAY
+
+  -- bent panel reference
+  member .refBentPanel     is DBREF
+
+  -- first leg direction
+  member .yDir             is DIRECTION
+
+  -- Filled/Unfilled
+  member .fill             is BOOLEAN
+
+  -- Colour
+  member .colour           is REAL
+
+  -- Line style
+  member .style            is REAL
+
+  -- Aid Tag
+  member .aidTag           is REAL
+
+  -- representation
+  member .obstruction      is REAL
+  member .drawingLevel     is ARRAY
+
+  -- inherited attributes from first selected panel
+  member .matRef           is DBREF
+  member .grade            is REAL
+  member .spref            is DBREF
+
+  -- Debug flag
+  member .debug            is BOOLEAN
+
+endobject
+-- End of object definition for stlBentPanel
+
+------------------------------------------------------------------------
+--
+-- Method:      stlBentPanel
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .stlBentPanel()
+
+  -- Initialise Variables
+  !this.matRef          = object DBREF()
+  !this.grade           = 0
+  !this.obstruction     = 2
+  !this.drawingLevel[1] = 0
+  !this.drawingLevel[2] = 10
+  !this.lastLegTrimmed  = false
+  !this.spref           = object DBREF()
+
+  !this.filled(true)
+
+  -- Aid Tags
+  !this.aidTag          = !!aidNumbers.add('stlBentPanel')
+
+  -- Default display style for main lines
+  !this.displayStyle()
+
+  !this.debug = FALSE
+  if (defined(!!debug) ) then
+    !this.debug = TRUE
+  endif
+
+endmethod
+-- End of method definition for .stlBentPanel()
+
+------------------------------------------------------------------------
+--
+-- Method:      stlBentPanel(DBREF)
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Reference of bent panel PANE/BPANEL element
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .stlBentPanel(!bentPanel is DBREF)
+
+	
+	
+  -- Initialise Variables
+  !this.stlBentPanel()
+  !bentPlateType = 'BPANEL'
+
+  if(!this.debug)then
+		write '+Enter .stlBentPanel() - $!bentPanel'
+	endif
+
+  -- check that given element is a bent panel
+  if( badref(!bentPanel) ) then
+  	if(!this.debug)then
+			write '-Leave .stlBentPanel() - badref(!bentPanel)'
+		endif
+    return error 1 'Not a valid bent panel: Bad Reference'
+  endif
+  if( !bentPanel.type eq 'PANE' ) then
+  	!bentPlateType = 'PANE'
+  	if( !bentPanel.purp neq 'BPLT' ) then
+  		if(!this.debug)then
+			  write '-Leave .stlBentPanel() - !bentPanel.purp neq BPLT'
+		  endif
+      return error 3 'Not a valid bent panel: Purpose must be BPLT'
+    endif
+  elseif( !bentPanel.type eq 'BPANEL' ) then
+  	!bentPlateType = 'BPANEL'
+  else
+    !message = 'Not a valid bent panel: Incorrect element type ' + !bentPanel.type
+    if(!this.debug)then
+		  write '-Leave .stlBentPanel() - $!message'
+		endif
+    return error 2 |$!message|
+  endif
+
+  if(!bentPlateType eq 'PANE')then
+    !this.thickness = !bentPanel.ddesp[1]
+    handle any
+      return error 4 'Not a valid bent panel: Panel thickness not set in design parameter 1'
+    endhandle
+  elseif(!bentPlateType eq 'BPANEL')then
+  	!this.thickness = !bentPanel.wThickness
+  endif
+
+  -- attempt to decompose panel back to planar panels
+  if( !this.decomposeToVertices(!bentPanel).not() ) then
+  	if(!this.debug)then
+		  write '-Leave .stlBentPanel() - decomposeToVertices failed'
+		endif
+    return error 5 'Not a valid bent panel: Cannot determine panel geometry'
+  endif
+
+  -- find first bend line to define panel width
+  !this.refBentPanel = !bentPanel
+  !this.plane        = object PLANE(!this.vertexPosition[2],!bentPanel.orientation)
+  !pvBendLine        = object POINTVECTOR(!this.vertexPosition[2], !bentPanel.orientation.zDir().opposite())
+
+  if(!bentPlateType eq 'PANE')then
+  	!this.bendLine     = !pvBendLine.line(!bentPanel.lohe)
+  else
+  	!this.bendLine     = !pvBendLine.line(!bentPanel.width)
+  endif
+  -- save material data
+  !this.matRef       = !bentPanel.matRef
+  handle any
+    !this.matRef     = object DBREF()
+  endhandle
+
+  !this.grade        = !bentPanel.grade
+  handle any
+    !this.grade      = 0
+  endhandle
+
+  !this.spref        = !bentPanel.spref
+  handle any
+    !this.spref      = object DBREF()
+  endhandle
+  -- save representation data
+  !this.obstruction  = !bentPanel.obstruction
+  !this.drawingLevel = !bentPanel.level
+
+  if(!this.debug)then
+		write '-Leave .stlBentPanel()'
+	endif
+	
+endmethod
+-- End of method definition for .stlBentPanel()
+
+------------------------------------------------------------------------
+--
+-- Method:      mergeElement
+--
+-- Description: Merge two or more planar profiles into a bent panel object
+--              The input array can contain DBREF, PLANE and PROFILE objects
+--              in the order that  they are used to define the bent panel
+--              The first element in the array must be a rectangular PANEL element.
+--              This defines the dimensions of the resulting bent panel.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       Array of DBREF, PLANE and PROFILE objects
+--    2   R      REAL        Bend (inner) radius for bends
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if bent panel created. False if it fails.
+--
+------------------------------------------------------------------------
+
+define method .mergeElement(!panels is ARRAY, !blendRadius is REAL) is BOOLEAN
+
+  if( !this.debug)then
+  	write |+Enter mergeElement|
+  	!size = !panels.size()
+  	write '  panels.size() = $!size'
+  endif
+
+  -- validate input elements
+  if( !panels[1].hardType neq 'PANE' ) then
+  	if( !this.debug)then
+  	  write |-Leaving StlBentPanel.mergeElement|
+  	  write |  !panels[1].hardType neq 'PANE'|
+    endif
+    return false
+  endif
+  if( !panels[1].purpose eq 'BPLT' ) then
+  	if( !this.debug)then
+  	  write |-Leaving StlBentPanel.mergeElement|
+  	  write |  !panels[1].purpose eq 'BPLT'|
+    endif
+    return false
+  endif
+  -- clear current curve
+  !this.pCurve = object PROFILE()
+  !this.lastLegTrimmed  = false
+
+  -- validate radius against panel thickness
+  !this.thickness  = !panels[1].lohe
+  !this.matRef     = !panels[1].matRef
+  handle any
+    !this.matRef   = object DBREF()
+  endhandle
+  !this.grade      = !panels[1].grade
+  handle any
+    !this.grade    = 0
+  endhandle
+  !this.spref      = !panels[1].spref
+  handle any
+   this.spref      = object DBREF()
+  endhandle
+  !this.bendRadius = !blendRadius
+
+
+  -- loop through panels to get corresponding profiles
+  !profiles          = ARRAY()
+  !this.originalData = ARRAY()
+  do !index indices !panels
+
+    !objectType  = !panels[!index].objectType()
+    if( !objectType inset('PROFILE','PLANE') ) then
+    	
+    	if( !this.debug)then
+    		if( !panels[!index].unset() ) then
+    			write 'Skipping profile'
+    		endif
+    	endif
+    	
+      skip if( !panels[!index].unset() )
+
+      if( !this.debug)then
+      	write '  Adding PROFILE/PLANE'
+      endif
+
+      !profiles.append(!panels[!index])
+      !this.originalData.append(!panels[!index])
+    else
+      !nextProfile = !this.getProfile(!panels[!index])
+
+      if( !this.debug)then
+      	if( !nextProfile.unset()) then
+      		write |  Skipping profile|
+      	endif
+    	endif
+    	
+      skip if( !nextProfile.unset() )
+
+      if( !this.debug)then
+      	write '  Adding ELSE'
+      endif
+
+      !profiles.append(!nextProfile)
+      !this.originalData.append(!panels[!index])
+    endif
+
+  enddo
+
+  -- return if only first edge defined
+  if( !profiles.size() lt 2 ) then
+  	if( !this.debug)then
+  	  write |-Leaving mergeElement|
+  	  write |  !profiles.size() lt 2|
+    endif
+    return false
+  endif
+
+  -- take half thickness from first panel
+  !halfThickness = !this.thickness / 2
+  !centreRadius  = !this.bendRadius + !halfThickness
+
+  -- set extrusion data
+  !done = !this.blendProfiles(!profiles, !centreRadius  )
+
+  if( !done ) then
+--    !this.pCurve.draw(2,2,2)
+
+    if( !this.debug)then
+  	  write |-Leaving mergeElement - Done|
+    endif
+
+    return true
+  else
+    !!alert.error('Cannot make a bent panel from the selected planar elements')
+
+    if( !this.debug)then
+  	  write |-Leaving mergeElement - Not Done|
+    endif
+
+    return false
+  endif
+
+endmethod
+-- End of method
+
+
+------------------------------------------------------------------------
+--
+-- Method:      blendProfiles
+--
+-- Description: Calculate path of generator curve for the bent panel
+--              This is stored as a PROFILE in member .pCurve and as
+--              vertex and FRAD arrays in members .vertexPosition and
+--              .vertexRadius
+--              The generator curve is assumed to be centre justified
+--              on the plate thickness
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       First value must be a rectangular profile
+--                           Other values can be PLANE or PROFILE objects
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .blendProfiles(!profiles is ARRAY, !blendRadius is REAL) is BOOLEAN
+
+	if( !this.debug)then
+    write '+Enter .blendProfiles()'
+  endif
+
+  -- validate input elements
+  !intersectionLines    = ARRAY()
+  !lines                = ARRAY()
+  !this.pCurve          = object PROFILE()
+  !this.yDir            = !profiles[1].orientation.zDir()
+  !lastPlane            = !profiles[1].plane()
+  !lastIntersectionLine = object LINE()
+
+  -- check for two adjacent profiles lying in parallel planes
+  do !index from 2 to !profiles.size()
+
+    -- find intersection of profile planes
+    !objectType = !profiles[!index].objectType()
+    if(!objectType eq 'PLANE') then
+      !thisPlane = !profiles[!index]
+    else
+      !thisPlane = !profiles[!index].plane()
+    endif
+
+    if( !lastPlane.orientation.zDir().isParallel(!thisPlane.orientation.zDir()) ) then
+    	if( !this.debug)then
+        write |-Leave .blendProfiles() - zDir check|
+      endif
+      return false
+    endif
+
+    -- get intersect between planes and check that it is parallel to previous lines
+    !intersectionLine = !lastPlane.intersection(!thisPlane)
+    if( !intersectionLine.length() eq 0 ) then
+      -- to avoid core bug in plane.intersection(plane) method
+      !offset   = object XYPOSITION()
+      !offset.x = 10mm
+      !offset.y = 10mm
+      !thisPlane.position = !thisPlane.threeDPosition(!offset)
+      !intersectionLine   = !lastPlane.intersection(!thisPlane)
+    endif
+
+    if( !lastIntersectionLine.set() ) then
+      if( !this.isParallel( !lastIntersectionLine.direction(), !intersectionLine.direction()).not() ) then
+      	if( !this.debug)then
+          write |-Leave .blendProfiles() - IntersectionLine check|
+        endif
+        return false
+      endif
+    endif
+    !intersectionLines.append(!lastPlane.intersection(!thisPlane))
+    !lastPlane = !thisPlane
+    !lastIntersectionLine = !intersectionLine
+
+  enddo
+
+  -- Get two lines representing the extents of first leg of the extrusion
+ !firstLeg = !this.extrusionExtents( !profiles[1], !intersectionLines[1] )
+  if( !firstLeg.empty() ) then
+  	if( !this.debug)then
+      write |-Leave .blendProfiles() - firstLeg check|
+    endif
+    return false
+  endif
+
+  -- record the first intersection which defines the width of the bent panel
+  !this.bendLine = !firstLeg[1]
+
+  -- get plane of new profile which is orthogonal to the intersection line
+  !zDir = !firstLeg[1].direction()
+  !yDir = !zDir.orthogonal(!profiles[1].orientation.zDir())
+  !orientation = object ORIENTATION('Z IS ' + !zDir.string() + ' AND Y IS ' + !yDir.string())
+  !mergeProfilePlane = object PLANE(!firstLeg[1].startPosition, !orientation)
+
+  -- record the plane in which the generator curve lies
+  !this.plane = !mergeProfilePlane
+
+  -- Get two lines representing the extents of last leg of the extrusion
+  if( !profiles.last().objectType() neq 'PROFILE' ) then
+    !lastLeg = ARRAY()
+  else
+    !lastLeg = !this.extrusionExtents( !profiles.last(), !intersectionLines.last() )
+  endif
+
+  !this.vertexPosition.clear()
+  !this.vertexRadius.clear()
+  !this.vertexPosition[1]  = !mergeProfilePlane.near(!firstLeg[2].endPosition)
+  !this.vertexRadius[1]    = 0mm
+  !straightEdges           = ARRAY()
+
+  -- deal with intermediate profiles
+  do !index from 2 to !profiles.size()
+
+    !this.vertexPosition.append(!mergeProfilePlane.near(!intersectionLines[!index - 1].endPosition))
+    !this.vertexRadius.append(!blendRadius)
+    !straightEdges.append( object LINE(!this.vertexPosition[!index - 1], !this.vertexPosition[!index]) )
+
+  enddo
+
+  !this.lastLegTrimmed  = !lastLeg.empty()
+  if( !lastLeg.empty() ) then
+    -- Can't find extents, so end at last selected plane
+    !this.vertexRadius[!this.vertexRadius.maxIndex()] = 0mm
+  else
+    -- append last vertex at end of last leg
+    !lastVertex = !mergeProfilePlane.near(!lastLeg[2].endPosition)
+    !straightEdges.append( object LINE(!this.vertexPosition.last(), !lastVertex) )
+    !this.vertexPosition.append(!lastVertex)
+    !this.vertexRadius.append(0mm)
+  endif
+
+  -- put arcs in profile array
+  !profileArray = ARRAY()
+  !tempLastEdge = !straightEdges[1]
+  do !index from 2 to !straightEdges.size()
+
+    -- bend radius
+    !bendRad         = !this.vertexRadius[!index]
+    -- work with temporary edge in case arc is too big on last leg
+    !tempNextEdge    = !straightEdges[!index]
+    !trimmedLastEdge = !tempLastEdge
+    -- create arc fillet
+    if( !bendRad gt 0 ) then
+      !arc           = !tempLastEdge.endPosition.arcFillet(!tempLastEdge.startPosition,!tempNextEdge.endPosition,!zDir,!bendRad)
+      handle (2,888)
+
+        if( !this.debug)then
+      		write |-Leave .blendProfiles() - handle|
+    		endif
+    		
+        return false
+      endhandle
+      -- note that a cross-over could occur here if the arc is too big
+      !trimmedLastEdge.endPosition = !arc.anglePosition(!arc.startAngle)
+      -- save direction of next edge
+      !edgeDirection = !tempNextEdge.direction()
+      !tempNextEdge.startPosition =!arc.anglePosition(!arc.endAngle)
+      if(!lastLeg.empty().not() and !index eq !straightEdges.size()) then
+        -- special case for last leg if arc does not fit. We do not know if
+        -- the user will go on to select another plane so ignore the last leg
+        -- limits if the arc does not fit
+        if(!tempNextEdge.length() gt 0 ) then
+          if( !edgeDirection.angle(!tempNextEdge.direction()) eq 180 ) then
+            -- arc is too big - ignore last edge bounds
+            !profileArray.append(!tempLastEdge)
+            !this.vertexPosition.removeLast()
+            !this.vertexRadius.removeLast()
+            !this.vertexRadius[!this.vertexRadius.maxIndex()] = 0mm
+            skip
+          endif
+        endif
+      endif
+      !profileArray.append(!trimmedLastEdge)
+      !profileArray.append(!arc)
+    else
+      profileArray.append(!trimmedLastEdge)
+    endif
+    !tempLastEdge = !tempNextEdge
+
+  enddo
+
+  -- add last edge
+  if( !tempLastEdge.length() gt 0 ) then
+    !profileArray.append(!tempLastEdge)
+  endif
+
+  if( !this.debug)then
+  	!size = !profileArray.size()
+  	write '  !profileArray.size() = $!size'
+  	!size = !straightEdges.size()
+  	write '  !straightEdges.size() = $!size'
+  endif
+
+  -- generate a curve for the centre (of thickness) of the bent panel
+  !this.pCurve = object PROFILE(!straightEdges[1].startPosition, !orientation, !profileArray)
+
+  if( !this.debug)then
+  	if( !this.pCurve.unset())then
+  		write '  Error! !this.pCurve was never created'
+  	endif
+  	
+  	write |-Leave .blendProfiles()|
+  endif
+
+  return true
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      extrusionExtents
+--
+-- Description: Find length and width of a leg of the bent plate
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      PROFILE     Profile defining one edge of the bent panel
+--    2   R      LINE        Intersection line in the plane of the given profile
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY      [1] Bend line: A LINE representing the extent of the panel along the intersection line
+--               [2] Edge: A LINE parallel to the bend line at the furthest extent of the profile
+--
+------------------------------------------------------------------------
+
+define method .extrusionExtents(!profile is PROFILE, !intersectionLine is LINE) is ARRAY
+
+  if( !this.debug)then
+  	write |+Enter .extrusionExtents()|
+  endif
+
+  -- get plane of new profile which is orthogonal to the intersection line
+  !zDir = !intersectionLine.direction()
+  !xDir = !zDir.orthogonal(!profile.orientation.zDir())
+  !offsetDirection = !xDir
+
+  !edges                   = !profile.edges()
+  !bendLine                = object LINE()
+  !maxFromIntersectionLine = 0mm
+  -- loop through the profile edges finding the extent of the bend line
+  -- which is projected onto the intersection line
+  -- and the extent of the edge parallel to the bend line at the furthest extent of the profile
+  do !index indices !edges
+
+    if( !edges[!index].objectType() neq 'LINE' ) then
+      return object ARRAY()
+    endif
+
+    !edgeStart = !edges[!index].startPosition
+    !edgeEnd   = !edges[!index].endPosition
+    -- line must be parallel to either the Z or x axis to be rectangular
+    if( !this.isParallel(!edges[!index].direction(),!zDir) ) then
+      -- map edge onto intersection line
+      !projectedStart = !intersectionLine.near(!edgeStart)
+      !projectedEnd   = !intersectionLine.near(!edgeEnd)
+      if(!bendLine.unset()) then
+        -- first line parallel to Z
+        !bendLine     = object LINE(!projectedStart, !projectedEnd)
+        skip
+      else
+        -- check that new line is same as existing line to ensure rectangle
+        if( !this.coincidentLines(!bendLine, object LINE(!projectedStart, !projectedEnd)).not() ) then
+        	if( !this.debug)then
+  	        write |-Leav .extrusionExtents() - ensure rectangle|
+          endif
+          -- line does not match - not a rectangle
+          return object ARRAY()
+        endif
+      endif
+    elseif(!this.isParallel(!edges[!index].direction(),!xDir) ) then
+      -- find maximum distance from intersection line and from intersection line to vertex
+      !startOffset = !edgeStart.distance(!intersectionLine)
+      if( !startOffset gt !maxFromIntersectionLine ) then
+        !maxFromIntersectionLine = !startOffset
+        !offsetDirection         = !intersectionLine.near(!edgeStart).direction(!edgeStart)
+      endif
+      !endOffset   = !edgeEnd.distance(!intersectionLine)
+      if( !endOffset gt !maxFromIntersectionLine ) then
+        !maxFromIntersectionLine = !endOffset
+        !offsetDirection         = !intersectionLine.near(!edgeEnd).direction(!edgeEnd)
+      endif
+    else
+    	if( !this.debug)then
+  	    write |-Leav .extrusionExtents() - parallel check|
+      endif
+      -- edge not parallel to X or Z - not a rectangle
+      return object ARRAY()
+    endif
+
+  enddo
+
+  -- record first face
+  !lines[1] = !bendLine
+  !lines[2] = !bendLine.offset(!offsetDirection, !maxFromIntersectionLine)
+
+  if( !this.debug)then
+    write |-Leav .extrusionExtents()|
+  endif
+
+  return !lines
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      coincidentLines
+--
+-- Description: Calculate if two lines are coincident within a tolerance
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      LINE       Line 1
+--    1   R      LINE       Line 2
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if lines are coincident
+--
+------------------------------------------------------------------------
+define method .coincidentLines(!line1 is LINE, !line2 is LINE) is BOOLEAN
+
+  -- compare two parallel lines by calculating the overlap of line 1 with line 2
+  -- which must be the same length as the input lines if they are coincident
+  !overlapLine = !line1.overlap(!line2)
+  return ( abs( !line1.length() - !overlapLine.length() ) lt 0.1mm )
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      isParallel
+--
+-- Description: Find if direction are parallel within a tolerance
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DIRECTION   Direction 1
+--    2   R      DIRECTION   Direction 2
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if parallel directions
+--
+------------------------------------------------------------------------
+define method .isParallel(!direction1 is DIRECTION, !direction2 is DIRECTION) is BOOLEAN
+
+  -- compare two directions by checking that the angle between them is
+  -- no greater than 0.05 degrees
+  !angle = !direction1.angle(!direction2)
+  if(!angle lt 0.05) then
+    return true
+  endif
+  return (abs( 180 - !angle) lt 0.05)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      calculateExtrusion
+--
+-- Description: Calculate profile representing the bent panel edge
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    PROFILE     Profile representing bent edge of panel
+--
+------------------------------------------------------------------------
+define method .calculateExtrusion() is PROFILE
+
+  if( !this.debug)then
+    write |+Enter .calculateExtrusion()|
+  endif
+
+  -- validate pCurve
+  if( !this.pCurve.unset() ) then
+  	if( !this.debug)then
+  		write |-Leaving .calculateExtrusion() -  !this.pCurve.unset()|
+    endif
+
+    return  object PROFILE()
+  endif
+
+  !edges = !this.pCurve.edges()
+  if( !edges.empty() ) then
+  	if( !this.debug)then
+  	  write |-Leaving .calculateExtrusion() - !edges.empty()|
+    endif
+
+    return  object PROFILE()
+  endif
+
+  if( !this.debug)then
+  	!dbgsize = !edges.size()
+  	write '  !edges.size() = $!dbgsize'
+  endif
+
+  -- array for list of line and arc objects used to build the profile
+  !extrusionEdges = ARRAY()
+  !halfThick      = !this.thickness / 2
+  !zDir           = !this.pCurve.orientation.zDir()
+
+  -- add edges in reverse direction for other side of the bent panel edge profile
+  -- pCurve lies on the centre line of the bent panel profile
+  !edges.appendArray(!this.pCurve.reverse().edges())
+
+  -- loop through pCurve edges and offset them to form the bent panel edge profile
+  do !index indices !edges
+    	
+    if( !edges[!index].objectType() eq 'LINE' )then
+      -- offset straight edge by half panel thickness
+      if( !edges[!index].length() gt 0 ) then
+        !extrusionEdges.append(!edges[!index].offset( !edges[!index].direction().orthogonal(!zDir), !halfThick))
+      endif
+    elseif( !edges[!index].objectType() eq 'ARC' )then
+      -- offset arc by half panel thickness and work out if it is an inner or outer curve
+      !arc = !edges[!index]
+      !offsetDirection = !arc.startTangent().orthogonal(!zDir)
+      if ( !offsetDirection.angle(!arc.angleDirection(!arc.startAngle))lt 0.1 ) then
+        -- outer curve
+        !arc.radius = !arc.radius + !halfThick
+      else
+        --inner curve
+        !arc.radius = !arc.radius - !halfThick
+      endif
+      if( !arc.radius gt 0 ) then
+        !extrusionEdges.append(!arc)
+      endif
+    endif
+
+  enddo
+
+  if( !this.debug)then
+  	!dbgsize = !extrusionEdges.size()
+  	write '  !extrusionEdges.size() = $!dbgsize'
+  endif
+
+  -- build profile from the offset edges
+  !profile = object PROFILE(!this.pCurve.position, !this.pCurve.orientation,!extrusionEdges)
+  handle any
+
+    if( !this.debug)then
+  	  write |-Leaving .calculateExtrusion()|
+  	  write |  handle|
+    endif
+
+    return object PROFILE()
+  endhandle
+
+  if( !this.debug)then
+  	if(!profile.unset())then
+  		write '  !profile is unset'
+  	endif
+  	write |-Leaving .calculateExtrusion()|
+  endif
+
+  -- return the profile cleaned and closed
+  return !profile.mergePoints().mergeLines().close()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      validate
+--
+-- Description: Test validity of bent panel
+--              Test that the panel has more than one vertex and is not
+--              self intersecting
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if this object is a valid bent panel shape
+--
+------------------------------------------------------------------------
+
+define method .validate() is BOOLEAN
+
+	!bResult = false
+
+	if( !this.debug)then
+		write '+Enter .validate()'
+	endif
+	
+  !profile = !this.calculateExtrusion()
+  if( !profile.unset() ) then
+    return !bResult
+  endif
+
+  !bResult = !profile.isValidClosed()
+
+  if( !this.debug)then
+		write '-Leave .validate() - $!bResult'
+	endif
+
+  return !bResult
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      getProfile
+--
+-- Description: Find a profile in the given element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element to search
+-- Return:
+--   [Data Type] [Description]
+--    PROFILE     Profile for this element or unset profile if none
+--
+------------------------------------------------------------------------
+define method .getProfile(!element is DBREF) is PROFILE
+
+  if(!element.hardType inset('EXTR','NXTR','PANE') ) then
+    if(!element.hardType eq 'PANE') then
+      !command = object BLOCK('PLOOP 1 OF ' + !element.string())
+    else
+      !command = object BLOCK('LOOP 1 OF ' + !element.string())
+    endif
+    -- get loop from extrusion
+    !loop     = !command.evaluate()
+    handle any
+      return object PROFILE()
+    endhandle
+    !profile  = object PROFILE( !loop )
+    handle any
+      return object PROFILE()
+    endhandle
+    -- use plane in centre of extrusion
+    !centrePoint = !loop.members[1].pPosition[2]
+    !centrePlane = object PLANE( !centrePoint, !profile.orientation )
+    -- map profile onto centre plane
+    !newOrigin   = !centrePlane.near(!profile.position)
+    !profile.position = !newOrigin
+  elseif(!element.hardType inset('HPLATE') ) then
+    !profile = object PROFILE(!element)
+    handle any
+      !profile          = object PROFILE()
+    elsehandle none
+      !panelThick       = !element.loHeight
+      !pv               = !profile.plane().pointVector().offset(!panelThick * -0.5)
+      !profile.position = !pv.position
+    endhandle
+  else
+    !profile = object PROFILE(!element)
+    handle any
+      !profile          = object PROFILE()
+    endhandle
+
+  endif
+
+  -- validate the profile
+  if( !profile.unset() ) then
+    return object PROFILE()
+  endif
+  !validProfile = !profile.isValidClosed()
+  handle any
+    !validProfile = false
+  endhandle
+  if( !validProfile.not() ) then
+    return object PROFILE()
+  endif
+  -- union with itself removes some bad profiles that isValidClosed does not find
+  !temp = !profile.union(!profile)
+  handle any
+    return object PROFILE()
+  endhandle
+  -- The union should not result in more than one profile
+  if( !temp.size() gt 1 ) then
+    return object PROFILE()
+  endif
+  return !profile
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      writeGensec
+--
+-- Description: Create GENSEC representing a bent panel
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       reference of resulting GENSEC
+--
+------------------------------------------------------------------------
+
+define method .writeGensec() is DBREF
+
+  -- Initialise Variables
+  !thick = !this.thickness
+  !width = !this.bendLine.length()
+  -- change profile to centre of panel for NA can be used
+  !centreCurve = !this.pCurve
+  !centrePlane = !this.plane()
+  !centrePlane.position = !this.bendLine.proportion(0.5)
+  -- project profile origin onto centre plane
+  !centreCurve.position = !centrePlane.near(!this.pCurve.position)
+  NEW GENSEC
+  handle any
+    return object DBREF()
+  endhandle
+  !newSection  = !!ce
+  SPREF  /CONCRETE-BEAMS-SPEC/Rectangular_Profile
+  handle any
+    return object DBREF()
+  endhandle
+  DESP $!thick $!width
+  JUSL NA
+  NEW SPINE
+  !yDir = !this.yDir
+  YDIR $!yDir
+  !centreCurve.dbWrite(!!ce)
+  handle any
+    return object DBREF()
+  endhandle
+
+  !!ce                = !newSection
+  !this.refBentPanel  = !newSection
+
+  return !newSection
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      writeWall
+--
+-- Description: Create CTWALL representing bent panel
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       reference of resulting CTWALL
+--
+------------------------------------------------------------------------
+
+define method .writeWall() is DBREF
+
+  -- Initialise Variables
+  !thick  = !this.thickness
+  !height = !this.bendLine.length()
+  NEW CTWALL
+  handle any
+    return object DBREF()
+  endhandle
+  !newWall = !!ce
+  HEIGHT $!height
+  WTHICK $!thick
+  WJUSL CENT
+  NEW RPATH
+  !this.pCurve.dbWrite(!!ce)
+  handle any
+    return object DBREF()
+  endhandle
+
+  !!ce                = !newWall
+  !this.refBentPanel  = !newWall
+
+  return !newWall
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      writePanel
+--
+-- Description: Create BPANEL/PANEL element for bent panel
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      Type of bent panel to be created(PANE/BPANEL)
+--    2   R      STRING      Valid for BPANEL only, WJUSLINE value on BPANEL
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       Reference to new bent panel, or null reference if failed
+--
+------------------------------------------------------------------------
+
+define method .writePanel(!targetType is STRING, !jusline is STRING) is DBREF
+
+  if( !this.debug)then
+    write |+Enter .writePanel()|	
+  endif
+
+  !newPanel = object DBREF()
+
+  if(!this.isBPanelType(!targetType))then
+  	-- Create BPANEL element for bent panel
+  	NEW BPANEL
+  	!newPanel           = !!ce
+  	!!ce.position       = !this.pCurve.position
+    !!ce.orientation    = !this.pCurve.orientation
+    !!ce.wThickness     = !this.thickness
+    !!ce.width          = !this.bendLine.length()
+    !!ce.wjusline       = !jusline
+    -- Create RPATH for bent panel
+    NEW RPATH
+    !this.constructLoop(!!ce,!targetType,!jusline)
+    -- write material data
+    if( !this.grade neq 0 ) then
+      !newPanel.grade   = !this.grade
+    endif
+    if( not badref(!this.matRef) ) then
+      !newPanel.matRef  = !this.matRef
+    endif
+    if( not badref(!this.spref) ) then
+      !newPanel.spref = !this.spref
+    endif
+  else
+    -- Create PANEL element for bent panel
+    NEW PANEL
+    !newPanel           = !!ce
+    !!ce.position       = !this.pCurve.position
+    !!ce.orientation    = !this.pCurve.orientation
+    !!ce.purpose        = 'BPLT'
+    DDESP NUMB 1 $!<this.thickness>
+    NEW PLOOP
+    -- height is the width (y) of the bent panel
+    !!ce.height         = !this.bendLine.length()
+    !!ce.sJustification = 'UBOT'
+    -- create PAVE elements for this bent panel
+    !this.constructLoop(!!ce,!targetType,'')
+    -- write material data
+    if( !this.grade neq 0 ) then
+      !newPanel.grade   = !this.grade
+    endif
+    if( not badref(!this.matRef) ) then
+      !newPanel.matRef  = !this.matRef
+    endif
+    if( not badref(!this.spref) ) then
+      !newPanel.spref = !this.spref
+    endif
+
+  endif
+
+  if( not badref(!newPanel) ) then
+    !!ce                = !newPanel
+    !this.refBentPanel  = !newPanel
+  endif
+
+  if( !this.debug)then
+    write |+Leave .writePanel() - $!newPanel|	
+  endif
+
+  return !newPanel
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      constructLoop
+--
+-- Description: Calculate PLOOP/RPATH for the given profile
+--              Note that bent panel path data is added to vertices
+--              The method requires that the PLOOP/RPATH is already created
+--              It creates a series of PAVE/POINTR elements.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element to search
+--    2   R      STRING      Plate type
+--    3   R      STRING      Valid for BPANEL only, WJUSLINE value on BPANEL
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .constructLoop(!loop is DBREF, !targetType is STRING, !jusline is STRING)
+
+	if(!this.debug)then
+		write '+Enter .constructLoop()'
+	endif
+	
+  !halfThick      = !this.thickness / 2
+  !zDir           = !this.pCurve.orientation.zDir()
+  -- arrays to hold loop vertex data
+  -- side 1 and side 2 are the two curves either side of the bent panel edge
+  !side1Vertex    = ARRAY()
+  !side2Vertex    = ARRAY()
+  !side1VertexNum = ARRAY()
+  !side2VertexNum = ARRAY()
+  !side1Radius    = ARRAY()
+  !side2Radius    = ARRAY()
+  !lastEdge       = object LINE()
+  !lastEdge1      = object LINE()
+  !lastEdge2      = object LINE()
+
+  -- loop through stored vertices to create LOOP data
+  if(!jusline.neq('CENT'))then
+	  do !index from 2 to !this.vertexPosition.size()
+	
+	    !edge            = object LINE(!this.vertexPosition[!index - 1], !this.vertexPosition[!index])
+	    !offsetDirection = !edge.direction().orthogonal(!zDir)
+	    !side1Edge       = !edge.offset( !offsetDirection, !halfThick)
+	    !side2Edge       = !edge.offset( !offsetDirection.opposite(), !halfThick)
+	    if( !lastEdge.set() ) then
+	      !side1Vertex.append(!side1Edge.intersection(!lastEdge1))
+	      !side2Vertex.append(!side2Edge.intersection(!lastEdge2))
+	      !side1VertexNum.append(!side1Vertex.maxIndex())
+	      !side2VertexNum.append(!side2Vertex.maxIndex())
+	      -- find inner and outer edge radius
+	      if ( !side1Edge.onProjected(!side1Vertex.last()) ) then
+	        -- Side 1 is inner curve and side 2 is outer curve
+	        !side1Radius.append(!this.vertexRadius[!index - 1] - !halfThick)
+	        !side2Radius.append(!this.vertexRadius[!index - 1] + !halfThick)
+	      else
+	        -- Side 1 is outer curve and side 2 is inner curve
+	        !side1Radius.append(!this.vertexRadius[!index - 1] + !halfThick)
+	        !side2Radius.append(!this.vertexRadius[!index - 1] - !halfThick)
+	      endif
+	    else
+	      -- first edge
+	      !side1Vertex[1]    = !side1Edge.startPosition
+	      !side2Vertex[1]    = !side2Edge.startPosition
+	      !side1VertexNum[1] = 1
+	      !side2VertexNum[1] = 1
+	      !side1Radius[1]    = 0mm
+	      !side2Radius[1]    = 0mm
+	    endif
+	
+	    -- move last edge to this edge to find next vertex
+	    !lastEdge      = !edge
+	    !lastEdge1     = !side1Edge
+	    !lastEdge2     = !side2Edge
+	
+	  enddo
+	
+	  -- append pair of vertices for the trailing edge
+	  !side1Vertex.append(!lastEdge1.endPosition)
+	  !side2Vertex.append(!lastEdge2.endPosition)
+	  !side1VertexNum.append(!side1Vertex.maxIndex())
+	  !side2VertexNum.append(!side2Vertex.maxIndex())
+	  !side1Radius.append(0mm)
+	  !side2Radius.append(0mm)
+	  if(!this.isBPanelType(!targetType).not())then
+	    -- add side 2 data to side 1 data ready to create vertices
+	    !side1Vertex.appendArray(!side2Vertex.invert())
+	    !side1Radius.appendArray(!side2Radius.invert())
+	    !side1VertexNum.appendArray(!side2VertexNum.invert())
+	  endif
+  endif
+
+  !savedCE      = !!ce
+  !!ce = !loop
+  if(!this.isBPanelType(!targetType))then
+  -- create POINTR elements from calculated vertex data
+    if(!jusline.eq('LEFT'))then
+  	  do !index indices !side2Vertex
+        !position   = !side2Vertex[!index]
+        if(!this.debug)then
+        	WRITE |   pointr at $!<position>|
+        endif
+        NEW POINTR AT $!<position>
+        !!ce.fRad   = !side2Radius[!index]
+      enddo
+    elseif(!jusline.eq('RIGH'))then
+      do !index indices !side1Vertex
+        !position   = !side1Vertex[!index]
+        if(!this.debug)then
+        	WRITE |   pointr at $!<position>|
+        endif
+        NEW POINTR AT $!<position>
+        !!ce.fRad   = !side1Radius[!index]
+      enddo
+    elseif(!jusline.eq('CENT'))then
+      do !index indices !this.vertexPosition
+        !position   = !this.vertexPosition[!index]
+        if(!this.debug)then
+        	WRITE |   pointr at $!<position>|
+        endif
+        NEW POINTR AT $!<position>
+        if(!index.gt(1))then
+        	!!ce.fRad   = !this.vertexRadius[!index]
+        else
+        	!!ce.fRad   = 0mm
+        endif
+      enddo
+    else
+    	if(!this.debug)then
+    		write '  Bad jusline defined for BPANEL.'
+    	endif
+    endif
+  else
+  -- create PAVE elements from calculated vertex data
+    do !index indices !side1Vertex
+      !position   = !side1Vertex[!index]
+      NEW PAVE AT $!<position>
+      !!ce.fRad   = !side1Radius[!index]
+      !!ce.number = !side1VertexNum[!index]
+    enddo
+  endif
+  !!ce          = !savedCE
+
+  if(!this.debug)then
+		write '-Leave .constructLoop()'
+	endif
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      writePlanarPanel
+--
+-- Description: Create planar PANEL element from decomposed bent panel
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Reference at which to create the PANEL
+--    2   R      LINE        X Edge of rectangular panel
+--    3   R      REAL        width of Y Edge of rectangular panel
+--    4   R      REAL        Thickness of rectangular panel
+--    5   R      ORIENTATION Orientation of panel
+--    6   R      BOOLAEN     swap direction of PLOOP
+--    7   R      STRING      plate justification
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       Reference to created panel or unset if failed
+--
+------------------------------------------------------------------------
+
+define method .writePlanarPanel(!storage is DBREF, !edge is LINE, !width is REAL, !thickness is REAL, !orientation is ORIENTATION, !swap is BOOLEAN, !justification is STRING) is DBREF
+
+  -- Create PANEL element for bent panel adjacent to bent panel
+  !!ce                = !storage
+  NEW PANEL
+  !newPanel           = !!ce
+  !!ce.position       = !edge.startPosition
+  !!ce.orientation    = !orientation
+  NEW PLOOP
+  -- height is the width (y) of the bent panel
+  !!ce.height         = !thickness
+  !!ce.sJustification = !justification
+  -- create PAVE elements for this bent panel
+  NEW PAVE
+  !length             = !edge.length()
+  NEW PAVE
+  if(!swap)then
+    POS X $!<width>
+	else
+    POS Y $!<width>
+  endif
+  NEW PAVE
+  if(!swap)then
+  	POS X $!<width> Y $!<length>
+  else
+    POS X $!<length> Y $!<width>
+  endif
+  NEW PAVE
+  if(!swap)then
+  	POS Y $!<length>
+  else
+    POS X $!<length>
+  endif
+
+  !!ce = !newPanel
+  return !newPanel
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      decomposeToVertices
+--
+-- Description: Analyse panel geometry to find vertices of bent panel
+--              Scan one edge and record vertices
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Panel Element to decompose
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True if vertices found - false if error
+--
+------------------------------------------------------------------------
+define method .decomposeToVertices(!bentPanel is DBREF) is BOOLEAN
+
+  if(!this.debug)then
+  	write '+Enter .decomposeToVertices()'
+  endif
+
+  !this.vertexPosition = ARRAY()
+  !this.vertexRadius   = ARRAY()
+  if( !bentPanel.type eq 'BPANEL' ) then
+  	!loop              = RPATH 1 OF $!<bentPanel>
+  else
+    !loop                = PLOOP 1 OF $!<bentPanel>
+  endif
+  handle any
+    if(!this.debug)then
+  	  write '-Leave .decomposeToVertices() - Failed to get loop.'
+    endif
+    return false
+  endhandle
+
+  -- find vertices
+  !vertices            = !loop.members
+  if( !vertices.size() leq 1 ) then
+  	if(!this.debug)then
+  	  write '-Leave .decomposeToVertices() - !vertices.size() leq 1.'
+    endif
+    return false
+  endif
+
+  -- arrays to hold loop vertex data
+  !lastVertexNumber = -1
+  do !vertex values !vertices
+    if( !bentPanel.type eq 'PANE' ) then
+      if( !vertex.number eq 0 ) then
+    	  if(!this.debug)then
+  	      write '-Leave .decomposeToVertices() - !vertex.number eq 0.'
+        endif
+        return false
+      endif
+      if( !vertex.number eq !lastVertexNumber ) then
+        -- found first edge
+        break
+      endif
+      !lastVertexNumber = !vertex.number
+    endif
+
+    !this.vertexPosition.append(!vertex.position)
+    !this.vertexRadius.append(!vertex.fRad)
+  enddo
+
+	if(!this.debug)then
+		!dbgsize = !this.vertexPosition.size()
+  	write '-Leave .decomposeToVertices() size=$!dbgsize'
+  endif
+
+  return !this.vertexPosition.size().gt(1)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      decomposeToPanels
+--
+-- Description: Create planar panel elements from stored vertices
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Where to put panels
+-- Return:
+--   [Data Type] [Description]
+--    REAL        Number of planar panels created
+--
+------------------------------------------------------------------------
+define method .decomposeToPanels(!storage is DBREF) is REAL
+
+  if(!this.debug)then
+  	write '+Enter .decomposeToPanels()'
+  endif
+
+  !return        = 0
+  !width         = !this.bendLine.length()
+  !yDir          = !this.bendLine.direction().opposite()
+  !lastEdge      = object LINE()
+  !thickness     = !this.thickness
+  !justification = 'UTOP'
+
+  if( !storage.badRef())then
+  	!previousPanel = !this.refBentPanel
+  else
+  	!previousPanel = !storage
+  endif
+
+  !firstPanel    = !this.refBentPanel
+
+  if( !this.refBentPanel.isNamed ) then
+    !bentName    = !this.refBentPanel.name
+    !suffix      = '000'
+  else
+    !bentName = ''
+  endif
+
+  !panelType    = !this.refBentPanel.type
+  !jusline      = ''
+
+  if(!panelType eq 'BPANEL')then
+  	!jusline = !this.refBentPanel.wjusline
+  	if(!jusline eq 'CENT')then
+  		!justification = 'CENT'
+  	endif
+  endif
+
+  -- build panels from bent panel data
+  do !index from 2 to !this.vertexPosition.size()
+
+  	!edge    = object LINE(!this.vertexPosition[!index - 1], !this.vertexPosition[!index])
+
+    if( !lastEdge.set() ) then
+      -- adjust start of this panel if orthogonal to last panel
+      if( !lastEdge.direction().cross(!edge.direction()).angle(!yDir) lt 0.01 ) then
+      	if(!panelType eq 'BPANEL')then
+      		if(!jusline eq 'LEFT')then
+      			!edge = !edge.setLengthStart(!edge.length() + !thickness)
+      		elseif(!jusline eq 'CENT')then
+  					!edge = !edge.extendStart( -1 * !thickness / 2 )
+  					if(!this.debug)then
+  						WRITE |  right turn|
+  					endif
+      		elseif(!jusline eq 'RIGH')then
+      		  !edge = !edge.setLengthStart(!edge.length() - !thickness)
+      		endif
+      	else
+          -- trim start of this panel
+          !edge = !edge.setLengthStart(!edge.length() - !thickness)
+        endif
+      elseif( abs( !lastEdge.direction().cross(!edge.direction()).angle(!yDir) - 180 ) lt 0.01 ) then
+      	if(!panelType eq 'BPANEL')then
+      		if(!jusline eq 'LEFT')then
+      			!edge = !edge.setLengthStart(!edge.length() - !thickness)
+      		elseif(!jusline eq 'CENT')then
+      			!edge = !edge.extendStart( -1 * !thickness / 2 )
+      			if(!this.debug)then
+  						WRITE |  left turn|
+  					endif
+      		elseif(!jusline eq 'RIGH')then
+      		  !edge = !edge.setLengthStart(!edge.length() + !thickness)
+      		endif
+      	else
+          -- extend start of this panel
+          !edge = !edge.setLengthStart(!edge.length() + !thickness)
+        endif
+      endif
+    endif
+
+    if(!index lt !this.vertexPosition.size())then
+	    if(!panelType eq 'BPANEL' )then
+	    	if(!jusline eq 'CENT')then
+	    		!edge = !edge.extendEnd( !thickness / 2 )
+	      endif
+	    endif
+	  endif
+	
+    -- calculate planar panel orientation
+    !swap = false
+    if(!panelType eq 'BPANEL')then
+    	if(!jusline eq 'LEFT')then
+    		!orientation = object ORIENTATION('X is ' + !yDir.string() + ' and Y is ' + !edge.direction().string())
+    		!swap = true
+    	elseif(!jusline eq 'RIGH')then
+    		!orientation = object ORIENTATION('X is ' + !edge.direction().string() + ' and Y is ' + !yDir.string())
+    	elseif(!jusline eq 'CENT')then
+    		!orientation = object ORIENTATION('X is ' + !edge.direction().string() + ' and Y is ' + !yDir.string())
+    	else
+    		break
+    	endif
+    else
+      !orientation = object ORIENTATION('X is ' + !edge.direction().string() + ' and Y is ' + !yDir.string())
+    endif
+    !newPanel    = !this.writePlanarPanel(!previousPanel,!edge, !width, !thickness, !orientation, !swap, !justification)
+    if( !newPanel.set() ) then
+      !previousPanel = !newPanel
+      !return        = !return + 1
+      if( !return eq 1 ) then
+        !firstPanel = !newPanel
+      endif
+      -- name new panels if bent panel is named
+      if( !bentName.empty().not() ) then
+        -- name new plate by trying a numeric index after the bent plate name
+        do !nameIndex from 1 to 999
+          !nameSuffix = !suffix + !nameIndex.string('D0')
+          !firstChar  = !nameSuffix.length() - 2
+          !newName    = !bentName + '-' + !nameSuffix.subString(!firstChar, 3)
+          !newPanel.name = !newName
+          handle (41,12)
+            -- name already used - try next in sequence
+            skip
+          elsehandle any
+            -- failed to name for another reason - abort naming
+            break
+          endhandle
+          -- element is named
+          break
+        enddo
+      endif
+      -- copy level and obstruction
+      !newPanel.obstruction = !this.obstruction
+      if( !this.drawingLevel.size() eq 2 ) then
+        !newPanel.level   = !this.drawingLevel
+      endif
+      -- write material data
+      if( !this.grade neq 0 ) then
+        !newPanel.grade = !this.grade
+      endif
+      if( not badref(!this.matRef) ) then
+        !newPanel.matRef  = !this.matRef
+      endif
+      if( not badref(!this.spref) ) then
+        !newPanel.spref = !this.spref
+      endif
+    endif
+    -- save last edge to calculate adjustment of next edge
+    !lastEdge    = !edge
+
+  enddo
+
+  -- leave CE at first created panel (or bent panel if none created)
+  !!ce = !firstPanel
+
+  if(!this.debug)then
+  	write '-Leave .decomposeToPanels()'
+  endif
+
+  return !return
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      displayStyle
+--
+-- Description: Sets the default style of the graphical item
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .displayStyle()
+
+  -- Initialise Variables
+
+  if (defined(!!gphColOpt)) then
+    !this.colour = !!gphColOpt.aids.code
+  else
+    !this.colour = 1
+  endif
+  !this.style  = 1
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      displayStyle
+--
+-- Description: Sets the style of the graphical item
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      REAL        Colour code
+--    2   R      REAL        Style code
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .displayStyle(!colour is REAL, !style is REAL)
+
+  -- Initialise Variables
+  !this.colour = !colour
+  !this.style  = !style
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      filled
+--
+-- Description: Return current aid fill setting
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True for filled
+--
+------------------------------------------------------------------------
+
+define method .filled() is BOOLEAN
+
+  return !this.fill
+
+endmethod
+-- End of method definition for .filled() BOOLEAN
+
+------------------------------------------------------------------------
+--
+-- Method:      filled
+--
+-- Description: Sets aid fill start of plane
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      BOOLEAN     True for filled
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .filled(!state is BOOLEAN)
+
+  -- Fill
+  !this.fill = !state
+
+endmethod
+-- End of method definition for .filled(BOOLEAN)
+
+------------------------------------------------------------------------
+--
+-- Method:      plane
+--
+-- Description: Return plane
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    PLANE       Plane
+--
+------------------------------------------------------------------------
+
+define method .plane() is PLANE
+
+  return !this.plane
+
+endmethod
+-- End of method definition for .plane() PLANE
+
+------------------------------------------------------------------------
+--
+-- Method:      position
+--
+-- Description: Return position
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    POSITION    Position
+--
+------------------------------------------------------------------------
+
+define method .position() is POSITION
+
+  return !this.plane.position
+
+endmethod
+-- End of method definition for .position() POSITION
+
+------------------------------------------------------------------------
+--
+-- Method:      orientation
+--
+-- Description: Return orientation
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ORIENTATION Orientation
+--
+------------------------------------------------------------------------
+
+define method .orientation() is ORIENTATION
+
+  return !this.plane.orientation
+
+endmethod
+-- End of method definition for .orientation() ORIENTATION
+
+------------------------------------------------------------------------
+--
+-- Method:      display
+--
+-- Description: Highlight bent planel edges as a series of aid boxes
+--              to give a thick line
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .display()
+
+	if( !this.debug)then
+		write '+Enter .display()'
+	endif
+
+  !!aidNumbers.hide(!this.aidTag)
+  !profile  = !this.calculateExtrusion()
+  if(!profile.unset()) then
+  	if( !this.debug)then
+		  write '-Leave .display() - !profile.unset()'
+	  endif
+    return
+  endif
+  -- draw one edge of bent panel
+  !this.display(!profile)
+
+  -- display arrow normal to profile at its origin
+  !arrow             = object GPHAXES(!profile.position, !profile.orientation)
+  !arrow.height      = min( 20mm, !this.thickness * 3 )
+  !arrow.draw(!this.aidTag, false)
+  !endPlane          = !this.plane()
+  !endPlane.position = !this.bendLine.endPosition
+
+  !edges             = !profile.edges()
+  do !index indices !edges
+    skip if(!edges[!index].objectType() neq 'LINE')
+    !line = object LINE(!edges[!index].startPosition, !endPlane.near(!edges[!index].startPosition))
+    !line.draw(!this.aidTag, !this.style, !this.colour)
+    !line = object LINE(!edges[!index].endPosition, !endPlane.near(!edges[!index].endPosition))
+    !line.draw(!this.aidTag, !this.style, !this.colour)
+  enddo
+
+  -- draw other edge of bent panel
+  -- project profile origin onto end plane
+  !profile.position = !endPlane.near(!profile.position)
+  !this.display(!profile)
+
+  -- draw aids indicating current trailing edge
+  -- middle of panel
+  if( !this.vertexPosition.size() gt 1 ) then
+    !aidSize = !this.thickness * 3
+    !pos     = !this.vertexPosition.last()
+    !posAlt  = !endPlane.near(!this.vertexPosition.last())
+    AID TRANSL 50	
+    AID SPHERE NUMBER $!<this.aidTag> $!<pos>    DIAM $!<aidSize>
+    AID SPHERE NUMBER $!<this.aidTag> $!<posAlt> DIAM $!<aidSize>
+    AID TRANSL 0
+  endif
+
+  if( !this.debug)then
+		write '-Leave .display()'
+	endif
+	
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      display
+--
+-- Description: Highlight selected profile as a series of aid boxes
+--              to give a thick line
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      PROFILE     Profile to draw
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .display(!drawProfile is PROFILE)
+
+  -- get chordal approximation to profile
+  !profile         = !drawProfile.mergePoints().mergeLines().polyline()
+  handle(2,785)
+    -- Invalid profile cannot be drawn
+    return
+  endhandle
+  !boxSize         = !this.thickness / 6
+  !boxSize         = !boxSize.min(6mm)
+  !profileZDir     = !profile.orientation.zDir()
+
+  -- for each chords edge show an aid box
+  !gBox            = object GMFBOX()
+  !gBox.xLength    = !boxSize
+  !gBox.yLength    = !boxSize
+  do !edge values !profile.edges()
+    !length        = !edge.length()
+    skip if(!length lt 0.1mm)
+    !midPoint      = !edge.proportion(0.5)
+    !boxDir        = !edge.direction()
+    !orientation   = object ORIENTATION('Y IS $!<profileZDir> AND Z IS $!<boxDir>')
+    !gBox.zLength  = !length
+    !gBox.position = !midPoint
+    !gBox.orientation = !orientation
+    !graphBox      = object GPHBOX(!gBox)
+    !graphBox.filled(!this.fill)
+    !graphBox.draw(!this.aidTag, false)
+  enddo
+
+endmethod
+-- End of function definition
+
+------------------------------------------------------------------------
+--
+-- Method:      getGeneratorObjects
+--
+-- Description: Return array of objects (Planes & Panels) used
+--              to define the curve
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       objects used to define the curve
+--
+------------------------------------------------------------------------
+
+define method .getGeneratorObjects() is ARRAY
+
+  return !this.originalData
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      isTrimmed
+--
+-- Description: True if last object used to trim curve.
+--              False if last object used as part of curve.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     True = trimmed   False = included
+--
+------------------------------------------------------------------------
+
+define method .isTrimmed() is BOOLEAN
+
+  return !this.lastLegTrimmed
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      tidy
+--
+-- Description: Tidy
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .tidy()
+
+  !!aidNumbers.hide(!this.aidTag)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      isBPanelType
+--
+-- Description: Check if bent plate should be represented as BPANEL object
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      STRING      String representation of plate data type
+-- Return:
+--   [Data Type] [Description]
+--    BOOLEAN     Is BPANEL type
+------------------------------------------------------------------------
+
+define method .isBPanelType(!type is STRING) is BOOLEAN
+
+	!bBPanelType = false
+	if( !type eq 'BPANEL' ) then
+		!bBPanelType = true
+	endif
+	
+	return !bBPanelType
+	
+endmethod
+-- End of method

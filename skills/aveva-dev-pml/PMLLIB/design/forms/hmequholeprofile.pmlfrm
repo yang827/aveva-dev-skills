@@ -1,0 +1,899 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            hmequholeprofile.pmlfrm
+--   Type:          Form Definition
+--   Group:         Utilities
+--     Keyword:     GENERAL
+--   Module:        design
+--   Replaces:
+--
+-- Author:          M.Barlow
+-- Created:         Jan 7 2008
+--
+--
+-- Description:
+--   Identify equipment hole profile (only one now - could be many in the future)
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  apply()                          -                   Create of modify Port for penetration profile
+--  clear()                          -                   Clear form gadgets
+--  clearMessages()                  -                   Clear message panel
+--  close()                          -                   Form close action
+--  createPort(DBREF)                DBREF               Create Port for penetration profile
+--  display()                        -                   Highlight selected profile as a series as aid boxes
+--  enableSelectButton()             -
+--  findPorts()                      ARRAY               Find existing HOLE ports
+--  findProfiles(DBREF)              -                   Find candidate profiles for the significant element
+--  getProfile(DBREF)                PROFILE             Find a profile in the given element
+--  hmEquHoleProfile()               -                   Constructor
+--  initialise()                     -                   Form initialisation
+--  initialise(DBREF)                -                   Initialise form for the given element
+--  navigate()                       -                   Popup menu callback - Navigate to selected element
+--  popupActive(BOOLEAN)             -                   Set active state of popup menu
+--  popupCallback(ARRAY)             -                   Pop-up callback
+--  refreshIcons()                   -                   Update selection icons on the grid
+--  select(ARRAY)                    -                   Callback when profile is selected
+--  selectHoleProfile()              -                   Select Profile to be used as hole profile
+--  significantElement(DBREF)        DBREF               Find the significant element for the given element
+--  tidy()                           -                   Tidy
+--  updateList()                     -                   Update the displayed instance list
+--
+import 'GridControl'
+handle any
+endhandle
+
+setup form !!hmEquHoleProfile varchars dialog resize
+
+  using namespace 'Aveva.Pdms.Presentation'
+  member .profListCtrl is NETGRIDCONTROL
+
+  !this.formTitle     = 'Identify Penetration Shape'
+  !this.iconTitle     = 'HMEHOLE'
+  !this.callback      = '!this.initialise()'
+
+	frame .housingFrame anchor all
+	  -- Current Equipment information
+	  paragraph .parName       anchor left + right + top     at x0.5  ymin+.5   width 36 lines 1
+	
+	  -- List of Profile objects
+	  frame .profList panel    anchor all                    at x0.5  ymax height 6 width 40
+	    container .profContainer noBox PMLNETControl 'NET' dock fill
+	  exit
+	
+	  frame .frameMessage 'Messages' anchor left + right + bottom  at x0.5  ymax width.profList
+	    paragraph .profMessage anchor left + right + bottom  at x0.5  ymax   width 38 lines 2
+	  exit
+
+  	button .select linkLabel 'Select as Penetration Profile' anchor left + bottom at xmin.profMessage ymax+0.2  callback '!this.selectHoleProfile()'
+  exit
+
+  button .update   'OK'     anchor l+b at xmin.housingFrame ymax+0.25 tooltip 'OK' 		 width 8 callback '!this.apply()'
+  button .dismiss  'Cancel' anchor r+b at xmax form-size 					ymin     	tooltip 'Cancel' width 8 callback '!this.close()'
+
+  -- Form members
+
+  -- significant element
+  member .sigElement          is DBREF
+  -- profile elements referenced by the significant element
+  member .portElements        is ARRAY
+
+  -- Index into table of profiles
+  member .selectedProfile     is REAL
+
+  -- Table of profile elements and PML profile objects found for the current element
+  member .profiles            is ARRAY
+  member .profileNames        is ARRAY
+  member .profileElement      is ARRAY
+
+  -- Aid Tag
+  member .aidTag              is REAL
+
+  -- icons for grid
+  member .iconList            is ARRAY
+
+  -- Undo event handlers
+  member .undoUpdate          is UNDOABLE
+
+exit
+-- End of form definition
+
+------------------------------------------------------------------------
+--
+-- Method:      hmEquHoleProfile
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .hmEquHoleProfile()
+
+  -- Initialise Variables
+  using namespace  'Aveva.Pdms.Presentation'
+  -- create instance of .Net control
+  !this.profListCtrl = object NETGRIDCONTROL()
+  -- add .Net control to PML container
+  !this.profContainer.control = !this.profListCtrl.handle()
+
+  -- Events handled
+  !this.profListCtrl.addEventHandler('onPopup', !this, 'popupCallback')
+  !this.profListCtrl.addEventHandler('afterSelectChange', !this, 'select')
+
+  -- Control configuration
+  !this.profListCtrl.columnExcelFilter(false)
+  !this.profListCtrl.outlookGroupStyle(false)
+  !this.profListCtrl.fixedHeaders(false)
+  !this.profListCtrl.headerSort(false)
+  !this.profListCtrl.fixedRows(false)
+  !this.profListCtrl.columnSummaries(false)
+  !this.profListCtrl.singleRowSelection(true)
+  !this.profListCtrl.editableGrid(false)
+  !this.profListCtrl.setLabelVisibility(false)
+
+  -- Define pop-up for Design Template list
+  !menu = !this.newMenu('hmEquProfileMenu')
+  !menu.add('callback', 'Navigate To',  '!this.navigate()','NAVIGATE')
+  !menu.add('callback', 'Select',  '!this.selectHoleProfile()','SELECT')
+  !menu.add('separator')
+  !menu.add( 'callback', 'Export to Excel...', '!!exportToExcel(!this.profListCtrl, ||, |Save As|)', 'EXCEL' )
+  !menu.add( 'callback', 'Print Preview...', '!this.profListCtrl.printpreview()', 'PRINT' )
+  !this.profContainer.popup = !menu
+
+  -- initialise selected profile Icon
+  !this.iconList[1] = !!pml.getPathname('valid12.png')
+  !this.iconList[2] = !!pml.getPathname('unknownicon16.png')
+
+  -- Aid Tags
+  !this.aidTag      = !!aidNumbers.add('hmEquHoleProfile')
+
+  -- Cancel
+  !this.cancelCall  = '!this.tidy()'
+  !this.killingCall = '!!aidNumbers.hide(' + !this.aidTag.string() + ')'
+
+  -- Define list information
+  !this.clear()
+
+  -- initialise selection
+  !this.selectedProfile = 0
+  -- deactivate OK until there is something to process
+  !this.update.active   = false
+
+  -- Initialise OK button undo
+  !this.undoUpdate.description('Equipment Hole Profile')
+--  !this.undoUpdate.undoAction('!!hmEquHoleProfile.updateUndo()')
+--  !this.undoUpdate.redoAction('!!hmEquHoleProfile.close()')
+  !this.update.setUndoable(!this.undoUpdate)
+
+--Tooltips
+  !this.update.setTooltip('OK')
+  !this.dismiss.setTooltip('Cancel')
+
+-- Enable/Disable Select button
+	!this.enableSelectButton()
+	
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      popupCallback
+--
+-- Description: Pop-up callback
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .popupCallback(!passedArray is ARRAY)
+
+  !this.popupActive(!this.profListCtrl.getRows().size() gt 0)
+
+-- Show pop-up
+  !this.profContainer.popup = !this.hmEquProfileMenu
+  !this.profContainer.showPopup(!passedArray[0], !passedArray[1])
+
+endmethod
+-- End of method
+------------------------------------------------------------------------
+--
+-- Method:      popupActive
+--
+-- Description: Set active state of popup menu
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .popupActive(!active is BOOLEAN)
+
+  !this.hmEquProfileMenu.setfieldProperty('NAVIGATE', 'ACTIVE', !active)
+  !this.hmEquProfileMenu.setfieldProperty('SELECT',   'ACTIVE', !active)
+  !this.hmEquProfileMenu.setfieldProperty('EXCEL',    'ACTIVE', !active)
+  !this.hmEquProfileMenu.setfieldProperty('PRINT',    'ACTIVE', !active)
+
+endmethod
+-- End of method
+-------------------------------------------------------------------
+--
+-- Method:      clearMessages
+--
+-- Description: Clear message panel
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .clearMessages()
+
+  !this.profMessage.val = ' '
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      tidy
+--
+-- Description: Tidy
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .tidy()
+
+  !!aidNumbers.hide(!this.aidTag)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      clear
+--
+-- Description: Clear form gadgets
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .clear()
+
+  using namespace  'Aveva.Pdms.Presentation'
+
+  -- Template Information
+  !this.parName.val     = ''
+  !this.clearMessages()
+  !this.update.active   = false
+  -- clear members
+  !this.profiles        = ARRAY()
+  !this.profileNames    = ARRAY()
+  !this.profileElement  = ARRAY()
+  !this.selectedProfile = 0
+  !this.popupActive(false)
+  !this.profListCtrl.clearGrid()
+
+endmethod
+-- End of method
+
+----------------------------------------------------------------------
+--
+-- Method:      close
+--
+-- Description: Form close action
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .close()
+
+  !this.tidy()
+  !this.hide()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      initialise
+--
+-- Description: Form initialisation
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .initialise()
+
+  -- initialise for current object
+  !this.initialise(!!ce)
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      initialise
+--
+-- Description: Initialise form for the given element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Target element
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .initialise(!element is DBREF)
+
+  -- check for good reference
+  if( badref(!element) ) then
+    !this.hide()
+    return error 1 'The current element must be Equipment or Design Template'
+  endif
+
+  -- clear the form gadgets
+  !this.clear()
+
+  -- find significant element
+  !significantElement  = !this.significantElement(!element)
+  if( !significantElement.unset() ) then
+    !this.hide()
+     return error 1 'The Current Element must be of type Equipment or Design Template.'
+  endif
+  if( not !!dbRefUpdatable(!significantElement) ) then
+    !this.hide()
+    return error 1 |$!!<error.text>|
+  endif
+  !this.sigElement     = !significantElement
+  -- display name of significant element
+  !this.parName.val    = !significantElement.fullname
+
+  -- find all candidate profiles in this element
+  !this.profileElement = ARRAY()
+  !this.profiles       = ARRAY()
+  !this.profileNames   = ARRAY()
+  -- findProfiles called recursively
+  !this.findProfiles(!significantElement)
+  !foundProfiles = !this.profileElement.empty().not()
+
+  -- deal with no candidate profiles found
+  !this.popupActive(!foundProfiles)
+  if( !foundProfiles.not() ) then
+    !this.profMessage.val = 'No suitable Penetration Profiles found in this element.'
+    return
+  endif
+
+  -- Find an existing port if one exists
+  !this.portElements        = !this.findPorts()
+  if( !this.portElements.empty().not() ) then
+    if( not badref(!this.portElements[1]) ) then
+      !selected             = !this.portElements[1].string()
+      !this.selectedProfile = !this.profileElement.findFirst(!selected)
+    endif
+  endif
+
+  -- display the list
+  !this.updateList()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      significantElement
+--
+-- Description: Find the significant element for the given element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Original element
+-- Return:
+--   [Data Type] [Description]
+--    DBREF       Significant element
+--
+------------------------------------------------------------------------
+define method .significantElement(!element is DBREF) is DBREF
+
+  -- Significant element is either SUBE or EQUI, or TMPL in TMAR
+  !types[1] = 'EQUI'
+  !types[2] = 'SUBE'
+  !types[3] = 'VOLM'
+  !types[4] = 'SVOLM'
+  !sigRef   = !!dtbOwnerOfTypes(!element,!types)
+  if( !sigRef.unset() ) then
+    -- check for TMPL definition
+    !tmplType[1] = 'TMPL'
+    !sigRef      = !!dtbOwnerOfTypes(!element,!tmplType)
+    if( !sigRef.set() ) then
+      if( !sigRef.owner.hardType neq 'TMAR' ) then
+        -- not a template definition
+        !sigRef  = object DBREF()
+      endif
+    endif
+  endif
+
+  return !sigRef
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      findProfiles
+--
+-- Description: Find candidate profiles for the significant element
+--              BEWARE THIS IS CALLED RECURSIVELY
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       element to search
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .findProfiles(!element is DBREF)
+
+  !members = !element.members
+  do !member values !members
+    if(!member.hardType inset('SUBE','SVOLM')) then
+      !this.findProfiles(!member)
+    else
+      !tryProfile = !this.getProfile(!member)
+      if( !tryProfile.set() ) then
+        !this.profileElement.append(!member.string())
+        !this.profiles.append(!tryProfile)
+        !tempArray[1] = !member.fullname
+        !this.profileNames.append(!tempArray[1])
+      endif
+    endif
+  enddo
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      getProfile
+--
+-- Description: Find a profile in the given element
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      DBREF       Element to search
+-- Return:
+--   [Data Type] [Description]
+--    PROFILE     Profile for this element or unset profile if none
+--
+------------------------------------------------------------------------
+define method .getProfile(!element is DBREF) is PROFILE
+
+  if(!element.hardType inset('EXTR','NXTR','PANE') ) then
+    -- get loop from extrusion
+    !findLoop = object COLLECTION()
+    !findLoop.scope(!element)
+    !findLoop.addtype(|LOOP|)
+    !findLoop.addtype(|PLOOP|)
+    !loop     = !findLoop.results()
+    !profile  = object PROFILE( !loop[1] )
+    handle any
+      !profile = object PROFILE()
+    endhandle
+  elseif(!element.hardType inset('NOZZ','ELCONN') ) then
+    -- first try for element with profile in the SPREF
+    !profile = object PROFILE(!element.spref.catref.gmre.member[1].member[1],!element)
+    handle any
+      -- no catalogue profile
+      !profile = object PROFILE()
+    endhandle
+  else
+    !profile = object PROFILE()
+  endif
+
+  -- validate the profile
+  if( !profile.unset() ) then
+    return object PROFILE()
+  endif
+  !validProfile = !profile.isValidClosed()
+  handle any
+    !validProfile = false
+  endhandle
+  if( !validProfile.not() ) then
+    return object PROFILE()
+  endif
+  -- union with itself removes some bad profiles that isValidClosed does not find
+  !temp = !profile.union(!profile)
+  handle any
+    return object PROFILE()
+  endhandle
+  -- The union should not result in more than one profile
+  if( !temp.size() gt 1 ) then
+    return object PROFILE()
+  endif
+  return !profile
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      updateList
+--
+-- Description: Update the displayed instance list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .updateList()
+
+  !columnHeading[1] = 'Name'
+
+  -- populate the displayed table
+  using namespace 'Aveva.Pdms.Presentation'
+  !nds = object NETDATASOURCE('profileList', !columnHeading, !this.profileNames, '')
+  !this.profListCtrl.bindToDataSource(!nds)
+
+  -- show row icons
+  !this.refreshIcons()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      selectHoleProfile
+--
+-- Description: Select Profile to be used as hole profile
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .selectHoleProfile()
+
+  -- Find the currently selected profile
+  !selectedElements = !this.profListCtrl.getSelectedRowTags()
+  if( not defined(!selectedElements[1]) ) then
+    return
+  endif
+  !this.selectedProfile = !this.profileElement.findFirst(!selectedElements[1])
+  if( !this.selectedProfile.unset() ) then
+     !this.selectedProfile = 0
+  endif
+
+  -- only allow OK if a profile has been selected
+  !this.update.active = ( !this.selectedProfile neq 0 )
+
+  -- show row icons
+  !this.refreshIcons()
+
+endmethod
+-- End of method
+
+-----------------------------------------------------------------------
+--
+-- Method:      refreshIcons
+--
+-- Description: Update selection icons on the grid
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .refreshIcons()
+
+  -- Set empty icon for unselected profile and tick for selected profile
+  do !rowNumber from 1 to !this.profileNames.size()
+    if( !this.selectedProfile eq !rowNumber ) then
+      !iconIndex = 1
+    else
+      !iconIndex = 2
+    endif
+    !this.profListCtrl.setCellImage(!rowNumber,1,!this.iconList[!iconIndex])
+  enddo
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      select
+--
+-- Description: Callback when profile is selected
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .select(!dummySelectArray is ARRAY)
+
+  !this.popupActive(true)
+
+  !this.display()
+
+  !this.enableSelectButton()
+
+endmethod
+-- End of method
+
+define method .enableSelectButton()
+	-- Enable / Disable the "Select as Penetration Profile" button
+  !selectedElements = !this.profListCtrl.getSelectedRowTags()
+  if( not defined(!selectedElements[1]) ) then
+    !this.select.active = false
+  else
+  	!this.select.active = true
+  endif
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      display
+--
+-- Description: Highlight selected profile as a series as aid boxes
+--              to give a thick line
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .display()
+
+  !!aidNumbers.hide(!this.aidTag)
+  -- get selected element
+  !selectedElements = !this.profListCtrl.getSelectedRowTags()
+  if( not defined(!selectedElements[1]) ) then
+    return
+  endif
+  !index       = !this.profileElement.findFirst(!selectedElements[1])
+  -- get chordal approximation to profile
+  !profile     = !this.profiles[!index].mergepoints().mergelines().polyline()
+  !boxSize     = 10mm
+  !profileZDir = !profile.orientation.zdir()
+  -- display arrow normal to profile at its origin
+  !arrow       = object GPHAXES(!profile.position, !profile.orientation)
+  !arrow.draw(!this.aidTag, false)
+  -- for each chords edge show an aid box
+  !gBox            = object GMFBOX()
+  !gBox.xLength    = !boxSize
+  !gBox.yLength    = !boxSize
+  do !edge values !profile.edges()
+    !length        = !edge.length()
+    skip if(!length lt 0.1mm)
+    !midPoint      = !edge.proportion(0.5)
+    !boxDir        = !edge.direction()
+    !orientation   = object ORIENTATION('Y IS $!<profileZDir> AND Z IS $!<boxDir>')
+    !gBox.zLength  = !length
+    !gBox.position = !midPoint
+    !gBox.orientation = !orientation
+    !graphBox      = object GPHBOX(!gBox)
+    !graphBox.filled(true)
+    !graphBox.draw(!this.aidTag, false)
+  enddo
+
+  -- Message
+  !element     = !selectedElements[1].dbref()
+  !lLevel      = !element.level[1]
+  !uLevel      = !element.level[2]
+  !obstruction = !element.obst
+  if( !obstruction eq 0 ) then
+    !obstMessage = 'No obstruction'
+  elseif( !obstruction eq 1 ) then
+    !obstMessage = 'Soft obstruction'
+  else
+    !obstMessage = 'Hard obstruction'
+  endif
+  !this.profMessage.val = !obstMessage + ' at Drawing Level ' + !lLevel.string() + ' to ' + !uLevel.string()
+
+endmethod
+-- End of function definition
+
+
+------------------------------------------------------------------------
+--
+-- Method:      apply
+--
+-- Description: Create of modify Port for penetration profile
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+
+--
+------------------------------------------------------------------------
+define method .apply()
+
+  if( !this.selectedProfile gt 0 ) then
+    !holeElement = !this.profileElement[!this.selectedProfile].dbref()
+  else
+    return
+  endif
+
+  !message = ''
+
+  !findPort  = object COLLECTION()
+  !findPort.scope(!this.sigElement)
+  !findPort.addtype(|PORI|)
+  !findPort.filter(object EXPRESSION(|PURP OF OWNER eq 'HOLE'|))
+  !holePort  = !findPort.results()
+  if( !holePort.empty() ) then
+    !saveRef = !!ce
+    !portRef = !this.createPort(!this.sigElement)
+    handle any
+      !message = !!error.text
+      !portRef = object DBREF()
+    endhandle
+    !!ce = !saveRef
+  else
+    !portRef = !holePort[1]
+  endif
+
+  -- point port to the selected profile element
+  if( badref(!portRef) ) then
+    !!alert.error(!message)
+  else
+    !portRef.tarf = !holeElement
+    handle any
+      !!alert.error(!!error.text)
+    endhandle
+  endif
+  !this.close()
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      createPort
+--
+-- Description: Create Port for penetration profile
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+
+--
+------------------------------------------------------------------------
+define method .createPort(!owner is DBREF) is DBREF
+
+  !!ce = !owner
+  NEW  PORS
+  PURP HOLE
+  NEW  PORI
+  return !!ce
+
+endmethod
+-- End of method
+
+------------------------------------------------------------------------
+--
+-- Method:      findPorts
+--
+-- Description: Find existing HOLE ports
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--    ARRAY       List of hole ports
+--
+------------------------------------------------------------------------
+define method .findPorts() is ARRAY
+
+  !findPort  = object COLLECTION()
+  !findPort.scope(!this.sigElement)
+  !findPort.addtype(|PORI|)
+  !findPort.filter(object EXPRESSION(|PURP OF OWNER eq 'HOLE'|))
+  !holePorts = !findPort.results()
+  !portArray = ARRAY()
+  do !port values !holePorts
+    !portTarf = !port.tarf
+    handle any
+      skip
+    endhandle
+    !portArray.append(!portTarf)
+  enddo
+
+  return !portArray
+endmethod
+-- End of method
+
+-------------------------------------------------------------------
+--
+-- Method:      navigate
+--
+-- Description: Popup menu callback - Navigate to selected element
+--
+-- Method Type: Procedure
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+define method .navigate()
+
+  !selectedElements = !this.profListCtrl.getSelectedRowTags()
+
+  if( !selectedElements.size() neq 1 ) then
+    return
+  endif
+
+  !ref = !selectedElements[1].dbref()
+  handle any
+    return
+  endhandle
+  !!ce = !ref
+
+endmethod
+-- End of method

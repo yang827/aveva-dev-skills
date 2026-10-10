@@ -1,0 +1,583 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            admperop.pmlobj
+--   Type:          Object Definition
+--   Group:         General Application
+
+--     Keyword:     GEN
+--   Module:        admin
+--   Replaces:
+--
+-- Author:          I.Clark
+-- Created:         Thu Dec 3 10:33:48 GMT 1998
+--
+--
+-- Description:
+-- This the definition of an object to store a Role's
+-- Permissible operation in an object as strings, ie:- outside of any database
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  admPerop()                       -                   Constructor Function
+--  deletePerop()                    -                   Method to delete a 'real' perop
+--  eclassArray(DBREF)               ARRAY               Generate eclass array with hierarchy paired
+--  mapCoreOpToThis(DBREF)           -                   Set object operations from PEROP element
+--  mapThisOpToCore()                ARRAY               Return array of operation attribute commands
+--  modifyPerop(DBREF)               -                   Method to change a perop if necessary
+--  newPerop(DBREF)                  DBREF               Creates a perop under the specified dbref of the owning role
+--  perop2AdmPerop(DBREF)            -                   To capture a perop as a admPerop!
+--  updateOperations(DBREF)          ARRAY               Return array of operation attribute commands
+--
+------------------------------------------------------------------------
+-- Return Errors used
+-- Error    Cause
+-- 1        The name specified for this Perop is invalid
+-- 2        One of Classes specified is invalid
+-- 3        There is a problem with the Operations specified
+-- 4        The Condition entered is invalid
+-- 5        The is a problem with the Message Set
+-- 6        There was a problem deleting the Perop
+-- 7        There is a problem with the affirm mode for this perop!
+------------------------------------------------------------------------
+
+define object ADMPEROP
+  member .name          is STRING
+  member .eclass        is ARRAY
+  member .aclass        is ARRAY
+  member .cond          is STRING
+  member .acrMessage    is STRING
+  member .dbRef         is DBREF
+  member .aNot          is BOOLEAN
+  member .eNot          is BOOLEAN
+  member .modify        is STRING
+  member .create        is STRING
+  member .delete        is STRING
+  member .claim         is STRING
+  member .issue         is STRING
+  member .drop          is STRING
+endobject
+-- End of object definition for ADMPEROP
+------------------------------------------------------------------------
+--
+--Method: .admPerop()
+--
+-- Description: Constructor Function
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .admPerop()
+  !this.aNot   = false
+  !this.eNot   = false
+  !this.modify = 'Ignore'
+  !this.create = 'Ignore'
+  !this.delete = 'Ignore'
+  !this.claim  = 'Ignore'
+  !this.issue  = 'Ignore'
+  !this.drop   = 'Ignore'
+endmethod
+-- End of method definition for .admPerop()
+------------------------------------------------------------------------
+--
+-- Method: .perop2AdmPerop()
+--
+-- Description: To capture a perop as a admPerop!
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+--   1   R             DBREF
+-- Return:
+--  [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .perop2AdmPerop(!dbRef is DBREF)
+  !this.name =  !dbRef.name
+  !this.dbRef = !dbRef
+
+  -- OPERATIONS
+  -- mapping between DB values an values presented to user
+  !this.mapCoreOpToThis( !dbRef )
+
+  -- ELEMENTS
+  !tempEclass     = !this.eclassArray(!dbRef)
+  if( defined(!tempEclass[1]) ) then
+    !this.eNot    = !tempEclass[1].upcase() eq 'NOT'
+  else
+    !this.eNot    = false
+  endif
+  -- get rid of NOT from the list if it is negative
+  if( !this.eNot ) then
+    !tempEclass.removeFirst()
+  endif
+  !this.eclass = !tempEclass
+
+  -- ATTRIBUTES
+  !this.aclass    = !dbRef.aclass
+  if( defined(!this.aclass[1]) ) then
+    !this.aNot    = !this.aclass[1].upcase() eq 'NOT'
+  else
+    !this.aNot    = false
+  endif
+  -- get rid of NOT from the list if it is negative
+  if( !this.aNot ) then
+    !this.aclass.removeFirst()
+  endif
+  -- ## Fix this work around Ian
+  !prevPos = !!ce
+  !!ce = !dbRef
+  var !temp COND
+  if(!temp.upcase() NEQ |UNSET|)then
+    !this.cond = !temp
+  else
+    !this.cond = ||
+  endif
+
+  !!ce = !prevPos
+  !this.acrMessage = !dbRef.acrMessage
+endmethod
+-- End of method definition for .perop2AdmPerop(DBREF)
+------------------------------------------------------------------------
+--
+-- Method: .newPerop()
+--
+-- Description: Creates a perop under the specified dbref of the owning role
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+--  1    R             DBREF       The role where the perop is to be created.
+-- Return:
+--  [Data Type] [Description]
+--    DBREF        The perop created from the admPerop
+------------------------------------------------------------------------
+define method .newPerop(!dbRef is DBREF) is DBREF
+  -- Check DBref is of the right type
+  if(!dbRef.type NE |ROLE|)then
+    return
+  endif
+
+  -- In case it isn't what it's supposed to be!
+  !prevPos = !!ce
+  !!ce = !dbRef
+  call !!admCommand(|NEW PEROP|)
+  if(!this.name.empty().not())then
+     call !!admCommand(|NAME $!this.name|)
+     handle any
+       call !!admCommand(|DELETE PEROP|)
+       return error 1 |The name specified for this Perop is invalid|
+     endhandle
+  endif
+  if(!this.eclass.empty().not())then
+    -- put NOT in for disabled elements
+    if( !this.eNot ) then
+      !textThusFar = |NOT |
+    else
+      !textThusFar = ||
+    endif
+    do !noun values !this.eclass
+       !textThusFar = !textThusFar + !noun + | |
+    enddo
+    if(!textThusFar.empty().not())then
+      call !!admCommand(|ECLASS $!textThusFar|)
+      handle any
+        call !!admCommand(|DELETE PEROP|)
+        return error 2 |One of the Classes specified is not valid|
+      endhandle
+    endif
+  endif
+  if(!this.aclass.empty().not())then
+    -- put NOT in for disabled attributes
+    if( !this.aNot ) then
+      !textThusFar = |NOT |
+    else
+      !textThusFar = ||
+    endif
+    do !attr values !this.aclass
+       !textThusFar = !textThusFar + !attr + | |
+    enddo
+    if(!textThusFar.empty().not())then
+      call !!admCommand(|ACLASS $!textThusFar|)
+      handle any
+        call !!admCommand(|DELETE PEROP|)
+        return error 2 |One of the Classes specified is not valid|
+      endhandle
+    endif
+  endif
+  if(!this.acrMessage.empty().not())then
+    !temp = '|' + !this.acrMessage + '|'
+    ACRMES $!temp
+    handle any
+      call !!admCommand(|DELETE PEROP|)
+      return error 5 |The is a problem with the Message Set|
+    endhandle
+  endif
+
+  -- Operations
+  !opCommands = !this.mapThisOpToCore()
+  do !operation values !opCommands
+    call !!admCommand(!operation)
+    handle any
+    endhandle
+  enddo
+  if(!this.cond.empty().not())then
+    call !!admCommand(|COND $!this.cond|)
+    handle any
+      call !!admCommand(|DELETE PEROP|)
+      return error 4 |The Condition entered is invalid|
+    endhandle
+  endif
+
+  !this.dbRef = !!ce
+
+  !result = !!ce
+  !!ce = !prevPos
+
+  return !result
+endmethod
+-- End of method definition for .newPerop(DBREF) DBREF
+------------------------------------------------------------------------
+--
+-- Method: .modifyPerop()
+--
+-- Description: Method to change a perop if necessary
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+--  1     R            DBREF       The Dbref of the perop to be modified
+-- Return:
+--  [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .modifyPerop(!dbRef is DBREF)
+
+  if(!dbRef.type EQ |PEROP|)then
+    !prevPos = !!ce
+    !!ce = !dbRef
+    if(!this.acrMessage NEQ !dbRef.acrMessage)then
+      !temp = '|' + !this.acrMessage + '|'
+      ACRMESS $!temp
+      handle any
+        return error 5 |The is a problem with the Message Set|
+      endhandle
+    endif
+    if(!this.name NEQ !dbRef.name)then
+      call !!admCommand(|NAME $!this.name|)
+      handle any
+        return error 1 |The name specified for this Perop is invalid|
+      endhandle
+    endif
+
+    -- ELEMENTS
+    !tempEclass = !this.eclass
+    if( !this.eNot ) then
+      -- put a NOT on the element list, ready for comparison
+      !tempEclass.insert(1,'NOT')
+    endif
+    if(!tempEclass NEQ !this.eclassArray(!dbRef))then
+      !textToExecute = ||
+      do !noun values !tempEclass
+        !textToExecute = !textToExecute + !noun + | |
+      enddo
+      if(!textToExecute.empty().not())then
+        call !!admCommand(|ECLASS $!textToExecute|)
+        handle any
+          return error 2 |One of the Classes specified is not valid|
+        endhandle
+      endif
+    endif
+
+    -- ATTRIBUTES
+    !tempAclass = !this.aclass
+    if( !this.aNot ) then
+      -- put a NOT on the attribute list, ready for comparison
+      !tempAclass.insert(1,'NOT')
+    endif
+    if(!tempAclass NEQ !dbRef.aclass)then
+      !textToExecute = ||
+      do !attr values !tempAclass
+        !textToExecute = !textToExecute + !attr + | |
+      enddo
+      if(!textToExecute.empty().not())then
+        call !!admCommand(|ACLASS $!textToExecute|)
+        handle any
+          return error 2 |One of the Classes specified is not valid|
+        endhandle
+      endif
+    endif
+
+    -- Operations
+    !opCommands = !this.updateOperations(!dbRef)
+    do !operation values !opCommands
+      call !!admCommand(!operation)
+      handle any
+      endhandle
+    enddo
+    -- ## check this
+    var !temp COND
+    if((!this.cond.set() AND (!temp.upcase() EQ |UNSET|)) OR (!temp NEQ !this.cond))then
+      if(!this.cond.empty().not())then
+        call !!admCommand(|COND $!this.cond|)
+        handle any
+          return error 4 |The Condition entered is invalid|
+        endhandle
+      else
+        -- This is BAD!
+        call !!admCommand(|COND TRUE|)
+      endif
+    endif
+    !!ce = !prevPos
+
+  endif
+endmethod
+-- End of method definition for .modifyPerop(DBREF)
+------------------------------------------------------------------------
+--
+-- Method: .deletePerop()
+--
+-- Description: Method to delete a 'real' perop
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .deletePerop()
+  !prev = !!ce
+  !!ce = !this.dbRef
+  call !!admCommand(|DELETE PEROP|)
+  handle any
+    !!ce = !prev
+    return error 6 |There was a problem deleting the Perop|
+  endhandle
+endmethod
+-- End of method definition for .deletePerop()
+------------------------------------------------------------------------
+--
+-- Method: .eclassArray()
+--
+-- Description: Generate eclass array with hierarchy paired
+--              to element type
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+--   1   R      DBREF       DBREF of Perop element
+-- Return:
+--  [Data Type] [Description]
+--  ARRAY of perop elements, paired with hierarchy
+--
+------------------------------------------------------------------------
+define method .eclassArray( !perop is DBREF ) is ARRAY
+
+  !eclassArray   = ARRAY()
+  !tempEclass    = !perop.eclass
+  -- find HIERARCHY entries and combine with the previous element
+  do !index indices !tempEclass
+    !eclassEntry = !tempEclass[!index]
+    skip if( !eclassEntry eq 'HIERAR' )
+    -- check for HIERAR as next entry
+    if( defined( !tempEclass[!index + 1] ) ) then
+      if( !tempEclass[!index + 1] eq 'HIERAR' ) then
+        !eclassEntry = !eclassEntry + ' HIERARCHY'
+      endif
+    endif
+    !eclassArray.append(!eclassEntry)
+  enddo
+  return !eclassArray
+endmethod
+-- End of method definition for .eclassArray(DBREF)
+------------------------------------------------------------------------
+--
+-- Method: .mapCoreOpToThis(DBREF)
+--
+-- Description: Set object operations from PEROP element
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+--   1   R      DBREF       DBREF of Perop element
+-- Return:
+--  [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .mapCoreOpToThis( !perop is DBREF )
+
+  !dbOps[1]     = 'GRANT'
+  !dbOps[2]     = 'DENY'
+  !dbOps[3]     = 'IGNORE'
+  !objectOps[1] = 'Allow'
+  !objectOps[2] = 'Disallow'
+  !objectOps[3] = 'Ignore'
+
+  -- allow for possibility of 11.2 project not upgraded, so operations could be IGNORE
+  if( !perop.opmodify.unset() ) then
+    !peropModify = 'IGNORE'
+  else
+    !peropModify = !perop.opmodify.upcase()
+  endif
+  if( !perop.opcreate.unset() ) then
+    !peropCreate = 'IGNORE'
+  else
+    !peropCreate = !perop.opcreate.upcase()
+  endif
+  if( !perop.opdelete.unset() ) then
+    !peropDelete = 'IGNORE'
+  else
+    !peropDelete = !perop.opdelete.upcase()
+  endif
+  if( !perop.opclaim.unset() ) then
+    !peropClaim = 'IGNORE'
+  else
+    !peropClaim = !perop.opclaim.upcase()
+  endif
+  if( !perop.opissue.unset() ) then
+    !peropIssue = 'IGNORE'
+  else
+    !peropIssue = !perop.opissue.upcase()
+  endif
+  if( !perop.opdrop.unset() ) then
+    !peropDrop = 'IGNORE'
+  else
+    !peropDrop = !perop.opdrop.upcase()
+  endif
+  !this.modify  = !objectOps[!dbOps.findFirst(!peropModify)]
+  !this.create  = !objectOps[!dbOps.findFirst(!peropCreate)]
+  !this.delete  = !objectOps[!dbOps.findFirst(!peropDelete)]
+  !this.claim   = !objectOps[!dbOps.findFirst(!peropClaim)]
+  !this.issue   = !objectOps[!dbOps.findFirst(!peropIssue)]
+  !this.drop    = !objectOps[!dbOps.findFirst(!peropDrop)]
+
+endmethod
+-- End of method definition for .mapCoreOpToThis(DBREF)
+------------------------------------------------------------------------
+--
+-- Method: .mapThisOpToCore() is ARRAY
+--
+-- Description: Return array of operation attribute commands
+--              from settings in this object
+-- Commands have the form OP<name> OPERATION
+-- where OPERATION is GRANT, DENY or IGNORE
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+-- Return:
+--  [Data Type] [Description]
+--   ARRAY       Array of six command strings to set operations attributes
+--
+------------------------------------------------------------------------
+define method .mapThisOpToCore() is ARRAY
+
+  !dbOps[1]     = 'GRANT'
+  !dbOps[2]     = 'DENY'
+  !dbOps[3]     = 'IGNORE'
+  !objectOps[1] = 'Allow'
+  !objectOps[2] = 'Disallow'
+  !objectOps[3] = 'Ignore'
+  !opCommand[1] = 'OPMODIFY ' + !dbOps[!objectOps.findFirst(!this.modify)]
+  !opCommand[2] = 'OPCREATE ' + !dbOps[!objectOps.findFirst(!this.create)]
+  !opCommand[3] = 'OPDELETE ' + !dbOps[!objectOps.findFirst(!this.delete)]
+  !opCommand[4] = 'OPCLAIM '  + !dbOps[!objectOps.findFirst(!this.claim)]
+  !opCommand[5] = 'OPISSUE '  + !dbOps[!objectOps.findFirst(!this.issue)]
+  !opCommand[6] = 'OPDROP '   + !dbOps[!objectOps.findFirst(!this.drop)]
+  return !opCommand
+
+endmethod
+-- End of method definition for .mapThisOpToCore()
+
+------------------------------------------------------------------------
+--
+-- Method: .updateOperations(DBREF)
+--
+-- Description: Return array of operation attribute commands
+--              from settings in this object ONLY FOR THOSE THAT HAVE CHANGED
+-- Commands have the form OP<name> OPERATION
+-- where OPERATION is GRANT, DENY or IGNORE
+--
+-- Method Type: Function/ Procedure
+-- Arguments:
+--  [#] [R/RW] [Data Type] [Description]
+--   1   R      DBREF       DBREF of Perop element
+-- Return:
+--  [Data Type] [Description]
+--   ARRAY       Array of six command strings to set operations attributes
+--
+------------------------------------------------------------------------
+define method .updateOperations( !perop is DBREF ) is ARRAY
+
+  !dbOps[1]     = 'GRANT'
+  !dbOps[2]     = 'DENY'
+  !dbOps[3]     = 'IGNORE'
+  !objectOps[1] = 'Allow'
+  !objectOps[2] = 'Disallow'
+  !objectOps[3] = 'Ignore'
+  !opCommand    = ARRAY()
+
+  -- allow for possibility of 11.2 project not upgraded, so operations could be unset
+  if( !perop.opmodify.unset() ) then
+    !peropModify = 'UNSET'
+  else
+    !peropModify = !perop.opmodify.upcase()
+  endif
+  if( !perop.opcreate.unset() ) then
+    !peropCreate = 'UNSET'
+  else
+    !peropCreate = !perop.opcreate.upcase()
+  endif
+  if( !perop.opdelete.unset() ) then
+    !peropDelete = 'UNSET'
+  else
+    !peropDelete = !perop.opdelete.upcase()
+  endif
+  if( !perop.opclaim.unset() ) then
+    !peropClaim = 'UNSET'
+  else
+    !peropClaim = !perop.opclaim.upcase()
+  endif
+  if( !perop.opissue.unset() ) then
+    !peropIssue = 'UNSET'
+  else
+    !peropIssue = !perop.opissue.upcase()
+  endif
+  if( !perop.opdrop.unset() ) then
+    !peropDrop = 'UNSET'
+  else
+    !peropDrop = !perop.opdrop.upcase()
+  endif
+
+  if( !dbOps[!objectOps.findFirst(!this.modify)] ne !peropModify ) then
+    !opCommand.append('OPMODIFY ' + !dbOps[!objectOps.findFirst(!this.modify)])
+  endif
+  if( !dbOps[!objectOps.findFirst(!this.create)] ne !peropCreate ) then
+    !opCommand.append('OPCREATE ' + !dbOps[!objectOps.findFirst(!this.create)])
+  endif
+  if( !dbOps[!objectOps.findFirst(!this.delete)] ne !peropDelete ) then
+    !opCommand.append('OPDELETE ' + !dbOps[!objectOps.findFirst(!this.delete)])
+  endif
+  if( !dbOps[!objectOps.findFirst(!this.claim)] ne !peropClaim ) then
+    !opCommand.append('OPCLAIM '  + !dbOps[!objectOps.findFirst(!this.claim)])
+  endif
+  if( !dbOps[!objectOps.findFirst(!this.issue)] ne !peropIssue ) then
+    !opCommand.append('OPISSUE '  + !dbOps[!objectOps.findFirst(!this.issue)])
+  endif
+  if( !dbOps[!objectOps.findFirst(!this.drop)] ne !peropDrop ) then
+    !opCommand.append('OPDROP '   + !dbOps[!objectOps.findFirst(!this.drop)])
+  endif
+  return !opCommand
+
+endmethod
+-- End of method definition for .updateOperations()

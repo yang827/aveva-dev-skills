@@ -1,0 +1,591 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            admsesscomment.pmlfrm
+--   Type:          Form Definition
+--   Group:         Form List Maintenance
+--     Keyword:     GEN
+--   Module:        admin
+--   Replaces:
+--
+-- Author:          C.J.Fellows
+-- Created:         Thurs Apr 23 1998
+
+--
+--
+-- Description:
+-- Form showing Session Comments for Admin
+--
+-- The owning form should have an array 'dbObjects' of <db> objects
+-- and a corresponding list gadget 'Dbs' containing DB names
+--
+-- Called from !!admMergeChange or !!admBacktrack
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  admSessComment()                 -                   Constructor
+--  backPage()                       -                   Display the previous page of sessions
+--  cb()                             -                   Method to re-initialise the session list after display parameter
+--  collectBeforeFilter()            -                   Populate the start date gadget to allow filtering on dates
+--  collectDayFilter(STRING)         -                   Function to get a list of number of days in a month (called when the month selection changes)
+--  collectDays(REAL,REAL)           ARRAY               Collects this an array of days for the passed year and month
+--  collectMonthFilter(STRING)       -                   Function to get a list of number of days in a month (called when the year selection changes)
+--  collectMonths()                  ARRAY               Collects this an array of 12 months
+--  collectYears(REAL)               ARRAY               Collects this year and last year (example 2001 and 2000)
+--  forwardPage()                    -                   Display the next page of sessions
+--  getSessions(REAL,REAL)           -                   get the comments for sessions
+--  initialise()                     -
+--  setDate(STRING)                  -                   Update the date gadgets
+--  update()                         -                   Update the list of sessions using the date of the selected session
+--
+------------------------------------------------------------------------
+
+setup form !!admSessComment
+
+  !!admSessComment.formTitle     = 'Database Sessions'
+  !!admSessComment.iconTitle     = 'Sessions'
+  !!admSessComment.callback      = '!!admSessComment.initialise()'
+  !!admSessComment.formRevision  = ' $Revision: 1.12 $ '
+
+  path down
+  para     .sessDb at x1  ymax  text 'Database Name  =  DBNAME/DBNAME                '
+
+  option  .nSess |Previous Sessions | at xmin y1 call |!this.cb()| width 7
+    button    .forward   at xmax+0.5 ymin-0.1  call |!this.forwardPage()| pixmap width 7 height 3 tooltip 'Forward'
+    button    .back      at xmin ymax  call |!this.backPage()| pixmap width 7 height 3 tooltip 'Back'
+
+    button .search               'Search Date' at xmax+1 ymin.nSess call '!this.update()'
+    option .setBeforeDayFilter   ''   at xmax+1 ymin call '' width 2
+    option .setBeforeMonthFilter ''   at xmax ymin call '!this.collectDayFilter(|before|)' width 9
+    option .setBeforeYearFilter  ''   at xmax ymin call '!this.collectMonthFilter(|before|)' width 4
+
+  frame .frame ' Sessions ' at x1 ymax
+    list .sessionComment  at x1 y1 width 64 height 15
+  exit
+  button .dismiss at xmax Form-size ymax+0.5 |Dismiss| OK
+
+  -- Member Definitions
+  member .sessList is ARRAY
+  member .main is FORM
+
+exit
+-- End of form definition for !!admSessComment
+
+------------------------------------------------------------------------
+--
+-- Method:      !admSessComment()
+--
+-- Description: Constructor
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .admSessComment()
+
+  -- Tool tips
+  !this.setBeforeDayFilter.setToolTip('Date')
+  !this.setBeforeMonthFilter.setToolTip('Month')
+  !this.setBeforeYearFilter.setToolTip('Year')
+  !this.search.setToolTip(|Update with date. <Pop-Up Menu>|)
+
+  -- Set the gadget pixmaps
+  !this.forward.addPixmap(!!pml.getPathName('uparrow7x3.png'))
+  !this.back.addPixmap(!!pml.getPathName('downarrow7x3.png'))
+
+  -- Pop up menus
+  !menu = !this.newMenu('setDateMenu')
+  !menu = !this.setDateMenu
+  !menu.clear()
+  !menu.add('callback', 'Today',  '!this.setDate(|today|)')
+  !menu.add('callback', 'Session',  '!this.setDate(|session|)')
+  !this.search.setPopup(!this.setDateMenu)
+  !this.setBeforeDayFilter.setPopup(!this.setDateMenu)
+  !this.setBeforeMonthFilter.setPopup(!this.setDateMenu)
+  !this.setBeforeYearFilter.setPopup(!this.setDateMenu)
+
+ -- Set up Number of Sessions Gadget
+  !this.nSess.clear()
+  !temp = ARRAY()
+  !temp.append(|15|)
+  !temp.append(|25|)
+  !temp.append(|50|)
+  -- 'All' not used because it can be dangerous if there were thousands of sessions
+  --!temp.append(|All|)
+  !this.nSess.dText = !temp
+
+  -- Before Dates (today)
+  !this.collectBeforeFilter()
+
+endmethod
+-- End of method definition for .admSessComment()
+
+------------------------------------------------------------------------
+--
+-- Method:      Initialise
+--
+-- Description:
+--   Initialise
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .initialise()
+
+  if( unset( !this.main ) ) then
+    !this.main = !this.owner()
+  endif
+
+  !this.getSessions(0, !this.nSess.selection('rText').real())
+
+endmethod
+-- End of method definition for .initialise()
+
+------------------------------------------------------------------------
+--
+-- Method:      getSessions
+--
+-- Description:
+--   get the comments for sessions
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R     REAL        Start session number
+--    2    R     REAL        Range n sessions forward or -n sessions back
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- Define method
+define method .getSessions(!number is REAL, !range is REAL)
+
+  !tempdText = ARRAY()
+
+  !currDbsDbRef = !this.main.dbObjects[!this.main.dbs.val]
+
+  !this.sessDb.val = 'Database Name  =  ' + !currDbsDbRef.name
+
+  -- Get the Sessions
+  if (!number eq 0) then
+    !session = !currDbsDbRef.lastSession()
+  elseif (!number gt 0) then
+    !session = !currDbsDbRef.session(!number)
+  else
+    -- Form the date time
+   !dateTime = object DATETIME(!this.setBeforeYearFilter.selection().real(), !this.setBeforeMonthFilter.selection(), !this.setBeforeDayFilter.selection().real(), 23, 59)
+    !session = !currDbsDbRef.session(!dateTime)
+    handle ANY
+      !session = !currDbsDbRef.lastSession()
+    endhandle
+  endif
+  -- Number of sessions given in a negative sense. (More efficient in Core code) however, forward button allows forward
+  !numberOfSessions = (!range * -1)
+  !arrayOfSessions = !currDbsDbRef.sessionRange(!session.number, !numberOfSessions)
+  handle any
+    !!alert.error(!!error.text)
+    !arrayOfSessions = ARRAY()
+    !sessText[1] = 'Problem with database'
+    !sessText[2] = 'Error reported:'
+    !sessText[3] = !!error.text
+    !!admSessComment.sessionComment.val = !sessText
+    return
+  elsehandle  NONE
+    if (!numberOfSessions gt 0) then
+      !arrayOfSessions.invert()
+    endif
+  endhandle
+  do !i values !arrayOfSessions
+    !tempdText.append(!i.number.string())
+  enddo
+
+if (!number lt 0) then
+  -- I am concerned that sessions on the same day may not be viewable if I show only 50 max sessions based on a date
+  -- so if the day, month and year are all the same on first and last show next batch also.
+  !count = 0
+  do
+    !count = !count + 1
+    if (!arrayOfSessions.size().gt(1)) then
+      !dateOne = object DATETIME(!arrayOfSessions[1].date)
+      !dateLast = object DATETIME(!arrayOfSessions[!arrayOfSessions.size()].date)
+      if (!dateOne.date() eq !dateLast.date() and !dateOne.month() eq !dateLast.month() and !dateOne.year() eq !dateLast.year()) then
+
+        !arrayOfMoreSessions = !currDbsDbRef.sessionRange(!arrayOfSessions[!arrayOfSessions.size()].number, !numberOfSessions)
+
+        -- Need to test if session number is different than we already had.
+        if (!arrayOfSessions[!arrayOfSessions.size()].number eq !arrayOfMoreSessions[!arrayOfMoreSessions.size()].number) then
+          break
+        endif
+
+        -- Need to test if first session number is different than we already had.
+        if (!arrayOfSessions[!arrayOfSessions.size()].number eq !arrayOfMoreSessions[1].number) then
+          !arrayOfMoreSessions.remove(1)
+        endif
+
+        if (!arrayOfMoreSessions.size() gt 0) then
+          -- Output a message if this is the first time we are appending
+          if (!count eq 1) then
+            !temporary = !numberOfSessions * -1
+            !answer = !!alert.confirm('There are more than ' & !temporary.string() & ' sessions for this date. $
+To view a lot of sessions could take a while. View ' & !temporary.string() & ' only?')
+            if (!answer.boolean()) then
+              break
+            endif
+          endif
+        endif
+
+        do !i values !arrayOfMoreSessions
+           !tempdText.append(!i.number.string())
+        enddo
+
+        !arrayOfSessions.appendArray(!arrayOfMoreSessions)
+
+      else
+        break
+      endif
+    else
+      break
+    endif
+  enddo
+endif
+
+--  !sessions = !db.sessions()
+--  handle any
+--    !sessText[1] = 'Problem with database'
+--    !sessText[2] = 'Error reported:'
+--    !sessText[3] = !!error.text
+--    !!admSessComment.sessionComment.val = !sessText
+--    return
+--  endhandle
+
+  -- Session Number
+  !eval = object BLOCK(|!arrayOfSessions[!evalIndex].number|)
+  !numbers = !arrayOfSessions.evaluate( !eval )
+  -- Session Date
+  !eval = object BLOCK(|!arrayOfSessions[!evalIndex].date|)
+  !dates = !arrayOfSessions.evaluate( !eval )
+  -- Session Comments
+  !eval = object BLOCK(|!arrayOfSessions[!evalIndex].comment|)
+  !comments = !arrayOfSessions.evaluate( !eval )
+  -- Max length of Comment
+  !lc = 0
+  do !a values !comments
+    !lc = MAX( !a.length(), !lc )
+  enddo
+
+  -- Session Author
+  !eval = object BLOCK(|!arrayOfSessions[!evalIndex].author|)
+  !authors = !arrayOfSessions.evaluate( !eval )
+  -- Max length of Author
+  !la = 0
+  do !a values !authors
+    !la = MAX( !a.length(), !la )
+  enddo
+  !la = !la + 4
+  !la = MIN( !la, 20)
+
+  -- Split the actual session comment up to output in a text pane gadget
+  var !line COMPOSE 'Number Date' width 25 'Author' width $!la $
+                    'Comment' width 7
+  !this.sessionComment.tag = !line[1]
+
+  !sessText = object ARRAY()
+  do !i indices !arrayOfSessions
+    var !line COMPOSE |$!numbers[$!i]| width 5 R |$!dates[$!i]| width 20 C $
+                      |$!authors[$!i]| width $!la C |$!comments[$!i]| width $!lc
+    !sessText.append( !line[1] )
+  enddo
+
+  !this.sessList = !arrayOfSessions
+  !!admSessComment.sessionComment.dText = !sessText
+
+endmethod
+-- End of method definition for .getSessions()
+------------------------------------------------------------------------
+--
+-- Method:      .cb()
+--
+-- Description: Method to re-initialise the session list after display parameter
+-- changed
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .cb()
+  !this.getSessions(0, !this.nSess.selection('rText').real())
+endmethod
+-- End of method definition for .cb()
+
+------------------------------------------------------------------------
+------------------------------------------------------------------------
+--
+-- Method:      collectBeforeFilter()
+--
+-- Description: Populate the start date gadget to allow filtering on dates
+--
+------------------------------------------------------------------------
+
+define method .collectBeforeFilter()
+
+  -- Sensible to use today's date
+  !today = object DATETIME()
+
+  !this.setBeforeYearFilter.dText = !this.collectYears(5)
+  !this.setBeforeMonthFilter.dText = !this.collectMonths()
+  !this.setBeforeDayFilter.dText = !this.collectDays(!today.month(), !today.year())
+
+  -- Set the gadgets to today's date
+  !this.setBeforeYearFilter.select('dText', !today.year().string())
+  !this.setBeforeMonthFilter.select('dText', !today.monthString())
+  !this.setBeforeDayFilter.select('dText', !today.date().string())
+
+endmethod
+-- End of method definition for .collectBeforeFilter()
+------------------------------------------------------------------------
+--
+-- Method:      collectDayFilter()
+--
+-- Description: Function to get a list of number of days in a month (called when the month selection changes)
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      STRING    Option (before or after)
+--
+------------------------------------------------------------------------
+
+define method .collectDayFilter(!option is STRING)
+
+    !year = !this.setBeforeYearFilter.selection()
+    !month = !this.setBeforeMonthFilter.selection()
+    !day = !this.setBeforeDayFilter.selection()
+    !newDate = object DATETIME(!year.real(), !month, 1)
+    !this.setBeforeDayFilter.dText = !this.collectDays(!newDate.month(), !newDate.year())
+    !this.setBeforeDayFilter.select('rtext', !day)
+    handle ANY
+    endhandle
+
+endmethod
+-- End of method definition for .collectDayFilter()
+------------------------------------------------------------------------
+--
+-- Method:      collectMonthFilter()
+--
+-- Description: Function to get a list of number of days in a month (called when the year selection changes)
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      STRING    Option (before or after)
+--
+------------------------------------------------------------------------
+
+define method .collectMonthFilter(!option is STRING)
+
+  -- Only need to do this because a change of year may be to or from a leap year
+
+    !year = !this.setBeforeYearFilter.selection()
+    !month = !this.setBeforeMonthFilter.selection()
+    if (!month.lowcase() eq 'february') then
+      !newDate = object DATETIME(!year.real(), !month, 1)
+      !this.setBeforeDayFilter.dText = !this.collectDays(!newDate.month(), !newDate.year())
+    endif
+
+endmethod
+-- End of method definition for .collectMonthFilter()
+------------------------------------------------------------------------
+--
+-- Method:      .collectYears()
+--
+-- Description: Collects this year and last year (example 2001 and 2000)
+--
+-- Return:
+--   [Data Type] [Description]
+--   STRING ARRAY   This year and last year
+--
+------------------------------------------------------------------------
+define method .collectYears(!numberOfYears is REAL) is ARRAY
+
+  -- Use the core collection objects to collect the available Years
+  !today = object DATETIME()
+  !years = ARRAY()
+  !years.append(!today.year().string())
+  do !i from 1 to (!numberOfYears - 1)
+    !anotherYear = !today.year() - !i
+    !years.append(!anotherYear.string())
+  enddo
+
+  return !years
+
+endmethod
+-- End of method definition for .collectYears()
+------------------------------------------------------------------------
+--
+-- Method:      .collectMonths()
+--
+-- Description: Collects this an array of 12 months
+--
+-- Return:
+--   [Data Type] [Description]
+--   STRING ARRAY   Twelve months
+--
+------------------------------------------------------------------------
+define method .collectMonths() is ARRAY
+
+  -- Collect the available months
+  !months = ARRAY()
+  !months.append('January')
+  !months.append('February')
+  !months.append('March')
+  !months.append('April')
+  !months.append('May')
+  !months.append('June')
+  !months.append('July')
+  !months.append('August')
+  !months.append('September')
+  !months.append('October')
+  !months.append('November')
+  !months.append('December')
+
+  return !months
+
+endmethod
+-- End of method definition for .collectMonths()
+------------------------------------------------------------------------
+--
+-- Method:      .collectDays()
+--
+-- Description: Collects this an array of days for the passed year and month
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1    R      REAL       Month
+--    2    R      REAL       Year
+-- Return:
+--   [Data Type] [Description]
+--   STRING ARRAY    Days of the passed year and month
+--
+------------------------------------------------------------------------
+define method .collectDays(!month is REAL, !year is REAL) is ARRAY
+
+  -- 2000, 2004 etceteras are leap years
+  !real = (!year - 2000) / 4
+  !integer = !real.nint()
+  if (!real eq !integer) then
+    !leap = true
+  else
+    !leap = false
+  endif
+
+  -- Collect the available months
+  if (!month eq 2) then
+    if (!leap.not()) then
+      !day = '1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28'
+    else
+      !day = '1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29'
+    endif
+  elseif (!month eq 4 or !month eq 6 or !month eq 9 or !month eq 11) then
+    !day = '1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30'
+  else
+    !day = '1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31'
+  endif
+
+  !days = !day.split()
+
+  return !days
+
+endmethod
+-- End of method definition for .collectDays()
+
+------------------------------------------------------------------------
+--
+-- Method:      .update()
+--
+-- Description: Update the list of sessions using the date of the selected session
+--
+------------------------------------------------------------------------
+define method .update()
+
+  -- Get sessions
+  !this.getSessions(-1, !this.nSess.selection('rText').real())
+
+endmethod
+-- End of method definition for .update()
+------------------------------------------------------------------------
+--
+-- Method:      .setDate()
+--
+-- Description: Update the date gadgets
+--
+------------------------------------------------------------------------
+define method .setDate(!option is STRING)
+
+  if (!option.lowcase() eq 'session') then
+    !sess = !this.sessList[!this.sessionComment.val]
+    !today = object DATETIME(!sess.date)
+  elseif (!option.lowcase() eq 'today') then
+    !today = object DATETIME()
+  endif
+
+  --!this.setBeforeYearFilter.dText = !this.collectYears(5)
+  --!this.setBeforeMonthFilter.dText = !this.collectMonths()
+  !this.setBeforeDayFilter.dText = !this.collectDays(!today.month(), !today.year())
+
+  -- Set the gadgets to today's date
+  !this.setBeforeYearFilter.select('dText', !today.year().string())
+  handle ANY
+    -- Make sure we have the year of the session in the gadget
+    !todayAbsolute = object DATETIME()
+    !this.setBeforeYearFilter.dText = !this.collectYears(!todayAbsolute.year() - !today.year() + 1)
+    -- Try again
+    !this.setBeforeYearFilter.select('dText', !today.year().string())
+  endhandle
+  !this.setBeforeMonthFilter.select('dText', !today.monthString())
+  !this.setBeforeDayFilter.select('dText', !today.date().string())
+
+endmethod
+-- End of method definition for .setDate()
+
+------------------------------------------------------------------------
+--
+-- Method:      backPage
+--
+-- Description: Display the previous page of sessions
+--
+------------------------------------------------------------------------
+
+define method .backPage()
+
+  !this.getSessions(!this.sessionComment.rtext[!this.sessionComment.rtext.size()].part(1).real(), (!this.nSess.selection('rText').real()))
+
+endmethod
+-- End of method definition for .backPage()
+------------------------------------------------------------------------
+--
+-- Method:      forwardPage
+--
+-- Description: Display the next page of sessions
+--
+------------------------------------------------------------------------
+
+define method .forwardPage()
+
+  !this.getSessions(!this.sessionComment.rtext[1].part(1).real(), (!this.nSess.selection('rText').real() * -1))
+
+endmethod
+-- End of method definition for .forwardPage()

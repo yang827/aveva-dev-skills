@@ -1,0 +1,727 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            rtrplanesofrack.pmlfrm
+--   Type:          Form Definition
+--   Group:         Router application
+--     Keyword:     RTR
+--   Module:        router
+--   Replaces:      FCONPRACK
+--
+-- Author:          Patricia Gardener
+-- Created:
+--
+--
+-- Description:
+-- Details of planes in stand-alone pipe-rack
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  cancel()                         -
+--  checkElevations()                -                   ensure separation is sufficient
+--  checkEntryPlanes()               -                   check suitable number of Entry/Exit planes
+--  checkOverhang()                  -                   ensure overhang is positive
+--  checkTravelPlanes()              -                   check suitable number of Travel planes
+--  commit()                         -
+--  converting()                     -                   Rack from conversion of structure - grey out some fields
+--  default()                        -                   initialise with default values
+--  determineElevations()            -                   find elevations for planes (from form entries)
+--  initialise()                     -                   initialisation
+--  levelsFromStructure(DBREF)       BOOLEAN
+--  rtrPlanesOfRack()                -                   Constructor.
+--
+------------------------------------------------------------------------
+
+
+setup form !!rtrPlanesOfRack
+
+  title    |Pipe Rack Definition|
+  iconti   |Rack|
+  revision | $$Revision: 1.7 $ |
+
+  !this.callback = |!this.initialise()|
+
+  path down
+  vdist 0.2
+
+  -- Rack Geometry
+
+  text _anchorHeight |Elevation of Anchor Plane     | width 10 is REAL format !!distanceFmt
+  text _height       |Elevation between planes      | width 10 is REAL format !!distanceFmt
+  text _overhang     |Overhang of Entry/Exit planes | width 10 is REAL format !!distanceFmt
+
+  text _numberTravel |Number of Travel Planes       | width 10 is REAL format !!integerFmt
+  text _numberEE     |Number of Entry/Exit Planes   | width 10 is REAL format !!integerFmt
+
+
+  -- Routing options
+  frame _options |Options:|
+    option _plpp     |Pipe Positioning | width 20
+    option _plww     |Pipe to Pipe Gap | width 20
+    option _plpm     |Packing Method   | width 20
+  exit
+
+  vdist 0.5
+
+  button _ok     |  OK  | ok
+  button _cancel |Cancel| at xmax form-size ymin cancel
+
+ -- members
+ member _rplg is DBREF
+ member _isNewRplg is BOOLEAN
+ member _levels is ARRAY
+
+ -- *** This variable determines the minimum separation between different planes
+ -- (of the same type) The user MAY WANT TO CHANGE ITS VALUE ***
+ member _minimumSeparation is REAL
+
+-- End of form definition for !!rtrPlanesOfRack
+exit
+
+
+------------------------------------------------------------------------
+--
+-- Method:      .rtrPlanesOfRack()
+--
+-- Description: Constructor.
+--
+------------------------------------------------------------------------
+
+define method .rtrPlanesOfRack()
+
+  -- Arrays
+
+  !dtext[1] = |Centre of pipe|
+  !dtext[2] = |Bottom of pipe|
+  !dtext[3] = |Top of pipe|
+  !rtext[1] = |CENT|
+  !rtext[2] = |ABOV|
+  !rtext[3] = |BELO|
+  !this.plpp.dtext = !dtext
+  !this.plpp.rtext = !rtext
+
+  !dtext.clear()
+  !rtext.clear()
+
+  !dtext[1] = |Wall to Wall|
+  !dtext[2] = |Wall to Flange|
+  !dtext[3] = |Flange to Flange|
+  !rtext[1] = |WW|
+  !rtext[2] = |WF|
+  !rtext[3] = |FF|
+  !this.plww.dtext = !dtext
+  !this.plww.rtext = !rtext
+
+  !dtext.clear()
+  !rtext.clear()
+
+  !dtext[1] = |Nearest edge|
+  !dtext[2] = |By Weight|
+  !rtext[1] = |NEAR|
+  !rtext[2] = |WEIG|
+  !this.plpm.dtext = !dtext
+  !this.plpm.rtext = !rtext
+
+  !dtext.clear()
+  !rtext.clear()
+
+  -- Callbacks
+  !this.height.callback        = |!this.checkElevations()|
+  !this.overhang.callback      = |!this.checkOverhang()|
+  !this.numberTravel.callback  = |!this.checkTravelPlanes()|
+  !this.numberEE.callback      = |!this.checkEntryPlanes()|
+
+  !this.ok.callback           = |!this.commit()|
+  !this.cancel.callback       = |!this.cancel()|
+
+endmethod
+-- End of method definition for .rtrPlanesOfRack()
+
+------------------------------------------------------------------------
+--
+-- Method:      .initialise()
+--
+-- Description: initialisation
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .initialise()
+
+  !this.levels = ARRAY()
+
+  -- make sure that the user is at an RPLG, or at an RPLA, with owner RPLG
+
+  if ( !!ce.type ne |RPLG| and  !!ce.owner.type ne |RPLG|) then
+    !!messageFile.error(162, 10)
+    return
+  endif
+
+  if ( !!ce.type eq |RPLG| ) then
+    !this.rplg = !!ce
+  else
+    !this.rplg = !!ce.owner
+  endif
+
+  if ( !this.rplg.members.empty() ) then
+    !this.isNewRplg = true
+
+    !this.anchorHeight.active = true
+    !this.height.active       = true
+    !this.numberTravel.active = true
+    !this.numberEE.active     = true
+
+    !this.default()
+  else
+    !this.isNewRplg           = false
+
+    !this.anchorHeight.active = false
+    !this.height.active       = false
+    !this.numberTravel.active = false
+    !this.numberEE.active     = false
+
+    -- check to see if Pipe Rack is valid (number of travel and Entry planes)
+
+    !numberEE = 0
+    !numberTravel = 0
+
+    do !rpla values !this.rplg.members
+
+      -- Get PURP for plane
+
+      !purpose = !rpla.purp
+
+      if ( !purpose eq 'PREX' ) then
+         !numberEE = !numberEE + 1
+         if ( !numberEE eq 1 ) then
+           !widthEntry = !rpla.yLength
+         endif
+      else
+         !numberTravel = !numberTravel + 1
+         if ( !numberTravel eq 1 ) then
+           !widthTravel = !rpla.yLength
+         endif
+      endif
+
+    enddo
+
+    if( !numberTravel lt 1) then
+      hide !!rtrCreateRack
+      !!messageFile.error(162, 11, !this.rplg.name)
+      return
+
+    elseif( !numberEE lt 1 ) then
+      hide !!rtrCreateRack
+      !!messageFile.error(162, 12, !this.rplg.name)
+      return
+    endif
+
+    !this.overhang.val = ( !widthEntry - !widthTravel ) / 2
+    !this.numberTravel.val = !numberTravel
+    !this.numberEE.val = !numberEE
+
+  endif
+
+  !this.overhang.active     = true
+  !this.ok.active           = true
+
+endmethod
+-- End of method definition for .initialise()
+
+------------------------------------------------------------------------
+--
+-- Method:      .default()
+--
+-- Description: initialise with default values
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .default()
+
+  -- *** Default separation. THIS VALUE MIGHT NEED TO BE CHANGED ***
+ !this.minimumSeparation = 10
+
+  -- other defaults
+  !this.numberTravel.val = 1
+  !this.numberEE.val     = 1
+  !this.anchorHeight.val = 0.0
+
+  !this.plpp.select('RTEXT', 'ABOV')
+  !this.plpm.select('RTEXT', 'NEAR')
+  !this.plww.select('RTEXT', 'WW')
+
+  -- Depending on the current unit, set the default height and overhang
+  if ( !!isImperialLength('DIST').not() ) then
+    !this.height.val   = 1000mm
+    !this.overhang.val = 1000mm
+  else
+    !this.height.val   = 30inch
+    !this.overhang.val = 30inch
+  endif
+
+endmethod
+-- End of method definition for .default()
+
+------------------------------------------------------------------------
+--
+-- Method:      .converting()
+--
+-- Description: Rack from conversion of structure - grey out some fields
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .converting()
+
+  !this.anchorHeight.active = false
+  !this.height.active       = false
+  !this.numberTravel.active = false
+  !this.numberEE.active     = false
+  !this.ok.active           = false
+
+endmethod
+-- End of method definition for .converting()
+
+------------------------------------------------------------------------
+--
+-- Method:      .levelsFromStructure( !element is DBREF )
+--
+-- Description: Find Heights of planes in Rack from conversion of structure
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .levelsFromStructure( !element is DBREF ) is BOOLEAN
+
+  -- Find directions for travel supports and entry / exit plane supports
+  if ( !!rtrCreateRack.rackDir.selection() eq |North|) then
+    !travelDir = object DIRECTION('N')
+    !entryDir = object DIRECTION('E')
+  else
+    !travelDir = object DIRECTION('E')
+    !entryDir = object DIRECTION('N')
+  endif
+  !travelDirOpposite = !travelDir.opposite()
+  !entryDirOpposite  = !entryDir.opposite()
+
+  -- make list of all SCTN in structure
+  var !sctnList COLLECT ALL SCTN FOR $!element
+
+  -- make sub-list of SCTN supporting Travel & Entry/Exit planes
+  !travelSupport = ARRAY()
+  !entrySupport  = ARRAY()
+
+  do !x indices !sctnList
+    !item = !sctnList[!x].dbref()
+    !ori = !item.ori.wrt( /* )
+    !dir = !ori.zDir()
+    if ( !dir eq !travelDir or !dir eq !travelDirOpposite ) then
+      !entrySupport.append( !item )
+    elseif ( !dir eq !entryDir or !dir eq !entryDirOpposite ) then
+      !travelSupport.append( !item )
+    endif
+  enddo
+
+  if ( !travelSupport.empty() or !entrySupport.empty() ) then
+    return false
+  endif
+
+  !baseUp = !!rtrCreateRack.corner1Position.wrt( /* ).up
+  !adjustLevels = false
+
+  if ( !this.plpp.selection() eq |ABOV|) then
+--    !adjustLevels = !!alert.confirm(!!messageFile.messageString(162,22) ) eq 'YES'
+    !adjustLevels = true
+  elseif ( !this.plpp.selection() eq |BELO|) then
+--    !adjustLevels = !!alert.confirm(!!messageFile.messageString(162,23) ) eq 'YES'
+    !adjustLevels = true
+  endif
+
+  do !x indices !travelSupport
+    !atLevel = !travelSupport[!x]
+    !rawLevel = !atLevel.position.wrt( /* )
+    if ( !adjustLevels ) then
+      if ( !this.plpp.selection() eq |ABOV|) then
+        PIN1 AT $!rawLevel DIR U
+      elseif ( !this.plpp.selection() eq |BELO|) then
+        PIN1 AT $!rawLevel DIR D
+      endif
+      PIN1 BEHIND $!atLevel
+      !rawLevel = !!posOfPin(1)
+    endif
+    !newLevel = !rawLevel.up - !baseUp
+
+    if ( !this.levels.size() eq 0 ) then
+      !this.levels.append(!newLevel)
+    else
+      !inList = false
+      do !y indices !this.levels
+        !level = !this.levels[!y]
+        !difference = !newLevel - !level
+        if ( !difference.abs() lt !this.minimumSeparation ) then
+          !inList = true
+          break
+        elseif ( !newLevel lt !level ) then
+          !this.levels.insert(!y,!newLevel)
+          !inList = true
+          break
+        endif
+      enddo
+      if ( not !inList ) then
+        !this.levels.append(!newLevel)
+      endif
+    endif
+  enddo
+
+  !nTravel = !this.levels.size()
+  !this.numberTravel.val = !nTravel
+  !this.anchorHeight.val = !this.levels[1]
+
+  do !x indices !entrySupport
+    !atLevel = !entrySupport[!x]
+    !rawLevel = !atLevel.position.wrt( /* )
+    if ( !adjustLevels ) then
+      if ( !this.plpp.selection() eq |ABOV|) then
+        PIN1 AT $!rawLevel DIR U
+      elseif ( !this.plpp.selection() eq |BELO|) then
+        PIN1 AT $!rawLevel DIR D
+      endif
+      PIN1 BEHIND $!atLevel
+      !rawLevel = !!posOfPin(1)
+    endif
+    !newLevel = !rawLevel.up - !baseUp
+
+    !inList = false
+    do !y indices !this.levels
+      !level = !this.levels[!y]
+      !difference = !newLevel - !level
+      if ( !difference.abs() lt !this.minimumSeparation ) then
+        !inList = true
+        break
+      elseif ( !newLevel lt !level and !y gt !nTravel ) then
+        !this.levels.insert(!y,!newLevel)
+        !inList = true
+        break
+      endif
+    enddo
+    if ( not !inList ) then
+      !this.levels.append(!newLevel)
+    endif
+  enddo
+
+  if ( !adjustLevels ) then
+    PIN1 OFF
+  endif
+
+  if ( !this.levels.size() eq !nTravel ) then
+    return false
+  endif
+
+  !this.numberEE.val = !this.levels.size() - !nTravel
+
+  !this.ok.active = true
+  return true
+
+endmethod
+-- End of method definition for .levelsFromStructure( DBREF ) BOOLEAN
+
+------------------------------------------------------------------------
+--
+-- Method:      .checkTravelPlanes()
+--
+-- Description: check suitable number of Travel planes
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .checkTravelPlanes()
+
+  -- Check at least 1
+  if ( !this.numberTravel.val lt 1 ) then
+
+    !this.numberTravel.val = 1
+    !!messageFile.error(162, 5)
+
+  -- And warn if large number ( >4 )
+  elseif( !this.numberTravel.val gt 4 ) then
+
+    !!messageFile.warning(162, 18)
+
+  endif
+
+endmethod
+-- End of method definition for .checkTravelPlanes()
+
+------------------------------------------------------------------------
+--
+-- Method:      .checkEntryPlanes()
+--
+-- Description: check suitable number of Entry/Exit planes
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+
+define method .checkEntryPlanes()
+
+  -- Check at least 1
+  if ( !this.numberEE.val lt 1 ) then
+
+    !this.numberEE.val = 1
+    !!messageFile.error(162, 3)
+
+  -- And warn if large number ( >5 )
+  elseif( !this.numberEE.val gt 5 ) then
+
+    !!messageFile.warning(162, 17)
+
+  endif
+
+endmethod
+-- End of method definition for .checkEntryPlanes()
+
+------------------------------------------------------------------------
+--
+-- Method:      .checkElevations()
+--
+-- Description: ensure separation is sufficient
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .checkElevations()
+
+  if ( !this.height.val.abs() lt 2 * !this.minimumSeparation ) then
+
+    -- Invalid value; revert to default (depends on units)
+    if ( !!isImperialLength('DIST').not() ) then
+      !this.height.val = 1000mm
+    else
+      !this.height.val = 30inch
+    endif
+
+    !!messageFile.error(162, 27)
+  endif
+
+endmethod
+-- End of method definition for .checkElevations()
+
+------------------------------------------------------------------------
+--
+-- Method:      .checkOverhang()
+--
+-- Description: ensure overhang is positive
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .checkOverhang()
+
+  if ( !this.overhang.val le 0 ) then
+
+    -- Invalid value; revert to default (depends on units)
+    if ( !!isImperialLength('DIST').not() ) then
+      !this.overhang.val = 1000mm
+    else
+      !this.overhang.val = 30inch
+    endif
+
+    !!messageFile.error(162, 6)
+  endif
+
+endmethod
+-- End of method definition for .checkOverhang()
+
+------------------------------------------------------------------------
+--
+-- Method:      .determineElevations()
+--
+-- Description: find elevations for planes (from form entries)
+--
+-- Method Type: Function
+--
+------------------------------------------------------------------------
+define method .determineElevations()
+
+  -- Elevations of Travel Planes for the RPLG
+  do !x from 1 to !this.numberTravel.val
+    !this.levels[!x] = !this.anchorHeight.val + 2 * ( !x - 1 ) * !this.height.val
+
+  enddo
+
+  !num = !this.numberTravel.val
+
+  -- Find z value for first EE plane
+  !heightEE = !this.anchorHeight.val - !this.height.val
+  if ( !this.numberEE.val le !this.numberTravel.val ) then
+    !heightEE = !heightEE + 2 * !this.height.val
+  endif
+
+  -- Elevations of Entry/Exit Planes for the RPLG
+  do !x from 1 to !this.numberEE.val
+
+    !num = !num + 1
+    -- Set height
+    !this.levels[!num] = !heightEE
+    -- Height for next EE plane
+    !heightEE = !heightEE + 2 * !this.height.val
+  enddo
+
+endmethod
+-- End of method definition for .determineElevations()
+
+------------------------------------------------------------------------
+--
+-- Method:      .commit()
+--
+-- Description:
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .commit()
+
+  !oldCe = !!ce
+
+  if ( !this.isNewRplg ) then
+    !!ce = !this.rplg
+
+    if ( !this.height.active ) then
+      !this.determineElevations()
+    endif
+
+    !xLength = !!rtrCreateRack.length.val
+    !yLength = !!rtrCreateRack.width.val
+    !position = !!rtrCreateRack.corner1Position.midPoint(!!rtrCreateRack.corner2Position)
+
+    if ( !!rtrCreateRack.rackDir.selection() eq |North|) then
+      !ori  = object ORIENTATION( 'X is N')
+    else
+      !ori  = object ORIENTATION( 'Y is N')
+    endif
+
+    !nTravel    = !this.numberTravel.val
+    !numberEE = !this.numberEE.val
+
+    -- Create the Travel Planes for the RPLG
+    do !x from 1 to !nTravel
+      -- create RPLA
+      NEW RPLA
+
+      -- Set position
+      POS $!position
+      !zValue = !this.levels[!x]
+      BY U $!zValue
+      -- Size of plane
+      XLEN $!xLength
+      YLEN $!yLength
+
+      ORI $!ori
+      PURP PRRP
+    enddo
+
+    -- Create the Entry/Exit Planes for the RPLG
+    do !x from 1 to !numberEE
+      -- create RPLA
+      NEW RPLA
+
+      -- Set position
+      POS $!position
+      !zValue = !this.levels[!nTravel + !x]
+      BY U $!zValue
+      -- Length of plane
+      XLEN $!xLength
+
+      ORI $!ori
+      PURP PREX
+    enddo
+
+    -- Go to the RPLG
+    OWNER
+
+    -- Set the function to be the number of travel planes and E/E planes.
+    !function = $!nTravel & ' LEVEL RACK WITH ' & $!numberEE & ' E/E PLANES'
+    FUNCTION |$!function|
+  endif
+
+  !plpp = !this.plpp.selection()
+  !plpm = !this.plpm.selection()
+  !plww = !this.plww.selection()
+
+  !xLength = !!rtrCreateRack.length.val
+  !yLengthTravel = !!rtrCreateRack.width.val
+  !yLengthEntry  = !!rtrCreateRack.width.val + 2 * !this.overhang.val
+  !position = !!rtrCreateRack.corner1Position.midPoint(!!rtrCreateRack.corner2Position)
+  !datum = !position.origin
+
+  do !rpla values !this.rplg.members
+
+    !purpose = !rpla.purp
+    !rplaPosition = !rpla.pos.wrt(!datum)
+    !position.up = !rplaPosition.up
+
+    !!ce = !rpla
+
+    if ( !purpose eq 'PREX' ) then
+      YLEN $!yLengthEntry
+      PLPM NEAR
+    else
+      YLEN $!yLengthTravel
+      PLPM $!plpm
+    endif
+
+    POS  $!position
+    XLEN $!xLength
+    PLPP $!plpp
+    PLWW $!plww
+    OBST 0
+  enddo
+
+  -- add planes as translucent things with edges to the drawlist
+
+  REM CE
+  ADD CE TRANSL 87 EDGES ON
+
+  !!ce = !oldCe
+  !!rtrCreateRack.stage2()
+  !this.hide()
+
+endmethod
+-- End of method definition for .commit()
+
+------------------------------------------------------------------------
+--
+-- Method:      .cancel()
+--
+-- Description:
+--
+-- Method Type: Procedure
+--
+------------------------------------------------------------------------
+define method .cancel()
+
+  if ( !this.isNewRplg ) then
+    !oldCe = !!ce
+    !!ce = !this.rplg
+    DELETE RPLG
+    !!ce = !oldCe
+    handle any
+    endhandle
+    hide !!rtrCreateRack
+  else
+    !!rtrCreateRack.stage2()
+  endif
+
+endmethod
+-- End of method definition for .cancel()

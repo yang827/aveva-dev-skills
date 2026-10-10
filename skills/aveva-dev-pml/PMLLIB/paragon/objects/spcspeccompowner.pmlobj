@@ -1,0 +1,195 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            spcspeccompowner.pmlobj
+--   Type:          Object Definition
+--   Group:         General Application
+--     Keyword:     GEN
+--   Module:        paragon
+--   Replaces:
+--
+-- Author:          S.Bourne
+-- Created:         Wed Jul 8 09:13:44 BST 1998
+--
+--
+-- Description:
+-- spcspeccompowner represents a database element that owns SPCOMPONENTs
+-- for the purpose of applying pcon rules for symbol keys
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  applyRule(SPCSKEYRULE,ARRAY)     -
+--  spcSpecCompOwner(DBREF,ARRAY)    -
+--
+------------------------------------------------------------------------
+
+define object SPCSPECCOMPOWNER
+  member .scomOwnerRef is DBREF
+
+  -- Array of symbol keys referenced by SPCOMPONENTs
+  member .skeys is ARRAY
+
+  -- Array of point sets referenced (indirectly) by SPCOMPONENTs
+  member .pointSets is ARRAY
+endobject
+-- End of object definition for SPCSPECCOMPOWNER
+
+------------------------------------------------------------------------
+--
+-- Method:      specCompOwner
+--
+-- Description:
+--
+-- Method Type: Procedure
+-- Arguments:
+--   1 R    DBREF          database element to construct this object from
+--   2 RW   ARRAY(STRING)  Error messages
+--
+------------------------------------------------------------------------
+
+define method .spcSpecCompOwner(!dbelem is DBREF,!errors is ARRAY)
+  !this.scomOwnerRef = !dbelem
+
+  -- Clear out existing data
+  !this.skeys.clear()
+  !this.pointSets.clear()
+
+  -- Get all SPCOMPONENT objects for !dbelem
+  var !spcoms COLLECT ALL SPCOM FOR $!dbelem
+
+  do !spcomElem values !spcoms
+    -- Get skey and associated pointset
+    !sKeyRef = !spcomElem.dbRef().detReference
+
+    if (!sKeyRef.badRef()) then
+      !errors.append(!spcomElem.dbRef().name & ' has bad detref - ' & !sKeyRef)
+      skip
+    endif
+
+    if (trim(!sKeyRef.skey) eq '') then
+      !errors.append(!sKeyRef.name & ' has bad skey - ' & !sKeyRef.skey)
+      skip
+    endif
+
+    !scomRef = !spcomElem.dbRef().catReference
+
+    if (!scomRef.badRef()) then
+      !errors.append(!spcomElem.dbRef().name & ' has bad catref - ' & !scomRef)
+      skip
+    endif
+
+    !pointSetRef = !scomRef.ptRef
+
+    if (!pointSetRef.badRef()) then
+      !errors.append(!scomRef.name & ' (of ' & !spcomElem.dbRef().name &$
+                     ' ) has bad ptref - ' & !pointSetRef)
+      skip
+    endif
+
+    -- Set up association relationship between skey and pointset
+    !found = FALSE
+
+    do !skeyIndex indices !this.skeys
+      if (!this.skeys[!skeyIndex].sKeyRef.skey eq !sKeyRef.skey) then
+        !foundSkeyIndex = !skeyIndex
+        !found = TRUE
+      endif
+    enddo
+
+    if (not !found) then
+      !newSkey = object SPCSKEY(!sKeyRef)
+      !this.skeys.append(!newSkey)
+      !foundSkeyIndex = !this.skeys.maxIndex()
+    endif
+
+    !found = FALSE
+
+    do !pointSetIndex indices !this.pointSets
+      if (!this.pointSets[!pointSetIndex].pointSetRef eq !pointSetRef) then
+
+        -- If this matches on owning catref as well
+        if (!this.pointSets[!pointSetIndex].catRef eq !scomRef) then
+
+          !foundPointSetInd = !pointSetIndex
+          !found = TRUE
+        else
+          -- Not associated to skey by referencing SCOMPONENT so
+          -- don't need to modify SCOMPONENT params but skey still dependent
+          !this.skeys[!skeyIndex].pointSets.append(!pointSetIndex)
+          !this.pointSets[!pointSetIndex].skeys.append(!foundSkeyIndex)
+        endif
+      endif
+    enddo
+
+    if (not !found) then
+      !newPointSet = object SPCPOINTSET(!pointSetRef, !scomRef)
+      !this.pointSets.append(!newPointSet)
+      !foundPointSetInd = !this.pointSets.maxIndex()
+    endif
+
+    !this.skeys[!foundSkeyIndex].pointSets.append(!foundPointSetInd)
+    !this.pointSets[!foundPointSetInd].skeys.append(!foundSkeyIndex)
+  enddo
+
+  -- Remove duplicate associations
+  do !skeyElem value !this.skeys
+    !skeyElem.pointSets.unique()
+  enddo
+
+  do !pointSetElem value !this.pointSets
+    !pointSetElem.skeys.unique()
+  enddo
+
+endmethod
+-- End of method definition for .spcSpecCompOwner(DBREF,ARRAY)
+
+------------------------------------------------------------------------
+--
+-- Method:      applyRule
+--
+-- Description:
+--
+-- Method Type: Procedure
+-- Arguments:
+--   1 R  SKeyRule          Rule to apply
+--   2 RW ARRAY(STRING)     Error messages
+--
+------------------------------------------------------------------------
+
+define method .applyRule(!rule is SPCSKEYRULE, !errors is ARRAY)
+  -- Don't do anything for null rules
+  if (not !rule.isNull()) then
+
+    do !skeyElem values !this.skeys
+
+      if (trim(!skeyElem.sKeyRef.skey) eq !rule.skey) then
+
+        do !pointSetInd values !skeyElem.pointSets
+
+          -- Check applying the rule to this pointset doesn't affect other skeys
+          if (!this.pointSets[!pointSetInd].skeys.size() gt 1) then
+            !errors.append('Changing pointset ' & $
+                           !this.pointSets[!pointSetInd].pointSetRef.name & $
+                           ' would affect skeys:')
+            do !affectedSkey values !this.pointSets[!pointSetInd].skeys
+              !errors.append ('        ' & !this.skeys[!affectedSkey].sKeyRef.skey)
+            enddo
+          else
+            !this.pointSets[!pointSetInd].applyRule(!rule, !errors)
+          endif
+
+        enddo
+
+      endif
+
+    enddo
+
+  endif
+
+endmethod
+-- End of method definition for .applyRule(SPCSKEYRULE, ARRAY)

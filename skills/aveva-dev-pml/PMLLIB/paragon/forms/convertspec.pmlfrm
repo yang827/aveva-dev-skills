@@ -1,0 +1,1272 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+--  File:            convertspec.pmlfrm
+--    Type:          Form Definition
+--    Group:         Undefined
+--      Keyword:     Undefined
+--    Module:        Paragon
+--  Author:          Dave Kettle
+--  Created:         Tue Feb 27 14:17:48 2007
+
+--
+--  Description:
+--  Convert specification from 11.6 format to 12.0 format
+--
+------------------------------------------------------------------------
+--
+-- Methods defined:
+--
+--  Method call                      Return              Description
+--  ===========                      ======              ===========
+--  apply()                          -                   Convert specification from 11.6 format to 12.0 format
+--  catCreate(STRING)                -                   Create new hierarchy element.
+--  convertspec()                    -
+--  getOldSpecSelesStructure(DBREF,STRING) -                   Populate destination part worlds list
+--  init()                           -                   Constructor
+--  initDisciplines(GADGET,STRING)   -                   Initialise disciplines
+--  initSpecDetails()                -                   Load specification/discipline details for all available specs
+--  initialise()                     -                   Form initialisation
+--  netAfterSelectDestPartWld(ARRAY) -                   Event handler for destination part worlds list
+--  netAfterSelectDestSpecWld(ARRAY) -                   Event handler for destination part worlds list
+--  netAfterSelectSourceSpec(ARRAY)  -                   Populate destination part worlds list
+--  netPopup(MENU,STRING)            -                   Service popup menus for all lists
+--  netPopupCallbackDestPartWld(ARRAY) -                   Initialise popup menu for destination part world list
+--  netPopupCallbackDestSpecWld(ARRAY) -                   Initialise popup menu for destination spec world list
+--  netPopupCallbackSourceSpec(ARRAY) -                   Initialise popup menu for source spec list
+--  populateDestPartWlds()           -                   Populate destination part worlds list
+--  populateDestSpecWlds()           -                   Populate destination specification worlds list
+--  populateDisciplines()            -                   Populate discipline option list
+--  populateSourceSpecs()            -                   Populate source specifications list
+--
+------------------------------------------------------------------------
+import 'GridControl'
+handle any
+endhandle
+
+--- form definition
+setup form !!convertspec dialog docking noalign size 78 30
+
+  -- Define grid control namespace
+  using namespace 'Aveva.Pdms.Presentation'
+
+  -- Grid control members
+  member .netSourceSpec        is NETGRIDCONTROL
+  member .netDestSpecWld       is NETGRIDCONTROL
+  member .netDestPartWld       is NETGRIDCONTROL
+
+  -- Specification members
+  member .allSpecs             is ARRAY
+
+  -- All disciplines found
+  member .disciplineIDs        is ARRAY
+  member .disciplineDtexts     is ARRAY
+  member .subDisciplineDtexts  is ARRAY
+
+  -- Specs/worlds that are currently in the lists
+  member .sourceSpecs          is ARRAY
+  member .destSpecWlds         is ARRAY
+  member .destTabGrps          is ARRAY
+  member .destPartWlds         is ARRAY
+
+  -- Current selections
+  member .selDiscipline        is STRING
+  member .selSourceSpecs       is ARRAY
+  member .selDestSpecWld       is DBREF
+  member .selDestPartWld       is DBREF
+  member .spcoList             is ARRAY
+  member .gpartList            is ARRAY
+
+  path right
+  -- Discipline details
+  frame .frDisMainSub panel
+    option .optDiscipline tagwid 7 'Discipline' width 38
+    rtoggle .rtDisMain 'Main' states 'OFF' 'MAIN'
+    rtoggle .rtDisSub 'Sub' states 'OFF' 'SUB'
+  exit
+
+  -- Source specification details
+  path down
+
+  para  .paSourceSpec text 'Source specification:'
+  container .conSourceSpec nobox PmlNetControl 'SourceSpec' anchor left + right + top at xmin form width 80 height 12
+
+  -- Destination world details
+  frame .frDestinations panel anchor left + right + top
+    para      .paDestSpecWlds text 'Destination Spec Worlds/Table Groups:'                                 width 30
+    container .conDestSpecWld nobox PmlNetControl 'DestSpecWld'                                            width 38 height 10
+    button    .btnCreateSpecWld linklabel 'Create Spec World...' at xmax.conDestSpecWld-size               width 13
+
+    para      .paDestPartWlds at xmax.conDestSpecWld+2 ymin.paDestSpecWlds text 'Destination Part Worlds:' width 30
+    container .conDestPartWld nobox PmlNetControl 'DestPartWld' anchor left + right at ymin.conDestSpecWld width 38 height 10
+    button    .btnCreatePartWld linklabel 'Create Part World...' anchor right at xmax.conDestPartWld-size  width 13
+  exit
+
+$(
+  -- Form options
+  frame .frOptions 'Options' anchor left + right + top width 78
+    rtoggle .rtPartsOnly tagwidth 13 'Create Parts Only'
+    rtoggle .rtCopyRefs tagwidth 13 'Copy Refs' at xmax.rtPartsOnly ymin.rtPartsOnly
+  exit
+$)
+
+  button .apply 'Apply'     anchor left + top  at xmin.frDisMainSub apply
+  button .refresh 'Refresh' anchor right + top at xmax form-size ymin.apply
+
+  frame .fixwidth panel at x0 y0 width 80 height 0.01
+  exit
+
+  -- Form details
+  !this.formTitle = 'Convert Spec'
+  !this.iconTitle = 'Convert'
+  !this.initcall  = '!this.initialise()'
+
+  -- Define source spec popup menu
+  menu .puSourceSpec popup
+  !this.puSourceSpec.add( 'CALLBACK', 'Navigate To Spec', '!this.netPopup(', 'NAVIGATETOSPEC')
+  !this.puSourceSpec.add( 'CALLBACK', 'View Spec', '!this.netPopup(', 'VIEWSPEC')
+
+  -- Define destination spec world popup menu
+  menu .puDestSpecWld popup
+  !this.puDestSpecWld.add( 'CALLBACK', 'Navigate To Spec World', '!this.netPopup(', 'NAVIGATETOSPWL' )
+
+  -- Define destination part world popup menu
+  menu .puDestPartWld popup
+  !this.puDestPartWld.add( 'CALLBACK', 'Navigate To Part World', '!this.netPopup(', 'NAVIGATETOPRTW' )
+
+exit
+
+------------------------------------------------------------------------
+--
+-- Method:      init
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .init()
+
+-- Try and workout what the Discipline is based on the dtext of the specification.
+
+if (!!appCntrl.currentApp eq 'STL') then
+    !this.optDiscipline.val = !this.optDiscipline.dtext.findFirst('Structures')
+      handle (61,620)
+         return
+      endhandle
+elseif (!!appCntrl.currentApp eq 'ELEC') then
+    !this.optDiscipline.val = !this.optDiscipline.dtext.findFirst('Electrical')
+      handle (61,620)
+         return
+      endhandle
+elseif (!!appCntrl.currentApp eq 'EQUI') then
+    !this.optDiscipline.val = !this.optDiscipline.dtext.findFirst('Equipment')
+      handle (61,620)
+         return
+      endhandle
+elseif (!!appCntrl.currentApp eq 'HVAC') then
+    !this.optDiscipline.val = !this.optDiscipline.dtext.findFirst('HVAC')
+      handle (61,620)
+         return
+      endhandle
+elseif (!!appCntrl.currentApp eq 'PIPE') then
+    !this.optDiscipline.val = !this.optDiscipline.dtext.findFirst('Piping')
+      handle (61,620)
+         return
+      endhandle
+
+else
+     return
+
+endif
+
+     !this.selDiscipline = !this.optDiscipline.selection()
+     !this.populateSourceSpecs()
+
+endmethod
+
+------------------------------------------------------------------------
+--
+-- Method:      convertSpec
+--
+-- Description: Constructor
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .convertspec()
+  -- Define grid control namespace
+  using namespace 'Aveva.Pdms.Presentation'
+
+  -- Set auto-scroll
+  !this.autoScroll = true
+
+  -- Discipline gadgets
+  !this.frDisMainSub.callback = '!this.initDisciplines('
+  !this.optDiscipline.callback = '!this.initDisciplines('
+
+  -- Destination world details
+  !this.btnCreateSpecWld.callback = |!this.catCreate('SPWL')|
+  !this.btnCreatePartWld.callback = |!this.catCreate('PRTWLD')|
+
+  -- Action buttons
+  !this.refresh.callback = '!this.initialise()'
+  !this.apply.callback = '!this.apply()'
+
+  -- Create grid control objects
+  -- Source spec grid
+  !this.netSourceSpec  = object NETGRIDCONTROL()
+  -- Add event handlers to .net container
+  !this.netSourceSpec.addEventHandler('OnPopup', !this, 'netPopupCallbackSourceSpec')
+  !this.netSourceSpec.addEventHandler('AfterSelectChange', !this, 'netAfterSelectSourceSpec')
+  -- Set grid properties
+  !this.netSourceSpec.fixedHeaders(false)
+  --!this.netSourceSpec.fixedRows(false)
+  !this.netSourceSpec.outlookGroupStyle(true)
+  !this.netSourceSpec.columnExcelFilter(false)
+  !this.netSourceSpec.headerSort(true)
+  !this.netSourceSpec.columnSummaries(false)
+  !this.netSourceSpec.singleRowSelection(false)
+  !this.netSourceSpec.setAlternateRowColor('WHITE')
+
+  -- Destination spec world grid
+  !this.netDestSpecWld = object NETGRIDCONTROL()
+  -- Add event handlers to .net container
+  !this.netDestSpecWld.addEventHandler('OnPopup', !this, 'netPopupCallbackDestSpecWld')
+  !this.netDestSpecWld.addEventHandler('AfterSelectChange', !this, 'netAfterSelectDestSpecWld')
+  -- Set grid properties
+  !this.netDestSpecWld.fixedHeaders(false)
+  --!this.netDestSpecWld.fixedRows(false)
+  !this.netDestSpecWld.outlookGroupStyle(false)
+  !this.netDestSpecWld.columnExcelFilter(false)
+  !this.netDestSpecWld.headerSort(true)
+  !this.netDestSpecWld.columnSummaries(false)
+  !this.netDestSpecWld.singleRowSelection(true)
+  !this.netDestSpecWld.setAlternateRowColor('WHITE')
+
+  -- Destination part world grid
+  !this.netDestPartWld = object NETGRIDCONTROL()
+  -- Add event handlers to .net container
+  !this.netDestPartWld.addEventHandler('OnPopup', !this, 'netPopupCallbackDestPartWld')
+  !this.netDestPartWld.addEventHandler('AfterSelectChange', !this, 'netAfterSelectDestPartWld')
+  -- Set grid properties
+  !this.netDestPartWld.fixedHeaders(false)
+  --!this.netDestPartWld.fixedRows(false)
+  !this.netDestPartWld.outlookGroupStyle(false)
+  !this.netDestPartWld.columnExcelFilter(false)
+  !this.netDestPartWld.headerSort(true)
+  !this.netDestPartWld.columnSummaries(false)
+  !this.netDestPartWld.singleRowSelection(true)
+  !this.netDestPartWld.setAlternateRowColor('WHITE')
+
+  -- Add grid controls to containers
+  !this.conSourceSpec.control  = !this.netSourceSpec.handle()
+  !this.conDestSpecWld.control = !this.netDestSpecWld.handle()
+  !this.conDestPartWld.control = !this.netDestPartWld.handle()
+
+  -- Set main discipline type
+  !this.frDisMainSub.val = 1
+
+  -- Set copy parts only
+  -- !this.frOptions.val = 1
+
+endmethod
+-- End of method definition convertSpec()
+
+------------------------------------------------------------------------
+--
+-- Method:      catCreate
+--
+-- Description: Create new hierarchy element.
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .catCreate(!type is STRING)
+
+  -- Hide this current form, to create the required element.
+  !this.hide()
+
+  -- Initialise the Room Design variable to false for this purpose.
+  !!catRoomDesign = FALSE
+
+  !!catCreate.form = !this
+  handle (2,765)
+    -- Form not defined yet, initialise the create form.
+    loadform !!catCreate
+    !!catCreate.form = !this
+  endhandle
+
+  -- Go create the required element at this point
+  !!catCreate(!type)
+
+endmethod
+-- End of method definition catCreate()
+
+------------------------------------------------------------------------
+--
+-- Method:      initialise
+--
+-- Description: Form initialisation
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .initialise()
+
+  -- Initialise the progress bar.
+  !!fmsys.setprogress(10)
+
+  -- Define grid control namespace
+  using namespace 'Aveva.Pdms.Presentation'
+
+  -- Initialise specification details
+  !this.initSpecDetails()
+
+  -- Populate discipline option list
+  !this.populateDisciplines()
+  !this.optDiscipline.val = 1
+
+  -- Populate source specifications table
+  !this.populateSourceSpecs()
+  !!fmsys.setprogress(80)
+
+  -- Populate destination specification worlds table
+  !this.populateDestSpecWlds()
+  !!fmsys.setprogress(85)
+
+  -- Populate destination specification worlds table
+  !this.populateDestPartWlds()
+
+  -- Reset the progress bar.
+  !!fmsys.setprogress(0)
+
+  -- Run the form, discipline check here
+  !this.init()
+
+endmethod
+-- End of method definition
+
+------------------------------------------------------------------------
+--
+-- Method:      initSpecDetails
+--
+-- Description: Load specification/discipline details for all available specs
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .initSpecDetails()
+------------------------------------------------------------------------
+
+  -- Get all specifications
+  !colSpco = object COLLECTION()
+  !colSpco.type('SPEC')
+  !specifications = !colSpco.results()
+
+  -- Get spec objects & disciplines
+  !this.allSpecs.clear()
+  --!this.disciplineIDs.clear()
+  !this.disciplineDtexts.clear()
+  !this.subDisciplineDtexts.clear()
+
+  -- Add in progress gadget values.
+  !count = 10
+  !inc = 70 / !specifications.size()
+
+  do !val values !specifications
+     !!fmsys.setprogress(!count)
+    !ugSpec = object CATUPGRADESPEC(!val)
+    !this.allSpecs.append(!ugSpec)
+    --!this.disciplineIDs.append(!ugSpec.disciplineID)
+    !this.disciplineDtexts.append(!ugSpec.disciplineDtext)
+    !this.subDisciplineDtexts.append(!ugSpec.subDisciplineDtext)
+    !count = !count + !inc
+  enddo
+
+  -- One entry for each discipline/sub-discipline found
+  --!this.disciplineIDs.unique().sort()
+  !this.disciplineDtexts.unique().sort()
+  !this.subDisciplineDtexts.unique().sort()
+
+  -- Move the Unknown discipline to the end
+  !none = 'Unknown'
+  !noneIndex = !this.disciplineDtexts.findFirst(!none)
+  if (!noneIndex.set()) then
+    --!this.disciplineIDs.remove(!noneIndex)
+    --!this.disciplineIDs.append(!none)
+    !this.disciplineDtexts.remove(!noneIndex)
+    !this.disciplineDtexts.append(!none)
+  endif
+  --!none = 'Unknown'
+  !noneIndex = !this.subDisciplineDtexts.findFirst(!none)
+  if (!noneIndex.set()) then
+    !this.subDisciplineDtexts.remove(!noneIndex)
+    !this.subDisciplineDtexts.append(!none)
+  endif
+
+  -- Move limbospec to the end
+  !limbo = '*Limbospec'
+  !limboIndex = !this.disciplineDtexts.findFirst(!limbo)
+  if (!limboIndex.set()) then
+    --!this.disciplineIDs.remove(!limboIndex)
+    --!this.disciplineIDs.append(!limbo)
+    !this.disciplineDtexts.remove(!limboIndex)
+    !this.disciplineDtexts.append(!limbo)
+  endif
+  !limbo = '*Limbospec'
+  !limboIndex = !this.subDisciplineDtexts.findFirst(!limbo)
+  if (!limboIndex.set()) then
+    !this.subDisciplineDtexts.remove(!limboIndex)
+    !this.subDisciplineDtexts.append(!limbo)
+  endif
+
+endmethod
+-- End of method definition initSpecDetails()
+
+------------------------------------------------------------------------
+--
+-- Method:      initDisciplines
+--
+-- Description: Initialise disciplines
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      GADGET      Calling gadget reference
+--    2   R      STRING      Event action
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .initDisciplines(!object is GADGET, !action is STRING)
+
+
+  -- Discipline option list
+  if (!object eq !this.optDiscipline and !action eq |SELECT|) then
+    !this.selDiscipline = !this.optDiscipline.selection()
+    !this.populateSourceSpecs()
+    --!this.populateDestSpecWlds()
+
+  -- Discipline frame (toggles)
+  elseif (!object eq !this.frDisMainSub and !action eq |SELECT|) then
+    !this.populateDisciplines()
+    !this.selDiscipline = !this.optDiscipline.selection()
+    !this.populateSourceSpecs()
+    --!this.populateDestSpecWlds()
+
+  endif
+
+endmethod
+-- End of method definition initDisciplines()
+
+------------------------------------------------------------------------
+--
+-- Method:      populateDisciplines
+--
+-- Description: Populate discipline option list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .populateDisciplines()
+
+  -- Populate discipline gadget
+  if (!this.frDisMainSub.val eq 1) then
+    !this.optDiscipline.dtext = !this.disciplineDtexts
+  else
+    !this.optDiscipline.dtext = !this.subDisciplineDtexts
+  endif
+
+endmethod
+-- End of method definition populateDisciplines()
+
+------------------------------------------------------------------------
+--
+-- Method:      populateSourceSpecs
+--
+-- Description: Populate source specifications list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .populateSourceSpecs()
+
+  -- Define grid control namespace
+  using namespace 'Aveva.Pdms.Presentation'
+
+  --Column headings
+  !sourceSpecHdg[1] = 'Project'
+  !sourceSpecHdg[2] = 'Spec World'
+  !sourceSpecHdg[3] = 'Spec'
+
+  -- Total indicator
+  !sourceSpecTi = 'Specs'
+
+  -- Compile rows
+  !row = ARRAY()
+  !rowset = ARRAY()
+  !this.sourceSpecs.clear()
+  !discipline = !this.optDiscipline.selection()
+
+  do !val values !this.allSpecs
+    if (!this.frDisMainSub.val eq 1) then
+      -- Filter on main discipline
+      if (!val.disciplineDtext eq !discipline) then
+        !row[1] = !val.sourceProject.code() & ' - ' & !val.sourceProject.description()
+        !row[2] = !val.sourceSpec.owner.namn
+        !row[3] = !val.sourceSpec.namn
+        !rowset.append(!row)
+        !this.sourceSpecs.append(!val)
+      endif
+    else
+      -- Filter on sub-discipline
+      if (!val.subDisciplineDtext eq !discipline) then
+        !row[1] = !val.sourceProject.code() & ' - ' & !val.sourceProject.description()
+        !row[2] = !val.sourceSpec.owner.namn
+        !row[3] = !val.sourceSpec.namn
+        !rowset.append(!row)
+        !this.sourceSpecs.append(!val)
+      endif
+    endif
+  enddo
+
+  -- Bind to data source
+  !ndsSourceSpec = object NETDATASOURCE(!sourceSpecTi, !sourceSpecHdg, !rowset)
+  !this.netSourceSpec.bindToDataSource(!ndsSourceSpec)
+
+  -- Select first row in the list
+  !this.netSourceSpec.selectRow(1)
+
+endmethod
+-- End of method definition populateSourceSpecs()
+
+------------------------------------------------------------------------
+--
+-- Method:      populateDestSpecWlds
+--
+-- Description: Populate destination specification worlds list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .populateDestSpecWlds()
+
+  -- Define grid control namespace
+  using namespace 'Aveva.Pdms.Presentation'
+
+  --Column headings
+  !destSpecWldHdg[1] = 'R/W'
+  !destSpecWldHdg[2] = 'DB'
+  !destSpecWldHdg[3] = 'Spec World'
+  -- Total indicator
+  !destSpecWldTi = 'Spec Worlds'
+
+  -- Get all spec worlds
+  !colSpwld = object COLLECTION()
+  !colSpwld.type('SPWL')
+  !spwlds = !colSpwld.results()
+  -- Load destination spec worlds from local DB's only (can't write to foreign DB's)
+  !this.destSpecWlds.clear()
+
+  do !val values !spwlds
+    if (!val.dbname.db().foreign eq |LOCAL|) then
+      !this.destSpecWlds.append(!val)
+    endif
+  enddo
+
+  -- Compile rows
+  !row = ARRAY()
+  !rowset = ARRAY()
+  -- Piping discipline
+  do !val values !this.destSpecWlds
+    !row[1] = !val.dbwrite.string().replace(|TRUE|,|R/W|).replace(|FALSE|,|R|)
+    !row[2] = !val.dbname
+    !row[3] = !val.namn
+    !rowset.append(!row)
+  enddo
+
+  -- Bind to data source
+  !ndsDestSpecWld = object NETDATASOURCE(!destSpecWldTi, !destSpecWldHdg, !rowset)
+  !this.netDestSpecWld.bindToDataSource(!ndsDestSpecWld)
+
+  -- Select first row in the list
+  !this.netDestSpecWld.selectRow(1)
+
+endmethod
+-- End of method definition populateDestSpecWlds()
+
+------------------------------------------------------------------------
+--
+-- Method:      populateDestPartWlds
+--
+-- Description: Populate destination part worlds list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .populateDestPartWlds()
+
+  -- Define grid control namespace
+  using namespace 'Aveva.Pdms.Presentation'
+
+  --Column headings
+  !destPartWldHdg[1] = 'R/W'
+  !destPartWldHdg[2] = 'DB'
+  !destPartWldHdg[3] = 'Part World'
+  -- Total indicator
+  !destPartWldTi = 'Part Worlds'
+
+  -- Get all part worlds
+  !colPrtwld = object COLLECTION()
+  !colPrtwld.type('PRTWLD')
+  !prtwlds = !colPrtwld.results()
+  !!fmsys.setprogress(85)
+
+  -- Load destination part worlds from local DB's only (can't write to foreign DB's)
+  !this.destPartWlds.clear()
+  do !val values !prtwlds
+    if (!val.dbname.db().foreign eq |LOCAL|) then
+      !this.destPartWlds.append(!val)
+    endif
+  enddo
+
+  !!fmsys.setprogress(90)
+
+  -- Compile rows
+  !row = ARRAY()
+  !rowset = ARRAY()
+  do !val values !this.destPartWlds
+    !row[1] = !val.dbwrite.string().replace(|TRUE|,|R/W|).replace(|FALSE|,|R|)
+    !row[2] = !val.dbname
+    !row[3] = !val.namn
+    !rowset.append(!row)
+  enddo
+
+  !!fmsys.setprogress(95)
+
+  -- Bind to data source
+  !ndsDestPartWld = object NETDATASOURCE(!destPartWldTi, !destPartWldHdg, !rowset)
+  !this.netDestPartWld.bindToDataSource(!ndsDestPartWld)
+
+  -- Select first row in the list
+  !this.netDestPartWld.selectRow(1)
+
+endmethod
+-- End of method definition populateDestPartWlds()
+
+------------------------------------------------------------------------
+--
+-- Method:      apply
+--
+-- Description: Convert specification from 11.6 format to 12.0 format
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .apply()
+
+  !save = !!ce
+  -- Get source/destination elements
+  do !val values !this.selSourceSpecs
+    !dummySsn = !val.sourceSpec.name
+    write 'Selected specification: $!dummySsn'
+  enddo
+    !dummyDswn = !this.selDestSpecWld.name
+    !dummyDpwn = !this.selDestPartWld.name
+    write 'Selected spec world is: $!dummyDswn'
+    write 'Selected part world is: $!dummyDpwn'
+    write ' '
+
+  -- Upgrade selected specs
+    !before = !this.selDestSpecWld.member
+  do !val values !this.selSourceSpecs
+    write 'Upgrading specification $!val.sourceSpec.name'
+    !val.upgrade(!this.selDestPartWld, !this.selDestSpecWld)
+    !this.spcoList  = !val.speccomps
+    !this.gpartList = !val.gparts
+
+-- Moved enddo further down.
+--  enddo
+
+    !after = !this.selDestSpecWld.member
+    write ' '
+    write 'New specs/tables Created Successfully!'
+    write ' '
+
+    write |Name items in the TABGRO's if they have just been defined|
+    write ' '
+
+    !difference = !after.difference(!before)
+
+    !inc = 100 / (!difference.size() + 1)
+    !str = !inc
+  do !tabgro value !difference
+     !!fmsys.setprogress(!str.int())
+     $!tabgro
+     if (!!ce.type eq 'TABGRO') then
+         var !list coll all CTABLE for $!tabgro
+
+         -- Name CTABLEs if required.
+         do !ctab value !list
+            !!ce = !ctab.dbref()
+
+            -- Do nothing if CTAB is already prefixed correctly.
+            skip if (!!ce.name.substring(1,3) eq '/CT')
+
+            !nameown = !!ce.owner.name
+            !newname = !nameown.replace('/ST','/CT',1,1)
+            if (!newname.substring(1,1) ne '=') then
+                 name $!newname
+                      handle (41,12)
+                          -- Name already exists, do nothing.
+                      endhandle
+            endif
+         enddo
+
+         -- Name all elements below the CTABLEs, This also checks for duplicate names.
+         var !list coll all tabite for $!tabgro
+         do !tabi value !list
+            !!ce = !tabi.dbref()
+            !cename = !!ce.prtref.name
+            if (!!ce.prtref.name.substring(1,2) eq '/P') then
+                !name = !!ce.prtref.name.replace('/P','/T',1,1)
+            else
+                !name = '/T' & !!ce.prtref.name
+            endif
+
+            name $!name
+              handle (41,12)
+                write |Duplicate Tabite, Name ($!name) already exists for ($!cename) with TABITE ($!tabi)|
+                -- Name already exists, Add bracket to first part of the name.
+                do !namet
+                   !newname = !name.replace('/T','/T($!namet)',1,1)
+                     name $!newname
+                       handle (41,12)
+                         skip
+                       elsehandle none
+                         write |$!newname|
+                         break
+                       endhandle
+                enddo
+              endhandle
+         enddo
+     endif
+     !str = !str + !inc
+  enddo
+  !!fmsys.setprogress(0)
+  !!ce = !save
+
+  write |Now create the questions and answers from the original spec for the TABGRO created.|
+    do !tabgro value !difference
+       !this.getOldSpecSelesStructure(!tabgro, !val.sourceSpec.name)
+    enddo
+
+  write ||
+  write |Finished...|
+
+  -- This moved from above.
+  enddo
+
+
+  -- Below uses the autonaming, if required, or just change the /P to /T for prtref, as above.
+  return
+
+  -- Visit each of the new TABGRO and name elements if we have created them.
+  !difference = !after.difference(!before)
+  !inc = 100 / (!difference.size() + 1)
+  !str = !inc
+  do !tabgro value !difference
+     !!fmsys.setprogress(!str.int())
+     $!tabgro
+     if (!!ce.type eq 'TABGRO') then
+         !!autoNameCe(true)
+     endif
+     !str = !str + !inc
+  enddo
+  !!fmsys.setprogress(0)
+
+  -- Now go and create the questions and answers from the original spec for the TABGRo created.
+    do !tabgro value !difference
+       !this.getOldSpecSelesStructure(!tabgro, !val.sourceSpec.name)
+    enddo
+
+endmethod
+-- End of method definition apply()
+
+------------------------------------------------------------------------
+--
+-- Method:      getOldSpecSelesStructure
+--
+-- Description: Populate destination part worlds list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .getOldSpecSelesStructure(!tabgro is DBREF, !specName is STRING)
+!save = !!ce
+
+!!ce = !tabgro
+
+-- Settings for PBORE types, 0,1,2,3
+!pbore[1] = 'PBOA,PBOR 1'
+!pbore[2] = 'PBOB,PBOR 2'
+!pbore[3] = 'PBOC,PBOR 3'
+!pbore[4] = 'PBOD,PBOR 4'
+
+-- Workout what the percentage change per tabitem is for counter.
+var !count coll all tabite for ce
+!inc = !count.size() / 100
+!cnt = 1
+
+-- get all CTABLE elements.
+   var !ctables coll all ctable for ce
+
+-- Cycle round the CTABLEs in order and sort out questions.
+do !ctable value !ctables
+
+   !!ce = !ctable.dbref()
+
+    var !tabites coll all tabite for ce
+
+ do !tabite value !tabites
+   !cnt = !cnt + !inc
+   !!fmsys.setprogress(!cnt)
+   !!ce = !tabite.dbref().prtref.catref
+   handle (2,822)
+     --write |$!!error.text - (no catref for $!tabite)|
+     if (set(!tabite.dbref().prtref.tmpref)) then
+       !types[1] = !this.spcoList[!this.gpartList.findFirst(!tabite.dbref().prtref)]
+       !!ce      = !this.spcoList[!this.gpartList.findFirst(!tabite.dbref().prtref)]
+     else
+       skip
+     endif
+   elsehandle none
+
+     !types      = geodep
+
+   endhandle
+
+   !question   = ARRAY()
+   !answer     = ARRAY()
+   !qualifier  = ARRAY()
+
+   do !geo value !types
+      !type = TYPE OF $!geo
+
+      if (!type eq 'SPCO') then
+
+          -- Check we are using the right source Specification.
+          !geoSpecName = NAME OF SPEC OF $!geo
+          skip if (!geoSpecName ne !specName)
+
+          -- Navigate to the SPCO element.
+          $!geo
+
+          -- Right, now we get the answer and questions.
+          if (!!ce.tanswer eq '') then
+             !answer.append(!!ce.answer)
+          else
+             !answer.append(!!ce.tanswer)
+          endif
+
+          -- Loop round the sele's, going up at each turn, until we get to the SPEC then stop
+          do
+          end
+            if (!!ce.type eq 'SPEC') then
+                !question.append(!!ce.question)
+                !qualifier.append(!!ce.qualifier)
+                break
+            else
+               !question.append(!!ce.question)
+               !qualifier.append(!!ce.qualifier)
+
+              if (!!ce.tanswer eq '') then
+                  !answer.append(!!ce.answer)
+              else
+                  !answer.append(!!ce.tanswer)
+              endif
+            endif
+          enddo
+      endif
+
+   enddo
+
+   !question.invert()
+   !answer.invert()
+   !qualifier.invert()
+
+-- Next TABITEM, set the TABITE TABHQU here.
+      !inset = ''
+      !!ce = !tabite.dbref()
+
+   do !q index !question
+      NEW TABQUE
+       QUALIFIER $!qualifier[$!q]
+       PURP  $!question[$!q]
+         handle (47,62)
+         endhandle
+       if (!qualifier[!q] ne 0) then
+         !pbors = !pbore[!qualifier[!q]].split(',')
+         !!ce.purp = !pbors[1]
+       endif
+       if (!question[!q] eq 'PBOR') then
+           !!ce.desc = |PBOR $!qualifier[$!q]|
+       endif
+       RFLAG SING
+       QTYPE WORD
+       WANSWERS $!answer[$!q]
+       handle (47,15)
+         -- Maybe we have a real here
+         tabanswer $!answer[$!q]
+          handle (47,15)
+            TANSWER |$!answer[$!q]|
+            qtype TEXT
+          elsehandle none
+            qtype REAL
+            !inset = |'| + !question[!q] + |'| + !inset
+          endhandle
+       elsehandle (2,113)
+         TANSWER |$!answer[$!q]|
+         qtype TEXT
+       endhandle
+   enddo
+
+ enddo
+
+ -- Next CTABLE
+ -- Set header questions.
+       !!ce = !ctable.dbref()
+        TABHEA 1
+        handle (2,113)
+          NEW TABHEA
+        endhandle
+
+   do !q index !question
+      NEW TABHQU
+
+           QUALIFIER $!qualifier[$!q]
+           RFLAG NONE
+      !check = !inset.replace(|''|,|','|)
+      if (!question[!q] inset($!check)) then
+           PURP $!question[$!q]
+           handle (47,62)
+              -- Handles case where !question[!q] is empty
+           endhandle
+           if (!qualifier[!q] ne 0) then
+             !pbors = !pbore[!qualifier[!q]].split(',')
+             !!ce.purp = !pbors[1]
+             !!ce.desc = !pbors[2]
+           endif
+             handle (47,62)
+             endhandle
+
+           if (!question[!q] eq 'PBOR') then
+             !!ce.desc = |PBOR $!qualifier[$!q]|
+           endif
+
+           ANSTYPE REAL
+           QTYPE EXPR
+      else
+
+           PURP $!question[$!q]
+             handle (47,62)
+             endhandle
+           if (!question[!q] eq 'PBOR') then
+             !!ce.desc = |PBOR $!qualifier[$!q]|
+           endif
+           ANSTYPE WORD
+           QTYPE WORD
+      endif
+  enddo
+
+enddo
+   !!fmsys.setprogress(0)
+
+!!ce = !save
+endmethod
+-- End of method .getOldSpecSelesStructure()
+
+------------------------------------------------------------------------
+--
+-- Method:      netAfterSelectSourceSpec
+--
+-- Description: Populate destination part worlds list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       !a[0] is array of selected row tags
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .netAfterSelectSourceSpec(!a is ARRAY)
+
+  -- Clear previous selection
+  !this.selSourceSpecs.clear()
+
+  -- Only process genuine user select events
+  if (!a[0].set()) then
+
+    -- Get selected source specs
+    do !val values !a[0]
+      !this.selSourceSpecs.append(!this.sourceSpecs[!val.real()])
+    enddo
+
+    -- Inactivate menu options for multiple selections
+    if (!a[0].size() gt 1) then
+      !this.puSourceSpec.setFieldProperty(|NAVIGATETOSPEC|, |ACTIVE|, false)
+      !this.puSourceSpec.setFieldProperty(|VIEWSPEC|, |ACTIVE|, false)
+    else
+      !this.puSourceSpec.setFieldProperty(|NAVIGATETOSPEC|, |ACTIVE|, true)
+      !this.puSourceSpec.setFieldProperty(|VIEWSPEC|, |ACTIVE|, true)
+    endif
+
+  endif
+
+endmethod
+-- End of method definition populateDestPartWlds()
+
+------------------------------------------------------------------------
+--
+-- Method:      netAfterSelectDestSpecWld
+--
+-- Description: Event handler for destination part worlds list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       !a[0] is array of selected row tags (strings)
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .netAfterSelectDestSpecWld(!a is ARRAY)
+
+  -- Clear previous selection
+  !this.selDestSpecWld = object DBREF()
+
+  -- Only process genuine user select events
+  if (!a[0].set()) then
+    -- Get selected spec world
+    !this.selDestSpecWld = !this.destSpecWlds[!a[0][1].real()]
+  endif
+
+endmethod
+-- End of method definition netAfterSelectDestSpecWld()
+
+------------------------------------------------------------------------
+--
+-- Method:      netAfterSelectDestPartWld
+--
+-- Description: Event handler for destination part worlds list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       !a[0] is array of selected row tags (strings)
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .netAfterSelectDestPartWld(!a is ARRAY)
+
+  -- Clear previous selection
+  !this.selDestPartWld = object DBREF()
+
+  -- Only process genuine user select events
+  if (!a[0].set()) then
+    -- Get selected part world
+    !this.selDestPartWld = !this.destPartWlds[!a[0][1].real()]
+  endif
+
+endmethod
+-- End of method definition netAfterSelectDestPartWld()
+
+------------------------------------------------------------------------
+--
+-- Method:      netPopupCallbackSourceSpec
+--
+-- Description: Initialise popup menu for source spec list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       !a[0] is cursor x position
+--                           !a[1] is cursor x position
+--                           !a[2] is array of selected row tags
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .netPopupCallbackSourceSpec(!a is ARRAY)
+
+  !this.conSourceSpec.popup = !this.puSourceSpec
+  !this.conSourceSpec.showPopup(!a[0], !a[1])
+
+endmethod
+-- End of method definition netPopupCallbackSourceSpec()
+
+------------------------------------------------------------------------
+--
+-- Method:      netPopupCallbackDestSpecWld
+--
+-- Description: Initialise popup menu for destination spec world list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       !a[0] is cursor x position
+--                           !a[1] is cursor x position
+--                           !a[2] is array of selected row tags
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .netPopupCallbackDestSpecWld(!a is ARRAY)
+
+  !this.conDestSpecWld.popup = !this.puDestSpecWld
+  !this.conDestSpecWld.showPopup(!a[0], !a[1])
+
+endmethod
+-- End of method definition netPopupCallbackDestSpecWld()
+
+------------------------------------------------------------------------
+--
+-- Method:      netPopupCallbackDestPartWld
+--
+-- Description: Initialise popup menu for destination part world list
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      ARRAY       !a[0] is cursor x position
+--                           !a[1] is cursor x position
+--                           !a[2] is array of selected row tags
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .netPopupCallbackDestPartWld(!a is ARRAY)
+
+  !this.conDestPartWld.popup = !this.puDestPartWld
+  !this.conDestPartWld.showPopup(!a[0], !a[1])
+
+endmethod
+-- End of method definition netPopupCallbackDestPartWld()
+
+------------------------------------------------------------------------
+--
+-- Method:      netPopup
+--
+-- Description: Service popup menus for all lists
+--
+-- Method Type: Function/Procedure
+-- Arguments:
+--   [#] [R/RW] [Data Type] [Description]
+--    1   R      MENU        Calling pop up menu reference
+--    2   R      STRING      Event action
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+define method .netPopup(!object is MENU, !action is STRING)
+
+  -- Get calling popup menu picked field
+  !pickedField = !object.pickedFieldName
+
+  --Source spec popup
+  if (!object eq !this.puSourceSpec) then
+    if (!pickedField eq 'NAVIGATETOSPEC') then
+      !!ce = !this.selSourceSpecs[1].sourceSpec
+    elseif (!pickedField eq 'VIEWSPEC') then
+
+      -- Defect Number 1356
+      !!ce = !this.selSourceSpecs[1].sourceSpec
+      !!catSpecViews.add()
+      -- Defect Number 1356
+
+    endif
+
+  -- Destination spec world popup
+  elseif (!object eq !this.puDestSpecWld) then
+    if (!pickedField eq 'NAVIGATETOSPWL') then
+      !!ce = !this.selDestSpecWld
+    endif
+
+  -- Destination part world popup
+  elseif (!object eq !this.puDestPartWld) then
+    if (!pickedField eq 'NAVIGATETOPRTW') then
+      !!ce = !this.selDestPartWld
+    endif
+
+  endif
+
+endmethod
+-- End of method definition netPopup()

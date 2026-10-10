@@ -1,0 +1,211 @@
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            hmmodify.pmlfnc
+--   Type:          Function Definition
+--   Group:         HOLE MANAGEMENT
+--     Keyword:     HOLE MANAGEMENT
+--   Module:        design
+--   Replaces:
+--
+-- Author:          R.Martin
+-- Created:         12 July 2007
+--
+-- Last modified:
+--
+-- Description:
+-- function to collect relevant data to enable managed (virtual holes) to be modelled
+--
+--
+------------------------------------------------------------------------
+--
+-- Function Type:   Function/Procedure
+-- Arguments:
+--
+-- Return:
+--   [Data Type] [Description]
+--
+------------------------------------------------------------------------
+
+-- define function
+define function !!hmModify()
+
+  -- get the fixing association components
+  !holeFixing = !!ce
+  !holeFinder = object HMHOLEFINDER(!holeFixing)
+  !holeArray  = !holeFinder.search()
+  if( !holeArray.size() lt 1 ) then
+    !!alert.error('Cannot find a suitable managed hole to modify - please select hole fixing and try again')
+    return
+  elseif( !holeArray.size() gt 1 ) then
+    !!alert.error('More than one managed hole associated with this element - please select hole fixing and try again')
+    return
+  endif
+
+  !assoc = !holeArray[1].string()
+  var !members collect all assmbr for $!<assoc>
+  handle any
+    -- assos is not set no we can't find the managed hole
+    !!alert.error('Cannot find a suitable managed hole to modify please select hole fixing and try again')
+    return
+  elsehandle none
+    -- get the status of the managed hole
+    !hmHole   = object HMHOLE( !assoc.dbref() )
+    !status   = !hmHole.getFullStatus()
+    !holeType = !hmHole.getHoleType()
+
+    -- don't allow modification of any managed hole that has a status other than 'UNSET'
+    if(not defined(!!holeManagementConfiguration)) then
+      !tempConfig = object HMCONFIG()
+      if(!tempConfig.loadConfigurationFile().not()) then
+        return error 1 'Error in configuration file. Please Contact your systems administrator'
+      endif
+    endif
+    if (!!holeManagementConfiguration.autoRequest.not()) then
+      if (!status.unset().not() and !status neq 'REJECTED') then
+        !alertString = 'The chosen managed hole status is ' & !status & ' - no modification actions can be taken unless the hole status is unset or REJECTED'
+        !!alert.warning(!alertString)
+        return
+      endif
+    else
+      if (!status.unset().not() and !status neq 'REJECTED' and !status neq 'REQUESTED') then
+        !alertString = 'The chosen managed hole status is ' & !status & ' - no modification actions can be taken unless the hole status is unset, REJECTED or REQUESTED'
+        !!alert.warning(!alertString)
+        return
+      endif
+    endif
+  endhandle
+
+  !componentArray = ARRAY()
+  do !assMember values !members
+    if (!assMember.dbref().asstar.set()) then
+      !componentArray.append(!assMember.dbref().asstar)
+    else
+      !componentArray.append(!assMember.dbref().amemrf)
+    endif
+  enddo
+
+  if (!holeType eq 'EQUI') then
+    !!equiPenModify(!componentArray, !hmHole)
+  elseif (!holeType eq 'PROF') then
+    !profileHole = object HMHOLEFROMPROFILE()
+    !profileHole.modify(!hmHole)
+    handle any
+      !error = |Unable to modify Managed Hole: | + !!error.text
+      !!alert.error(!error)
+    elsehandle none
+      !!alert.message(|Hole definition has been modified|)
+    endhandle
+  elseif (!holeType eq 'GEN' or !holeType eq 'FITT') then
+    !find = object COLLECTION()
+    !find.type('ASSMBR')
+    !find.scope(!assoc.dbref())
+    !find.filter(object EXPRESSION(|lname eq '/HoleOwner'|))
+    !errorString = 'The generic hole is incorrectly setup and can not be modified'
+    if (!find.results().size() eq 0 ) then
+      !!alert.error(!errorString)
+      return
+    else
+      !assocMember = !find.results()
+      if (badref(!assocMember[1].amemrf) or !assocMember[1].amemrf.unset()) then
+        !!alert.error(!errorString)
+        return
+      else
+        !panel = !assocMember[1].amemrf
+      endif
+      if (!assocMember[1].asstar.unset()) then
+        !plate = !panel
+      elseif (badref(!assocMember[1].asstar)) then
+        !!alert.error(!errorString)
+        return
+      else
+        !plate = !assocMember[1].asstar
+      endif
+    endif
+    if (!plate.type eq 'HPLATE' or !plate.type eq 'CPLATE') then
+      !thickness = !plate.thickness
+    elseif( !plate.type inset('CTWALL','BPANEL') ) then
+      !thickness = !plate.wThickness
+    elseif( !plate.hardtype inset('SCTN','GENSEC') ) then
+      !thickness = !hmHole.plateThickness
+    else
+      !thickness = !plate.lohe
+    endif
+    if (!plate.hardtype inset('CPLATE','GENSEC')) then
+      -- cannot get current plane of plate for non-planar items - use plane of virtual hole
+      !normal = !hmHole.zDir()
+      !pv     = object POINTVECTOR(!hmHole.origin, !normal)
+      !plane  = !pv.plane()
+    elseif(!plate.hardtype eq 'SCTN') then
+      -- cannot get current plane of SCTN - use plane of virtual hole with origin at poss
+      !normal = !hmHole.zDir()
+      !pv     = object POINTVECTOR(!hmHole.origin, !normal)
+      !plane  = !pv.plane()
+      !plane.position  = !plane.near(!plate.poss)
+    else
+      -- get current plane of plate for planar items
+      if( !plate.hardtype eq 'PANE' ) then
+        -- outfit plate - put plane on top face, allowing for loop justification
+        !vertex                   = object DBREF('PAVE 1 OF PLOOP 1 OF $!<plate>')
+        !topPosition              = !vertex.ppos[3].wrt(worl)
+        !topPlane                 = object PLANE(!topPosition, !plate.orientation.wrt(worl))
+        !position                 = !topPlane.near(!plate.position)
+      else
+        !position     = !plate.position
+      endif
+      !orientation  = !plate.orientation
+      !plane = object PLANE(!position, !orientation)
+    endif
+    if (!holeType eq 'GEN') then
+      show !!hmFreeHole
+      !!hmFreeHole.initialise(!plate, !panel, !hmHole.virtualHole, !hmHole.origin , !plane.direction(), !thickness , !plane, 'MODIFY')
+    elseif (!holeType eq 'FITT') then
+      !find = object COLLECTION()
+      !find.type('ASSMBR')
+      !find.scope(!assoc.dbref())
+      !find.filter(object EXPRESSION(|lname eq '/primaryElement'|))
+      if (!find.results().size() eq 0 ) then
+        !!alert.error(!errorString)
+        return
+      else
+        !fixing = !find.results()[1].amemrf
+        show !!hmFittHole
+        !!hmFittHole.initialise(!plate, !plate, !fixing, !hmHole.origin, !plane.direction(), !thickness , !plane, 'MODIFY')
+      endif
+    endif
+  elseif(!holeType eq 'CWAY') then
+    if (undefined(!!hmCWayDefinition)) then
+      pml load form !!hmCWayDefinition
+      handle any
+      endhandle
+    endif
+    -- the form must not be shown otherwise form initialise will not work
+    if( !!hmCWayDefinition.shown() ) then
+      !!alert.error('Hole definition form already shown. Please complete previous action first')
+    else
+      !!hmCWayDefinition.clear()
+      show !!hmCWayDefinition
+      !!hmCWayDefinition.initialise(!hmHole)
+    endif
+
+  else
+
+    -- the form must be created before it is shown otherwise it will attempt
+    -- to create a new hole
+    if (undefined(!!hmDefinition)) then
+      pml load form !!hmDefinition
+      handle any
+      endhandle
+    endif
+    -- the form must not be shown otherwise form initialise will not work
+    if( !!hmDefinition.shown() ) then
+      !!alert.error('Hole definition form already shown. Please complete previous action first')
+    else
+      !!hmDefinition.clear()
+      show !!hmDefinition
+      !!hmDefinition.initialise(!hmHole)
+    endif
+
+  endif
+endfunction

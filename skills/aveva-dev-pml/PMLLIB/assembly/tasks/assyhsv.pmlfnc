@@ -1,0 +1,309 @@
+----------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+------------------------------------------------------------------------
+--
+-- Copyright 1974 to current year. AVEVA Solutions Limited and its subsidiaries. All rights reserved in original code only.
+--
+-- File:            assyhsv.pmlfnc
+--   Type:          Function Definition
+--   Group:         Marine
+--     Keyword:     Assembly
+--   Module:        Draft
+--   Replaces:
+--
+-- Author:          Steve Wilson
+-- Created:         25 May 1999
+--
+--
+-- Description:
+-- Create the axes symbol in the view
+--
+------------------------------------------------------------------------
+--
+-- Arguments:
+--   [#] [R/RW] [Data Type]       [Description]
+--    1    R     ARRAY of STRINGs
+--
+-- ASSUMPTIONS
+-- The current element must be the VIEW to be processed
+--
+------------------------------------------------------------------------
+define function !!assyHsv(!arguments is ARRAY)
+
+  -- Initialise variables
+  !viewRefe   = !!ce
+  !sheeRefe   = !viewRefe.owne
+  !module     = object ASSYMODULE()
+  !hPanelName = object STRING()
+  !xDir       = X WRT /*
+  !yDir       = Y WRT /*
+  !zDir       = Z WRT /*
+  !array      = ARRAY()
+
+  -- Check the coordinate global object is set
+  if (undefined(!!coords)) then
+    !!comDefineGlobal(object coordsTransfer())
+  endif
+
+  -- Get the assembly from the DRWG attribute IDLN
+  !assyRefe = !sheeRefe.owne.idln
+
+  -- Get assembly plane directions Z and -Z
+  -- We will look for any hpanel that is has the same Z direction as either of these
+  -- Also the assembly -Z direction will be the view direction
+  !aNormal   = !assyRefe.ori.zDir()
+  !aOpposite = !aNormal.opposite()
+
+  -- Look for a hull panel that is in the same plane as the assembly
+  if (!module.description.eq('MARINE')) then
+
+    -- Load the marine api
+    import 'marapi'
+      handle( 1000, 0 )
+        -- This error means that marapi has already been imported, ignore this error and continue.
+      endhandle
+
+    using namespace 'AVEVA.Marine.Drafting'
+    using namespace 'Aveva.Marine.Drafting.MarInterpretationObject'
+    using namespace 'Aveva.Marine.Geometry'
+
+    -- Initialise mar api variables
+    !mDrafting  = object MARDRAFTING()
+    !symbDefObj = object MARSYMBOLICVIEW()
+    !transform  = object MARTRANSFORMATIONPLANAR()
+
+    -- For each assembly part, search for hull panel
+    do !elemRefe val !assyRefe.sexpnd
+
+      -- Get the first available position of any suitable element
+      !unusedPosition = !elemRefe.pos
+        handle (2,201)
+          -- Element does not have attribute POS
+          skip
+        endhandle
+
+      -- Look for hpanel in the same plane as the assembly
+      if (!elemRefe.owne.type.upCase().eq('HPANEL')) then
+
+        -- Get hpanel normal
+        !hNormal = !elemRefe.owne.ori.zDir()
+
+        -- Test hpanel normal against the assembly normal
+        if (!hNormal.eq(!aNormal) or !hNormal.eq(!aOpposite)) then
+
+          -- Ignore any hpanel that is NOT named
+          skip if (!elemRefe.owne.flnm.substring(1,1).neq('/'))
+
+          -- Set the panel name
+          !hPanelName = !elemRefe.owne.flnn
+
+          -- Get the panel reflected state
+          -- It is not possible to produce a symbolic view of a reflected panel
+          -- We have to use the non-reflected one.
+          -- The naming used is in the format /ER3-FR46_1_R reflected and /ER3-FR46_1 non-reflected
+          if (!elemRefe.hurefl ) then
+
+            -- For a symmetrical panel
+            if ( !elemRefe.husymm ) then
+
+              -- Get a test string from the panel name
+              !tStr = !hPanelName.substring( !hPanelName.length() - 1, !hPanelName.length() )
+
+              -- For a reflected and symmetrical panel test for named reflected
+              if ( !tStr.eq('_R') ) then
+                !hPanelName = !hPanelName.substring(1,!elemRefe.owne.flnn.length() - 2)
+
+              endif
+
+            endif
+
+            -- Test that the found name exists
+            VAR !exists EXISTS /$!hPanelName
+            if (!exists.eq('FALSEA')) then
+              !!assyLog.add('    Cannot create a Hull Symbolic View as the reflected panel does not have an equivalent standard one.')
+              return
+            endif
+
+            !reflected = 1
+
+          else
+            !reflected  = 0
+
+          endif
+
+          -- We do not need to look any further
+          break
+
+        endif
+
+      endif
+
+    enddo
+
+  endif
+
+  -- Set the current view parameters
+  IDLN $!assyRefe
+  AUTO
+    handle (64,347)
+      -- ASMBLY: empty ID list
+    endhandle
+
+  -- Check for no panel
+  if (!hPanelName.unset()) then
+
+    -- If we are in OUTFITTING
+    if (!module.description.eq('OUTFITTING')) then
+      !!assyLog.add('    A Hull Symbolic View cannot be created in Outfitting Draft, replacing with a standard view')
+
+    -- We are in HULL
+    else
+      !!assyLog.add('    There is no HPANEL in the same plane as the assembly. Aborting HSV creation and replacing with a standard view')
+    endif
+
+    -- Set view direction & produce the graphics
+    !vDir = !aOpposite.string().before(' WRT')
+    DIR $!vDir
+    TITLE |$!vDir|
+
+    UPDATE DESI
+      handle any
+      endhandle
+
+    -- Done
+    return
+
+  endif
+
+  -- Get data of the current view
+  !viewPos  = !viewRefe.xypo
+  !xPos     = !viewPos.east
+  !yPos     = !viewPos.north
+  !viewSize = !viewRefe.size
+  !xLen     = !viewSize[1]
+  !yLen     = !viewSize[2]
+  !vsca     = !viewRefe.vsca
+
+  -- Delete the View as it will be recreated
+  DELETE VIEW
+
+  -- The symbolic view -----------------------------------
+  -- !! Remember to be in production view mode when
+  -- doing this as assemblies will only be created with
+  -- production panels. !!
+
+  -- View direction
+  -- PORTSIDE = 1; STARBOARD = 2; AFT = 3; FOR = 4; TOP = 5; BOT = 6
+  -- Port = Y; Starboard = -Y; Aft = -X; Forward = X; Top = -Z; Bottom = Z
+  if (!aOpposite.eq(!yDir.opposite())) then
+    -- $P View Look Direction is 1
+    !symbDefObj.lookingPML(1)
+  elseif (!aOpposite.eq(!yDir)) then
+    -- $P View Look Direction is 2
+    !symbDefObj.lookingPML(2)
+  elseif (!aOpposite.eq(!xDir)) then
+    -- $P View Look Direction is 3
+    !symbDefObj.lookingPML(3)
+  elseif (!aOpposite.eq(!xDir.opposite())) then
+    -- $P View Look Direction is 4
+    !symbDefObj.lookingPML(4)
+  elseif (!aOpposite.eq(!zDir)) then
+    -- $P View Look Direction is 5
+    !symbDefObj.lookingPML(5)
+  elseif (!aOpposite.eq(!zDir.opposite())) then
+    -- $P View Look Direction is 6
+    !symbDefObj.lookingPML(6)
+  endif
+
+  -- Automatic selection
+  !symbDefObj.AutomaticSelectionPML(1)
+
+  -- No shell profiles, seams or surface intersection
+  !symbDefObj.shellProfilesPML(0)
+  !symbDefObj.shellSeamsPML(0)
+  !symbDefObj.setShellCurves(0,!array)
+
+  -- Set the panel to use as view plane definition.
+  !symbDefObj.setPlaneByPanel(!hPanelName, 0, 0, !reflected, 0)
+  !symbDefObj.drawAsPlatePML(1)
+  -- Set Assembly view type
+  !symbDefObj.viewTypePML(1)
+
+  -- Set the assembly to use as filter.
+  -- You need to use the DBRef as the name!!!!!
+  !assArray[0] = !assyRefe.string()
+  !symbDefObj.assembliesPML(!assArray)
+
+  -- Check if a drawing is open, if so then close it
+  if(!mDrafting.dwgCurrent()) then
+   !mDrafting.dwgClose()
+  endif
+
+  -- Open this drawing
+  !mDrafting.dwgOpen(!sheeRefe.string(),4)
+
+  -- Create the Hull Symbolic View
+  !hSVHandle = !mDrafting.viewSymbolicNew(!symbDefObj)
+
+  --------------------------------------------------------
+
+  -- Check that a new view has been created
+  if (!!ce.type.upCase().neq('VIEW')) then
+
+    !!assyLog.add('   There is an unknown error in creating an HSV. Aborting HSV creation...')
+
+    -- Access any view
+    LAST VIEW
+      handle any
+      endhandle
+
+    -- Done
+    return
+
+  endif
+
+  -- Set the view parameters
+  SIZE $!xLen $!yLen
+  XYPO X $!xPos Y $!yPos
+  VSCA $!vsca
+
+  -- Store the current direction, for display when changing projection
+  !direction = !!ce.dir.string().before(' WRT')
+  TITLE |$!direction|
+
+  -- Get the box of HSV
+  !hSVRect = !mDrafting.elementExtentGet(!hSVHandle)
+
+  -- The HSV is now in scale 1:1, so set the scale
+  !transform.scale(!vsca)
+  !mDrafting.elementTransform(!hSVHandle, !transform)
+  !mDrafting.dwgRepaint()
+
+  !hSVRect = !mDrafting.elementExtentGet(!hSVHandle)
+  !hSVPt1  = !hSVRect.corner1()
+  !hSVPt2  = !hSVRect.corner2()
+
+  --  Place the HSV in middle of the view
+  !toPoint   = object MARPOINTPLANAR( !xPos, !yPos )
+
+  -- FromPt is the midpoint of the current box of the HSV
+  !xPos = !hSVPt1.x() + (0.5 * (!hSVPt2.x() - !hSVPt1.x()))
+  !yPos = !hSVPt1.y() + (0.5 * (!hSVPt2.y() - !hSVPt1.y()))
+
+  !fromPoint = object MARPOINTPLANAR(!xPos, !yPos)
+
+  !trancVector = object MARVECTORPLANAR(!toPoint.x() - !fromPoint.x(), !toPoint.y() - !fromPoint.y())
+  !transform.identityTransf()
+  !transform.translate(!trancVector)
+
+  -- Translation from "FromPt" to "ToPt"
+  !mDrafting.elementTransform(!hSVHandle, !transform)
+  !mDrafting.dwgRepaint()
+
+  -- Save the drawing. Please note that it is now a Marine Drafting drawing. It can't be opened in Outfitting Draft.
+  !mDrafting.dwgSave()
+  !mDrafting.dwgClose()
+
+endfunction
