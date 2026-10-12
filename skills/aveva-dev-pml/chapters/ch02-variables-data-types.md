@@ -61,25 +61,29 @@ PML 2 treats data in two distinct ways upon assignment (`!a = !b`) and parameter
 !origNum = 100.0
 !copyNum = !origNum
 !copyNum = 250.0
-$P Original: $!origNum  -- Outputs: 100.0 (unaffected)
-$P Copy:     $!copyNum  -- Outputs: 250.0
+-- Outputs: Original 100.0 (unaffected), Copy 250.0
+$P Original: $!origNum
+$P Copy:     $!copyNum
 
 -- 2. Reference Type Behavior (Shared Pointer)
 !origArray = ARRAY()
 !origArray.append('PUMP-01')
 
-!aliasArray = !origArray        -- Creates an alias reference!
+-- Creates an alias reference!
+!aliasArray = !origArray
 !aliasArray.append('PUMP-02')
 
-$P Orig Array Size:  $!origArray.size()   -- Outputs: 2 (Modified!)
-$P Alias Array Size: $!aliasArray.size()  -- Outputs: 2
+-- Outputs: both sizes 2 (origArray was modified through the alias!)
+$P Orig Array Size:  $!origArray.size()
+$P Alias Array Size: $!aliasArray.size()
 
 -- 3. Breaking Reference Link with .clone()
 !isolatedArray = !origArray.clone()
 !isolatedArray.append('PUMP-03')
 
-$P Orig Array Size:     $!origArray.size()      -- Outputs: 2 (Safe!)
-$P Isolated Array Size: $!isolatedArray.size()  -- Outputs: 3
+-- Outputs: Orig 2 (safe), Isolated 3
+$P Orig Array Size:     $!origArray.size()
+$P Isolated Array Size: $!isolatedArray.size()
 
 -- 4. Advanced Array Sorting and Grouping
 !names = ARRAY()

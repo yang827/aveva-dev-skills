@@ -75,11 +75,13 @@ HANDLE (41, 8)
   NEW EQUI /VESSEL-101
 ELSEHANDLE (41, 12)
   $P Error: Equipment name /VESSEL-101 already exists in DABACON database.
-  UNDO  -- Revert any partial changes back to mark
+  -- Revert any partial changes back to mark
+  UNDO
   return error 101 'Duplicate Equipment Name' noalert
 ELSEHANDLE ANY
   $P Unexpected error during EQUI creation. Rolling back transaction...
-  UNDO  -- Safe rollback
+  -- Safe rollback
+  UNDO
   return error 100 'Failed to create Equipment /VESSEL-101' noalert
 ELSEHANDLE NONE
   $P Success: EQUI /VESSEL-101 created successfully.

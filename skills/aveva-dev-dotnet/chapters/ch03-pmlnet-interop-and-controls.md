@@ -173,7 +173,8 @@ endmethod
 import 'PMLFileBrowser'
 using namespace 'Aveva.Pdms.Presentation'
 
-!browser = object PMLFileBrowser('OPEN') -- 支持 'OPEN' 或 'SAVE'
+-- 支持 'OPEN' 或 'SAVE'
+!browser = object PMLFileBrowser('OPEN')
 
 -- 弹出文件选择器: !browser.show(dir, seed, title, exists, filter, index)
 !browser.show('C:\ShipData', 'block.txt', 'Open Hull Data', true, 'Data Files (*.txt)|*.txt|All files (*.*)|*.*', 1)

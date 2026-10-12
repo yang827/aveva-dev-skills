@@ -27,6 +27,8 @@ Every delivered file opens with the standard header block; keep it in new files 
 ------------------------------------------------------------------------
 ```
 
+> **Comment placement is a hard rule**: `--` must be the **first token on its line** (leading indentation allowed). A trailing comment after a statement (`!a = 1 -- note`) is a **syntax error** and appears **nowhere** in the delivered sources — every explanatory note in official files sits on its own full `--` line, usually above the statement it describes. All snippets in this file follow that rule.
+
 Form body skeleton — properties, gadgets, `member` state, then `exit`; methods live in the **same file after the `exit`**:
 
 ```pml
@@ -34,7 +36,7 @@ setup form !!splMembers
 
   !!splMembers.formTitle     = 'Spooler Members'
   !!splMembers.iconTitle     = 'MEMBERS'
-  !!splMembers.callback      = '!!splMembers.init()'      -- shown/raised callback
+  !!splMembers.callback      = '!!splMembers.init()'
   !!splMembers.formRevision  = ' $Revision: 1.44 $ '
 
   member .isodCe     is DBREF
@@ -45,7 +47,8 @@ exit
 -- End of form definition for !!splMembers
 
 define method .splMembers()
-  ...   -- constructor: menus, pixmaps, callbacks
+  -- constructor: menus, pixmaps, callbacks
+  ...
 endmethod
 ```
 
@@ -71,8 +74,9 @@ Menus are created in the constructor via `newMenu('<name>')` matching a `bar add
   !this.controlMenu.add('callback', 'Resize...', 'show !!splMemResize')
   !this.controlMenu.add('separator')
   !this.controlMenu.add('toggle',  'Show Extract Claims', '!!spooler.functions.extractClaims(')
-  !this.controlMenu.add('menu',    'Switch', 'switchMenu')          -- submenu
-  !this.controlMenu.select(|Show Extract Claims|, !!showMemExtracts) -- set toggle state
+  -- 'menu' entry = submenu; select() sets the toggle state
+  !this.controlMenu.add('menu',    'Switch', 'switchMenu')
+  !this.controlMenu.select(|Show Extract Claims|, !!showMemExtracts)
 ```
 
 Gadget right-mouse popup: `newMenu` + `!gadget.setPopup(!menu)`, and menu callbacks receive `(MENU, STRING pickedField)` — branch on `!menu.pickedField.upcase()`.
@@ -92,7 +96,8 @@ Gadget right-mouse popup: `newMenu` + `!gadget.setPopup(!menu)`, and menu callba
 
 -- constructor
   !this.dbList.callback = '!!splMembers.navigate(!!splMembers.dbList.selection().dbRef())'
-  !this.find.callback   = '!!splMembers.findName(!!splMembers.find)'   -- text gadget find
+  -- text gadget find
+  !this.find.callback   = '!!splMembers.findName(!!splMembers.find)'
 ```
 
 `$!!global` inline expansion sizes the gadget from globals so `pml reload form` keeps user resize choices (globals `!!splMemWidth/Height` are `undefined()`-defaulted at form-definition time).
@@ -122,11 +127,13 @@ Measure packet (full minimal example, 30 lines):
 
 ```pml
   !packet        = object EDGPACKET()
-  !packet.defineMeasure('DISTANCE')             -- or 'SHORTEST'
+  -- argument: 'DISTANCE' or 'SHORTEST'
+  !packet.defineMeasure('DISTANCE')
   !packet.action = '!!edgDiameter.measure(!this.return[1])'
   !!edgCntrl.add(!packet)
 
-  define method .measure(!line is LINE)         -- action callback payload: LINE
+  -- action callback payload: LINE
+  define method .measure(!line is LINE)
     if (!line.unset()) then
       !this.diameter.val = 0
     else
@@ -143,7 +150,8 @@ Position pick and element pick (from asl/accommodation forms):
   !packet.action = '!!aslLadder.pickPosition(!this.return[1])'
   !!edgCntrl.add(!packet)
 
-  !packet.elementPick(!prompt)                  -- payload = picked element(s)
+  -- payload = picked element(s)
+  !packet.elementPick(!prompt)
   !!edgCntrl.add(!packet)
 ```
 
@@ -180,10 +188,14 @@ Iterate results with `do !x value <array>`; attribute access stays typed (`!allD
 Reading an env var inside PML (the delivered wrapper functions live in `limbo/functions/evar.pmlfnc` and `common/functions/evarsplit.pmlfnc`):
 
 ```pml
-  var !tempDir evar temp                       -- raw command form
-  !paths = !!evarSplit('PDMSUSER')             -- ARRAY of paths, splits on ';' or space,
-  !first = !paths[1]                           --   drops entries whose FILE is unset
-  !one   = !!evar('HOME')                      -- single STRING value
+  -- raw command form
+  var !tempDir evar temp
+  -- !!evarSplit: ARRAY of paths, splits on ';' or space,
+  -- dropping entries whose FILE is unset
+  !paths = !!evarSplit('PDMSUSER')
+  !first = !paths[1]
+  -- !!evar: single STRING value
+  !one   = !!evar('HOME')
 ```
 
 (Implementation of `!!evarSplit`: `var !row EVAR '$!evar'` then `split(|;|)`/`split()` — i.e. PML expands `$!evar` into the `EVAR` command.)
@@ -245,7 +257,8 @@ endfunction
 -- in initialise():
   !this.posControl = object POSITIONCONTROL()
   ...
-  !this.netPositionFrame.control = !this.posControl.handle()   -- hand HWND to container
+  -- hand HWND to container
+  !this.netPositionFrame.control = !this.posControl.handle()
 ```
 
 *Source: `common/forms/edgshipposition.pmlfrm` L31–L138*
@@ -259,7 +272,8 @@ The `FILE` object doubles as directory handle; `readFile()` returns lines and th
 ```pml
   !dir = object FILE(!path & '\' & !module & '\ADDINS')
   skip if (!dir.exists().not())
-  !files = !dir.files()                     -- ARRAY of FILE objects
+  -- ARRAY of FILE objects
+  !files = !dir.files()
   do !file values !files
     !lines = !file.readFile()
     handle any

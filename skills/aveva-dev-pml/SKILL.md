@@ -3,7 +3,7 @@ name: aveva-dev-pml
 description: "Knowledge base for AVEVA PML secondary development (part of the aveva-dev-skills suite). Covers PML 1 and PML 2 macros, functions, forms, gadgets, Event Driven Graphics, Marine Drafting automation, and DABACON database queries."
 metadata:
   suite: aveva-dev-skills
-  version: "0.2.0"
+  version: "0.3.0"
 ---
 
 <!-- argument-hint: [topic, framework name, or chapter number] -->
@@ -28,6 +28,7 @@ When you ask about a topic not covered in the Core Frameworks below, I will read
 AVEVA's scripting environment comprises two distinct tiers:
 - **PML 1 (Command Macros - `.mac`)**: Procedural command-stream replays using positional parameters (`$1`–`$9`), parameter defaults (`$d1=`), full-line comments (`$*`), and unconditional jumps (`$GOTO`, `$LABEL`). Variables are expanded using the dollar prefix (`$!var`).
 - **PML 2 (Object-Oriented Architecture)**: Fully structured, object-oriented runtime introducing standalone functions (`.pmlfnc`), User-Defined Objects (`.pmlobj`), and GUI forms (`.pmlfrm`). Evaluates native typed expressions (`!var`) without `$`, supports method chaining (`!obj.method1().method2()`), and provides lexical variable scope.
+- **Comment Syntax (MANDATORY)**: `--` must be the **first token on its line** (leading indentation allowed). Trailing/inline comments after a statement (`!a = 1 -- note`) are **invalid syntax** and appear nowhere in the delivered PMLLIB sources. Put explanatory notes on their own `--` line **above** the statement they describe. PML 1 macros comment with `$*`, also full-line only.
 - **Rule of Thumb**: Never mix PML 1 `$GOTO` inside PML 2 functions or methods. Reserve `.mac` files for linear command scripts; use `.pmlfnc`, `.pmlobj`, and `.pmlfrm` for applications.
 
 ### 2. Runtime Resolution & The PMLLIB Contract
@@ -70,7 +71,8 @@ DABACON is AVEVA's hierarchical, transactional engineering database:
   !coll.scope(!parentRef)
   !expr = object EXPRESSION(|BORE ge 100|)
   !coll.filter(!expr)
-  !results = !coll.results() -- Returns ARRAY of DBREF
+  -- Returns ARRAY of DBREF
+  !results = !coll.results()
   ```
 
 ### 5. Deterministic Control Flow (No While Loops)
@@ -111,15 +113,18 @@ AVEVA PML provides structured loops with explicit termination:
 - **Mandatory order**: the risky command comes FIRST, on its own line; the `handle` clause follows IMMEDIATELY after it, with NO intervening statements. Everything between `handle` and `endhandle` is the **recovery code executed only when the preceding command fails**.
 - **Correct**:
   ```pml
-  !modelNo = !elem.:SPEC        -- risky command FIRST, outside the trap
+  -- risky command FIRST, outside the trap
+  !modelNo = !elem.:SPEC
   handle any
-    !modelNo = ''               -- recovery: runs only if the line above failed
+    -- recovery: runs only if the line above failed
+    !modelNo = ''
   endhandle
   ```
 - **Wrong (a frequent generation error)** — do NOT move the risky statement inside the trap:
   ```pml
   handle any
-    !modelNo = !elem.:SPEC      -- WRONG: this is recovery code, not guarded code
+    -- WRONG: this is recovery code, not guarded code
+    !modelNo = !elem.:SPEC
   endhandle
   ```
   Wrapping the assignment inside `handle any` means it only executes on error paths (or is dead code), and the original error is never trapped.

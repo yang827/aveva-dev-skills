@@ -143,7 +143,8 @@ define method .startEdg()
   $P EDG Pick engaged. 3D view is interactive.
 endmethod
 
-define method .onPickSuccess(!pickData is ANY)  -- Legal ANY use: formal-parameter position only (Ch 5 ANY rules)
+-- Legal ANY use: formal-parameter position only (Ch 5 ANY rules)
+define method .onPickSuccess(!pickData is ANY)
   -- Callback invoked by EDG engine on successful canvas pick
   !dbItem = !pickData.item()
   !pos    = !pickData.position()

@@ -27,7 +27,7 @@ AVEVA Programmable Macro Language (PML) is an interpreted scripting language ope
   - Deleting a synonym: `$S<Alias>=`. Kill all: `$SK`.
   - Disable / enable synonyms: `$S-` (disable) and `$S+` (re-enable).
 - **`$P` Directive**: Command processor output directive printing text directly to the console or Request window (`$P Message text`).
-- **Comment Syntax**: `--` denotes a PML 2 line comment; `$*` denotes a PML 1 comment line.
+- **Comment Syntax**: `--` denotes a PML 2 comment and **must be the first token of the line** (leading whitespace allowed). Trailing/inline comments after a statement are a **syntax error**: `!a = 1 -- note` will not parse; put the note on its own `--` line above the statement. `$*` denotes a PML 1 comment line (also full-line only). There are no block comments in either dialect.
 
 ## Mental Models
 - **Think of PMLLIB as the PATH of AVEVA PML**: Any file placed in a PMLLIB directory is immediately discoverable once indexed via `pml rehash all`.
@@ -37,6 +37,7 @@ AVEVA Programmable Macro Language (PML) is an interpreted scripting language ope
 - **Forgetting `pml rehash all`**: Editing or adding a `.pmlfrm` or `.pmlfnc` file on disk without issuing `pml rehash all` will cause AVEVA to execute obsolete cached definitions or report missing definitions.
 - **Filename Case Mismatch**: Naming a form `!!MyForm` in code but saving it as `MyForm.pmlfrm` instead of `myform.pmlfrm` (PML loader requires lowercase filenames).
 - **Using `$GOTO` in PML 2**: Using `$GOTO` and `$LABEL` inside a PML 2 function or method corrupts the call stack; use `DO`, `BREAK`, and `IF` instead.
+- **Trailing (inline) comments**: Writing `!x = 1 -- set flag` looks like every other language but is **invalid PML**; `--` only starts a comment when it is the first token of the line. Every comment in the delivered AVEVA sources is a full-line comment. Write the note on the line above: `-- set flag` then `!x = 1`.
 
 ## Code Examples
 ```pml

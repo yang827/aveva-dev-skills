@@ -143,7 +143,8 @@ Marine Drafting handles three fundamental coordinate spaces:
     do
       !res = !marDex.NextResultPML()
       if (!res eq -1) then
-        break  -- End of result tree (EOF)
+        -- End of result tree (EOF)
+        break
       elseif (!res eq 1) then
         !intVal = !marDex.GetIntPML()
       elseif (!res eq 2) then
@@ -151,9 +152,11 @@ Marine Drafting handles three fundamental coordinate spaces:
       elseif (!res eq 3) then
         !strVal = !marDex.GetString()
       elseif (!res eq 4) then
-        !vec3d = !marDex.GetReavec3D()    -- [X, Y, Z]
+        -- Returns [X, Y, Z]
+        !vec3d = !marDex.GetReavec3D()
       elseif (!res eq 5) then
-        !box = !marDex.GetBox()            -- [Xmin, Ymin, Zmin, Xmax, Ymax, Zmax]
+        -- Returns [Xmin, Ymin, Zmin, Xmax, Ymax, Zmax]
+        !box = !marDex.GetBox()
       elseif (!res eq 6) then
         !vec2d = !marDex.GetReavec2D()
       endif
@@ -203,8 +206,10 @@ Every drawing entity (view, subview, component, contour, text, symbol, dimension
   Converts a 2D drafting element handle directly into a DABACON `DBREF`:
   ```pml
   !viewHandle = !marDraft.ComponentIdentify(!pt)
-  !dbrefNum = !marDraft.ElementDbrefGet(!viewHandle)      -- Drafting database reference
-  !desiNum  = !marDraft.ElementDESIDbrefGet(!viewHandle)  -- Design database reference
+  -- Drafting database reference
+  !dbrefNum = !marDraft.ElementDbrefGet(!viewHandle)
+  -- Design database reference
+  !desiNum  = !marDraft.ElementDESIDbrefGet(!viewHandle)
   
   !obj = object DBREF()
   !obj.Dbref(!dbrefNum)
@@ -243,8 +248,10 @@ Every drawing entity (view, subview, component, contour, text, symbol, dimension
   !p2 = object MarPointPlanar(100, 10)
   !measurePts.AddPoint(!p2)
   
-  !dir = object MarVectorPlanar(1, 0)         -- Horizontal dimension line
-  !linePos = object MarPointPlanar(55, 5)     -- Dimension text line location
+  -- Horizontal dimension line
+  !dir = object MarVectorPlanar(1, 0)
+  -- Dimension text line location
+  !linePos = object MarPointPlanar(55, 5)
   -- Type: 1 = Normal, 2 = Chain, 3 = Staircase
   !hDim = !marDraft.DimLinearNew(!measurePts, 1, !dir, !linePos)
   ```
@@ -324,7 +331,8 @@ define function !!marineDraftingDemo() is ANY
   endif
 
   -- 5. Set Active Layer & Add Text Element
-  !marDraft.LayerActiveSet(15)  -- Layer 15: General Annotations
+  -- Layer 15: General Annotations
+  !marDraft.LayerActiveSet(15)
   
   -- Create Text with standard modal parameters (height: 3.5mm, slant: 0)
   !hText = !marDraft.TextCreate(!pickPt.X(), !pickPt.Y(), !noteText, 3.5, 0.0)
