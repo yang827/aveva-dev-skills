@@ -17,7 +17,10 @@
 
 Built upon the open **[Agent Skills specification](https://agentskills.io)**, the project employs **Progressive Disclosure** architecture: agents load only high-level mental models and indexes at initialization, reading detailed chapters and reference documentation on demand.
 
-Recognizing that modern **.NET / C# managed add-in development** and traditional **PML scripting & UI automation** represent two distinct engineering scenarios with differing requirements, this repository decouples them into two scenario-tailored skills that can be deployed together or independently.
+Covering the three foundational pillars of AVEVA customization, this repository decouples engineering knowledge into three scenario-tailored skills that can be deployed together or independently:
+1. **.NET / C# Managed Add-in Development & Architecture** (`aveva-dev-dotnet`)
+2. **PML Scripting, Object-Oriented Runtime & GUI Automation** (`aveva-dev-pml`)
+3. **DABACON Database Hierarchy, Element Schemas & Pseudo-Attribute Navigation** (`aveva-data-model`)
 
 ---
 
@@ -52,11 +55,25 @@ Recognizing that modern **.NET / C# managed add-in development** and traditional
 
 ---
 
+### Scenario 3: `aveva-data-model` — DABACON Database Schemas & Hierarchy Navigation
+> Path: [`skills/aveva-data-model/`](skills/aveva-data-model/SKILL.md)  
+> Scope: 17 Systematic Chapters + Comprehensive Element Taxonomy (~826 pages distilled)  
+> Best for: Navigating database hierarchies, element schema queries (Legal Owner / Legal Member), attribute introspection, pseudo-attribute resolution, and Catalogue / Design / Draft / Spooler / System database architecture.
+
+* **Invariant Directed Tree Architecture**: Strict hierarchical ownership rooted at `WORL`; explicit Legal Owner and Legal Member constraints; no orphan records.
+* **Element Taxonomy & Schema**: Primary elements (`SITE`, `ZONE`, `EQUI`, `PIPE`, `STRU`, `DRWG`) vs secondary components (`NOZZ`, `BRAN`, `VALV`, `SCTN`, `VIEW`).
+* **P-point Connection Topology**: Parametric Point Sets (`PTSE`), flow ports (`PARRIVE`, `PLEAVE`), branch ports, and connection compatibility (`COCO`).
+* **Attribute System & Pseudo-Attributes**: Standard native attributes, Dictionary UDAs (`:ATTR`), and dynamic engine-evaluated pseudo-attributes (`POS WRT /*`, `CRFA`, `BBOX`, `CUTL`, `ARRI`, `LEAV`, `CREF`, `WVOL`).
+* **Complete Database Ecosystem**: Dedicated deep dives into Catalogue (`CATA`), Design (`DESI`), Draft (`PADD`), Dictionary (`DICT`), Schematic (`SCHEM`), Spooler (`SPLR`), System (`SYST`), and Transaction databases.
+* **Supporting Resources**: [Glossary (glossary.md)](skills/aveva-data-model/glossary.md) · [Architectural Patterns (patterns.md)](skills/aveva-data-model/patterns.md) · [Diagnostics Cheatsheet (cheatsheet.md)](skills/aveva-data-model/cheatsheet.md) · [Full Chapters (chapters/)](skills/aveva-data-model/chapters/).
+
+---
+
 ## 🛠️ Universal Installation Guide
 
-This suite adheres strictly to the open Agent Skills format. Each skill is prefixed with `aveva-dev-*` for unambiguous identification across any AI agent.
+This suite adheres strictly to the open Agent Skills format. Each skill is prefixed with `aveva-*` for unambiguous identification across any AI agent.
 
-### Option A: Install Complete Suite (Both .NET & PML)
+### Option A: Install Complete Suite (All 3 Skills: .NET, PML & Data Model)
 Copy all skills to your AI agent's global skills directory:
 
 ```bash
@@ -72,13 +89,14 @@ Copy-Item -Recurse skills/* "$env:USERPROFILE\.gemini\config\skills\"
 
 ### Option B: Scenario-Based Installation (Recommended)
 Choose only the skill required for your current development task:
-* **For .NET / C# Addin Engineers**: Copy only `skills/aveva-dev-dotnet`
+* **For .NET / C# Add-in Engineers**: Copy only `skills/aveva-dev-dotnet`
 * **For PML / Macro / Drawing Script Engineers**: Copy only `skills/aveva-dev-pml`
+* **For Database / Schema / Attribute Query Engineers**: Copy only `skills/aveva-data-model`
 
 ### Option C: Workspace Integration (Cline / Cursor / Windsurf)
 * Clone this repository into your project workspace;
 * Add a reference directive in your project instructions (`.clinerules`, `.cursorrules`, or `.windsurfrules`):
-  > "For AVEVA .NET secondary development, refer to `skills/aveva-dev-dotnet/SKILL.md`. For PML automation, refer to `skills/aveva-dev-pml/SKILL.md`."
+  > "For AVEVA .NET secondary development, refer to `skills/aveva-dev-dotnet/SKILL.md`. For PML automation, refer to `skills/aveva-dev-pml/SKILL.md`. For DABACON database hierarchies and attribute schemas, refer to `skills/aveva-data-model/SKILL.md`."
 
 ### Option D: Web AI & Knowledge Bases (Claude Projects, Custom GPTs, RAG)
 Upload `SKILL.md`, `cheatsheet.md`, and `patterns.md` from the relevant skill directory into your project's knowledge base.
@@ -99,6 +117,10 @@ Once installed, simply converse naturally with your AI coding agent:
   > *"How do I implement non-blocking 3D object picking using Event Driven Graphics (EDG) in PDMS to retrieve a DBREF?"*
 * **Code Review & Auditing**:
   > *"Review this PML snippet for illegal loops, memory leaks, and encoding flaws, then refactor it according to AVEVA best practices."*
+* **Data Model & Element Hierarchy**:
+  > *"What is the standard element hierarchy under an EQUI or PIPE in the Design database? What owner/member rules apply?"*
+* **Pseudo-Attributes & Database Navigation**:
+  > *"Which pseudo-attributes can I query on a NOZZ or BRAN element in PML/C#, and how do they evaluate coordinates and connectivity?"*
 
 ---
 
@@ -140,7 +162,7 @@ aveva-dev-skills/
     │   ├── patterns.md             # Production architectural patterns
     │   ├── chapters/               # 10 In-depth subsystem chapters (ch01 - ch10)
     │   └── references/             # 4 Full official API reference manuals
-    └── aveva-dev-pml/              # Scenario 2: PML 1/2 / GUI / EDG / Drafting
+    ├── aveva-dev-pml/              # Scenario 2: PML 1/2 / GUI / EDG / Drafting
         ├── SKILL.md                # Entry point & architecture rules (name: aveva-dev-pml)
         ├── cheatsheet.md           # Diagnostic smells & decision rules
         ├── glossary.md             # System objects dictionary
@@ -149,6 +171,12 @@ aveva-dev-skills/
         ├── references/             # Delivered PMLLIB index & verified idioms
         ├── tools/                  # Automation scripts (index regenerator)
         └── PMLLIB/                 # Bundled official PML source snapshot (~6,075 files)
+    └── aveva-data-model/           # Scenario 3: DABACON Database Hierarchy & Schemas
+        ├── SKILL.md                # Entry point & database navigation rules (name: aveva-data-model)
+        ├── cheatsheet.md           # Database types & schema heuristics
+        ├── glossary.md             # Element mnemonics & database dictionary
+        ├── patterns.md             # Query & hierarchy traversal patterns
+        └── chapters/               # 17 Reference manual chapters (ch01 - ch17)
 ```
 
 ---

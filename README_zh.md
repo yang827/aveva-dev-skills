@@ -15,7 +15,10 @@
 
 **AVEVA Dev Skills** 是专为 AI 编程智能体（AI Coding Agents）打造的 **AVEVA Marine 与 AVEVA PDMS 二次开发工程知识库与专业技能套件**。
 
-本项目遵循开放的 **[Agent Skills 规范](https://agentskills.io)**，采用 **渐进式披露（Progressive Disclosure）** 架构设计。考虑到 AVEVA 二次开发中 **.NET 现代托管插件开发** 与 **PML 传统脚本/界面自动化** 属于两种截然不同的工程场景，本项目将两者拆分为两个独立的专业技能包，既可作为整套开发套件引入，也可按实际开发场景单独使用。
+本项目遵循开放的 **[Agent Skills 规范](https://agentskills.io)**，采用 **渐进式披露（Progressive Disclosure）** 架构设计。涵盖 AVEVA 二次开发的三大核心技术支柱，本项目将工程知识解耦为三个专业技能包，既可作为整套开发套件引入，也可按实际开发场景按需装载：
+1. **.NET / C# 现代托管插件开发与架构体系** (`aveva-dev-dotnet`)
+2. **PML 传统脚本、面向对象运行时与界面自动化** (`aveva-dev-pml`)
+3. **DABACON 数据库体系、构件 Schema 与伪属性导航** (`aveva-data-model`)
 
 ---
 
@@ -50,12 +53,26 @@
 
 ---
 
+### 场景三：`aveva-data-model` — DABACON 数据库模型、层级体系与属性导航
+> 路径: [`skills/aveva-data-model/`](skills/aveva-data-model/SKILL.md)  
+> 覆盖规模: 17 大系统章节 + 全量数据库元素分类字典 (826 页官方参考手册提炼)  
+> 适用场景: 数据库树形层级导航、元素 Schema 校验（合法 Owner / Legal Member 规则）、属性与伪属性解析、Catalogue / Design / Draft / Spooler / System 等各类数据库体系查询。
+
+* **严格有向树架构 (Directed Tree Architecture)**: 以 `WORL` 为根节点的严格所属层级，每个元素具备唯一明确的 Owner；杜绝孤立节点与非法挂载。
+* **元素分类与 Schema**: 主干独立元素（`SITE`、`ZONE`、`EQUI`、`PIPE`、`STRU`、`DRWG` 等）与从属构件（`NOZZ`、`BRAN`、`VALV`、`SCTN` 等）的层级关系。
+* **P-point 空间拓扑与连接**: 参数化特征点集（`PTSE`）、进出口流向点（`PARRIVE` / `PLEAVE`）、分支点及连接兼容性（`COCO`）。
+* **属性系统与伪属性矩阵**: 通用与专用原生属性、字典库用户自定义属性（UDA）、以及由内核动态计算的只读伪属性（`POS WRT /*`、`CRFA`、`BBOX`、`CUTL`、`ARRI`、`LEAV` 等）。
+* **全域数据库生态**: 深入覆盖 Catalogue (元件库)、Design (设计库)、Draft (出图库)、Dictionary (数据字典)、Schematic (原理图库)、Spooler (管段预制库) 及 System (系统库)。
+* **配套文件**: [速查字典 (glossary.md)](skills/aveva-data-model/glossary.md) · [工程模式 (patterns.md)](skills/aveva-data-model/patterns.md) · [排错速查 (cheatsheet.md)](skills/aveva-data-model/cheatsheet.md) · [全量章节 (chapters/)](skills/aveva-data-model/chapters/)。
+
+---
+
 ## 🛠️ 安装与引入指南 (Universal Installation)
 
-本套件遵循开放的 Agent Skills 标准，各技能以统一前缀 `aveva-dev-*` 命名，在任何 AI 工具的技能列表中均具备极高的辨识度。
+本套件遵循开放的 Agent Skills 标准，各技能以统一前缀 `aveva-*` 命名，在任何 AI 工具的技能列表中均具备极高的辨识度。
 
-### 方式 A：全套引入（包含 .NET 与 PML 两个场景）
-直接将 `skills/` 下的两个技能目录全部复制到您的 AI 工具技能目录中：
+### 方式 A：全套引入（包含 .NET、PML 与数据模型全部场景）
+直接将 `skills/` 下的技能目录全部复制到您的 AI 工具技能目录中：
 
 ```bash
 # 复制全套到 OpenCode 全局技能目录
@@ -69,13 +86,14 @@ Copy-Item -Recurse skills/* "$env:USERPROFILE\.gemini\config\skills\"
 ```
 
 ### 方式 B：按场景按需引入（推荐根据工程类型选用）
-* **仅进行 .NET / C# 二次开发**：只需复制 `skills/aveva-dev-dotnet`；
-* **仅进行 PML 宏 / 表单 / 脚本开发**：只需复制 `skills/aveva-dev-pml`。
+* **进行 .NET / C# 插件开发**：复制 `skills/aveva-dev-dotnet`；
+* **进行 PML 宏 / 表单 / 脚本开发**：复制 `skills/aveva-dev-pml`；
+* **进行数据库层级、构件 Schema 与属性检索开发**：复制 `skills/aveva-data-model`。
 
 ### 方式 C：在 Cline / Cursor / Windsurf 中使用
 * 将本仓库 clone 到您的工程工作区；
 * 在工作区规则文件（如 `.clinerules`、`.cursorrules` 或 `.windsurfrules`）中添加指引：
-  > "For AVEVA .NET secondary development, refer to `skills/aveva-dev-dotnet/SKILL.md`. For PML automation, refer to `skills/aveva-dev-pml/SKILL.md`."
+  > "For AVEVA .NET secondary development, refer to `skills/aveva-dev-dotnet/SKILL.md`. For PML automation, refer to `skills/aveva-dev-pml/SKILL.md`. For DABACON database hierarchies and attribute schemas, refer to `skills/aveva-data-model/SKILL.md`."
 
 ---
 
@@ -93,6 +111,10 @@ Copy-Item -Recurse skills/* "$env:USERPROFILE\.gemini\config\skills\"
   > *"如何在 PDMS 中使用 Event Driven Graphics (EDG) 实现让用户在三维视图中拾取设备并返回 DBREF？"*
 * **排错与规范检查**:
   > *"检查这段代码中是否存在循环语法或编码问题，并给出符合 AVEVA 标准的重构方案。"*
+* **数据模型与层级导航场景**:
+  > *"在 Design 数据库中，EQUI 和 PIPE 的标准下级层级关系是什么？有哪些 Owner/Member 约束规则？"*
+* **伪属性与属性查询场景**:
+  > *"查询 NOZZ 或 BRAN 元素时，有哪些可用的伪属性（如 :BORE、:POS、POS WRT /*），它们如何映射到原生数据库属性？"*
 
 ---
 
@@ -134,7 +156,7 @@ aveva-dev-skills/
     │   ├── patterns.md             # 生产级架构模式与避坑指南
     │   ├── chapters/               # 10 大子系统深入指南 (ch01 - ch10)
     │   └── references/             # 4 大全量 API 参考手册
-    └── aveva-dev-pml/              # 场景二：PML 1/2 / GUI / EDG / Drafting 技能
+    ├── aveva-dev-pml/              # 场景二：PML 1/2 / GUI / EDG / Drafting 技能
         ├── SKILL.md                # 技能主入口与双架构法则 (name: aveva-dev-pml)
         ├── cheatsheet.md           # 诊断与避坑速查表
         ├── glossary.md             # 术语与系统对象字典
@@ -143,6 +165,12 @@ aveva-dev-skills/
         ├── references/             # 官方 PMLLIB 索引与已验证工程成例
         ├── tools/                  # 辅助工具脚本 (索引自动重建)
         └── PMLLIB/                 # 官方 PML 原生源码快照 (~6,075 源码文件)
+    └── aveva-data-model/           # 场景三：DABACON 数据库模型、层级体系与属性导航
+        ├── SKILL.md                # 技能主入口与数据库导航心智模型 (name: aveva-data-model)
+        ├── cheatsheet.md           # 数据库类型与属性速查表
+        ├── glossary.md             # 核心元素类型与术语字典
+        ├── patterns.md             # 数据库检索与层级遍历模式
+        └── chapters/               # 17 个参考手册完整章节 (ch01 - ch17)
 ```
 
 ---
