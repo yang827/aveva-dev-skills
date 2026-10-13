@@ -3,7 +3,7 @@ name: aveva-dev-pml
 description: "Knowledge base for AVEVA PML secondary development (part of the aveva-dev-skills suite). Covers PML 1 and PML 2 macros, functions, forms, gadgets, Event Driven Graphics, Marine Drafting automation, and DABACON database queries."
 metadata:
   suite: aveva-dev-skills
-  version: "0.3.0"
+  version: "0.3.1"
 ---
 
 <!-- argument-hint: [topic, framework name, or chapter number] -->
@@ -130,6 +130,44 @@ AVEVA PML provides structured loops with explicit termination:
   Wrapping the assignment inside `handle any` means it only executes on error paths (or is dead code), and the original error is never trapped.
 - **Rule of Thumb**: never describe or generate this as "wrap the command in handle" — the `handle` clause wraps nothing; it **trails** the command it guards, like a postfix error handler. Full syntax: [ch04](chapters/ch04-error-handling-debugging.md).
 
+### 10. There Is No `null` Keyword and No `.null()` Method — Empty Returns Are Typed
+PML has **no `null`/`nil`/`None` literal, and no `.null()` method on any type** (`STRING` included). `return null` is a hard compile error (`CP: Syntax error` at the `^^NULL` token); `!x.null()` compiles but fails at runtime with `Method <STRING>.NULL() not found`. The words "return null" appear in delivered PMLLIB code **only inside English `--` comments** (e.g. `MdsGetAlias.pmlfnc`, whose real statement is `return ''`) — never copy syntax from comment prose.
+- **Correct "empty" return by declared type**: `is STRING` → `return ''` (or `return object STRING()` for unset); `is DBREF` → `return object DBREF()`; `is ARRAY` → `return object ARRAY()`; `is REAL` → `object REAL()` / a documented numeric sentinel.
+- **Call-site test**: `!ret.unset()` (unassigned object/DBREF/ARRAY), `!s.eq('')` (blank STRING), `undefined(!x)` (never defined), `!ref.badRef()` (dead pointer) — never `!x.null()` and never `!ret eq null`.
+- **Review rule**: any `null`/`NULL`/`nil`/`None` in executable tokens (outside comments) — literal, `.null()` call, or `eq null` comparison — is a defect; replace with the typed empty idiom. Full tables and citations: [ch05](chapters/ch05-pml2-functions-methods.md) "No `null` Keyword (MANDATORY)".
+
+### 11. Bang-Prefix Arity — Built-in Globals Are ALWAYS Double-Banged (MANDATORY)
+`!!CE`, `!!ALERT`, `!!edgCntrl`, `!!evar`, `!!evarSplit`, ... are **session globals with built-in values**; they must be written with **two bangs**. `!ce` (one bang) is a **completely different variable**: a plain local that is `unset` unless your code assigns it first. Reading `!ce.type`, `!ce.refno`, or `!ce.name` in a method that never assigned `!ce` silently reads an unset local — a frequent AI code-generation error. Name resolution is case-insensitive (delivered code mixes `!!CE`, `!!ce`, `!!Alert`, `!!alert` freely), so **only the bang count changes the meaning — never rely on case**.
+- **Two legal idioms** (both used throughout delivered PMLLIB):
+  1. Use the global directly: `if (!!ce.type.upcase().eq('SITE')) then ... !this.pa.val = !!ce.name`.
+  2. Copy to a local FIRST, then use the local: `!ce = !!ce` on the first line of the method, then `!ce.type` / `!ce.badref().not()` — this `!ce = !!ce` snapshot idiom appears in hundreds of delivered files (e.g. `admin/objects/admstamp.pmlobj`, `aba/Objects/abadrawings.pmlobj`), and as formal parameters (`define method .addce(!ce is DBREF)`).
+- **A bare single-bang `!ce` read is never legal** unless assigned earlier in the same scope (`!ce = !!ce`, another assignment, or a formal parameter). A scan of the bundled PMLLIB snapshot found **zero** delivered methods that read `!ce` before assigning it.
+- **Never do this** (typical generation defect):
+  ```pml
+  define method .setCE()
+    -- WRONG: !ce is an unset local, not the Current Element
+    if (!ce.type.upcase().eq('ZONE') or !ce.type.upcase().eq('SITE')) then
+      !this.selectedSiteZone = !ce.refno
+      !this.paZone.val = !ce.name
+    ...
+  ```
+- **Correct**:
+  ```pml
+  define method .setCE()
+    if (!!ce.type.upcase().eq('ZONE') or !!ce.type.upcase().eq('SITE')) then
+      !this.selectedSiteZone = !!ce.refno
+      !this.paZone.val = !!ce.name
+      !this.findData()
+    else
+      !!alert.error('Please select a SITE or ZONE')
+      !this.netExport.clearGrid()
+      !this.paZone.val = 'unset'
+    endif
+  endmethod
+  ```
+  (Equivalent delivered style: start the method with `!ce = !!ce` and keep the `!ce.` accesses.)
+- **Review rule**: scan generated PML for single-bang uses of any built-in global name (`!ce`, `!alert`, `!edgCntrl`, ...) where the global is meant. If the name is not assigned or declared (`var`, `member`, formal parameter) earlier in the same scope, flag it: fix by double-banging, or by inserting `!ce = !!ce` at the top of the routine. Detail: [ch02](chapters/ch02-variables-data-types.md) "Built-in Globals vs Locals", [ch05](chapters/ch05-pml2-functions-methods.md) "Current Element (`!!CE`) Interfacing".
+
 ---
 
 ## Chapter Index
@@ -166,6 +204,7 @@ AVEVA PML provides structured loops with explicit termination:
 - **ANY (`is ANY` type-specifier restrictions)** → [ch02](chapters/ch02-variables-data-types.md), [ch05](chapters/ch05-pml2-functions-methods.md)
 - **Arrays & Indexing** → [ch02](chapters/ch02-variables-data-types.md), [ch03](chapters/ch03-flow-control-logic.md)
 - **Assembly Import (`marapi`)** → [ch14](chapters/ch14-marine-drafting-automation.md), [ch15](chapters/ch15-marapi-dotnet-interop.md)
+- **Bang-Prefix Arity (`!ce` vs `!!ce`, single- vs double-bang globals)** → Core Framework 11, [ch02](chapters/ch02-variables-data-types.md), [ch05](chapters/ch05-pml2-functions-methods.md)
 - **Clipbox Manipulation** → [ch11](chapters/ch11-view-gadgets-3d.md), [ch19](chapters/ch19-production-exercises-recipes.md)
 - **Collections (`COLLECTION`)** → [ch13](chapters/ch13-collections-database-queries.md), [ch17](chapters/ch17-system-objects-catalog.md), [ch19](chapters/ch19-production-exercises-recipes.md)
 - **Copies vs References (`.clone()`)** → [ch02](chapters/ch02-variables-data-types.md), [ch17](chapters/ch17-system-objects-catalog.md)
@@ -184,6 +223,7 @@ AVEVA PML provides structured loops with explicit termination:
 - **Hot-Reloading (`pml reload form`)** → [ch08](chapters/ch08-forms-gui-customisation.md)
 - **Marine Drafting Element Handles** → [ch14](chapters/ch14-marine-drafting-automation.md)
 - **Menus & Add-ins (`.pmladd`)** → [ch10](chapters/ch10-menus-toolbars-integration.md)
+- **Null / empty returns (`return null` is invalid; typed empty idioms)** → Core Framework 10, [ch05](chapters/ch05-pml2-functions-methods.md)
 - **P-Points & 3D Primitives (`CONN`)** → [ch18](chapters/ch18-pdms-primitives-modeling.md), [ch19](chapters/ch19-production-exercises-recipes.md)
 - **PMLLIB & Rehash (`pml rehash all`)** → [ch01](chapters/ch01-pml-basics-environment.md), [ch16](chapters/ch16-pml-migration-best-practices.md)
 - **User-Defined Objects (`.pmlobj`)** → [ch06](chapters/ch06-user-defined-objects.md)

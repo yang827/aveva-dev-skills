@@ -3,7 +3,7 @@ name: aveva-dev-dotnet
 description: "Comprehensive developer knowledge base for AVEVA Marine and AVEVA PDMS .NET secondary development (part of the aveva-dev-skills suite). Covers Common Application Framework (CAF), Dabacon DbElement access, PMLNet interop, MarAPI, and Planar structural modeling."
 metadata:
   suite: aveva-dev-skills
-  version: "0.3.0"
+  version: "0.3.1"
 ---
 
 <!-- argument-hint: [topic, class name, or chapter number] -->

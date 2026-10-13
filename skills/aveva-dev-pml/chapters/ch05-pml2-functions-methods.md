@@ -15,6 +15,7 @@ PML 2 functions (`.pmlfnc`) provide reusable, encapsulated logic with explicit a
 - **Current Element (`!!CE`) Interfacing**:
   - `!!CE` is the global built-in `DBREF` pointing to the currently active element in the 3D DABACON hierarchy.
   - Navigating with AVEVA commands (e.g., `/ZONE-1` or `NEXT`) automatically updates `!!CE`.
+  - **Always double-bang the Current Element.** `!ce` (one bang) is a separate local variable, `unset` unless assigned in the current scope. Either use `!!ce.xxx` directly, or snapshot first — `!ce = !!ce` — and only then use `!ce.xxx` (delivered idiom, e.g. `aba/Objects/abadrawings.pmlobj`: `!ce = !!ce` then `!ce.type`). A method reading `!ce.type` with no prior `!ce` assignment is a defect (SKILL.md Core Framework 11). Name case is irrelevant (`!!CE` = `!!ce`); only bang count matters.
 
 ## Key Concepts
 - **`define function` / `endfunction`**: Keywords declaring a standalone PML 2 callable subroutine.
@@ -72,9 +73,43 @@ Scan generated PML code for `is ANY` and judge each occurrence by its **syntacti
 - Occurrence in a normal variable declaration → **flag as a defect to correct**: convert it into a legal formal-parameter declaration, a supported return-type declaration, or a concrete variable/object design matching the actual requirement.
 A mere token hit on `ANY` is never sufficient grounds to report an error.
 
+## No `null` Keyword — "Empty" Returns by Type (MANDATORY)
+
+**PML has no `null`, `nil`, or `None` literal — and no `.null()` method on any type.** `return` must be followed by an expression, and `null` is not one: writing `return null` aborts compilation with `CP: Syntax error` pointing at the offending token (`return ^^NULL`). Calling `!x.null()` compiles but fails at runtime with `Method <STRING>.NULL() not found` (or the caller's actual type) — no PML type, `STRING` included, defines a `null()` method. Do not import `null`/`None`/`.null()` habits from Java, C#, JavaScript, or Python.
+
+**The phrase "return null" exists only in English `--` comments of the delivered PMLLIB source — never in executable code.** Grepping for it yields comment lines such as `-- When called with null string, then return null string` in `mds/draft/functions/MdsGetAlias.pmlfnc`, whose actual statement is `return ''`. Never infer syntax from comment prose.
+
+### Returning "nothing" / an empty value, by declared return type
+| Declared type | Idiom | Meaning | Delivered-source example |
+|---|---|---|---|
+| `is STRING` | `return ''` | Empty-string sentinel value | `mds/draft/functions/MdsGetAlias.pmlfnc` |
+| `is STRING` | `return object STRING()` | Unset STRING; caller tests `!ret.unset()` | `design/forms/componentorioff.pmlfrm` |
+| `is DBREF` | `return object DBREF()` | Null DBREF (nullref); caller tests `.unset()` / `badRef()` | `design/objects/aslinstance.pmlobj`, `common/functions/dtbmemberoftype.pmlfnc` |
+| `is ARRAY` | `return object ARRAY()` | Unset/empty array | `admin/functions/adminfiltersort.pmlfnc` |
+| `is REAL` | `object REAL()` for an unset REAL; otherwise a documented numeric sentinel | Unset REAL | `design/objects/componentpspool.pmlobj` (assignment form) |
+
+- Returning a value from inside a `handle ... endhandle` recovery block is **legal** and used by delivered code — e.g. `return object DBREF()` inside `handle any` in `aslinstance.pmlobj` — but the value must follow the per-type table above.
+
+### Testing for "empty" / "no value" at the call site (the anti-`.null()` table)
+`.null()` does not exist — `if (!model.null())` raises `Method <STRING>.NULL() not found` at runtime. Use the idiom matching what "empty" means:
+
+| Condition to test | Valid idiom | Delivered-source example |
+|---|---|---|
+| Object / `DBREF` / `ARRAY` / gadget is unassigned | `if (!x.unset()) then` | 340+ sites, e.g. `design/functions/cblautoname.pmlfnc`, `common/functions/projectinfoattr.pmlfnc` |
+| Variable was never defined in this scope | `if (undefined(!x)) then` | `common/functions/modulemenus.pmlfnc` |
+| STRING holds the empty string | `if (!s.eq('')) then` | `mds/draft/functions/MdsGetAlias.pmlfnc` (`!type.trim().eq('')`) |
+| Unset **or** blank string | `if (!x.unset() or !x.string() eq '') then` | ch19 recipe (`!posno.unset() or !posno.string() eq ''`) |
+| `DBREF` points at a dead/nonexistent element | `if (!ref.badRef()) then` | Ch 13, Ch 17 |
+
+- **Receiver caution**: delivered `.unset()` calls sit on objects, `DBREF`s, `ARRAY`s, and results such as `object STRING()` — for a plain already-assigned `STRING` variable prefer `.eq('')` or `undefined(!x)` so the check itself cannot raise a method-not-found error.
+- Never compare with a null literal: `!x eq null` is the same compile error family — use the table above.
+
+### `null` Misuse Review Rule (code audit)
+Scan generated PML for `null`, `NULL`, `nil`, `None` in **executable tokens** (outside `--` and `$*` comments) in ALL forms — bare literal (`return null`), method call (`!x.null()`), and comparison (`!x eq null`): every occurrence is a defect. Replace the value with the empty idiom of the declared return type (table above) and the test with the call-site idiom (`.unset()` / `.eq('')` / `undefined()` / `.badRef()`).
+
 ## Mental Models
 - **Think of `.pmlfnc` files as modular libraries**: Each function gets its own file. AVEVA loads it on first call and caches the compiled bytecode in memory.
-- **Use `!!CE` defensively**: Never assume `!!CE` points to a specific element type; always inspect `!!CE.type` or test with `!ce.badRef()`.
+- **Use `!!CE` defensively**: Never assume `!!CE` points to a specific element type; always inspect `!!CE.type` or test with `!!CE.badRef()` (or, after `!ce = !!ce`, with `!ce.badRef()` — the local only exists once assigned).
 
 ## Anti-patterns
 - **Declaring a normal variable `is ANY`**: `!value is ANY` outside a parameter list is invalid; ANY exists only in formal-parameter (and documented return-type) declaration positions. For mixed-type storage use concrete types, `ARRAY`, or object design.
@@ -82,6 +117,7 @@ A mere token hit on `ANY` is never sufficient grounds to report an error.
 - **Putting Multiple Functions in a Single `.pmlfnc`**: Unlike C or Python, AVEVA PML 2 mandates **one function per `.pmlfnc` file**, with the filename exactly matching the function name.
 - **Forgetting to Return a Value**: If a function is declared with `is <TYPE>`, reaching `endfunction` without executing a typed `return` statement raises a runtime execution error.
 - **Global Variable Dependencies**: Relying on undeclared global variables inside functions reduces reusability; pass all needed inputs through parameters.
+- **One-Bang Built-in Globals**: Writing `!ce.type`, `!alert.error(...)`, or `!edgCntrl.add(...)` in a scope that never assigned the local. Built-in globals (`!!CE`, `!!ALERT`, `!!edgCntrl`, ...) exist ONLY in double-bang form; a single-bang name is an unrelated unset local. Use `!!ce.xxx` directly or assign `!ce = !!ce` first (SKILL.md Core Framework 11).
 
 ## Code Examples
 ```pml
@@ -113,6 +149,23 @@ $P Total calculated volume: $!totalVol mm3
 ```
 - **What it demonstrates**: Function declaration with typed arguments, return type declaration (`is REAL`), input validation, mathematical calculation, return statement, and external caller invocation.
 
+### Form Method: Validating `!!CE` Before Use (double-bang required)
+```pml
+-- CE button callback: accept only SITE or ZONE as the source element
+define method .setCE()
+  if (!!ce.type.upcase().eq('ZONE') or !!ce.type.upcase().eq('SITE')) then
+    !this.selectedSiteZone = !!ce.refno
+    !this.paZone.val = !!ce.name
+    !this.findData()
+  else
+    !!alert.error('Please select a SITE or ZONE')
+    !this.netExport.clearGrid()
+    !this.paZone.val = 'unset'
+  endif
+endmethod
+```
+- **What it demonstrates**: Reading the Current Element strictly as the global `!!ce` (also correct: open the method with `!ce = !!ce`, then use `!ce.xxx`); `.type.upcase().eq(...)` guard (delivered style, e.g. `aba/Forms/abaviewlist.pmlfrm`); `!!alert.error` also double-banged. Writing `!ce.type` in a method that never assigned `!ce` reads an unset local and is a defect (SKILL.md Core Framework 11).
+
 ## Reference Tables
 | Signature Element | Syntax Pattern | Notes |
 |---|---|---|
@@ -125,7 +178,7 @@ $P Total calculated volume: $!totalVol mm3
 ## Key Takeaways
 1. Standalone PML 2 functions are defined in `<name>.pmlfnc` files inside a `PMLLIB` directory.
 2. Function names must be global (`!!name`) and match the lowercase file basename.
-3. Method chaining allows concise object navigation: `!ce.position.string()`.
+3. Method chaining allows concise object navigation: `!!ce.position.string()`.
 4. Always validate `!!CE.type` when functions operate on the current 3D element.
 
 ## Connects To
