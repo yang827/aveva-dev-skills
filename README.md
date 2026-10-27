@@ -7,6 +7,7 @@
 [English](README.md) | [简体中文](README_zh.md) | [Benchmark & Evals](EVALS.md)
 
 [![Agent Skills Standard](https://img.shields.io/badge/Standard-Agent%20Skills-blue?style=flat-square)](https://agentskills.io)
+[![Release: v0.4.0](https://img.shields.io/badge/Release-v0.4.0-informational?style=flat-square)](https://github.com/yang827/aveva-dev-skills/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
 [![Compatible with OpenCode](https://img.shields.io/badge/Compatible-OpenCode-purple?style=flat-square)](https://opencode.ai)
 [![Compatible with Claude Code](https://img.shields.io/badge/Compatible-Claude%20Code-orange?style=flat-square)](https://claude.ai)
@@ -42,7 +43,7 @@ Covering the three foundational pillars of AVEVA customization, this repository 
 
 ### Scenario 2: `aveva-dev-pml` — PML Scripting, OOP & GUI Automation
 > Path: [`skills/aveva-dev-pml/`](skills/aveva-dev-pml/SKILL.md)  
-> Scope: 20 Systematic Chapters + 80 SCRM System Objects + Production Recipes (858 pages distilled)  
+> Scope: 20 Systematic Chapters + 80 SCRM System Objects + 6,075 Delivered Sources + Offline Syntax Gate  
 > Best for: PML 1 batch command macros, PML 2 OOP and functions, GUI form layouts, Event Driven Graphics (EDG) 3D canvas interaction, and Marine Drafting automation.
 
 * **Dual-Architecture Paradigm (PML 1 vs PML 2)**: Procedural command streams (`.mac`) vs. modern object-oriented runtime (`.pmlfnc`, `.pmlobj`, `.pmlfrm`).
@@ -51,7 +52,8 @@ Covering the three foundational pillars of AVEVA customization, this repository 
 * **DABACON Query Pipeline**: `DBREF` reference semantics, `COLLECTION` query engine, expression filters, and transactional checkpoints (`MARK`/`UNDO`).
 * **GUI & Graphics Systems**: Form lifecycle events, comprehensive gadget positioning, asynchronous Event Driven Graphics (EDG) picking callbacks.
 * **Marine Drafting Automation**: `MarDrafting` single-document interface (SDI) lifecycle, coordinate transformations, automated dimensions and annotations.
-* **Supporting Resources**: [Glossary (glossary.md)](skills/aveva-dev-pml/glossary.md) · [8 Production Patterns (patterns.md)](skills/aveva-dev-pml/patterns.md) · [Decision Cheatsheet (cheatsheet.md)](skills/aveva-dev-pml/cheatsheet.md) · [Verified PMLLIB Idioms (references/)](skills/aveva-dev-pml/references/pmllib-idioms.md).
+* **Offline Syntax Gate & Verification (Tree-sitter)**: Bundled standalone PML parser (`tools/pml-parse/`) with zero external dependencies (no Node.js, compiler, or network). Parses PML 1 & PML 2 with a **94.02%** clean parse baseline across 6,075 official PMLLIB source files; enforces mandatory **0-FAIL** validation (`parse-pml.ps1`) for AI-generated code.
+* **Supporting Resources**: [Glossary (glossary.md)](skills/aveva-dev-pml/glossary.md) · [8 Production Patterns (patterns.md)](skills/aveva-dev-pml/patterns.md) · [Decision Cheatsheet (cheatsheet.md)](skills/aveva-dev-pml/cheatsheet.md) · [Verified PMLLIB Idioms (references/)](skills/aveva-dev-pml/references/pmllib-idioms.md) · [Offline Syntax Gate (tools/pml-parse/)](skills/aveva-dev-pml/tools/pml-parse/README.md).
 
 ---
 
@@ -117,6 +119,8 @@ Once installed, simply converse naturally with your AI coding agent:
   > *"How do I implement non-blocking 3D object picking using Event Driven Graphics (EDG) in PDMS to retrieve a DBREF?"*
 * **Code Review & Auditing**:
   > *"Review this PML snippet for illegal loops, memory leaks, and encoding flaws, then refactor it according to AVEVA best practices."*
+* **Offline PML Syntax Verification**:
+  > *"Validate my PML 2 form script with the bundled syntax checker and inspect the parsed AST tree for any syntax or gadget clause errors."*
 * **Data Model & Element Hierarchy**:
   > *"What is the standard element hierarchy under an EQUI or PIPE in the Design database? What owner/member rules apply?"*
 * **Pseudo-Attributes & Database Navigation**:
@@ -136,6 +140,7 @@ General LLMs frequently hallucinate when dealing with AVEVA software due to spar
 | **marAPI Native Resource** | Leaving `MarDataBase`/`MarObject` to GC | Deterministic `using` / `IDisposable` lifecycle | Native handle leak & crash on save |
 | **CAF UI Architecture** | Hardcoding `Click` events in Form | Decoupled `CommandManager` Key + `.uic` XML | Inoperable menus, docking failure |
 | **PMLLIB Hot Reloading** | CamelCase filenames, restart-only advice | Lowercase filenames, `pml rehash all`, `reload form` | Form not found, stale code execution |
+| **PML Syntax Verification** | Delivering unverified code with invalid gadget/command syntax | Offline Tree-sitter syntax gate (`parse-pml.ps1`, mandatory 0-FAIL) | Fatal parser crash or gadget declaration failure |
 
 👉 **Read the comprehensive evaluation report with code examples in [EVALS.md](EVALS.md) (中文版: [EVALS_zh.md](EVALS_zh.md))**.
 
@@ -163,14 +168,16 @@ aveva-dev-skills/
     │   ├── chapters/               # 10 In-depth subsystem chapters (ch01 - ch10)
     │   └── references/             # 4 Full official API reference manuals
     ├── aveva-dev-pml/              # Scenario 2: PML 1/2 / GUI / EDG / Drafting
-        ├── SKILL.md                # Entry point & architecture rules (name: aveva-dev-pml)
-        ├── cheatsheet.md           # Diagnostic smells & decision rules
-        ├── glossary.md             # System objects dictionary
-        ├── patterns.md             # 8 Production PML design patterns
-        ├── chapters/               # 20 Systematic language chapters (ch01 - ch20)
-        ├── references/             # Delivered PMLLIB index & verified idioms
-        ├── tools/                  # Automation scripts (index regenerator)
-        └── PMLLIB/                 # Bundled official PML source snapshot (~6,075 files)
+    │   ├── SKILL.md                # Entry point & architecture rules (name: aveva-dev-pml)
+    │   ├── cheatsheet.md           # Diagnostic smells & decision rules
+    │   ├── glossary.md             # System objects dictionary
+    │   ├── patterns.md             # 8 Production PML design patterns
+    │   ├── chapters/               # 20 Systematic language chapters (ch01 - ch20)
+    │   ├── references/             # Delivered PMLLIB index & verified idioms
+    │   ├── tools/                  # Automation scripts & offline quality gate
+    │   │   ├── regen-pmllib-index.ps1  # Automated index regenerator
+    │   │   └── pml-parse/          # Tree-sitter offline syntax checker (94.02% baseline)
+    │   └── PMLLIB/                 # Bundled official PML source snapshot (~6,075 files)
     └── aveva-data-model/           # Scenario 3: DABACON Database Hierarchy & Schemas
         ├── SKILL.md                # Entry point & database navigation rules (name: aveva-data-model)
         ├── cheatsheet.md           # Database types & schema heuristics

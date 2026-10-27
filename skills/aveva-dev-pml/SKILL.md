@@ -3,7 +3,7 @@ name: aveva-dev-pml
 description: "Knowledge base for AVEVA PML secondary development (part of the aveva-dev-skills suite). Covers PML 1 and PML 2 macros, functions, forms, gadgets, Event Driven Graphics, Marine Drafting automation, and DABACON database queries."
 metadata:
   suite: aveva-dev-skills
-  version: "0.3.1"
+  version: "0.4.0"
 ---
 
 <!-- argument-hint: [topic, framework name, or chapter number] -->
@@ -54,6 +54,16 @@ A snapshot of the AVEVA-delivered PML source tree ships with this skill at [PMLL
 - **Lookup order when official usage is uncertain**: (1) [references/pmllib-idioms.md](references/pmllib-idioms.md) — verified idioms with citations; (2) grep [references/pmllib-index.md](references/pmllib-index.md) (module, gadget, flag, description) to locate candidate files; (3) open the real source under [PMLLIB/](PMLLIB/) via the index path.
 - **Priority**: module order of interest is `common` → `design` → `draft`/`marinedrafting`/`isodraft` → `admin`/`global` → others; treat `mds` (scantling formula library, 2504 files) as low priority unless the task is MDS-specific.
 - **Copyright**: delivered AVEVA source — cite paths in answers, do not bulk-copy large extracts into user deliverables.
+
+### 2c. Offline Syntax Gate — Bundled PML Parser (MANDATORY after code generation)
+
+A standalone PML syntax checker ships at [tools/pml-parse/](tools/pml-parse/) (tree-sitter CLI + compiled `pml.dll` + PowerShell wrappers; no node, no compiler, no network). It parses PML 1 and PML 2 sources; grammar baseline: **94.02%** clean parse on the 6,075-file bundled PMLLIB with 22/22 unit tests.
+
+- **After writing or editing any `.pmlfnc` / `.pmlobj` / `.pmlfrm` / `.mac` file**, run `tools/pml-parse/parse-pml.ps1 <file-or-folder> [-Recurse]`. New generated code must reach **0 FAIL** before delivery; the report prints `file -> ERROR [line, col]` for each finding.
+- **A FAIL is a review signal, not a compiler verdict** — delivered PMLLIB itself has 363 known-failing files (unterminated quotes glued to code, `*/` tails, eval-with-subscript, `=0/0` placeholders; taxonomy in the tool README). Trees stay usable around ERROR nodes, but generated code should never join that set.
+- **Do not "avoid" `$P` trailing dots or `numericinput` labels** — those two false-positive families were fixed in the 2026-10-27 grammar build (25 delivered files rescued, 0 regressions); write them freely, see the tool README "Known false positives — RESOLVED".
+- **Tree inspection** (structure questions, e.g. verifying a form parses as one `form_definition`): `parse-pml.ps1 <file> -Tree`. Also the double-check channel when a verdict looks too good: the CLI quiet mode can under-report (false OK) on some recovery trees — grep the `-Tree` output for `(ERROR`.
+- **Parser sanity gate** after any tooling change: `tools/pml-parse/bench-pmllib.ps1` must stay ≈ 94.02% on the bundled PMLLIB.
 
 ### 3. Copies and References Framework (Value Types vs Reference Types)
 - **Value Types (`REAL`, `STRING`, `BOOLEAN`)**: Assignment (`!a = !b`) copies data by value.
@@ -240,6 +250,7 @@ PML has **no `null`/`nil`/`None` literal, and no `.null()` method on any type** 
 - [references/pmllib-idioms.md](references/pmllib-idioms.md) — Verified idioms mined from the delivered source: form skeleton, menus, selector+navigation, EDG packet API, COLLECTION pipeline, EVAR/evars.bat, marapi import guard, pmlnetcontrol, FILE I/O — every snippet cited to a real PMLLIB file.
 - [references/pmllib-index.md](references/pmllib-index.md) — Machine-generated index of all 6075 bundled source files (module, type, lines, syntax flags, description). Grep this first, then open the source. Regenerate with [tools/regen-pmllib-index.ps1](tools/regen-pmllib-index.ps1).
 - [PMLLIB/](PMLLIB/) — The bundled AVEVA-delivered PML source snapshot (see Core Framework 2b).
+- [tools/pml-parse/](tools/pml-parse/) — Offline PML syntax checker (tree-sitter CLI + pml.dll + PowerShell wrappers): parse-pml.ps1 for single files/folders, bench-pmllib.ps1 as parser sanity gate. See Core Framework 2c.
 
 ---
 

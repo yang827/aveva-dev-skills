@@ -3,9 +3,8 @@ name: aveva-dev-dotnet
 description: "Comprehensive developer knowledge base for AVEVA Marine and AVEVA PDMS .NET secondary development (part of the aveva-dev-skills suite). Covers Common Application Framework (CAF), Dabacon DbElement access, PMLNet interop, MarAPI, and Planar structural modeling."
 metadata:
   suite: aveva-dev-skills
-  version: "0.3.1"
+  version: "0.4.0"
 ---
-
 <!-- argument-hint: [topic, class name, or chapter number] -->
 
 # AVEVA Marine & PDMS .NET Customisation & Secondary Development Guide
@@ -26,7 +25,9 @@ When you ask about a topic not fully covered in Core Frameworks below, the relev
 ## Core Frameworks & Mental Models
 
 ### 1. 通用应用程序框架与插件生命周期 (Common Application Framework - CAF)
+
 AVEVA 现代界面与业务插件采用基于服务总线的微内核架构：
+
 - **入口契约**: 必须实现 `Aveva.ApplicationFramework.IAddin`（定义 `Name`, `Description`, `Start`, `Stop`）。
 - **服务检索**: 在 `Start(ServiceManager serviceManager)` 中统一向宿主索取核心服务：
   - `WindowManager`: 负责通过 `CreateDockedWindow()` 创建和管理吸附面板，设置 `SaveLayout = true` 维持用户停靠偏好。
@@ -35,14 +36,18 @@ AVEVA 现代界面与业务插件采用基于服务总线的微内核架构：
 - **模块加载配置**: 模块启动时扫描 `%AVEVA_DESIGN_USER%\<Module>Addins.xml` 完成反射加载。
 
 ### 2. Dabacon 面向对象数据库操作体系 (Dabacon DbElement Paradigm)
+
 AVEVA 所有工程模型数据均存储于分层式的 Dabacon 专有数据库中：
+
 - **实体封装**: `Aveva.Core.Database.DbElement` 是操作图元的统一对象句柄，具备“值语义”（相同图元指针即判定相等）。
 - **防卫式编程法则**: 访问任何实体首步必须检查 `if (!element.IsValid() || element.IsNull())`；写入前必须检查 `element.Database.Writeable`，并使用 `try...catch (PdmsException)` 进行事务防卫。
 - **静态常量优化**: 实体类型与属性优先使用 `DbElementTypeInstance`（如 `EQUIPMENT`, `ZONE`）和 `DbAttributeInstance`（如 `NAME`, `DESC`, `POSX`），杜绝字符串反射开销。
 - **单线程调度约束**: Dabacon 内核为非线程安全的 STA 架构，严禁在后台线程直接调用 `DbElement` 的读写 API。
 
 ### 3. PMLNet 双向跨语言互操作契约 (PMLNet Bridge Contract)
+
 连接老旧 PML 脚本资产与现代 .NET 托管生态的核心桥梁：
+
 - **可调用类五大铁律**:
   1. 程序集置于 `%PDMSEXE%` 目录或通过配置加载。
   2. 类和方法显式标记 `[PMLNetCallable()]` 特性。
@@ -53,13 +58,17 @@ AVEVA 所有工程模型数据均存储于分层式的 Dabacon 专有数据库�
 - **窗体嵌套**: PML 表单中使用 `container .name pmlnetcontrol ...` 接收 `!netCtrl.handle()` 实现 WinForms/WPF 控件的无缝内嵌。
 
 ### 4. Marine 原生实体与非托管资源管控 (Marine Native Objects & IDisposable)
+
 `marAPI.dll` 是造船工艺专用的面向对象中介层：
+
 - **确定性释放**: 所有以 `Mar` 开头的类型（`MarObject`, `MarDataBase`, `MarUtil`, `MarWeld`）均实现了 `IDisposable`，内部包裹非托管 C++ 句柄；必须使用 `using` 代码块或严格在 `finally` 中调用 `.Dispose()`。
 - **查询与命令分工**: 使用 `MarDataBase.ObjectListGet` 结合 `MarObjectCriteria` 执行条件化构件检索；使用 `MarUtil.AddCommand()` 执行宿主底层宏命令注入。
 - **三元语言融合 (Vitesse)**: 利用 `MarPythonEngine` 在进程内直接执行 Python 脚本，并配合 `MarPythonObjectPML` 打通 Python 与 PML。
 
 ### 5. 平面分段与工艺特征声明式建模 (Planar Statements Framework)
+
 造船平直结构（甲板、舱壁、强框架）遵循参数化数学语句体系：
+
 - **板架画布**: `PanelStatement` 是平面构件的顶级容器，结合 `PlaneStatement`（全船参考基准面）与 `BoundaryStatement`（外围轮廓修剪）定义基本骨架。
 - **双向互转**: 支持通过 `new PanelStatement(dbElement)` 将现有 3D 数据库图元一键逆向提取为结构化语句，并可通过 `.Statement` 属性获取标准语法字符串。
 - **骨架网络**: 母板（`PlateStatement`）上敷设型材筋条（`StiffenerStatement`，含端切连接 `StiffenerEndConnection`）、连接肘板（`BracketStatement`）与自由边面板（`FlangeStatement`）。
@@ -69,18 +78,18 @@ AVEVA 所有工程模型数据均存储于分层式的 Dabacon 专有数据库�
 
 ## Chapter Index
 
-| 章节编号 | 章节标题 | 核心框架与涉及类型 |
-|---|---|---|
-| [ch01](chapters/ch01-architecture-and-caf-addin.md) | AVEVA .NET 架构与 CAF Addin 框架 | `IAddin`, `ServiceManager`, `WindowManager`, `Command`, `DockedWindow`, UIC |
-| [ch02](chapters/ch02-database-access-and-elements.md) | Dabacon 数据库操作、三维空间几何与 DbEvents | `DbElement`, `Position`, `Orientation`, `DbEvents`, `PseudoAttribute`, `DbUnits` |
-| [ch03](chapters/ch03-pmlnet-interop-and-controls.md) | PMLNet 跨语言互操作与控件宿主 | `PMLNetCallable`, `Assign()`, `PMLNetEventHandler`, `PMLNetException`, `pmlnetcontrol` |
-| [ch04](chapters/ch04-ui-controls-grid-mydata.md) | AVEVA C# Grid 控件、My Data 与文件浏览器 | `GridControl` 完整行/列/单元格 API, 输入掩码规则, `MyData`, `OpenFileDialog` |
-| [ch05](chapters/ch05-marine-utility-and-objects.md) | AVEVA Marine Utility API 与领域对象 | `MarObject`, `MarUtil`, `MarDataBase`, `MarObjectCriteria`, `IDisposable` |
-| [ch06](chapters/ch06-marine-ui-and-vitesse.md) | Marine UI 自动化与 Vitesse Python 集成 | `MarUi.AnswerReq`, `ChoiceSelect`, `MarPythonEngine`, `MarPythonObjectPML` |
-| [ch07](chapters/ch07-marine-welding-and-production.md) | 造船焊接与生产制造数据管道 | `MarWeld`, `MarWeldedJoint`, `MarWeldTable`, `MarPinProfiles`, `GenerateSketch` |
-| [ch08](chapters/ch08-planar-fundamentals-and-panels.md) | 平面建模基础与 PanelStatement 结构 | `PanelStatement`, `PlaneStatement`, `BoundaryStatement`, `ComponentHelper` |
-| [ch09](chapters/ch09-planar-plates-stiffeners-brackets.md) | 结构板件、型材加筋与连接肘板 | `PlateStatement`, `StiffenerStatement`, `StiffenerEndConnection`, `BracketStatement` |
-| [ch10](chapters/ch10-planar-features-cuts-holes-welds.md) | 制造特征、补强板、波形折边与 PML 包装层 | `HoleStatement`, `CompensationStatement`, `SwageStatement`, `HNCStatement`, `Clip`, `ExcessStatement` |
+| 章节编号                                                  | 章节标题                                    | 核心框架与涉及类型                                                                                                |
+| --------------------------------------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| [ch01](chapters/ch01-architecture-and-caf-addin.md)        | AVEVA .NET 架构与 CAF Addin 框架            | `IAddin`, `ServiceManager`, `WindowManager`, `Command`, `DockedWindow`, UIC                             |
+| [ch02](chapters/ch02-database-access-and-elements.md)      | Dabacon 数据库操作、三维空间几何与 DbEvents | `DbElement`, `Position`, `Orientation`, `DbEvents`, `PseudoAttribute`, `DbUnits`                      |
+| [ch03](chapters/ch03-pmlnet-interop-and-controls.md)       | PMLNet 跨语言互操作与控件宿主               | `PMLNetCallable`, `Assign()`, `PMLNetEventHandler`, `PMLNetException`, `pmlnetcontrol`                  |
+| [ch04](chapters/ch04-ui-controls-grid-mydata.md)           | AVEVA C# Grid 控件、My Data 与文件浏览器    | `GridControl` 完整行/列/单元格 API, 输入掩码规则, `MyData`, `OpenFileDialog`                                |
+| [ch05](chapters/ch05-marine-utility-and-objects.md)        | AVEVA Marine Utility API 与领域对象         | `MarObject`, `MarUtil`, `MarDataBase`, `MarObjectCriteria`, `IDisposable`                               |
+| [ch06](chapters/ch06-marine-ui-and-vitesse.md)             | Marine UI 自动化与 Vitesse Python 集成      | `MarUi.AnswerReq`, `ChoiceSelect`, `MarPythonEngine`, `MarPythonObjectPML`                                |
+| [ch07](chapters/ch07-marine-welding-and-production.md)     | 造船焊接与生产制造数据管道                  | `MarWeld`, `MarWeldedJoint`, `MarWeldTable`, `MarPinProfiles`, `GenerateSketch`                         |
+| [ch08](chapters/ch08-planar-fundamentals-and-panels.md)    | 平面建模基础与 PanelStatement 结构          | `PanelStatement`, `PlaneStatement`, `BoundaryStatement`, `ComponentHelper`                                |
+| [ch09](chapters/ch09-planar-plates-stiffeners-brackets.md) | 结构板件、型材加筋与连接肘板                | `PlateStatement`, `StiffenerStatement`, `StiffenerEndConnection`, `BracketStatement`                      |
+| [ch10](chapters/ch10-planar-features-cuts-holes-welds.md)  | 制造特征、补强板、波形折边与 PML 包装层     | `HoleStatement`, `CompensationStatement`, `SwageStatement`, `HNCStatement`, `Clip`, `ExcessStatement` |
 
 ---
 
@@ -148,4 +157,3 @@ AVEVA 所有工程模型数据均存储于分层式的 Dabacon 专有数据库�
 ## Scope & Limits
 
 本 Skill 完整覆盖了 AVEVA Plant / Marine 官方文档中的 .NET 二次开发指南（NCUG.pdf）、Marine 核心 API 参考（NETmarAPI.pdf）及 Planar 平面结构建模 API（netaveva.marine.planarapi.pdf）。在具体工程中编写实现代码时，需结合目标项目安装的具体 AVEVA 版本（如 Marine 12.1、PDMS 12.0/12.1）及其引用的程序集版本；若涉及曲面外板高级成形算法或特定的第三方数据库，请辅以对应专项指南。
-

@@ -7,6 +7,7 @@
 [English](README.md) | [简体中文](README_zh.md) | [实测基准 (Evals)](EVALS_zh.md)
 
 [![Agent Skills Standard](https://img.shields.io/badge/Standard-Agent%20Skills-blue?style=flat-square)](https://agentskills.io)
+[![Release: v0.4.0](https://img.shields.io/badge/Release-v0.4.0-informational?style=flat-square)](https://github.com/yang827/aveva-dev-skills/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
 [![Compatible with OpenCode](https://img.shields.io/badge/Compatible-OpenCode-purple?style=flat-square)](https://opencode.ai)
 [![Compatible with Claude Code](https://img.shields.io/badge/Compatible-Claude%20Code-orange?style=flat-square)](https://claude.ai)
@@ -40,7 +41,7 @@
 
 ### 场景二：`aveva-dev-pml` — PML 宏、面向对象编程与界面自动化
 > 路径: [`skills/aveva-dev-pml/`](skills/aveva-dev-pml/SKILL.md)  
-> 覆盖规模: 20 大系统章节 + 80 种 SCRM 系统对象速查 + 实战代码配方 (858 页全量提炼)  
+> 覆盖规模: 20 大系统章节 + 80 种 SCRM 系统对象速查 + 6,075 个官方源码快照 + 离线语法校验门禁  
 > 适用场景: PML 1 批处理宏、PML 2 面向对象与函数、GUI 表单布局、Event Driven Graphics (EDG) 交互、Marine Drafting 出图自动化。
 
 * **双架构范式 (PML 1 vs PML 2)**: 命令行批处理宏（`.mac`）与现代面向对象运行时（`.pmlfnc`, `.pmlobj`, `.pmlfrm`）严格分工。
@@ -49,7 +50,8 @@
 * **DABACON 数据检索管道**: `DBREF` 引用语义、`COLLECTION` 查询引擎、表达式过滤器与事务撤销（`MARK`/`UNDO`）。
 * **GUI 界面与交互系统**: 现代表单生命周期、全套 Gadget 布局器、Event Driven Graphics (EDG) 异步拾取交互。
 * **Marine Drafting 出图自动化**: `MarDrafting` 单文档接口（SDI）控制、图纸坐标投影、文字与尺寸标注自动化。
-* **配套文件**: [速查字典 (glossary.md)](skills/aveva-dev-pml/glossary.md) · [八大生产级设计模式 (patterns.md)](skills/aveva-dev-pml/patterns.md) · [诊断决策树 (cheatsheet.md)](skills/aveva-dev-pml/cheatsheet.md) · [官方源码索引与成例 (references/)](skills/aveva-dev-pml/references/pmllib-idioms.md)。
+* **离线语法门禁与即时校验 (Tree-sitter)**: 内置完全独立的离线语法检查工具包（`tools/pml-parse/`），零外部依赖（无须 Node.js、编译器或网络）；在官方 6,075 个 PMLLIB 源码文件上实测达成 **94.02%** 无错解析率；提供生成后必须通过的 **0-FAIL** 语法门禁脚本（`parse-pml.ps1`）。
+* **配套文件**: [速查字典 (glossary.md)](skills/aveva-dev-pml/glossary.md) · [八大生产级设计模式 (patterns.md)](skills/aveva-dev-pml/patterns.md) · [诊断决策树 (cheatsheet.md)](skills/aveva-dev-pml/cheatsheet.md) · [官方源码索引与成例 (references/)](skills/aveva-dev-pml/references/pmllib-idioms.md) · [离线语法校验工具 (tools/pml-parse/)](skills/aveva-dev-pml/tools/pml-parse/README.md)。
 
 ---
 
@@ -111,6 +113,8 @@ Copy-Item -Recurse skills/* "$env:USERPROFILE\.gemini\config\skills\"
   > *"如何在 PDMS 中使用 Event Driven Graphics (EDG) 实现让用户在三维视图中拾取设备并返回 DBREF？"*
 * **排错与规范检查**:
   > *"检查这段代码中是否存在循环语法或编码问题，并给出符合 AVEVA 标准的重构方案。"*
+* **PML 离线语法校验与 AST 分析**:
+  > *"使用内置的离线语法检查工具对我的 PML 2 表单进行语法验证，并检查语法树中是否存在解析错误或非法 Gadget 子句。"*
 * **数据模型与层级导航场景**:
   > *"在 Design 数据库中，EQUI 和 PIPE 的标准下级层级关系是什么？有哪些 Owner/Member 约束规则？"*
 * **伪属性与属性查询场景**:
@@ -130,6 +134,7 @@ Copy-Item -Recurse skills/* "$env:USERPROFILE\.gemini\config\skills\"
 | **marAPI 船体原生对象** | 将 `MarDataBase`/`MarObject` 交给 .NET GC | 强制 `using` 或 `IDisposable` 确定性释放非托管指针 | 内存句柄泄漏，SAVE WORK 时模型损坏崩溃 |
 | **CAF 插件界面解耦** | 在 Form 构造函数中写死按钮 `Click` 事件 | 注册全局 `Command`，界面通过 `.uic` XML 声明式解耦 | 按钮无法吸附、无法参与系统撤销与布局记忆 |
 | **PMLLIB 索引与热更新** | 建议重启软件、随意大写文件名 | 强制小写命名、`pml rehash all` 重新索引、`reload form` | 文件找不到，修改代码在内存中始终不生效 |
+| **PML 语法即时校验** | 交付未经语法验证的代码，包含非法控件子句或命令语法 | 离线 Tree-sitter 语法检查门禁 (`parse-pml.ps1`，强制 0 FAIL) | 模块加载或控件初始化时发生不可恢复语法中断 |
 
 👉 **查看完整的详细评测案例、测试 Prompt 与对比代码：[EVALS_zh.md](EVALS_zh.md) (English: [EVALS.md](EVALS.md))**。
 
@@ -157,14 +162,16 @@ aveva-dev-skills/
     │   ├── chapters/               # 10 大子系统深入指南 (ch01 - ch10)
     │   └── references/             # 4 大全量 API 参考手册
     ├── aveva-dev-pml/              # 场景二：PML 1/2 / GUI / EDG / Drafting 技能
-        ├── SKILL.md                # 技能主入口与双架构法则 (name: aveva-dev-pml)
-        ├── cheatsheet.md           # 诊断与避坑速查表
-        ├── glossary.md             # 术语与系统对象字典
-        ├── patterns.md             # 8 大生产级 PML 架构模式
-        ├── chapters/               # 20 个完整系统章节 (ch01 - ch20)
-        ├── references/             # 官方 PMLLIB 索引与已验证工程成例
-        ├── tools/                  # 辅助工具脚本 (索引自动重建)
-        └── PMLLIB/                 # 官方 PML 原生源码快照 (~6,075 源码文件)
+    │   ├── SKILL.md                # 技能主入口与双架构法则 (name: aveva-dev-pml)
+    │   ├── cheatsheet.md           # 诊断与避坑速查表
+    │   ├── glossary.md             # 术语与系统对象字典
+    │   ├── patterns.md             # 8 大生产级 PML 架构模式
+    │   ├── chapters/               # 20 个完整系统章节 (ch01 - ch20)
+    │   ├── references/             # 官方 PMLLIB 索引与已验证工程成例
+    │   ├── tools/                  # 辅助工具脚本与离线质量门禁
+    │   │   ├── regen-pmllib-index.ps1  # PMLLIB 索引自动重建脚本
+    │   │   └── pml-parse/          # Tree-sitter 离线语法校验与基准测试工具 (94.02% 解析率)
+    │   └── PMLLIB/                 # 官方 PML 原生源码快照 (~6,075 源码文件)
     └── aveva-data-model/           # 场景三：DABACON 数据库模型、层级体系与属性导航
         ├── SKILL.md                # 技能主入口与数据库导航心智模型 (name: aveva-data-model)
         ├── cheatsheet.md           # 数据库类型与属性速查表

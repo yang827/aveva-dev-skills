@@ -292,7 +292,52 @@ Parsing idiom `part(1, ':')` / `.after(':')` / `.before()` is the official repla
 
 ---
 
-## 10. Icons & Shared Paths
+## 10. Console Output (`$P`) and Numeric Input Gadgets — parser-verified
+
+**`$P` free text (PML 1 command macro / function console print).** Everything
+after `$P ` up to end of line is literal output text — the command processor
+performs `$!x` expansion at execution time, so the text itself has no syntax.
+Trailing periods, ellipses and version strings are all legal and ship in
+official code:
+
+```pml
+$P Assembly ADP Library change 12.0.SP5.2 starts...
+...
+$p Working....
+```
+
+*Sources: `assembly/data/assembly_library_upgrade.mac` L10, L154; `hulldesign/functions/hullCheckManpkg.pmlfnc` L49*
+
+> **Parser note (2026-10-27 grammar):** older `pml.dll` builds FAILed on any
+> stray dot at/after the text (e.g. `... starts...`). Fixed via the
+> `print_statement` rule; do not "clean up" dots from `$P` lines to appease
+> the gate. Decimals (`$P E 0.5`) always parsed fine.
+
+**`numericinput` — numeric entry gadget with label + range.** SOFTCG/SCRM
+legal syntax, 24 delivered forms use it; the full official clause stack
+(`label tagwidth N anchor ... at ... callback '..' range lo hi ndp N width N`)
+parses clean since the same grammar build:
+
+```pml
+  numericinput .nangleTxt 'Angle from North'  tagwidth 20 anchor top + left  at x0.5  ymax+1
+       callback '!this.updatenAngle(' range -180 180 ndp 0 width 7
+  numericinput .nuCopies 'Number of Copies:'  anchor l+t at xmax ymin  tagwidth 14  callback ''  width 4
+```
+
+*Sources: `accommodation/forms/slopeangle.pmlfrm` L54–L55; `design/forms/cblmtrl.pmlfrm` L365; `asl/forms/aslstrtwr.pmlfrm` L181–L182; `asl/forms/aslpltfrmlayout.pmlfrm` L98 (`step` variant)*
+
+Functionally similar alternative — plain `text ... is REAL` (typed numeric
+field, no numeric keypad/range clauses):
+
+```pml
+  text .diameter 'Diameter' width 14 is REAL format !!distanceFmt
+```
+
+*Source: `common/forms/edgdiameter.pmlfrm` L41*
+
+---
+
+## 11. Icons & Shared Paths
 
 Never hardcode icon paths — resolve through the PML resource function (icons ship under `PMLLIB/icons/`):
 
