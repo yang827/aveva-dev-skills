@@ -4,7 +4,7 @@
 
 # AVEVA Dev Skills 🚀
 
-[English](README.md) | [简体中文](README_zh.md) | [Benchmark & Evals](EVALS.md)
+[English](README.md) | [简体中文](README_zh.md) | [Benchmark & Evals](EVALS.md) | [Changelog](CHANGELOG.md)
 
 [![Agent Skills Standard](https://img.shields.io/badge/Standard-Agent%20Skills-blue?style=flat-square)](https://agentskills.io)
 [![Release: v0.4.0](https://img.shields.io/badge/Release-v0.4.0-informational?style=flat-square)](https://github.com/yang827/aveva-dev-skills/releases)
