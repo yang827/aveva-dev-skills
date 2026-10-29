@@ -4,6 +4,11 @@ Distilled idioms mined from the bundled AVEVA-delivered PML snapshot ([PMLLIB/](
 
 **When to use**: after consulting the chapters and [cheatsheet](../cheatsheet.md), if a construct's exact official usage is unclear, grep [pmllib-index.md](pmllib-index.md) then open the cited file. Use these recipes for the 80% of cases below.
 
+**Route by question type before searching** — this file answers *how is X written*, not *who uses X*:
+
+- **Relational questions** — "who calls `!!name`", "where is this form's callback wired", "what breaks if I change this method", "which code touches `/SITE/AREA`" — go to the **code graph, not grep**: `tools/pml-graph/query-graph.ps1 -WhoCalls '!!name'` / `-CallbacksInto .method` / `-CallsOf <node-id>` / `-FilesForDbPath <path>` / `-Module <module>` (modes, coverage, and limits: [SKILL.md](../SKILL.md) Core Framework 2d). Edges carry `file:line` plus the caller node, exclude definition lines and commented-out code, and see through callback *strings* that grep cannot join to a gadget. Open only the files a hit points at.
+- **Idiom / usage questions** — "how do delivered files write `numericinput`, `$P`, string parsing, an EVAR read" — that is text-pattern search, which the graph cannot serve (it stores definitions and edges, not code bodies): this file first, then grep [pmllib-index.md](pmllib-index.md) or the PMLLIB sources. The graph's known blind spots — method calls on local variables, `$!<dyn>` dynamic names — also land here as the grep fallback.
+
 ---
 
 ## 1. File Header & Form Skeleton
@@ -353,4 +358,5 @@ Never hardcode icon paths — resolve through the PML resource function (icons s
 
 - Syntax rules & anti-patterns: [SKILL.md](../SKILL.md) Core Frameworks, [cheatsheet.md](../cheatsheet.md)
 - Deeper recipes in the knowledge base (not from PMLLIB): [ch19](../chapters/ch19-production-exercises-recipes.md), [patterns.md](../patterns.md)
+- **Who-calls-what / impact analysis / callback wiring / CDB usage**: `tools/pml-graph/query-graph.ps1` over [graph/pml-graph.tsv.gz](../graph/pml-graph.tsv.gz) — see [SKILL.md](../SKILL.md) Core Framework 2d. Use this **instead of** grepping for relational questions; this file and the index serve idiom and text search only.
 - Full file listing: [pmllib-index.md](pmllib-index.md) (grep by module/flag, then open the source)

@@ -1,10 +1,10 @@
-﻿# PMLLIB Delivered Source Index
+# PMLLIB Delivered Source Index
 
 Machine-generated index of the bundled AVEVA-delivered PML source snapshot. Regenerate with [tools/regen-pmllib-index.ps1](../tools/regen-pmllib-index.ps1).
 - Snapshot: bundled PMLLIB/ folder | Product version: TBD - awaiting user | Scan date: 2026-10-10
 - Scope: 6075 source files (.pmlfrm/.pmlfnc/.pmlobj/.mac) under [PMLLIB/](../PMLLIB/). Icons (.png) and data files excluded.
 
-**How to use**: grep this file for a concept (gadget name, system object, module, flag), then open the real source via the path column. Flags: FORM=setup form, SEL=selector, INIT=initcall/okcall, EDG=event driven graphics, COLL=COLLECTION query, PNET=pmlnetcontrol, API=marapi import, MUI=MarUi/MarDrafting, HND=HANDLE trap, DLW=drawlist, VIEW=view gadget, BRK=BREAK IF, FIO=FILE object, FN/OD/MT=define function/object/method, P1=$GOTO legacy, ANY=is ANY usage.
+**How to use**: grep this file for a concept (gadget name, system object, module, flag), then open the real source via the path column. For **relational** questions (who calls `!!name`, callback wiring, change impact, code touching a CDB path) use `tools/pml-graph/query-graph.ps1` instead of grepping — see [SKILL.md](../SKILL.md) Core Framework 2d. Flags: FORM=setup form, SEL=selector, INIT=initcall/okcall, EDG=event driven graphics, COLL=COLLECTION query, PNET=pmlnetcontrol, API=marapi import, MUI=MarUi/MarDrafting, HND=HANDLE trap, DLW=drawlist, VIEW=view gadget, BRK=BREAK IF, FIO=FILE object, FN/OD/MT=define function/object/method, P1=$GOTO legacy, ANY=is ANY usage.
 
 ## Modules
 

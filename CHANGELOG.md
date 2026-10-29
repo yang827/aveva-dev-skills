@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.5.0] - 2026-10-28
+
+### Added
+- **Queryable PML Code Graph (`tools/pml-graph/` + `graph/`)**:
+  - New [`build-pml-graph.ps1`](skills/aveva-dev-pml/tools/pml-graph/build-pml-graph.ps1) extracts definitions, calls, callbacks, member ownership, CDB paths and interop from all 6,075 PMLLIB sources, reusing the existing tree-sitter CLI and `pml.dll` — still zero dependencies (no Node.js, compiler, network or Graphviz).
+  - Committed artifact [`graph/pml-graph.tsv.gz`](skills/aveva-dev-pml/graph/pml-graph.tsv.gz): 69,459 nodes / 218,280 edges, ~3 MB gzipped, byte-deterministic across rebuilds.
+  - New [`query-graph.ps1`](skills/aveva-dev-pml/tools/pml-graph/query-graph.ps1) with six modes: `-WhoCalls`, `-CallsOf`, `-CallbacksInto`, `-FilesForDbPath`, `-Module`, `-Find`.
+  - Measured coverage on the delivered snapshot: **99.76%** of `!!global` calls resolve to a declaring file, **96.12%** of callback targets resolve; unresolved names are listed verbatim in `pml-graph.meta.json`.
+  - `-Check` mode detects a stale graph via a source fingerprint (path + size of every scanned file), exiting 2 on drift.
+  - Fixture-based regression suite [`tests/run-tests.ps1`](skills/aveva-dev-pml/tools/pml-graph/tests/run-tests.ps1): 34 assertions covering node kinds, overload handling, call/callback resolution, ownership, CDB paths, imports, metadata consistency, query modes and rebuild determinism.
+- **Core Framework 2d (Code Graph)**:
+  - Added Section 2d to [`skills/aveva-dev-pml/SKILL.md`](skills/aveva-dev-pml/SKILL.md) directing agents to query the graph before walking source files, with the documented scope limits (syntax-level, no local-variable method resolution).
+
+### Notes
+- Grammar and parser behaviour are unchanged; `parse-pml.ps1` and `bench-pmllib.ps1` keep their existing CLI, exit codes and ≈94.02% baseline.
+
+---
+
 ## [v0.4.0] - 2026-10-27
 
 ### Added

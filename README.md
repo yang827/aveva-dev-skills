@@ -7,7 +7,7 @@
 [English](README.md) | [简体中文](README_zh.md) | [Benchmark & Evals](EVALS.md) | [Changelog](CHANGELOG.md)
 
 [![Agent Skills Standard](https://img.shields.io/badge/Standard-Agent%20Skills-blue?style=flat-square)](https://agentskills.io)
-[![Release: v0.4.0](https://img.shields.io/badge/Release-v0.4.0-informational?style=flat-square)](https://github.com/yang827/aveva-dev-skills/releases)
+[![Release: v0.5.0](https://img.shields.io/badge/Release-v0.5.0-informational?style=flat-square)](https://github.com/yang827/aveva-dev-skills/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
 [![Compatible with OpenCode](https://img.shields.io/badge/Compatible-OpenCode-purple?style=flat-square)](https://opencode.ai)
 [![Compatible with Claude Code](https://img.shields.io/badge/Compatible-Claude%20Code-orange?style=flat-square)](https://claude.ai)
@@ -53,7 +53,8 @@ Covering the three foundational pillars of AVEVA customization, this repository 
 * **GUI & Graphics Systems**: Form lifecycle events, comprehensive gadget positioning, asynchronous Event Driven Graphics (EDG) picking callbacks.
 * **Marine Drafting Automation**: `MarDrafting` single-document interface (SDI) lifecycle, coordinate transformations, automated dimensions and annotations.
 * **Offline Syntax Gate & Verification (Tree-sitter)**: Bundled standalone PML parser (`tools/pml-parse/`) with zero external dependencies (no Node.js, compiler, or network). Parses PML 1 & PML 2 with a **94.02%** clean parse baseline across 6,075 official PMLLIB source files; enforces mandatory **0-FAIL** validation (`parse-pml.ps1`) for AI-generated code.
-* **Supporting Resources**: [Glossary (glossary.md)](skills/aveva-dev-pml/glossary.md) · [8 Production Patterns (patterns.md)](skills/aveva-dev-pml/patterns.md) · [Decision Cheatsheet (cheatsheet.md)](skills/aveva-dev-pml/cheatsheet.md) · [Verified PMLLIB Idioms (references/)](skills/aveva-dev-pml/references/pmllib-idioms.md) · [Offline Syntax Gate (tools/pml-parse/)](skills/aveva-dev-pml/tools/pml-parse/README.md).
+* **Code Graph for the Delivered Snapshot**: Pre-built graph of all 6,075 PMLLIB sources (`graph/pml-graph.tsv.gz`, 69,459 nodes / 218,280 edges) answering "who calls this", "which gadget fires this method" and "what code touches this CDB element" — 99.76% global-call resolution, built by `tools/pml-graph/` on the same zero-dependency tree-sitter foundation.
+* **Supporting Resources**: [Glossary (glossary.md)](skills/aveva-dev-pml/glossary.md) · [8 Production Patterns (patterns.md)](skills/aveva-dev-pml/patterns.md) · [Decision Cheatsheet (cheatsheet.md)](skills/aveva-dev-pml/cheatsheet.md) · [Verified PMLLIB Idioms (references/)](skills/aveva-dev-pml/references/pmllib-idioms.md) · [Offline Syntax Gate (tools/pml-parse/)](skills/aveva-dev-pml/tools/pml-parse/README.md) · [Code Graph (tools/pml-graph/)](skills/aveva-dev-pml/tools/pml-graph/README.md).
 
 ---
 

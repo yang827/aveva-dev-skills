@@ -3,7 +3,7 @@ name: aveva-data-model
 description: "Knowledge base from the AVEVA Data Model Reference Manual by AVEVA Solutions Ltd. Use when navigating database hierarchies, developing PML automation macros, querying native and pseudo attributes, managing Catalogue/Design/Draft/System databases, or resolving connectivity across AVEVA Plant, Marine, and Everything3D (E3D) models."
 metadata:
   suite: aveva-dev-skills
-  version: "0.4.0"
+  version: "0.5.0"
 ---
 <!-- argument-hint: [topic, database name, element mnemonic, or chapter number] -->
 

@@ -7,7 +7,7 @@
 [English](README.md) | [简体中文](README_zh.md) | [实测基准 (Evals)](EVALS_zh.md) | [变更日志 (Changelog)](CHANGELOG.md)
 
 [![Agent Skills Standard](https://img.shields.io/badge/Standard-Agent%20Skills-blue?style=flat-square)](https://agentskills.io)
-[![Release: v0.4.0](https://img.shields.io/badge/Release-v0.4.0-informational?style=flat-square)](https://github.com/yang827/aveva-dev-skills/releases)
+[![Release: v0.5.0](https://img.shields.io/badge/Release-v0.5.0-informational?style=flat-square)](https://github.com/yang827/aveva-dev-skills/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
 [![Compatible with OpenCode](https://img.shields.io/badge/Compatible-OpenCode-purple?style=flat-square)](https://opencode.ai)
 [![Compatible with Claude Code](https://img.shields.io/badge/Compatible-Claude%20Code-orange?style=flat-square)](https://claude.ai)
@@ -51,7 +51,8 @@
 * **GUI 界面与交互系统**: 现代表单生命周期、全套 Gadget 布局器、Event Driven Graphics (EDG) 异步拾取交互。
 * **Marine Drafting 出图自动化**: `MarDrafting` 单文档接口（SDI）控制、图纸坐标投影、文字与尺寸标注自动化。
 * **离线语法门禁与即时校验 (Tree-sitter)**: 内置完全独立的离线语法检查工具包（`tools/pml-parse/`），零外部依赖（无须 Node.js、编译器或网络）；在官方 6,075 个 PMLLIB 源码文件上实测达成 **94.02%** 无错解析率；提供生成后必须通过的 **0-FAIL** 语法门禁脚本（`parse-pml.ps1`）。
-* **配套文件**: [速查字典 (glossary.md)](skills/aveva-dev-pml/glossary.md) · [八大生产级设计模式 (patterns.md)](skills/aveva-dev-pml/patterns.md) · [诊断决策树 (cheatsheet.md)](skills/aveva-dev-pml/cheatsheet.md) · [官方源码索引与成例 (references/)](skills/aveva-dev-pml/references/pmllib-idioms.md) · [离线语法校验工具 (tools/pml-parse/)](skills/aveva-dev-pml/tools/pml-parse/README.md)。
+* **官方源码代码图谱**: 预置全量 6,075 个 PMLLIB 源码的结构图谱（`graph/pml-graph.tsv.gz`，69,459 个节点 / 218,280 条边），可直接回答"谁调用了这个函数""这个控件回调进了哪个方法""哪些代码触达这个 CDB 元素"，全局调用解析率 **99.76%**；由 `tools/pml-graph/` 基于同一套零依赖 tree-sitter 底座构建。
+* **配套文件**: [速查字典 (glossary.md)](skills/aveva-dev-pml/glossary.md) · [八大生产级设计模式 (patterns.md)](skills/aveva-dev-pml/patterns.md) · [诊断决策树 (cheatsheet.md)](skills/aveva-dev-pml/cheatsheet.md) · [官方源码索引与成例 (references/)](skills/aveva-dev-pml/references/pmllib-idioms.md) · [离线语法校验工具 (tools/pml-parse/)](skills/aveva-dev-pml/tools/pml-parse/README.md) · [代码图谱工具 (tools/pml-graph/)](skills/aveva-dev-pml/tools/pml-graph/README.md)。
 
 ---
 

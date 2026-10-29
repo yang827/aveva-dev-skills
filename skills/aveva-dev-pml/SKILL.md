@@ -3,7 +3,7 @@ name: aveva-dev-pml
 description: "Knowledge base for AVEVA PML secondary development (part of the aveva-dev-skills suite). Covers PML 1 and PML 2 macros, functions, forms, gadgets, Event Driven Graphics, Marine Drafting automation, and DABACON database queries."
 metadata:
   suite: aveva-dev-skills
-  version: "0.4.0"
+  version: "0.5.0"
 ---
 
 <!-- argument-hint: [topic, framework name, or chapter number] -->
@@ -15,6 +15,7 @@ metadata:
 
 - **Without arguments** — loads the core PML frameworks, syntax rules, and mental models below.
 - **With a topic** — ask about `forms`, `gadgets`, `collections`, `edg`, `marapi`, or `primitives`; I will navigate to and load the relevant chapter.
+- **With a structural question** — "who calls `!!name`", "what does this form wire up", "what breaks if I change this method", "which code touches `/SITE/AREA`" — query the pre-built **code graph** ([tools/pml-graph/query-graph.ps1](tools/pml-graph/query-graph.ps1), Core Framework 2d) **before** grepping the 6,075-file source snapshot.
 - **With a chapter** — ask for `ch01` through `ch20` to load that specific chapter directly.
 - **Browse** — ask for the chapter index or consult supporting documents.
 
@@ -51,7 +52,10 @@ PML 2 files are dynamically loaded on-demand across directories listed in the op
 A snapshot of the AVEVA-delivered PML source tree ships with this skill at [PMLLIB/](PMLLIB/) (6075 source files: 1380 `.pmlfrm`, 3703 `.pmlfnc`, 988 `.pmlobj`; version.dat + pml.index included). This is real, production-grade official code — the authoritative reference for verified syntax.
 
 - **On AVEVA installs**, runtime PMLLIB directories come from the instance environment (set by `evars.bat`); read env values in PML with `var !x EVAR <name>` or `!!evar()` / `!!evarSplit()`. The bundled snapshot works offline: it is plain text under this skill folder, no environment lookup needed.
-- **Lookup order when official usage is uncertain**: (1) [references/pmllib-idioms.md](references/pmllib-idioms.md) — verified idioms with citations; (2) grep [references/pmllib-index.md](references/pmllib-index.md) (module, gadget, flag, description) to locate candidate files; (3) open the real source under [PMLLIB/](PMLLIB/) via the index path.
+- **Lookup order when official usage is uncertain** — pick the fork by question type; do not grep reflexively:
+  - *How is X written?* (idiom / syntax evidence) → (1) [references/pmllib-idioms.md](references/pmllib-idioms.md) — verified idioms with citations; (2) grep [references/pmllib-index.md](references/pmllib-index.md) (module, gadget, flag, description) to locate candidate files; (3) open the real source under [PMLLIB/](PMLLIB/) via the index path.
+  - *Who uses / calls X? Where is this callback wired? What breaks if X changes? Which code touches this CDB path?* → query the **code graph before grepping** (Core Framework 2d): `tools/pml-graph/query-graph.ps1 -WhoCalls '!!name'` / `-CallbacksInto .method` / `-CallsOf <node-id>` / `-FilesForDbPath <path>`. Grep cannot see caller→callee edges or join a callback string to its gadget; the graph returns `file:line` for exactly the files to open, minus definitions and comments.
+  - *Literal text* (attribute names, prompt strings, command words, error texts) → grep [PMLLIB/](PMLLIB/) via the index — the graph holds definitions and edges, not code bodies.
 - **Priority**: module order of interest is `common` → `design` → `draft`/`marinedrafting`/`isodraft` → `admin`/`global` → others; treat `mds` (scantling formula library, 2504 files) as low priority unless the task is MDS-specific.
 - **Copyright**: delivered AVEVA source — cite paths in answers, do not bulk-copy large extracts into user deliverables.
 
@@ -64,6 +68,16 @@ A standalone PML syntax checker ships at [tools/pml-parse/](tools/pml-parse/) (t
 - **Do not "avoid" `$P` trailing dots or `numericinput` labels** — those two false-positive families were fixed in the 2026-10-27 grammar build (25 delivered files rescued, 0 regressions); write them freely, see the tool README "Known false positives — RESOLVED".
 - **Tree inspection** (structure questions, e.g. verifying a form parses as one `form_definition`): `parse-pml.ps1 <file> -Tree`. Also the double-check channel when a verdict looks too good: the CLI quiet mode can under-report (false OK) on some recovery trees — grep the `-Tree` output for `(ERROR`.
 - **Parser sanity gate** after any tooling change: `tools/pml-parse/bench-pmllib.ps1` must stay ≈ 94.02% on the bundled PMLLIB.
+
+### 2d. Code Graph — Who Calls What, Without Grepping
+
+A pre-built structural graph of the whole delivered snapshot ships at [graph/pml-graph.tsv.gz](graph/pml-graph.tsv.gz) (69,459 nodes / 218,280 edges, built by [tools/pml-graph/](tools/pml-graph/)). Query it before reading source files: it takes seconds instead of a 7,465-file walk, and it answers questions grep cannot (callback → method, caller → callee, code → CDB element).
+
+- **Before answering "who uses `!!someFunction`" or "where is this form's callback wired up"**, run `tools/pml-graph/query-graph.ps1 -WhoCalls '!!name'` / `-CallbacksInto .method` / `-CallsOf <node-id>` / `-FilesForDbPath /SITE/AREA` / `-Module <module>` / `-Find <substring>`. Hits carry `file:line`, so open only the file you actually need.
+- **Lookup contract** (`-WhoCalls` / `-CallbacksInto` / `-CallsOf`, identical since 2026-10-29): a **full node id** (`file.pmlobj#object.method`) matches exactly in all three modes and never truncates — a wrong id fails loudly with a `-Find` hint. A **qualified name** (`!!obj.method`) resolves on the LAST dot segment, falling back to the first only when the last matches no node; note the builder keys chained `!this.member.method()` callbacks on `member`, so query chained receivers by the member name. A **bare name** merges every node of that name (1,562 overloads plus cross-module name clashes) — when precision matters, look the id up with `-Find` first, then pass it.
+- **Coverage** (measured, see `graph/pml-graph.meta.json`): 99.76% of `!!global` calls resolve to a declaring `.pmlfnc`/`.pmlobj`/`.pmlfrm`; 96.12% of callback targets resolve. The remainder are runtime-provided names (`!!warning`, `!!error`), built-in form methods (`.hide()`, `.cancel()`), and members created dynamically at run time — treat those as a genuine "not in the delivered source" signal, not a graph gap.
+- **Scope**: syntax-level, not type-resolved. Calls on `!this` and on `!!global` receivers are tracked; calls on arbitrary local variables (`!obj.doThing()`) are not, because that needs type inference. Overloaded methods (1,562 `(file, method)` pairs) keep separate nodes with a `~2` suffix and an `overload` flag.
+- **Rebuild after PMLLIB changes**: `tools/pml-graph/build-pml-graph.ps1` (~4.5 min), then commit `graph/`. `-Check` exits 2 when the committed graph no longer matches the sources; `tools/pml-graph/tests/run-tests.ps1` is the 38-assertion self-test (must stay green after any change to the query or the builder).
 
 ### 3. Copies and References Framework (Value Types vs Reference Types)
 - **Value Types (`REAL`, `STRING`, `BOOLEAN`)**: Assignment (`!a = !b`) copies data by value.
@@ -251,6 +265,8 @@ PML has **no `null`/`nil`/`None` literal, and no `.null()` method on any type** 
 - [references/pmllib-index.md](references/pmllib-index.md) — Machine-generated index of all 6075 bundled source files (module, type, lines, syntax flags, description). Grep this first, then open the source. Regenerate with [tools/regen-pmllib-index.ps1](tools/regen-pmllib-index.ps1).
 - [PMLLIB/](PMLLIB/) — The bundled AVEVA-delivered PML source snapshot (see Core Framework 2b).
 - [tools/pml-parse/](tools/pml-parse/) — Offline PML syntax checker (tree-sitter CLI + pml.dll + PowerShell wrappers): parse-pml.ps1 for single files/folders, bench-pmllib.ps1 as parser sanity gate. See Core Framework 2c.
+- [graph/pml-graph.tsv.gz](graph/pml-graph.tsv.gz) + [graph/pml-graph.meta.json](graph/pml-graph.meta.json) — Pre-built code graph of the snapshot (definitions, calls, callbacks, member ownership, CDB paths, interop), with coverage counts and unresolved-name lists. See Core Framework 2d.
+- [tools/pml-graph/](tools/pml-graph/) — Graph builder and query tool: build-pml-graph.ps1, query-graph.ps1, queries/pml-graph.scm, tests/run-tests.ps1. Same zero-dependency tree-sitter foundation as the parser.
 
 ---
 
